@@ -99,7 +99,7 @@ void rd_range_text(char *buf, size_t cap, int32_t radius_m, int unit);
 int rd_scale(int32_t radius_m, int unit, int max_px, int *px);
 
 /* ---- the theme's values (§2.11), layout version 4 ------------------------------------ */
-#define RD_VALUES_VER 4
+#define RD_VALUES_VER 5
 #define RD_VALUES_V2_B 1144           /* a layout-2 theme: the scale keeps its defaults */
 #define RD_VALUES_V3_B 1160           /* a layout-3 theme: nothing drawn under the rain */
 typedef struct {
@@ -128,8 +128,18 @@ typedef struct {
     uint8_t  under_cross;         /* 1: a cross through the centre */
     uint8_t  under_w;             /* their width, 1-3 px */
     uint8_t  under_pad[9];
+    /* layout 5 (radar-plan §6.26): the approved mock-up's look */
+    uint8_t  track_bottom;        /* 1: the time track on the bottom rim, half a degree a minute */
+    uint8_t  forecast;            /* a nowcast frame: 0 as observed, 1 dimmed, 2 hatched, 3 desaturated */
+    uint8_t  scale_ring;          /* 1: a range ring at the round length, labelled; 0 the bar */
+    uint8_t  caps;                /* 1: the place in capitals */
+    uint16_t place_y, time_y, status_y;   /* the words' centres on the glass */
+    uint8_t  sweep_s;             /* the sweep's turn, seconds; 0 none */
+    uint8_t  l5_pad[5];
 } rd_values_t;
-_Static_assert(sizeof(rd_values_t) == 64 + 16 + 16 + 4 + 4 + 1024 + 16 + 16 + 16, "the editor writes this layout");
+_Static_assert(sizeof(rd_values_t) == 64 + 16 + 16 + 4 + 4 + 1024 + 16 + 16 + 16 + 16, "the editor writes this layout");
+#define RD_VALUES_V4_B 1176           /* a layout-4 theme: the old look (track round, the bar) */
+enum { RD_FC_NONE, RD_FC_DIM, RD_FC_HATCH, RD_FC_DESAT };
 /* The lowest dBZ the owner's "Lightest rain shown" setting keeps (choice 0-3), and the
  * value under which a frame's pixels are not drawn: value = (dBZ + 32) * 2. */
 static inline int rd_floor_dbz(int choice) { return choice <= 0 ? 10 : choice == 1 ? 15 : choice == 2 ? 20 : 25; }

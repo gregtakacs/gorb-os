@@ -33,6 +33,8 @@ GFXH = os.path.join(ROOT, "main", "gfx", "orb_gfx.h")
 # walk anyway; the test says so for readers). The same goes for live_restack's explicit
 # stop at the two lifted layers: they carry no tag, so the tag test stops there too.
 MUTATIONS = [
+    (UI, "static inline bool hatched_out(int32_t X, int32_t Y) { return ((X + Y) & 7) >= 5; }", "static inline bool hatched_out(int32_t X, int32_t Y) { return ((X - Y) & 7) >= 5; }"),
+    (UI, "if (e.a && !(p->hatch && hatched_out(X, Y))) over(", "if (e.a) over("),
     (UI, "const int32_t half = k2 * k2 / 2,", "const int32_t half = 0,"),
     (GFX, "row[x] = (uint16_t)((v >> 8) | (v << 8)); }", "row[x] = v; }"),
     (GFX, "for (int32_t x = xa; x <= xb; x++) { const uint16_t v = *src++;", "for (int32_t x = xa - 1; x <= xb; x++) { const uint16_t v = *src++;"),
@@ -85,6 +87,7 @@ def lifted(mutation=None):
         tgt, "#define ORB_PNG8_MAX_W 1024", "#define ORB_DISC_SIDE 64u   /* the harness's glass, a 64 px disc */", pal_t,
         func(ui, "static inline uint16_t blend565("),
         func(ui, "static inline void over("),
+        ui[ui.index("static inline bool hatched_out("):ui.index("\n", ui.index("static inline bool hatched_out(")) + 1],   # one line
         sctx,
         ui[ui.index("static int32_t floordiv("):ui.index("\n", ui.index("static int32_t floordiv(")) + 1],   # one line
         func(ui, "static void smooth_prep("),
@@ -163,6 +166,7 @@ static uint16_t c565(int r, int g, int b) { return (uint16_t)((r & 31) << 11 | (
  * onto an opaque target; each glass pixel then holds the value it sampled */
 static uint16_t G[64 * 64];
 static const uint16_t *s_disc;     /* NULL, or the 64 px glass's disc (§6.19) */
+static bool s_hatch;               /* OS v1.2.38: the forecast's stripes */
 static int run_smooth(const uint8_t *src, int sw, int shh, int sx, int sy, int dx, int dy, int k, int gw, int gh)
 {
     static pal565_t pal[256];
@@ -171,7 +175,7 @@ static int run_smooth(const uint8_t *src, int sw, int shh, int sx, int sy, int d
     for (int i = 0; i < 64 * 64; i++) G[i] = 0xFFFF;
     orb_ui_tgt_t t = { G, NULL, 64, 64, 64 };
     static smooth_ctx_t c;
-    c = (smooth_ctx_t){ .t = &t, .pal = pal, .vmap = vmap, .sx = sx, .sy = sy, .dx = dx, .dy = dy, .w = gw, .h = gh, .k = k, .prev_y = -2, .disc = s_disc };
+    c = (smooth_ctx_t){ .t = &t, .pal = pal, .vmap = vmap, .sx = sx, .sy = sy, .dx = dx, .dy = dy, .w = gw, .h = gh, .k = k, .prev_y = -2, .disc = s_disc, .hatch = s_hatch };
     smooth_prep(&c);
     int rows = 0;
     for (int y = 0; y < shh; y++) { rows++; if (smooth_row(&c, y, src + y * sw, sw)) break; }
@@ -223,6 +227,17 @@ int main(void)
       }
       CK(corners > 0 && out_drawn == 0 && in_bad == 0, "on the full glass the disc alone is drawn, as before inside it, the corners left alone"); }
     CK(check_smooth(S, 16, 16, 10, 0, 0, 0, 2, 20, 10) == 0, "past the source's right edge the glass is left alone, never read beyond the row");
+    { s_hatch = true;                   /* hatched: the stripes' gaps keep the glass, the rest is the draw */
+      run_smooth(S, 16, 16, 0, 0, 0, 0, 2, 30, 30);
+      int gap_drawn = 0, on_bad = 0, gaps = 0;
+      for (int Y = 0; Y < 30; Y++) for (int X = 0; X < 30; X++) {
+          const double r = ref(S, 16, 16, 0, 0, 0, 0, 2, X, Y);
+          if (r < 0) continue;
+          if (((X + Y) & 7) >= 5) { gaps++; if (G[Y * 64 + X] != 0xFFFF) gap_drawn++; }
+          else if (G[Y * 64 + X] != (int)floor(r + 0.5)) on_bad++;
+      }
+      s_hatch = false;
+      CK(gaps > 0 && gap_drawn == 0 && on_bad == 0, "hatched (the forecast): 3 px of every 8 along the diagonal keep what was under them, the rest drawn"); }
     CK(check_smooth(S, 16, 16, 0, 0, 7, 9, 4, 40, 40) == 0, "a source placed right of and below the glass's corner: negative positions floor, not truncate");
     { static uint8_t R[8 * 2] = { 0, 100, 0, 100, 0, 100, 0, 100,  0, 100, 0, 100, 0, 100, 0, 100 };
       run_smooth(R, 8, 2, 0, 0, 0, 0, 2, 12, 2);

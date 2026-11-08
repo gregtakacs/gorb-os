@@ -1769,3 +1769,35 @@ nothing and asked for a theme every 2 s.
   alike, measured 24 s each); on a theme it was 25-31 KB. Under the ~7 KB block a send has
   starved before (gorb-os-internal-ram-under-clock). Not the radar's: to be found in the
   display path the stage does not use.
+
+### 6.26 The approved look, real previews, and one look set (2026-11-08, Bronze, OS v1.2.38, radar v1.2.2)
+
+The owner: the editor's previews were "total garbage, not reflective of what each premade
+theme looks like", and the looks had lost the mock-up's design (§0 ruling 13). Ruled the same
+day: **all eight looks in every app** (Scope, Paper, Brass, Blueprint, Station, Celestial,
+Silver, Sectional), **the mock-up's layout** for the radar, **one name per look**.
+
+- **The mock-up's look (values layout 5, 1,192 B):** the place at the top (capitals where the
+  look says), the time low over a **time track on the bottom rim** (a tick a frame, past in
+  quiet ink left of Now, forecast in the accent to its right, the cursor half a degree a
+  minute), the "forecast" word under a nowcast's time, a **range ring at the scale's round
+  length** labelled on the ring (the bar stays a choice), **the forecast marked** (dimmed,
+  desaturated, or hatched: `ORB_PNG_HATCH`, OS v1.2.38, 45-degree stripes 5 px on, 3 off), and
+  **Scope's sweep** (a 20 fps row with a fading trail the app turns, its box the wedge's own:
+  116 KB). A layout-2/3/4 theme keeps the old look; a design saved before keeps it on a re-bake.
+- **Kept from later rulings over the mock-up:** the zoom's large pill (§6.12), not rim steps.
+  **Station** is the railway clock's white, black and red in every app (the mock-up's TV map
+  gave way to parity; its broadcast rain ramp stays). **Owed:** the no-coverage dim (the
+  source gives no coverage).
+- **The looks:** Scope phosphor through and through (a green map, rain glowing to white, the
+  sweep); Brass dark enamel with a turned brass rim; Silver graphite with a silver rim;
+  Celestial violet with stars and its own sweep; Paper, Blueprint and Sectional as before.
+- **Previews:** `frame()` in radar-bake.js draws the look as the orb does, and both the
+  editor and the bake use it: the baked preview is the whole 466 px glass, over the owner's
+  own map at Region when the editor has it, else over maps@1's `sampleMap()` (a made-up place:
+  lakes, two rivers, a city and towns, roads, a state line, an airport; never real data).
+- **Size:** the fonts' glyphs are drawn white and coloured on the orb, so one face and size is
+  baked once (~250 KB a theme); every starter fits the pool beside the shelf's others
+  (Scope 1.76 MB with its sweep).
+- **Bronze:** Scope (dimmed forecast, sweep, 16-17 fps) and Paper (hatched forecast) as
+  previewed.

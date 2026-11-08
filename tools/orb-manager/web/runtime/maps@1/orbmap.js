@@ -780,13 +780,78 @@
     return { lat: +hm.home.lat, lon: +hm.home.lon, name: hm.home.place || 'Home', unit: unit };
   }
 
+  /* ---- a made-up place's map, for a theme's baked preview when no real map is at hand
+   * (a bake on the shelf, with no hub): lakes, two rivers, a city and its towns with their
+   * built-up areas, motorways, main and minor roads, a state line, an airport and its runways.
+   * Its own seed, so every bake draws the same place. Never a real place's data. ---- */
+  function sampleMap() {
+    var s = 20261108, rnd = function () { s = (s * 1103515245 + 12345) & 0x7fffffff; return s / 0x7fffffff; };
+    var P = function (x, y) { return [Math.round(x * UNIT), Math.round(y * UNIT)]; };
+    var feats = [], marks = [];
+    var blob = function (cx, cy, r, n, j) {
+      var ring = [];
+      for (var i = 0; i < n; i++) { var t = 2 * Math.PI * i / n, rr = r * (1 - j / 2 + j * rnd()); ring.push(P(cx + rr * Math.cos(t), cy + rr * Math.sin(t) * 0.8)); }
+      ring.push(ring[0]);
+      return ring;
+    };
+    var path = function (pts, wob) {               /* a gently wandering polyline through the points */
+      var out = [], p1 = rnd() * 6.3, p2 = rnd() * 6.3, f1 = 1 + rnd() * 2, f2 = 3 + rnd() * 3;
+      for (var i = 0; i + 1 < pts.length; i++) {
+        var a = pts[i], b = pts[i + 1], n = Math.max(2, Math.round(Math.hypot(b[0] - a[0], b[1] - a[1]) / 6));
+        for (var k = 0; k < n; k++) {
+          var f = k / n, nx = -(b[1] - a[1]), ny = b[0] - a[0], l = Math.hypot(nx, ny) || 1;
+          var w = wob * Math.sin(f * Math.PI) * (0.35 * Math.sin(f1 * Math.PI * f + p1) + 0.15 * Math.sin(f2 * Math.PI * f + p2));
+          out.push(P(a[0] + (b[0] - a[0]) * f + nx / l * w, a[1] + (b[1] - a[1]) * f + ny / l * w));
+        }
+      }
+      var e = pts[pts.length - 1]; out.push(P(e[0], e[1]));
+      return out;
+    };
+    var towns = [[18, -12, 'Fairview', 0, 2], [-150, 70, 'Westbury', 1, 4], [130, -150, 'Northgate', 1, 4], [175, 110, 'Easton', 1, 5],
+      [-90, -170, 'Millbrook', 1, 6], [-200, -60, 'Redwater', 1, 7], [60, 210, 'Southport', 1, 6], [250, -20, 'Lakeside', 1, 8]];
+    // water: lakes, the river through the city, and its tributary
+    [[-110, -80, 34], [205, 175, 26], [-60, 160, 18], [95, -235, 22], [-245, 140, 30]].forEach(function (l) { feats.push([3, FILL, [blob(l[0], l[1], l[2], 18, 0.5)]]); });
+    feats.push([4, LINE, [path([[-330, -100], [-180, -60], [-60, 10], [40, 40], [160, 30], [330, 90]], 50)]]);
+    feats.push([4, LINE, [path([[-110, -80], [-80, -10], [-60, 10]], 25), path([[120, -330], [100, -200], [60, -60], [40, 40]], 40)]]);
+    // built-up areas round each town, the city's the largest
+    towns.forEach(function (t, i) { feats.push([2, FILL, [blob(t[0], t[1], i ? 18 : 62, 16, 0.45)]]); });
+    // motorways through the city, and its ring
+    feats.push([6, LINE, [path([[-330, 40], [-150, 70], [18, -12], [175, 110], [330, 170]], 30)]]);
+    feats.push([6, LINE, [path([[-90, -330], [-90, -170], [18, -12], [60, 210], [40, 330]], 30)]]);
+    feats.push([6, LINE, [path([[330, -230], [130, -150], [18, -12]], 20)]]);
+    var ringRd = []; for (var a = 0; a <= 24; a++) { var t = 2 * Math.PI * a / 24; ringRd.push(P(18 + 75 * Math.cos(t), -12 + 62 * Math.sin(t))); }
+    feats.push([6, LINE, [ringRd]]);
+    // main roads between the towns, minor roads in the city
+    [[1, 4], [4, 5], [5, 1], [2, 7], [7, 3], [3, 6], [6, 1], [2, 4], [0, 7], [0, 5], [6, 3]].forEach(function (e) {
+      var A = towns[e[0]], B = towns[e[1]]; feats.push([5, LINE, [path([[A[0], A[1]], [B[0], B[1]]], 40)]]);
+    });
+    for (var g = -2; g <= 2; g++) {
+      feats.push([13, LINE, [path([[18 + g * 24, -70], [18 + g * 24, 46]], 6)]]);
+      feats.push([14, LINE, [path([[-50, -12 + g * 22], [86, -12 + g * 22]], 6)]]);
+    }
+    [[[-330, 220], [-150, 70]], [[330, -80], [250, -20], [175, 110]], [[-330, -160], [-200, -60]], [[200, 330], [175, 110]], [[-20, 330], [60, 210]]].forEach(function (r) {
+      feats.push([5, LINE, [path(r, 30)]]);
+    });
+    for (var m = 0; m < 14; m++) {                  /* the minor roads of the country */
+      var x0 = -300 + rnd() * 600, y0 = -300 + rnd() * 600, ang = rnd() * Math.PI, len = 60 + rnd() * 120;
+      feats.push([13, LINE, [path([[x0, y0], [x0 + len * Math.cos(ang), y0 + len * Math.sin(ang)]], 20)]]);
+    }
+    // a state line across the north-west, an airport east of the city
+    feats.push([7, LINE, [path([[-330, -250], [-200, -230], [-30, -330]], 30)]]);
+    feats.push([12, LINE, [[P(92, 28), P(118, 4)], [P(96, 40), P(124, 16)]]]);
+    marks.push([MARK_AIRPORT, 1, Math.round(110 * UNIT), Math.round(22 * UNIT), 'FVW']);
+    towns.forEach(function (t) { marks.push([t[3] ? MARK_TOWN : MARK_CITY, t[4], Math.round(t[0] * UNIT), Math.round(t[1] * UNIT), t[2]]); });
+    marks.sort(function (a, b) { return a[1] - b[1]; });
+    return encode(40, -95, 9, feats, marks);
+  }
+
   var api = {
     FORMAT: FORMAT, UNIT: UNIT, HALF: HALF, ZOOMS: ZOOMS, ROLES: ROLES, W: W, RASTER_B: RASTER_B,
     readTile: readTile, classify: classify, world: world, tilesFor: tilesFor, e4: e4, mapName: mapName,
     clipPoly: clipPoly, clipLine: clipLine, simplify: simplify, quantise: quantise,
     encode: encode, info: info, build: build, crc32: crc32,
     render: render, SHAPE: SHAPE, look: look, roleAt: roleAt, nib: nib, pickLevel: pickLevel, paint: paint,
-    fetchLevel: fetchLevel, orbHome: orbHome
+    fetchLevel: fetchLevel, orbHome: orbHome, sampleMap: sampleMap
   };
   root.GorbMaps = api;
 })(typeof window !== 'undefined' ? window : (typeof globalThis !== 'undefined' ? globalThis : this));

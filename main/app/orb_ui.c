@@ -387,7 +387,10 @@ typedef struct {
     const pal565_t *pal;
     int32_t sx, sy, dx, dy, w, h, scale;
     const uint16_t *disc;          /* the glass's disc for a full-glass target, else NULL */
+    bool hatch;                    /* ORB_UI_PNG_HATCH: diagonal stripes, the rest left as it was */
 } png_ctx_t;
+/* A hatched draw (OS v1.2.38, the radar's forecast): 45-degree stripes 5 px on, 3 off. */
+static inline bool hatched_out(int32_t X, int32_t Y) { return ((X + Y) & 7) >= 5; }
 
 static int png_row(void *ctx, int y, const uint8_t *idx, int w)
 {
@@ -411,7 +414,7 @@ static int png_row(void *ctx, int y, const uint8_t *idx, int w)
         for (int32_t ky = 0; ky < p->scale && oy + ky < p->h; ky++)
             for (int32_t kx = 0; kx < p->scale && x * p->scale + kx < p->w; kx++) {
                 const int32_t X = p->dx + x * p->scale + kx, Y = p->dy + oy + ky;
-                if ((uint32_t)X < (uint32_t)p->t->w && (uint32_t)Y < (uint32_t)p->t->h)
+                if ((uint32_t)X < (uint32_t)p->t->w && (uint32_t)Y < (uint32_t)p->t->h && !(p->hatch && hatched_out(X, Y)))
                     over(p->t, Y * p->t->stride + X, e.c, e.a);
             }
     }
@@ -433,6 +436,7 @@ typedef struct {
     int32_t sx, sy, dx, dy, w, h, k;
     int32_t prev_y, shift;         /* shift: log2(4k^2) when k is a power of two, else -1 */
     const uint16_t *disc;          /* the glass's disc for a full-glass target, else NULL */
+    bool hatch;                    /* ORB_UI_PNG_HATCH */
     uint8_t prev[ORB_PNG8_MAX_W], cur[ORB_PNG8_MAX_W];
     int16_t x0[ORB_PNG8_MAX_W];    /* per glass column: its left source column, -1 off the image */
     uint8_t fx[ORB_PNG8_MAX_W];    /* and its weight toward the right one, 0 .. 2k-1 */
@@ -485,7 +489,7 @@ static int smooth_row(void *ctx, int y, const uint8_t *idx, int w)
                 if (sum0 && !(a | b)) continue;
                 const int32_t fx = p->fx[X], n = a * (k2 - fx) + b * fx + half;
                 const pal565_t e = p->pal[p->shift >= 0 ? n >> p->shift : n / (k2 * k2)];
-                if (e.a) over(p->t, base + X, e.c, e.a);
+                if (e.a && !(p->hatch && hatched_out(X, Y))) over(p->t, base + X, e.c, e.a);
             }
         }
         if (floordiv(y * k2 - c + 1, 2) >= p->h) return 1;  /* past the window: stop decoding */
@@ -535,7 +539,7 @@ void orb_ui_tgt_line(const orb_ui_tgt_t *t, int32_t x0, int32_t y0, int32_t x1, 
 int32_t orb_ui_tgt_png8(const orb_ui_tgt_t *t, const uint8_t *png, uint32_t len, int32_t sx, int32_t sy,
                         int32_t dx, int32_t dy, int32_t w, int32_t hh, int32_t scale, const uint32_t *argb)
 {
-    const bool smooth = (scale & ORB_UI_PNG_SMOOTH) != 0;
+    const bool smooth = (scale & ORB_UI_PNG_SMOOTH) != 0, hatch = (scale & ORB_UI_PNG_HATCH) != 0;
     scale &= 0xFF;
     if (!t || !png || !argb || scale < 1 || scale > (smooth ? 16 : 4)) return ORB_PNG8_E_FORMAT;
     /* One scratch for every draw: they all run on the LVGL task, one at a time. */
@@ -559,13 +563,13 @@ int32_t orb_ui_tgt_png8(const orb_ui_tgt_t *t, const uint8_t *png, uint32_t len,
         if (!sc || !vmap) { heap_caps_free(sc); heap_caps_free(vmap); heap_caps_free(pal); return ORB_PNG8_E_SCRATCH; }
         for (int i = 0; i < 256; i++) vmap[i] = np ? value[i] : (uint8_t)i;
         *sc = (smooth_ctx_t){ .t = t, .pal = pal + 256, .vmap = vmap, .sx = sx, .sy = sy, .dx = dx, .dy = dy,
-                              .w = w, .h = hh, .k = scale, .prev_y = -2, .disc = disc_of(t) };
+                              .w = w, .h = hh, .k = scale, .prev_y = -2, .disc = disc_of(t), .hatch = hatch };
         smooth_prep(sc);
         r = orb_png8_decode(png, len, scratch, orb_png8_scratch_size(), smooth_row, sc);
         heap_caps_free(sc);
         heap_caps_free(vmap);
     } else {
-        png_ctx_t ctx = { t, pal, sx, sy, dx, dy, w, hh, scale, disc_of(t) };
+        png_ctx_t ctx = { t, pal, sx, sy, dx, dy, w, hh, scale, disc_of(t), hatch };
         r = orb_png8_decode(png, len, scratch, orb_png8_scratch_size(), png_row, &ctx);
     }
     if (r == ORB_PNG8_E_STOP) r = ORB_PNG8_OK;        /* the window ended before the image */

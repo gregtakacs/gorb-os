@@ -214,9 +214,10 @@ uint16_t rd_roles_at(const rd_values_t *v, int step)
 void rd_values_default(rd_values_t *v)
 {
     static const uint32_t PAL[16] = {
-        0xFF0A2233, 0xFF101A22, 0xFF18242E, 0xFF0E2C40, 0xFF1F5A80, 0xFF4A5966,
-        0xFF6B7B88, 0xFF3D4A56, 0xFF6A7886, 0xFF2A5470, 0xFFB8C4CE, 0xFFE0B040,
-        0xFF5B6B78, 0xFF3A4855, 0xFF2F3B46, 0 };
+        /* Scope's phosphor (radar-plan §6.26, the mock-up's): every feature a green */
+        0xFF04180F, 0xFF06140C, 0xFF0B2416, 0xFF082A1A, 0xFF175A3A, 0xFF14482E,
+        0xFF1F7A4C, 0xFF163E2A, 0xFF2FA86A, 0xFF175A3A, 0xFF5FD49A, 0xFFC8FFE0,
+        0xFF1F7A4C, 0xFF103522, 0xFF0D2C1C, 0 };
     memset(v, 0, sizeof *v);
     memcpy(v->map_pal, PAL, sizeof PAL);
     v->width[4] = 1; v->width[5] = 1; v->width[6] = 2; v->width[7] = 1; v->width[8] = 2;
@@ -231,10 +232,10 @@ void rd_values_default(rd_values_t *v)
     v->names = 4;
     v->map_order = 0;
     v->rain_order = 1;
-    /* rain: green, yellow, orange, red, magenta, over the 10 dBZ noise floor (value 84) */
+    /* rain: the phosphor's green glowing to white, over the 10 dBZ noise floor (value 84) */
     static const struct { int dbz; uint32_t argb; } RAMP[] = {
-        { 10, 0x9900C850 }, { 20, 0xBF00E060 }, { 30, 0xD9F0E020 }, { 40, 0xE8F09020 },
-        { 50, 0xF0E83020 }, { 60, 0xFFE020D0 }, { 70, 0xFFFFFFFF } };
+        { 10, 0x8C1F6B46 }, { 20, 0xB32FA86A }, { 30, 0xD13DDC84 }, { 40, 0xE67DFFB0 },
+        { 50, 0xF2C8FFE0 }, { 60, 0xFFFFFFFF }, { 70, 0xFFFFFFFF } };
     const int n = (int)(sizeof RAMP / sizeof RAMP[0]);
     for (int i = 0; i < 256; i++) {
         const double dbz = i / 2.0 - 32.0;
@@ -243,12 +244,16 @@ void rd_values_default(rd_values_t *v)
         while (k < n - 1 && dbz >= RAMP[k + 1].dbz) k++;
         v->rain[i] = RAMP[k].argb;
     }
-    v->scale_ink = 0xFFD8F4EE;
-    v->scale_edge = 0xFF05090D;
+    v->scale_ink = 0xFF299057;                             /* the range ring: the rim's green, quiet */
+    v->scale_edge = 0xFF020805;
     v->scale_w = 2;
     v->scale_tick = 9;
     v->scale_max = 150;
     v->under_w = 1;                                        /* nothing under the rain: alpha 0 */
+    /* layout 5: Scope's look, the mock-up's (radar-plan §6.26) */
+    v->track_bottom = 1; v->forecast = RD_FC_DIM; v->scale_ring = 1; v->caps = 1;
+    v->place_y = 52; v->time_y = 346; v->status_y = 392;
+    v->sweep_s = 6;
 }
 
 int rd_scale(int32_t radius_m, int unit, int max_px, int *px)

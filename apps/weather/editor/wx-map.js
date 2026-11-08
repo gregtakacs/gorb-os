@@ -50,6 +50,7 @@
     celestial: { on: true, look: 'hint', p: { ink: '#8C7BFF', water: '#5A6BD8', accent: '#FFD27A' } },
     station: { on: true, look: 'hint', p: { ink: '#555555', water: '#6A8AA8', accent: '#E3000F' } },
     sectional: { on: true, look: 'chart', p: { ink: '#1F4E8C', water: '#8CC4EA', accent: '#C2187A' } },
+    silver: { on: true, look: 'hint', p: { ink: '#C8CED6', water: '#7E9CB8', accent: '#F2F4F7' } },
     blank: { on: false, look: 'hint', p: { ink: '#9A9A9A', water: '#6A7A8A', accent: '#D0D0D0' } },
   };
   function paletteOf(base) { return (FAMILY[base] || FAMILY.scope).p; }
@@ -117,7 +118,7 @@
   /* ---- the preview: the OS's view of the owner's home map ---- */
   function levelOf(lat, areaKm) { return root.GorbMaps.pickLevel(Math.round(lat * 1e6), areaKm * 1000); }
   function view(m, bytes, lat) {
-    var GM = root.GorbMaps, lv = levelOf(lat, m.area), Ro = roles(m), S = strokes(m);
+    var GM = root.GorbMaps, lv = lat == null ? { scale: 1 } : levelOf(lat, m.area), Ro = roles(m), S = strokes(m);   // null: a made-up place
     var r = GM.render(bytes, { scale: lv.scale, rot_rad: 0, role_on: Ro.role_on, mark_on: Ro.mark_on, width: S.width, dash: S.dash, clip: CLIP });
     if (r.err) throw new Error('the map could not be drawn (' + r.err + ')');
     var c = document.createElement('canvas'); c.width = c.height = 466;

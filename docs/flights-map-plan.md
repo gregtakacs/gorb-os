@@ -146,3 +146,18 @@ levels on the card), faint, behind the reading, cut inside the bezel's ticks (r 
   a theme ~100 B.
 - On Bronze over DFW at 40 km: the view 1,323 ms at z10 0.75×; 20 fps; the shelf's Scope
   re-baked with it.
+
+## 6. One look set (2026-11-08)
+
+The owner: parity of look and feel across weather, radar and flights. Every app now starts
+from the same eight looks, under the same names, in the same order: **Scope, Paper, Brass,
+Blueprint, Station, Celestial, Silver, Sectional** (radar-plan §6.26).
+
+- **Flights** gains **Station** (black silhouettes on white, a red arm, Jost); "Modern" is
+  **Scope** and "Vintage brass" **Brass**; **Silver** wears graphite under a silver bezel.
+  Its picture draws the map (maps@1's made-up place) under the planes.
+- **Weather** gains **Silver** (graphite, a turned bezel, the engraved icons in silver);
+  "Vintage brass" is **Brass**. Its picture draws the map behind the reading.
+- **Radar** gains **Celestial** and **Silver**; "Radarscope" is **Scope**, "Vintage" **Brass**.
+- The shelf files keep their names (modern.orbtheme, scope.orbtheme, radarscope.orbtheme);
+  the themes inside are named for their look.

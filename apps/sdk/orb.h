@@ -334,6 +334,9 @@ typedef struct {
  * it, their values blended bilinearly before the palette colours them. dx may be negative
  * (the window's first source pixel can start left of the glass) for exact alignment. */
 #define ORB_PNG_SMOOTH 0x100
+/* scale | ORB_PNG_HATCH (OS v1.2.38): drawn in 45-degree stripes, 5 px on and 3 off, what was
+ * under them left as it was (a forecast that never looks observed). */
+#define ORB_PNG_HATCH  0x200
 ORB_IMPORT("cv_png8") int32_t orb_cv_png8(int32_t cv, const orb_png_draw_t *d);
 
 /* ---- maps (cap "location"; radar-plan §2.4, OS v1.2.20) ---------------------------- *

@@ -22,12 +22,13 @@
 #define DEFAULT_SOURCE "https://api.librewxr.net"
 
 /* the theme's slots (apps/radar/editor/radar-bake.js) */
-enum { T_DOT = 0, T_HAND = 1, T_TIME = 8, T_PLACE = 9, T_RANGE = 10, T_STATUS = 11, T_NAME0 = 12, T_ZOOM = 18 };
+enum { T_DOT = 0, T_HAND = 1, T_SWEEP = 2, T_TIME = 8, T_PLACE = 9, T_RANGE = 10, T_STATUS = 11, T_NAME0 = 12, T_ZOOM = 18 };
 #define N_NAMES 6
 #define N_ROWS 64
 
 static orb_stage_info_t s_stage;
 static bool  s_themed;
+static int32_t R_sweep = -1;
 static int32_t R_dot = -1, R_hand = -1, R_time = -1, R_place = -1, R_range = -1, R_status = -1, R_zoom = -1;
 static int32_t R_name[N_NAMES];
 static rd_values_t V;
@@ -463,6 +464,11 @@ static void draw_scale(void)
     const where_t *w = here();
     if (!w) return;
     int px;
+    if (V.scale_ring) {                  /* the mock-up's: a ring at the round length, labelled by draw_ui */
+        (void)rd_scale(rd_radius_m(s_zoom, w->lat_e6), s_units.dist, 200, &px);
+        orb_cv_ring(s_tgt, CX, CY, px, V.scale_ink & 0xFFFFFF);
+        return;
+    }
     (void)rd_scale(rd_radius_m(s_zoom, w->lat_e6), s_units.dist, V.scale_max, &px);
     const int x0 = CX - px / 2, x1 = x0 + px, t = V.scale_tick, h = V.scale_w;
     /* the edge a pixel round the bar and the ticks, then the ink over it */
@@ -479,11 +485,19 @@ static void draw_scale(void)
 }
 
 /* The theme's rain colours with the owner's floor: values under it draw nothing. */
-static uint32_t s_pal[256];
+static uint32_t s_pal[256], s_pal_fc[256];      /* observed, and a nowcast frame's (V.forecast) */
 static void pal_build(void)
 {
     const int v0 = rd_floor_value(s_floor);
-    for (int i = 0; i < 256; i++) s_pal[i] = i < v0 ? 0 : V.rain[i];
+    for (int i = 0; i < 256; i++) {
+        const uint32_t c = i < v0 ? 0 : V.rain[i];
+        s_pal[i] = c;
+        if (V.forecast == RD_FC_DIM) s_pal_fc[i] = ((c >> 25) << 24) | (c & 0xFFFFFF);   /* half the opacity */
+        else if (V.forecast == RD_FC_DESAT) {                                             /* seven parts grey */
+            const uint32_t r = c >> 16 & 0xFF, g = c >> 8 & 0xFF, b = c & 0xFF, l = (r * 77 + g * 150 + b * 29) >> 8;
+            s_pal_fc[i] = (c & 0xFF000000u) | ((r + 7 * l) >> 3) << 16 | ((g + 7 * l) >> 3) << 8 | ((b + 7 * l) >> 3);
+        } else s_pal_fc[i] = c;
+    }
 }
 
 static void draw_rain(void)
@@ -500,7 +514,8 @@ static void draw_rain(void)
     if (!f || f->slot < 0 || !orb_blob_len((uint32_t)f->slot)) { draw_scale(); return; }
     const int k = rd_img_k(s_zoom);
     orb_png_draw_t d = { .slot = (uint32_t)f->slot, .sx = s_sx, .sy = s_sy, .dx = s_dx, .dy = s_dy,
-                         .w = RD_GLASS, .h = RD_GLASS, .scale = k > 1 ? (k | ORB_PNG_SMOOTH) : 1, .pal = s_pal };
+                         .w = RD_GLASS, .h = RD_GLASS, .scale = k > 1 ? (k | ORB_PNG_SMOOTH) : 1, .pal = f->now ? s_pal_fc : s_pal };
+    if (f->now && V.forecast == RD_FC_HATCH) d.scale |= ORB_PNG_HATCH;   /* a forecast never looks observed */
     const int32_t rc = orb_cv_png8(ORB_CV_LIVE1, &d);
     draw_scale();
     if (rc == ORB_OK) s_shown = i;
@@ -539,19 +554,26 @@ static void draw_ui(void)
     const where_t *w = here();
     char b[48];
     pose(R_dot, CX, CY);
-    say(R_place, CX, 58, w ? w->name : "", 0);
-    if (w) {                                              /* the scale bar's length */
-        int px;
-        const int len = rd_scale(rd_radius_m(s_zoom, w->lat_e6), s_units.dist, V.scale_max, &px);
+    char pl[40];
+    snprintf(pl, sizeof pl, "%s", w ? w->name : "");
+    if (V.caps) for (char *c = pl; *c; c++) if (*c >= 'a' && *c <= 'z') *c = (char)(*c - 32);   /* ASCII alone */
+    say(R_place, CX, V.place_y, pl, 0);
+    int rpx = 0;
+    if (w) {                                              /* the scale's round length */
+        const int len = rd_scale(rd_radius_m(s_zoom, w->lat_e6), s_units.dist, V.scale_ring ? 200 : V.scale_max, &rpx);
         snprintf(b, sizeof b, "%d %s", len, s_units.dist == 1 ? "mi" : s_units.dist == 2 ? "nm" : "km");
     } else b[0] = 0;
-    say(R_range, CX, 414, b, 0);
+    /* the bar's length under it; the ring's on the ring, up and to the right */
+    if (V.scale_ring) say(R_range, CX + rpx * 7071 / 10000 + 30, CY - rpx * 7071 / 10000 - 6, b, 0);
+    else say(R_range, CX, 414, b, 0);
     const int i = frame_wanted();
     if (i >= 0) {
         const int min = (int)((F[i].t - F[idx_newest()].t) / 60);
         rd_time_text(b, sizeof b, min);
-        say(R_time, CX, 98, b, F[i].now ? 1 : 0);                  /* a forecast reads as one */
-        if (R_hand >= 0) orb_stage_pose(R_hand, min * 15, 0, 0);   /* 1.5 degrees a minute */
+        say(R_time, CX, V.time_y, b, F[i].now ? 1 : 0);           /* a forecast reads as one */
+        /* the cursor: round, Now at the top and 1.5 degrees a minute; bottom (the mock-up's),
+         * Now at the bottom and half a degree a minute, the past to its left */
+        if (R_hand >= 0) orb_stage_pose(R_hand, V.track_bottom ? 1800 - min * 5 : min * 15, 0, 0);
     } else {
         hide(R_time);
         hide(R_hand);
@@ -584,7 +606,8 @@ static void draw_ui(void)
         snprintf(b, sizeof b, "updated %d min ago", (int)((now_s() - s_list_at) / 60));
         st = b;
     }
-    say(R_status, CX, 362, st, 0);
+    else if (want >= 0 && F[want].now && V.track_bottom) st = "forecast";   /* the mock-up's word under the time */
+    say(R_status, CX, V.status_y, st, 0);
     if (s_flip_ms) for (int k = 0; k < N_NAMES; k++) hide(R_name[k]);   /* the old map's */
     else draw_names();
 }
@@ -648,11 +671,11 @@ static void loop_step(void)
  * a ring and the rim, home's dot, the scale bar, and the words in the system fonts (18 px,
  * 48 px for the time and the zoom), names folded to ASCII (the system fonts carry no
  * accents). Same knob, same loop, same fetches as on a theme. */
-#define BARE_GROUND 0x0B1822
-#define BARE_INK    0xD8F4EE
-#define BARE_QUIET  0x9CC2BC
+#define BARE_GROUND 0x06140C            /* Scope's phosphor, as the default values' map is */
+#define BARE_INK    0xB4FFD2
+#define BARE_QUIET  0x5FBF8A
 #define BARE_NEXT   0xE0B040            /* a forecast frame's time */
-#define BARE_RING   0x2F6A64
+#define BARE_RING   0x299057
 static int32_t s_cv;                    /* the bare canvas; 0 on a theme */
 static void bare_text(int y, int w, int font, uint32_t rgb, const char *s)
 {
@@ -760,7 +783,7 @@ static void redraw(void)
 
 static void find_rows(void)
 {
-    R_dot = R_hand = R_time = R_place = R_range = R_status = R_zoom = -1;
+    R_dot = R_hand = R_time = R_place = R_range = R_status = R_zoom = R_sweep = -1;
     for (int k = 0; k < N_NAMES; k++) R_name[k] = -1;
     for (int32_t i = 0; i < (int32_t)s_stage.n_rows && i < N_ROWS; i++) {
         clk_row_t r;
@@ -768,6 +791,7 @@ static void find_rows(void)
         const int t = r.tag;
         if (t == T_DOT) R_dot = i;
         else if (t == T_HAND) R_hand = i;
+        else if (t == T_SWEEP) R_sweep = i;
         else if (t == T_TIME) R_time = i;
         else if (t == T_PLACE) R_place = i;
         else if (t == T_RANGE) R_range = i;
@@ -784,9 +808,17 @@ static void read_values(void)
     rd_values_t got;
     const uint32_t n = s_themed ? orb_stage_values(&got, sizeof got, &ver) : 0;
     if (n == sizeof got && ver == RD_VALUES_VER) memcpy(&V, &got, sizeof V);
+    else if (n == RD_VALUES_V4_B && ver == 4) memcpy(&V, &got, RD_VALUES_V4_B);
     else if (n == RD_VALUES_V3_B && ver == 3) memcpy(&V, &got, RD_VALUES_V3_B);   /* nothing under the rain */
     else if (n == RD_VALUES_V2_B && ver == 2) memcpy(&V, &got, RD_VALUES_V2_B);   /* the scale's defaults stay */
     else if (n) orb_logf("radar: the theme's values are layout %u, %u B: the defaults draw", (unsigned)ver, (unsigned)n);
+    if (n && ver < 5 && (n == RD_VALUES_V4_B || n == RD_VALUES_V3_B || n == RD_VALUES_V2_B)) {
+        /* a theme from before the mock-up's look: its glass has the round track and no ring */
+        V.track_bottom = 0; V.forecast = RD_FC_NONE; V.scale_ring = 0; V.caps = 0;
+        V.place_y = 58; V.time_y = 98; V.status_y = 362; V.sweep_s = 0;
+    }
+    if (V.place_y > 440 || V.time_y > 440 || V.status_y > 440) { V.place_y = 58; V.time_y = 98; V.status_y = 362; }
+    if (V.sweep_s > 30) V.sweep_s = 30;
     if (V.names > N_NAMES) V.names = N_NAMES;
     if (V.scale_w < 2) V.scale_w = 2;
     if (V.scale_w > 8) V.scale_w = 8;
@@ -868,6 +900,10 @@ ORB_EXPORT("orb_suspend") void orb_suspend(void) { s_visible = false; s_layers =
 ORB_EXPORT("orb_tick") void orb_tick(uint32_t now)
 {
     (void)now;
+    if (R_sweep >= 0 && V.sweep_s && s_themed && s_visible) {      /* Scope's sweep: one turn a sweep_s */
+        const int64_t per = (int64_t)V.sweep_s * 1000;
+        orb_stage_pose(R_sweep, (int32_t)((up_ms() % per) * 3600 / per), 0, 0);
+    }
     zoom_step();
     loop_step();
     redraw();

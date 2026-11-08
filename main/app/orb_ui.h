@@ -51,6 +51,9 @@ typedef struct { uint16_t *px; uint8_t *a; int32_t w, h, stride; } orb_ui_tgt_t;
 /* In a PNG draw's scale: magnify by the low byte (up to 16) and sample the values
  * bilinearly (radar-plan §6.9); without it the scale is 1-4, each source pixel a block. */
 #define ORB_UI_PNG_SMOOTH 0x100
+/* OS v1.2.38: drawn in 45-degree stripes (5 px on, 3 off), the target's own pixels between:
+ * the radar's hatched forecast. */
+#define ORB_UI_PNG_HATCH  0x200
 /* The glass's disc, row by row: the first pixel of row y inside it (466 - 1 - it the last). */
 const uint16_t *orb_ui_disc_left(void);
 /* A 1 px ring onto a target, opaque. */

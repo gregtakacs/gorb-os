@@ -20,6 +20,7 @@
 #include "orb_app.h"       /* ORB_APP_CAP: the slot count the table is sized by */
 #include "orb_png8.h"      /* orb_ui_cv_png8: radar-plan §2.3 */
 #include "orb_map_raster.h" /* orb_ui_cv_roles: radar-plan §2.4 */
+#include "orb_glass.h"      /* a canvas is a display buffer: the glass region's */
 #include "orb_disc.h"       /* the glass's disc: draws onto a full glass skip its corners */
 
 static const char *TAG = "appui";
@@ -199,14 +200,19 @@ int32_t orb_ui_cv_create(int slot, int32_t parent, int32_t w, int32_t h)
     cv_t *c = &u->cv[u->n_cv];
     c->stride = (int32_t)lv_draw_buf_width_to_stride((uint32_t)w, LV_COLOR_FORMAT_RGB565) / 2;
     const size_t bytes = (size_t)c->stride * 2u * (size_t)h;
-    c->px = heap_caps_aligned_alloc(LV_DRAW_BUF_ALIGN, bytes, MALLOC_CAP_SPIRAM);
+    /* A canvas is a display buffer (a no-theme app's whole glass is 434 KB): the glass
+     * region's, so it never cuts the general heap TLS and the apps share (OS v1.2.38;
+     * Bronze, 2026-11-08: two bare canvases left the heap 666 KB and a download starved).
+     * The region answers 8-byte aligned blocks, past LV_DRAW_BUF_ALIGN. */
+    _Static_assert(LV_DRAW_BUF_ALIGN <= 8, "the glass region aligns to 8");
+    c->px = orb_glass_alloc(bytes);
     if (!c->px) return 0;
     memset(c->px, 0, bytes);
     c->w = w; c->h = h;
     lv_draw_buf_init(&c->dbuf, (uint32_t)w, (uint32_t)h, LV_COLOR_FORMAT_RGB565,
                      (uint32_t)c->stride * 2u, c->px, bytes);
     lv_obj_t *o = lv_canvas_create(p);
-    if (!o) { heap_caps_free(c->px); memset(c, 0, sizeof *c); return 0; }
+    if (!o) { orb_glass_free(c->px); memset(c, 0, sizeof *c); return 0; }
     lv_canvas_set_draw_buf(o, &c->dbuf);
     lv_obj_set_pos(o, 0, 0);
     u->obj[hd] = o;
@@ -292,7 +298,10 @@ void orb_ui_cv_text(int slot, int32_t h, int32_t x, int32_t y, int32_t w, int32_
     ui_slot_t *u = slot_get(slot, false);
     cv_t *c = cv_of(u, h);
     if (!c || !s || w < 1) return;
-    const lv_font_t *f = font_of(font);
+    /* OS v1.2.38: ORB_CV_CENTER and ORB_CV_RIGHT ride the font's high bits; the box is
+     * x .. x + w - 1, and the words are placed in it */
+    const lv_text_align_t al = (font & 0x100) ? LV_TEXT_ALIGN_CENTER : (font & 0x200) ? LV_TEXT_ALIGN_RIGHT : LV_TEXT_ALIGN_LEFT;
+    const lv_font_t *f = font_of(font & 0xFF);
     lv_layer_t layer;
     lv_canvas_init_layer(u->obj[h], &layer);
     lv_draw_label_dsc_t d;
@@ -301,6 +310,7 @@ void orb_ui_cv_text(int slot, int32_t h, int32_t x, int32_t y, int32_t w, int32_
     d.color = lv_color_hex(rgb);
     d.text = s;
     d.text_local = 1;               /* the guest's buffer is copied, not kept */
+    d.align = al;
     lv_area_t a = { x, y, x + w - 1, y + lv_font_get_line_height(f) - 1 };
     lv_draw_label(&layer, &d, &a);
     lv_canvas_finish_layer(u->obj[h], &layer);
@@ -622,7 +632,7 @@ void orb_ui_release(int slot)
     }
     if (u->scr) lv_obj_delete(u->scr);           /* takes every child with it */
     for (int i = 0; i < u->n_cv; i++)
-        if (u->cv[i].px) heap_caps_free(u->cv[i].px);
+        if (u->cv[i].px) orb_glass_free(u->cv[i].px);
     heap_caps_free(u);
     s_ui[slot] = NULL;
 }

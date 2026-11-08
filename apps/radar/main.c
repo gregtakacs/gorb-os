@@ -452,10 +452,11 @@ static void draw_map(void)
 /* The scale bar under its length (owner, 2026-11-08), on the rain's layer so no rain
  * covers it: ink on a dark edge, end ticks up. */
 #define SCALE_Y   440               /* the bar's top */
+static int32_t s_tgt = ORB_CV_LIVE1;  /* where the bar goes: the rain's layer, or the bare canvas */
 static void band(int x0, int x1, int y0, int y1, uint32_t argb)   /* rows y0..y1, the 2 px pen */
 {
     if (!(argb >> 24)) return;
-    for (int y = y0; y <= y1; y += 2) orb_cv_line(ORB_CV_LIVE1, x0, y > y1 - 1 ? y1 - 1 : y, x1, y > y1 - 1 ? y1 - 1 : y, argb & 0xFFFFFF);
+    for (int y = y0; y <= y1; y += 2) orb_cv_line(s_tgt, x0, y > y1 - 1 ? y1 - 1 : y, x1, y > y1 - 1 ? y1 - 1 : y, argb & 0xFFFFFF);
 }
 static void draw_scale(void)
 {
@@ -472,8 +473,8 @@ static void draw_scale(void)
     }
     band(x0, x1 - 1, SCALE_Y, SCALE_Y + h - 1, V.scale_ink);
     if (t) {
-        orb_cv_line(ORB_CV_LIVE1, x0, SCALE_Y - t, x0, SCALE_Y, V.scale_ink & 0xFFFFFF);
-        orb_cv_line(ORB_CV_LIVE1, x1 - 2, SCALE_Y - t, x1 - 2, SCALE_Y, V.scale_ink & 0xFFFFFF);
+        orb_cv_line(s_tgt, x0, SCALE_Y - t, x0, SCALE_Y, V.scale_ink & 0xFFFFFF);
+        orb_cv_line(s_tgt, x1 - 2, SCALE_Y - t, x1 - 2, SCALE_Y, V.scale_ink & 0xFFFFFF);
     }
 }
 
@@ -640,9 +641,115 @@ static void loop_step(void)
     if (next != s_loop) { s_loop = next; s_rain_dirty = s_ui_dirty = true; }
 }
 
+/* ---- the bare form: no theme bound (app-platform-plan §26: every app draws its base
+ * form from the OS's primitives) ---------------------------------------------------------
+ * One canvas, composed whole whenever anything moved: the ground, the OS's map in the
+ * radar's own colours (rd_values_default), the rain frame through the same ramp and floor,
+ * a ring and the rim, home's dot, the scale bar, and the words in the system fonts (18 px,
+ * 48 px for the time and the zoom), names folded to ASCII (the system fonts carry no
+ * accents). Same knob, same loop, same fetches as on a theme. */
+#define BARE_GROUND 0x0B1822
+#define BARE_INK    0xD8F4EE
+#define BARE_QUIET  0x9CC2BC
+#define BARE_NEXT   0xE0B040            /* a forecast frame's time */
+#define BARE_RING   0x2F6A64
+static int32_t s_cv;                    /* the bare canvas; 0 on a theme */
+static void bare_text(int y, int w, int font, uint32_t rgb, const char *s)
+{
+    char a[64];
+    rd_ascii(a, sizeof a, s);
+    orb_cv_text(s_cv, CX - w / 2, y, w, font | ORB_CV_CENTER, rgb, a);
+}
+
+static void bare_names(void)
+{
+    int n = 0;
+    int16_t bx[N_NAMES], by[N_NAMES], bw[N_NAMES];
+    for (uint32_t k = 0; s_view > 0 && n < V.names && n < N_NAMES && k < 32; k++) {
+        orb_map_mark_t m;
+        if (orb_map_mark(s_view, k, &m) != 1) break;
+        char a[32];
+        const int len = (int)rd_ascii(a, sizeof a, m.name);
+        const int w = 11 * len + 12, x = m.x, y = m.y + 6;      /* 18 px words, under the mark */
+        const int dx = x - CX, dy = y - CY;
+        if (dx * dx + dy * dy > 185 * 185 || dx * dx + dy * dy < 40 * 40) continue;
+        if (y < 130 || y > 330) continue;                         /* the time, the status, the scale */
+        bool hit = false;
+        for (int j = 0; j < n && !hit; j++)
+            hit = (x - bx[j] < (w + bw[j]) / 2 && bx[j] - x < (w + bw[j]) / 2) && (y - by[j] < 24 && by[j] - y < 24);
+        if (hit) continue;
+        bx[n] = (int16_t)x; by[n] = (int16_t)y; bw[n] = (int16_t)w;
+        orb_cv_text(s_cv, x - w / 2, y, w, ORB_FONT_18 | ORB_CV_CENTER, BARE_QUIET, a);
+        n++;
+    }
+}
+
+static void bare_draw(void)
+{
+    s_map_dirty = s_rain_dirty = s_ui_dirty = false;
+    const where_t *w = here();
+    char b[48];
+    orb_cv_fill(s_cv, BARE_GROUND);
+    if (s_view > 0) orb_map_draw(s_cv, s_view, V.map_pal, 0, 0);
+    const int i = frame_wanted();
+    const frame_t *f = i >= 0 ? &F[i] : NULL;
+    s_shown = -1;
+    if (f && f->slot >= 0 && orb_blob_len((uint32_t)f->slot)) {
+        const int k = rd_img_k(s_zoom);
+        orb_png_draw_t d = { .slot = (uint32_t)f->slot, .sx = s_sx, .sy = s_sy, .dx = s_dx, .dy = s_dy,
+                             .w = RD_GLASS, .h = RD_GLASS, .scale = k > 1 ? (k | ORB_PNG_SMOOTH) : 1, .pal = s_pal };
+        if (orb_cv_png8(s_cv, &d) == ORB_OK) s_shown = i;
+    }
+    orb_cv_ring(s_cv, CX, CY, 116, BARE_RING);
+    orb_cv_ring(s_cv, CX, CY, 231, BARE_RING);
+    orb_cv_ring(s_cv, CX, CY, 230, BARE_RING);
+    if (!s_flip_ms) bare_names();
+    orb_cv_disc(s_cv, CX, CY, 6, BARE_NEXT);
+    orb_cv_disc(s_cv, CX, CY, 4, 0xFFFFFF);
+    s_tgt = s_cv;
+    draw_scale();
+    if (w) {
+        int px;
+        const int len = rd_scale(rd_radius_m(s_zoom, w->lat_e6), s_units.dist, V.scale_max, &px);
+        snprintf(b, sizeof b, "%d %s", len, s_units.dist == 1 ? "mi" : s_units.dist == 2 ? "nm" : "km");
+        bare_text(410, 160, ORB_FONT_18, BARE_INK, b);
+        bare_text(36, 300, ORB_FONT_18, BARE_QUIET, w->name);
+    }
+    if (i >= 0) {
+        rd_time_text(b, sizeof b, (int)((F[i].t - F[idx_newest()].t) / 60));
+        bare_text(62, 320, ORB_FONT_48, F[i].now ? BARE_NEXT : BARE_INK, b);
+    }
+    /* the zoom while it changes, or a press's new place: large, on a dark band */
+    const bool zooming = s_zoom_want >= 0 || up_ms() - s_zoom_said_ms < 2000;
+    const int zs = s_zoom_want >= 0 ? s_zoom_want : s_zoom;
+    s_pill_up = w && (zooming || s_flip_ms);
+    if (s_pill_up) {
+        if (s_flip_ms && !zooming) snprintf(b, sizeof b, "%s", w->name);
+        else snprintf(b, sizeof b, "%s", ZOOM[zs]);
+        for (int y = CY + 36; y < CY + 92; y += 2) orb_cv_line(s_cv, CX - 190, y, CX + 190, y, 0x05090D);
+        bare_text(CY + 40, 370, ORB_FONT_48, BARE_INK, b);
+    }
+    const char *st = "";
+    if (!w) st = "Set home on the hub";
+    else if (s_map_absent) st = "No map yet";
+    else if (s_view_next > 0 || s_map_retry_ms) st = "Loading map";
+    else if (!s_npast) st = s_net != NET_IDLE ? "Loading radar" : "No radar yet";
+    else if (i >= 0 && F[i].slot < 0 && !F[i].failed) st = "Loading radar";
+    else if (s_list_at && now_s() - s_list_at > STALE_S) {
+        snprintf(b, sizeof b, "updated %d min ago", (int)((now_s() - s_list_at) / 60));
+        st = b;
+    }
+    if (st[0]) bare_text(352, 300, ORB_FONT_18, BARE_QUIET, st);
+    orb_cv_flush(s_cv);
+}
+
 static void redraw(void)
 {
-    if (!s_visible || !s_themed) return;
+    if (!s_visible) return;
+    if (!s_themed) {
+        if (s_cv && (s_map_dirty || s_rain_dirty || s_ui_dirty)) bare_draw();
+        return;
+    }
     if (!s_layers) layers_open();
     if (s_map_dirty) draw_map();
     if (s_rain_dirty) draw_rain();
@@ -705,7 +812,13 @@ static void stage_read(void)
     if (s_themed) find_rows();
     if (s_themed && R_time < 0) s_themed = false;      /* not this app's layout */
     read_values();
-    orb_set_beat(s_themed ? 0 : 2000);
+    /* no theme: the bare form, for good (a theme's store reboots the orb, which starts the
+     * app again on it); its loop steps every 250 ms */
+    if (!s_themed && !s_cv) {
+        s_cv = orb_cv_create(0, CX * 2, CY * 2);
+        orb_logf("radar: no theme: the bare form%s", s_cv ? "" : ", but its canvas was refused");
+    }
+    orb_set_beat(s_themed ? 0 : s_cv ? 250 : 2000);
     if (was != s_themed) orb_logf("radar: %s", s_themed ? "on its theme" : "no theme bound yet: asking again");
     s_stage_retry_ms = up_ms() + 2000;
 }
@@ -728,7 +841,8 @@ static void on_glass(void)
 {
     s_visible = true;
     s_layers = false;                  /* the stage frees the layers when another app binds */
-    stage_read();
+    if (!s_cv) stage_read();           /* the bare form stays bare */
+    s_map_dirty = s_rain_dirty = s_ui_dirty = true;
     /* the OS closed the map's views when the app left (no display buffers off the glass,
      * OS v1.2.27): a new one, the frames kept unless nothing has been shown yet */
     for (int i = 0; i < RD_FRAMES; i++)              /* the OS frees kept bodies 15 min off the glass */
@@ -796,7 +910,7 @@ ORB_EXPORT("orb_service") void orb_service(void)
         s_ui_dirty = s_rain_dirty = true;
     }
     zoom_step();
-    if (s_visible && !s_themed && up_ms() >= s_stage_retry_ms) { stage_read(); s_layers = false; s_map_dirty = s_rain_dirty = s_ui_dirty = true; }
+    if (s_visible && !s_themed && !s_cv && up_ms() >= s_stage_retry_ms) { stage_read(); s_layers = false; s_map_dirty = s_rain_dirty = s_ui_dirty = true; }
     if (s_map_retry_ms && up_ms() >= s_map_retry_ms) { s_map_retry_ms = 0; view_open(); }
     view_step();
     /* The zoom's pill goes 2 s after it lands. Playing, the loop's next frame redrew it away;

@@ -262,3 +262,28 @@ int rd_scale(int32_t radius_m, int unit, int max_px, int *px)
     *px = (int)floor(best * u / mpp + 0.5);
     return best;
 }
+
+/* U+00C0 .. U+017F to their base letters (Latin-1 and Latin Extended-A), for the system
+ * fonts, which carry ASCII alone (the no-theme form): "München" reads "Munchen", "Győr"
+ * "Gyor"; anything else outside ASCII is '?'. */
+static const char FOLD[] =
+    "AAAAAAACEEEEIIIIDNOOOOOxOUUUUYTsaaaaaaaceeeeiiiidnooooo/ouuuuyty"
+    "AaAaAaCcCcCcCcDdDdEeEeEeEeEeGgGgGgGgHhHhIiIiIiIiIiIiJjKkkLlLlLlLlLlNnNnNnnNnOoOoOoOoRrRrRrSsSsSsSsTtTtTtUuUuUuUuUuUuWwYyYZzZzZzs";
+size_t rd_ascii(char *dst, size_t cap, const char *src)
+{
+    size_t n = 0;
+    if (!cap) return 0;
+    for (const unsigned char *p = (const unsigned char *)src; *p && n + 1 < cap;) {
+        unsigned cp = *p, len = 1;
+        if (cp >= 0xC0 && cp < 0xE0 && (p[1] & 0xC0) == 0x80) { cp = (cp & 0x1F) << 6 | (p[1] & 0x3F); len = 2; }
+        else if (cp >= 0x80) {                         /* a longer or broken sequence: one '?' */
+            len = cp >= 0xF0 ? 4 : cp >= 0xE0 ? 3 : 1;
+            for (unsigned k = 1; k < len; k++) if ((p[k] & 0xC0) != 0x80) { len = k; break; }
+            cp = '?';
+        }
+        dst[n++] = cp < 0x80 ? (char)cp : cp >= 0xC0 && cp <= 0x17F ? FOLD[cp - 0xC0] : '?';
+        p += len;
+    }
+    dst[n] = 0;
+    return n;
+}

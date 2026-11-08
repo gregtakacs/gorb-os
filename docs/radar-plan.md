@@ -1741,3 +1741,31 @@ built level by level through a state updater closed over a `var`, so every level
 under the last zoom (fixed: `const`); and the hub memoises an app's editor files by
 version, so a bench reinstall at the same version serves the old editor until the hub
 restarts.
+
+### 6.25 The bare form: the radar with no theme (2026-11-08, Bronze, OS v1.2.38, radar v1.2.2)
+
+The owner: every app draws its base form with no theme at all (app-platform-plan §26), and
+everything the radar needs is the OS's (the map, the places), so it must run bare. It drew
+nothing and asked for a theme every 2 s.
+
+- **The form:** one 466 px canvas (`orb_cv_create`), composed whole whenever anything moved:
+  the ground, the OS's map in the radar's default colours (`rd_values_default`), the rain
+  frame through the same ramp and floor, a ring and the rim, home's dot, the scale bar, the
+  place (18 px) and the time (48 px, amber for a forecast), up to four names (18 px), the
+  status line, and the zoom or a press's new place in 48 px on a dark band. Same knob, loop
+  and fetches as on a theme; the loop steps at a 250 ms beat. Bare is for good: a theme's
+  store reboots the orb, which starts the app on it.
+- **Names in the system fonts:** they carry ASCII alone, so `rd_ascii` folds Latin-1 and
+  Latin Extended-A to the base letter ("Munchen", "Gyor"), anything else one `?`
+  (`host_radar_test.py`, 2 mutants).
+- **The OS, v1.2.38:** `orb_cv_text` takes `ORB_CV_CENTER` / `ORB_CV_RIGHT` in the font's high
+  bits; a canvas's pixels come from the glass region. Two bare apps' canvases (radar,
+  flights: 868 KB) had left the general heap 666 KB; from the glass region it stays 3.2 MB.
+- **Bronze, every theme removed** (card and pool empty): the radar cold-started, fetched its
+  18 frames (89-791 ms each), looped, scrubbed to -30 min on a turn, said "Austin" at once on
+  a press and drew Austin's map, and zoomed to Area (20 mi: Round Rock, Pflugerville, AUS).
+- **Owed, the OS's:** with no theme anywhere, every app's bare form leaves internal RAM at
+  ~11.3 KB free, largest block 4.8 KB (clock, weather, flights, the picker and the radar
+  alike, measured 24 s each); on a theme it was 25-31 KB. Under the ~7 KB block a send has
+  starved before (gorb-os-internal-ram-under-clock). Not the radar's: to be found in the
+  display path the stage does not use.

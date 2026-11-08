@@ -86,6 +86,9 @@ void rd_window_k(int z, int k, int side, int32_t img_lat_e6, int32_t img_lon_e6,
 /* The view's radius, centre to the glass's edge, so the map draws at its level's own scale. */
 int32_t rd_radius_m(int step, int32_t lat_e6);
 
+/* src (UTF-8) as ASCII for the system fonts: Latin-1 and Latin Extended-A letters to their
+ * base letter, anything else '?'. Answers the length written. */
+size_t rd_ascii(char *dst, size_t cap, const char *src);
 /* "Now", "-40 min", "+30 min": minutes from the newest past frame. */
 void rd_time_text(char *buf, size_t cap, int minutes);
 /* The range, centre to edge, in the orb's distance unit (0 km, 1 mi, 2 nm): "120 km". */

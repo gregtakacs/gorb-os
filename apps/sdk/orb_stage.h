@@ -96,6 +96,11 @@ ORB_IMPORT("stage_live_copy")  int32_t orb_stage_live_copy(int32_t dst, int32_t 
  * Refused while a back picture is still being drawn. */
 #define ORB_CV_BACK0 (-17)
 #define ORB_CV_BACK1 (-18)
+/* Or'd into stage_live_present's layer (radar-plan §6.28): NOW skips the pace, for a step the
+ * owner asked for (a scrub); PREPARE compares a picture drawn ahead and never swaps it, so a
+ * later present of it is one blip with nothing left to make. */
+#define ORB_LIVE_NOW     0x100
+#define ORB_LIVE_PREPARE 0x200
 ORB_IMPORT("stage_live_back")    int32_t orb_stage_live_back(int32_t layer, int32_t src, uint32_t argb);
 ORB_IMPORT("stage_live_present") int32_t orb_stage_live_present(int32_t layer);
 #define ORB_CV_LIVE0 (-1)

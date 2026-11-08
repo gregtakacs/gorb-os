@@ -1415,21 +1415,27 @@ m3ApiRawFunction(imp_stage_live_back)
  * compared, or paced, ask again next tick; < 0 an error. The first ask after the draws
  * queues the worker's comparison of back and front (LW_DIFF); the swap takes its rows, so
  * only what the new picture changed is composed, in one blip, and the next swap waits on
- * that blip's cost (stage_live_swap_due). */
+ * that blip's cost (stage_live_swap_due). Or'd into layer (§6.28): ORB_LIVE_NOW (0x100)
+ * skips that wait, for a step the owner asked for (a scrub); ORB_LIVE_PREPARE (0x200)
+ * makes the comparison and never swaps (a picture drawn ahead, shown only if asked). */
+#define LIVE_NOW     0x100
+#define LIVE_PREPARE 0x200
 m3ApiRawFunction(imp_stage_live_present)
 {
     m3ApiReturnType(int32_t);
     CALLER();
-    m3ApiGetArg(int32_t, layer);
+    m3ApiGetArg(int32_t, arg);
     STAGE_GATE(ESP_ERR_INVALID_STATE);
-    if (layer < 0 || layer >= STAGE_LIVE_N) m3ApiReturn(ESP_ERR_INVALID_ARG);
+    const int32_t layer = arg & 0xFF;
+    if ((arg & ~(0xFF | LIVE_NOW | LIVE_PREPARE)) || layer >= STAGE_LIVE_N) m3ApiReturn(ESP_ERR_INVALID_ARG);
     if (orb_live_work_pending(layer)) m3ApiReturn(0);
     if (!orb_live_work_diff_ready(layer)) {
         lw_job_t j = { .op = LW_DIFF, .layer = (uint8_t)layer };
         const esp_err_t e = orb_live_work_post(&j);
         m3ApiReturn(e == ESP_OK ? 0 : e);
     }
-    if (!stage_live_swap_due()) m3ApiReturn(0);  /* paced by the last blip (§6.27) */
+    if (arg & LIVE_PREPARE) m3ApiReturn(0);       /* compared and held (§6.28) */
+    if (!(arg & LIVE_NOW) && !stage_live_swap_due()) m3ApiReturn(0);  /* paced by the last blip (§6.27) */
     const int16_t *x0 = NULL, *x1 = NULL;
     (void)orb_live_work_diff(layer, &x0, &x1);
     const esp_err_t e = stage_live_present(layer, x0, x1);

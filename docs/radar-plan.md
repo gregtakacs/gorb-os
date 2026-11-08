@@ -1882,3 +1882,43 @@ plane from the general PSRAM (800 KB left), internal 25 KB (largest 7 KB).
 still costs a frame now and then; a place with no map keeps the last place's map and names
 under its rain (seen benching Brittany; older than this work); Gold has not run it; weather
 has no sweep and is untouched.
+
+### 6.28 The scrub goes at once, and the next frame is drawn ahead (2026-11-08, Bronze, OS v1.2.38, radar v1.2.2)
+
+The owner: from turning to the new frame on the glass "is a bit long. Can we make it better via
+some buffering?" A detent paid the whole path: the map copied into the back, the frame drawn
+on the worker (~100 ms, mostly the smoothed per-pixel draw), the compare, and then §6.27's
+blip pace (up to ~600 ms over a storm), which is the loop's and was never meant for a hand.
+
+- **No pace on a scrub:** `stage_live_present` takes flags in its layer argument, so the ABI
+  is unchanged. `ORB_LIVE_NOW` (0x100) skips the wait on the last blip for a step the owner
+  asked for; the loop is still paced by its blips.
+- **The next frame drawn ahead, in the back the radar already has** (no memory added): when a
+  scrubbed frame lands, the radar begins the next one the way the dial turns (the direction
+  read off the dial, not off the jump from the loop's frame) and has the worker compare it
+  with `ORB_LIVE_PREPARE` (0x200), which never swaps. A detent that way presents it in the
+  same frame; a detent elsewhere draws over it. Anything that voids the rain's pictures (a
+  view, a zoom, the palette, the units, the place, a new list, a frame's body) bumps
+  `s_rain_gen`, and a picture drawn ahead for an older one is never shown.
+- **Bronze, DFW, Region:** a detent drawn ahead reaches the glass 0-2 ms after the turn (then
+  its blip), at 1.5 s a detent and at 0.4 s; a cold one (the first, or the first after the
+  dial reverses) 160-220 ms. The loop playing is unchanged (median 17).
+
+**Kept for after the flash-resident theme work** (each needs PSRAM it will free, or is
+measured against what it changes):
+
+1. **The clock's build-ahead planes for app stages** (+868 KB): a new rain picture prepared in
+   the slack and landed with no blip at all, in place of the paced blip.
+2. **A larger kept-body cap, or frames kept more compactly:** Region and Wide still need the
+   512 px images (50-70 KB on a rainy day), and the 768 KB fill at 5-6 frames (Austin read
+   -50 min); all 12 past frames want ~1 MB there.
+3. **More than one frame drawn ahead** (434 KB each): both directions, or two deep, for a fast
+   spin.
+4. **Pace the blips by the core's share, not 4x their cost:** a cheaper sweep (15 fps frees
+   ~190 ms/s of the LVGL core) would then turn into faster rain steps; at a fixed 4x it does not.
+5. **A faster first load:** the frames come one request at a time over one connection (the
+   list ~2 s with its TLS handshake, then 18 frames at 120-620 ms each); two or three at once,
+   and Now and its neighbours first.
+6. **Re-measure the sweep's 38 ms frame and the blips** once the theme's art is read through
+   the flash cache: pre-painted slow layers live in PSRAM planes, but the sweep's art is read
+   every frame.

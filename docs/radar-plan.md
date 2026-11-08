@@ -169,7 +169,9 @@ A standalone firmware for a very similar round 466 px S3 board. Its radar
     at z5: 31,895 B; DFW, light rain to the south-west: z6 2,253 B, z7 1,529 B. The RGBA
     scheme 2 for the London frame: 31,319 B.
   - The values: index 0 is no echo. Indices 1–68 map to a grey ramp of 84–151 in the PNG's
-    palette (New York z6). **The grey is LibreWXR's pixel value, and dBZ = value / 2 − 32**
+    palette (New York z6). **The indices are the encoder's, frame by frame** (R3c's bench,
+    2026-11-07: Seattle's index 1 is grey 89), so a pixel's value is its palette entry's
+    grey, never its index; `orb_cv_png8` colours values (§2.3). **The grey is LibreWXR's pixel value, and dBZ = value / 2 − 32**
     (read from its source, 2026-11-07: `pixel = (dBZ + 32) * 2`; scheme 255 is an identity
     table). Echoes under 10 dBZ (value 84, `noise_floor_dbz`) are dropped, which is why the
     lowest grey seen is 84. **The raw image carries no snow:** scheme 255's snow table is the
@@ -461,8 +463,12 @@ int32_t orb_cv_png8(int32_t cv, const orb_png_draw_t *d);
   anything else with its reason. Rows are inflated through ROM `tinfl` into PSRAM
   (`tinfl_decompressor` and the 32 KB window are PSRAM, the two row buffers are 512 B
   each). The draw is native and row by row, with no whole-image buffer.
-- The app's palette, not the PNG's, colours it. Alpha blends over the canvas (0 leaves it
-  as it was), so the radar draws over the map, and the map over a plain fill.
+- The app's palette colours it, indexed by each pixel's **value**: the grey the PNG's own
+  palette names for its index (`orb_png8_plte`), since LibreWXR numbers its greys afresh
+  in every frame (§1.4). R3 shipped this sentence as "the app's palette, not the PNG's",
+  indexing by the index; R3c's bench drew nothing with a dBZ ramp and corrected it. Alpha
+  blends over the canvas (0 leaves it as it was), so the radar draws over the map, and the
+  map over a plain fill.
 - *Estimate:* 20–40 ms for a 512×512 radar frame, synchronous inside the guest call
   (`orb_service`'s budget is 250 ms wall). If R3 measures it over ~30 ms, or the UI
   stutters, the draw moves to the jobs worker with an `orb_cv_ready()`, the shape the
@@ -803,12 +809,16 @@ contours). Each matches the same-named looks in Weather and Flights.
 **Canvas and theme: a live layer on the stage** (proposed 2026-11-07, R0). The stage draws
 a theme's plate, rows and text on the dial's own render path; an LVGL canvas over it forces
 the slower LVGL path, and would hide the theme's rows under it. So the radar draws no
-canvas. **The stage gains a live layer:** a full-glass element the theme places in its z
-stack like any row, whose pixels are the app's, held by the OS in PSRAM (RGB565, plus an
-alpha plane when the theme asks for transparency, so a later Flights can lay a map over its
-plate).
-- `orb_map_draw` and `orb_cv_png8` take the layer as their target as well as a canvas; the
-  app marks what changed (`orb_stage_layer_damage`), and the stage recomposes those tiles.
+canvas. **The stage gains a live layer:** a full-glass plane stacked among the theme's rows,
+whose pixels are the app's, held by the OS in PSRAM (RGB565 plus an alpha plane, always,
+so a later Flights can lay a map over its plate).
+- *As built (R3c):* its depth is a number on the rows' scale (0-63) that the theme carries
+  in its values (§2.11) and the app passes to `orb_stage_live(order, argb)`; the theme
+  format gains no element for it, so no reader, writer or bake changed. The editor's row
+  for it is the radar editor's (R7), writing that number.
+- `orb_map_draw` and `orb_cv_png8` take the layer (`ORB_CV_LIVE`) as their target as well
+  as a canvas, and each draw repaints the box it covered; there is no separate damage call
+  (the earlier `orb_stage_layer_damage` was never built).
 - The theme's own rows sit below it (the plate) and above it (the rim's time track, the
   rings, the place marker, the labels in the theme's fonts), all still on the fast path.
 - To the compositor it is a sprite whose pixels live outside the theme bank; the editor
@@ -901,7 +911,7 @@ follow rules that keep everyone moving:
 | R1 | places in the OS: `orb_places.c`, NVS, the imports, `binds --write`, the routes, the hub's allowlist and fake orb, the Places card on the Orb tab; a host test with mutants | — |
 | R2 | Weather v1.4.0 reads the OS places; the place rows leave its App settings page | R1 |
 | R3 | the OS surface: kept bodies and `orb_cv_png8`; the maps: the `.orbmap` FORMAT 1 reader, the rasteriser, views on the worker, the map imports, `/System/Maps`, the gen route; host tests with mutants for the PNG reader, the `.orbmap` reader and the rasteriser; dash patterns, the card's scheduling (§2.12), the render and draw times measured on Bronze | R0, R1 |
-| R3c | the stage's live layer (§2.9): the element, its PSRAM planes, damage, `orb_map_draw`/`orb_cv_png8` targeting it, the editor's row, host and bench checks | R0 |
+| R3c | the stage's live layer (§2.9): its depth, its PSRAM planes, damage, `orb_map_draw`/`orb_cv_png8` targeting it, host and bench checks (the editor's row moved to R7; §6.4) | R0 |
 | R3b | a theme's values section (§2.11): the reader, `orb_stage_values`, `theme_schema`, `baker@1`, the host suites, `os_min` | R0 |
 | R4 | the hub's map tool: the Map tiles row, the Go forwarder with its User-Agent, the tile fetch and cache, the MVT decoder, the class-to-role table, clipping, simplifying and the `.orbmap` writer for six levels with their landmarks, the JS rasteriser and the Places card preview, the C/JS pixel parity test, the writes and clean-up, the amber "Maps out of date" state | R0, R1 |
 | R5 | `apps/radar`: the frame list, fetch order, refresh rules, the knob, the glass, the no-map and no-coverage states, one baked starter on the shelf | R3, R3b, R3c, R4 |
@@ -927,7 +937,10 @@ follow rules that keep everyone moving:
    fallback is §1.7's hub-drawn pictures behind the same imports.
 6. **Internal RAM** during the cold start's 20 HTTPS requests in a row: does the OS client
    keep the connection alive, and what is the internal low point? Weather makes one request
-   per 30 minutes; this makes twenty in a few seconds.
+   per 30 minutes; this makes twenty in a few seconds. *Found in R3c (§6.4):* with the
+   clock on the glass Bronze has ~23 KB internal free, the largest block 7.2-7.4 KB, and
+   R3's map task taking 6 KB of it was enough to stop Wi-Fi transmits. The radar's own
+   headroom on the glass is R6's to measure, against this number.
 7. **The map tool's cost:** bytes fetched and time to encode six levels for one place, at
    DFW and at a sparse place. The simplification tolerance (a quarter pixel, *estimate*)
    against how lines look, and the `.orbmap` sizes it gives.
@@ -942,12 +955,23 @@ follow rules that keep everyone moving:
     the map): confirm before R4 ships in a public release.
 12. ~~The priority shrink's weight~~ **Gone with §0 ruling 11:** vectors are drawn at the
     view's scale, so nothing is shrunk, and line weight is the theme's choice per role.
+13. **The classic path rounds the live layer differently** (R3c, §6.4): over a pixel the
+    layer half covers, LVGL's blend lands one RGB565 step under L4's (land at alpha 160:
+    L4 2/8/5, LVGL 1/7/4, the exact blend 1.63/7.63/4.5). `orb_lv_blend.c`'s rounding
+    hooks claim this blend, so some branch for an unturned RGB565A8 image is not hooked.
+    One step, on the fallback path; which branch is owed.
+14. **A theme label recomposed under a plan** probably goes stale the way the live layer
+    did before `gfx_prep_stale` (§6.4): its plane changes under a pose that does not, and
+    pre-paint keys on the pose. Not benched; the same call at `label_compose` would cover
+    it.
+15. **Pre-paint's exactness check (`prep=2`) cannot see a stale slow job**: with the stale
+    call removed it still counted 0 differing pixels while the glass kept the old layer.
+    It compares against planes built from the same stale state.
 
 ## 5. Open
 
-- **Flights' map** is a later plan (§0 ruling 6). It will have to answer how a map gets
-  under stage rows: a stage plane the OS fills from `orb_map_draw`, or a canvas row under
-  the theme.
+- **Flights' map** is a later plan (§0 ruling 6). How a map gets under stage rows is
+  answered: the live layer (§2.9, R3c), at a depth under the aircraft rows.
 - **Running LibreWXR on the NAS**: the owner is ready to (§0 ruling 8). The `source`
   setting exists from R5.
 - **Lightning** (`/v2/lightning`, GeoJSON by point and radius) as marks on the radar, after
@@ -1049,3 +1073,60 @@ follow rules that keep everyone moving:
 - **Found, not fixed:** `python3 tools/theme_schema.py`'s self-test stops at its "seats 32
   moving rows" case, on HEAD too: the row ceiling rose to 64 (§53) and that case was not
   moved with it. `make check-host` does not run the self-test.
+
+### 6.4 R3c, the live layer (2026-11-07, Bronze, OS v1.2.22, uncommitted)
+
+- **The layer.** `stage_live_open(order, argb)` (`main/stage/orb_stage.c`) allocates one
+  PSRAM plane, 16 + 466x466x3 B (651 KB, RGB565 then A8), fills it, and stacks it at
+  `depth_key(order, false)`: above the rows at that depth, under the glass. Again at the
+  same order it only fills; another order re-stacks; -1 frees it, as does release. In
+  the L4 table it is a row like the glass overlay (`live_desc`: a plate-class row whose
+  plane is the stage's), picked into `clock_layers_build`'s depth sort, so a re-stack is
+  a rebuild of the table (L4's z is table order). On the classic path it is an image
+  placed by `live_restack`: every widget `stage_init` builds now carries its depth key
+  + 1 as user data, and the image goes before the first one deeper than it; it counts as
+  the stage's own child, so it never trips the L4 veto meant for an app's widgets.
+- **The way in.** One import, `orb_stage_live(order, argb)` (85 imports), behind the
+  stage's binding like every `stage_*` call. `orb_cv_png8` and `orb_map_draw` take
+  `ORB_CV_LIVE` (-1) as their canvas and repaint the box they drew (`stage_live_damage`:
+  row marks under L4, an invalidate on the classic path). The draws were generalised over
+  a target (`orb_ui_tgt_t`): a canvas is opaque as before; the layer's alpha plane takes
+  src-over with the coverage added up and the colours weighted by what each contributes.
+- **Pre-paint.** A slow job whose pixels change under an unmoved pose was invisible to
+  pre-paint's planes, so the damage also calls `gfx_prep_stale` (new in `orb_gfx.c`),
+  which rebuilds the box from the new pixels. Proved on Bronze under the clock with
+  `prep=1`: a same-order redraw that adds rain showed the old layer without the call and
+  the rain with it (owed 15: `prep=2` saw neither as a mismatch).
+- **PNG values.** The bench found §2.3's draw indexing the app's palette by the PNG's
+  index, which LibreWXR assigns per frame; `orb_png8_plte` reads the palette's first
+  channel and the draw indexes by that value (§1.4 and §2.3 corrected in place).
+- **The map task's stack** moved to PSRAM (`orb_map.c`, the `appnet` pattern; the task
+  reads the card and never touches flash). In internal RAM it took the block Wi-Fi's
+  transmit buffers come from: under the clock (23 KB free, largest 7.4 KB), once the task
+  existed, any reply longer than about a segment stopped after its first send (status's
+  1.6 KB, config's 4.5 KB, a framebuffer capture), while short ones still went. Before
+  the move, the bench's map + PNG + layer stalled status by the second poll; after, 24
+  polls over three minutes and six cycles of re-stack, re-render and frame swaps with
+  status, config and a 652 KB capture each time all came through whole.
+- **Tests.** `tools/host_live_test.py` lifts `over`, `depth_key` and `live_restack` into
+  gcc: the canvas blend unchanged, a clear pixel taking the source whole, coverage adding
+  up (half over half = 191), forty faint strokes building to opaque; the layer's place
+  among a plate, rows at keys 3 and 5, a comp at 21, the glass and an app widget, up and
+  down; 7/7 mutants (two equivalent edits left out, said why in the file).
+  `host_png8_test.py` gains the palette read (a non-grey palette proves the first channel
+  is read; no palette, 256 entries, a bad CRC, a ragged length, 257 entries): 17/17.
+- **On Bronze** (`/api/v1/debug/live`, debug builds only: open at an order, draw the
+  home map at a radius and a card PNG through a rain ramp, timed on the stage's frame;
+  `veto=1` forces the classic path):
+  - Weather (32 rows + the layer = 33, L4): open 18-25 ms (alloc, fill, table rebuild),
+    the map's blend into it 60-65 ms, a 512x512 frame 47 ms with no echo in the window
+    and 63-66 ms with Seattle's. At order 10 the map covers Weather's rows; at 0 they
+    stand on it; the classic path stacks the same at both.
+  - The clock (8 rows + 1): a commit's paint 25.0 ms without the layer, 29.6 ms with it.
+  - A redraw of map and rain is ~125 ms on the LVGL task, and the loop pays it every
+    step: the layer holds the two composited, so a new frame needs the map under it
+    again. R5's to plan around: a second layer for the rain, or a slower loop (at 4 fps
+    half of each 250 ms step would be drawing).
+- **Not built here:** the editor's row (R7: it writes the order into the values).
+  Classic-path rounding is owed (13).
+

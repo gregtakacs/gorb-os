@@ -34,7 +34,7 @@ STAGE = "/mnt/c/Temp/radar-bake-check"
 RUNTIME = os.path.join(ROOT, "tools", "orb-manager", "web", "runtime")
 EDITOR = os.path.dirname(HERE)
 APPV = open(os.path.join(EDITOR, "..", "version.txt")).read().strip()
-VALUES_B = 64 + 16 + 16 + 4 + 4 + 1024 + 16 + 16    # radar.h rd_values_t, layout 3
+VALUES_B = 64 + 16 + 16 + 4 + 4 + 1024 + 16 + 16 + 16    # radar.h rd_values_t, layout 4
 # The pool's room beside the shelf's other defaults (8 MB less those, the two table
 # sectors and 512 KB of slack), read off the shelf so it follows them.
 SHELF = os.path.join(ROOT, "tools", "orb-manager", "themes")
@@ -90,8 +90,8 @@ def check(name, raw, exe):
     if labs != list(range(8, 19)):
         bad.append("labels at %s, not 8..18" % labs)
     vals = [e for e in els if int(e["class"]) == ts.CLASS_VALUES]
-    if len(vals) != 1 or int(vals[0]["src"]) != 3:
-        bad.append("no values of layout 3")
+    if len(vals) != 1 or int(vals[0]["src"]) != 4:
+        bad.append("no values of layout 4")
     else:
         b = sec["blob"]["sprites"][int(vals[0]["frame0"])]
         w = int(b["w"]) if b else None

@@ -83,6 +83,12 @@ uint32_t stage_values(void *buf, uint32_t cap, uint16_t *ver);
 esp_err_t stage_live_open(int32_t layer, int32_t order, uint32_t argb);
 /* A layer's planes: colour (RGB565, stride CLK_SCR_W) then alpha; false when it is not open. */
 bool stage_live_target(int layer, uint16_t **px, uint8_t **a);
+/* radar-plan §6.19: merge the two layers. On, layer 0 is hidden (still drawn into: the
+ * backing) and layer 1 is composed as covering everywhere, a copy, not a blend; the app
+ * builds layer 1 from stage_live_copy(1, 0) and draws over it. Off whenever the layers go. */
+esp_err_t stage_live_merge(bool on);
+/* Layer src's pixels into layer dst, inside the glass's disc. */
+esp_err_t stage_live_copy(int dst, int src);
 /* The box the app's draw changed: the stage repaints it on the next flush. */
 void stage_live_damage(int32_t x, int32_t y, int32_t w, int32_t h);
 #if CONFIG_ORB_DEBUG_HTTP

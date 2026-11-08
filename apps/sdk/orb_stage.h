@@ -77,6 +77,13 @@ ORB_IMPORT("stage_values")   uint32_t orb_stage_values(void *buf, uint32_t cap, 
  *  of PSRAM each). The orders are theme facts, so an app reads them from its theme's
  *  values. Answers 0, or an error when no theme is bound. */
 ORB_IMPORT("stage_live")     int32_t orb_stage_live(int32_t layer, int32_t order, uint32_t argb);
+/* OS v1.2.33 (radar-plan §6.19): merge the two layers. On, layer 0 is hidden but still drawn
+ * into (the backing) and layer 1 is composed as covering everywhere, copied, not blended, so
+ * it must cover: build it from orb_stage_live_copy(1, 0) and draw over it. Off when the
+ * layers go (the app off the glass): ask again after reopening them. */
+ORB_IMPORT("stage_live_merge") int32_t orb_stage_live_merge(int32_t on);
+/* Layer src's pixels into layer dst, inside the glass's disc. */
+ORB_IMPORT("stage_live_copy")  int32_t orb_stage_live_copy(int32_t dst, int32_t src);
 #define ORB_CV_LIVE0 (-1)
 #define ORB_CV_LIVE1 (-2)
 ORB_IMPORT("stage_row")      int32_t orb_stage_row(int32_t i, clk_row_t *out);

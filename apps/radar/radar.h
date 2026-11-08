@@ -95,9 +95,10 @@ void rd_range_text(char *buf, size_t cap, int32_t radius_m, int unit);
  * glass's 233 px. Answers its length in units; *px its width on the glass. */
 int rd_scale(int32_t radius_m, int unit, int max_px, int *px);
 
-/* ---- the theme's values (§2.11), layout version 3 ------------------------------------ */
-#define RD_VALUES_VER 3
+/* ---- the theme's values (§2.11), layout version 4 ------------------------------------ */
+#define RD_VALUES_VER 4
 #define RD_VALUES_V2_B 1144           /* a layout-2 theme: the scale keeps its defaults */
+#define RD_VALUES_V3_B 1160           /* a layout-3 theme: nothing drawn under the rain */
 typedef struct {
     uint32_t map_pal[16];         /* ARGB per map role (orb_map_view's roles) */
     uint8_t  width[16];           /* line width per role, 0-4 */
@@ -117,8 +118,15 @@ typedef struct {
     uint8_t  scale_tick;          /* the end ticks' height above the bar, 0-24 px */
     uint8_t  scale_max;           /* the longest bar, 60-200 px */
     uint8_t  scale_pad[5];
+    /* layout 4 (§6.19): drawn on the map, under the rain (rings and a cross a theme wants
+     * the weather to cover; ones over it are the theme's own rows) */
+    uint32_t under_argb;          /* ARGB; alpha 0 draws nothing */
+    uint8_t  under_rings;         /* 0-6 rings, evenly out to the glass's edge */
+    uint8_t  under_cross;         /* 1: a cross through the centre */
+    uint8_t  under_w;             /* their width, 1-3 px */
+    uint8_t  under_pad[9];
 } rd_values_t;
-_Static_assert(sizeof(rd_values_t) == 64 + 16 + 16 + 4 + 4 + 1024 + 16 + 16, "the editor writes this layout");
+_Static_assert(sizeof(rd_values_t) == 64 + 16 + 16 + 4 + 4 + 1024 + 16 + 16 + 16, "the editor writes this layout");
 /* The lowest dBZ the owner's "Lightest rain shown" setting keeps (choice 0-3), and the
  * value under which a frame's pixels are not drawn: value = (dBZ + 32) * 2. */
 static inline int rd_floor_dbz(int choice) { return choice <= 0 ? 10 : choice == 1 ? 15 : choice == 2 ? 20 : 25; }

@@ -139,6 +139,7 @@ ORB_IMPORT("ui_refresh") void    orb_ui_refresh(void);
 ORB_IMPORT("cv_create")  int32_t orb_cv_create(int32_t parent, int32_t w, int32_t h);
 ORB_IMPORT("cv_fill")    void orb_cv_fill(int32_t h, uint32_t rgb);
 ORB_IMPORT("cv_pixel")   void orb_cv_pixel(int32_t h, int32_t x, int32_t y, uint32_t rgb);
+/* h may be ORB_CV_LIVE0/1 for a ring (OS v1.2.33) as for a line (v1.2.32): opaque, onto the layer. */
 ORB_IMPORT("cv_ring")    void orb_cv_ring(int32_t h, int32_t cx, int32_t cy, int32_t r, uint32_t rgb);
 ORB_IMPORT("cv_disc")    void orb_cv_disc(int32_t h, int32_t cx, int32_t cy, int32_t r, uint32_t rgb);
 /* h may be ORB_CV_LIVE0/1 (OS v1.2.32): a 2 px opaque line onto the live layer. */

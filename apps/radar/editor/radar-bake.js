@@ -26,7 +26,7 @@
   var CHARSET = (function () { var c = []; for (var i = 0x20; i < 0x7F; i++) c.push(String.fromCharCode(i)); return c; })();
   var SLOT = { dot: 0, hand: 1, time: 8, place: 9, range: 10, status: 11, name0: 12, zoom: 18 };
   var N_NAMES = 6;
-  var VALUES_VER = 3;
+  var VALUES_VER = 4;
   // the map's roles by index (OS v1.2.26's FORMAT 2): road1 motorway and trunk, road2 primary,
   // road3 secondary, road4 tertiary
   var ROLES = ['water', 'land', 'urban', 'lake', 'river', 'road2', 'road1', 'state', 'border', 'coast', 'city', 'airport', 'runway',
@@ -46,6 +46,8 @@
                scale: { face: 'IBM Plex Sans', px: 26, colour: '#d8f4ee' } },   // the scale bar's length
       // the scale bar (layout 3): ink and a dark edge, its thickness, end ticks, longest bar
       scale: { ink: '#d8f4ee', edge: '#05090d', width: 2, tick: 9, max: 150 },
+      // drawn on the map, under the rain (layout 4): none here, Radarscope's rings are glass art over it
+      under: { colour: null, rings: 0, cross: false, width: 1 },
       dot: { colour: '#ffffff', ring: '#e0b040', r: 4.5 },   // white: the airports are amber
       map: {
         water: '#0a2233', land: '#101a22', urban: '#18242e', lake: '#0e2c40', river: '#1f5a80', road2: '#4a5966',
@@ -144,7 +146,7 @@
 
   /* ---- the values: rd_values_t, little-endian ---- */
   function valuesBytes(d) {
-    var b = new Uint8Array(64 + 16 + 16 + 4 + 4 + 1024 + 16 + 16), dv = new DataView(b.buffer), M = d.map, i;
+    var b = new Uint8Array(64 + 16 + 16 + 4 + 4 + 1024 + 16 + 16 + 16), dv = new DataView(b.buffer), M = d.map, i;
     ROLES.forEach(function (r, k) { dv.setUint32(4 * k, argb(M[r], 1), true); });
     ROLES.forEach(function (r, k) {
       b[64 + k] = Math.max(0, Math.min(4, (M.width && M.width[r]) | 0));
@@ -174,6 +176,11 @@
     b[1152] = Math.max(2, Math.min(8, S.width == null ? 2 : S.width | 0));
     b[1153] = Math.max(0, Math.min(24, S.tick == null ? 9 : S.tick | 0));
     b[1154] = Math.max(60, Math.min(200, S.max == null ? 150 : S.max | 0));
+    var U = d.under || {};                                 // layout 4: under the rain
+    dv.setUint32(1160, U.colour ? argb(U.colour, U.alpha == null ? 1 : U.alpha) : 0, true);
+    b[1164] = Math.max(0, Math.min(6, U.rings | 0));
+    b[1165] = U.cross ? 1 : 0;
+    b[1166] = Math.max(1, Math.min(3, U.width == null ? 1 : U.width | 0));
     return b;
   }
 

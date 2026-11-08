@@ -189,6 +189,10 @@ static uint8_t *s_live[STAGE_LIVE_N];
 static int32_t s_live_order[STAGE_LIVE_N] = { -1, -1 };
 static lv_obj_t *s_live_obj[STAGE_LIVE_N];
 static lv_image_dsc_t s_live_dsc[STAGE_LIVE_N];
+/* radar-plan §6.19: layer 1 is layer 0's copy with the app's drawing on it, every pixel
+ * covering, so layer 0 is hidden (still a draw target: the backing) and layer 1 copied,
+ * not blended. Off whenever the layers go. */
+static bool s_live_merged;
 static void live_drop_all(void);
 
 /* CLK_BG_DIRECT_PUSH, the L3/L4 switch the block below and the scheduler's delta
@@ -1841,6 +1845,7 @@ static void live_desc(orb_layer_desc_t *d, int l)
     d->gen_prim  = 0xFFu;
     d->alpha     = 255;
     d->plane     = s_live[l];
+    d->solid     = s_live_merged && l == 1;
 }
 
 /* One element's row. The descriptor's own placement, pivot and blend stay
@@ -2091,8 +2096,9 @@ static void clock_layers_refresh(void)
             if (s_overlay) show = 1;  /* the glass: built and static */
             break;
         case LIVE_PICK:
-            show = r->slot < STAGE_LIVE_N && s_live[r->slot] ? 1 : 0;   /* its plane changes,
-                                                                        * its pose never */
+            show = r->slot < STAGE_LIVE_N && s_live[r->slot] && !(s_live_merged && r->slot == 0)
+                   ? 1 : 0;                       /* its plane changes, its pose never; a
+                                                  * merged layer 0 is layer 1's backing */
             break;
         case ORB_ASSET_BANK: {
             /* FORMAT 3 admits no comp kind but the window, so one row is one
@@ -2657,6 +2663,7 @@ static void stage_release(void)
         s_live[l] = NULL;
         s_live_order[l] = -1;
     }
+    s_live_merged = false;
     ESP_LOGI(TAG, "stage released %s", s_lay_app && s_lay_app->slug ? s_lay_app->slug : "?");
     s_opened = false;
     s_base = false;
@@ -2755,17 +2762,24 @@ uint32_t stage_values(void *buf, uint32_t cap, uint16_t *ver)
 
 /* ---- radar-plan §2.9 (R3c): the live layer --------------------------------------- */
 
-static void live_fill(int l, uint32_t argb)
+/* A fill, inside the glass's disc alone once the layer is new (radar-plan §6.19: the
+ * corners are never seen; a new plane is cleared whole, so they read clear, not noise). */
+static void live_fill(int l, uint32_t argb, bool whole)
 {
     uint16_t *px = (uint16_t *)(s_live[l] + LIVE_OFF);
     uint8_t *al = s_live[l] + LIVE_OFF + (size_t)CLK_SCR_W * CLK_SCR_H * 2u;
-    const size_t n = (size_t)CLK_SCR_W * CLK_SCR_H;
-    memset(al, (int)(argb >> 24), n);
-    if (!(argb >> 24)) return;             /* clear: no colour shows, and a draw over a
-                                            * clear pixel takes its own whole (`over`) */
     const uint32_t rgb = argb & 0xFFFFFFu;
     const uint16_t c = (uint16_t)(((rgb >> 8) & 0xF800u) | ((rgb >> 5) & 0x07E0u) | ((rgb >> 3) & 0x001Fu));
-    for (size_t i = 0; i < n; i++) px[i] = c;
+    const uint16_t *x0 = orb_ui_disc_left();
+    for (int y = 0; y < CLK_SCR_H; y++) {
+        const int a = whole ? 0 : x0[y], n = CLK_SCR_W - 2 * a;
+        const size_t i = (size_t)y * CLK_SCR_W + (size_t)a;
+        memset(al + i, (int)(argb >> 24), (size_t)n);
+        if (!(argb >> 24) && !s_live_merged && !whole) continue;   /* clear: no colour shows, and a draw
+                                                          * over a clear pixel takes its own
+                                                          * whole (`over`) */
+        for (int k = 0; k < n; k++) px[i + (size_t)k] = c;
+    }
 }
 
 /* The classic path's z, for both layers at once. Each layer's place among the widgets the
@@ -2810,6 +2824,7 @@ static void live_drop_all(void)
         s_live[l] = NULL;
         s_live_order[l] = -1;
     }
+    s_live_merged = false;
 }
 
 esp_err_t stage_live_open(int32_t layer, int32_t order, uint32_t argb)
@@ -2826,9 +2841,10 @@ esp_err_t stage_live_open(int32_t layer, int32_t order, uint32_t argb)
         s_live[l] = heap_caps_malloc(LIVE_OFF + (size_t)CLK_SCR_W * CLK_SCR_H * 3u,
                                      MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
         if (!s_live[l]) return ESP_ERR_NO_MEM;
+        live_fill(l, 0, true);
     }
     s_live_order[l] = order;
-    if (s_live[l]) live_fill(l, argb);
+    if (s_live[l]) live_fill(l, argb, false);
     if (s_live[l] && !s_live_obj[l]) {
         clk_sprite_t sp;
         memset(&sp, 0, sizeof sp);
@@ -2857,8 +2873,41 @@ bool stage_live_target(int layer, uint16_t **px, uint8_t **a)
 {
     if (layer < 0 || layer >= STAGE_LIVE_N || !s_live[layer]) return false;
     *px = (uint16_t *)(s_live[layer] + LIVE_OFF);
-    *a = s_live[layer] + LIVE_OFF + (size_t)CLK_SCR_W * CLK_SCR_H * 2u;
+    /* a merged layer 1 covers everywhere: its draws blend into the colour alone */
+    *a = s_live_merged && layer == 1 ? NULL : s_live[layer] + LIVE_OFF + (size_t)CLK_SCR_W * CLK_SCR_H * 2u;
     return true;
+}
+
+esp_err_t stage_live_merge(bool on)
+{
+    if (on && (!s_live[0] || !s_live[1])) return ESP_ERR_INVALID_STATE;
+    if (on == s_live_merged) return ESP_OK;
+    s_live_merged = on;
+    if (on) memset(s_live[1] + LIVE_OFF + (size_t)CLK_SCR_W * CLK_SCR_H * 2u, 0xFF,
+                   (size_t)CLK_SCR_W * CLK_SCR_H);       /* the classic path reads it as covering */
+    if (s_live_obj[0]) lv_obj_set_hidden(s_live_obj[0], on);
+    if (s_lay_app && (orb_svc_layers_live(s_lay_app) > 0 || stage_running())) {
+        clock_layers_build(s_lay_app);                    /* the rows' show and solid change */
+        clock_layers_refresh();
+    }
+    stage_live_damage(0, 0, CLK_SCR_W, CLK_SCR_H);
+    return ESP_OK;
+}
+
+esp_err_t stage_live_copy(int dst, int src)
+{
+    if (dst < 0 || dst >= STAGE_LIVE_N || src < 0 || src >= STAGE_LIVE_N || dst == src || !s_live[dst] || !s_live[src])
+        return ESP_ERR_INVALID_ARG;
+    const size_t n = (size_t)CLK_SCR_W * CLK_SCR_H;
+    const uint16_t *x0 = orb_ui_disc_left();
+    for (int y = 0; y < CLK_SCR_H; y++) {                 /* the disc alone (§6.19) */
+        const size_t i = (size_t)y * CLK_SCR_W + x0[y], k = (size_t)(CLK_SCR_W - 2 * x0[y]);
+        memcpy(s_live[dst] + LIVE_OFF + 2 * i, s_live[src] + LIVE_OFF + 2 * i, 2 * k);
+        if (!(s_live_merged && dst == 1))
+            memcpy(s_live[dst] + LIVE_OFF + 2 * n + i, s_live[src] + LIVE_OFF + 2 * n + i, k);
+    }
+    stage_live_damage(0, 0, CLK_SCR_W, CLK_SCR_H);
+    return ESP_OK;
 }
 
 void stage_live_damage(int32_t x, int32_t y, int32_t w, int32_t h)

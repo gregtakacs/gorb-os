@@ -327,6 +327,7 @@ int orb_layers_jobs(const orb_layer_tab_t *t, const uint8_t *theme_base,
         if (gfx_paint_ctx_init(&jc[n], &t->spr[i], base, t->row[i].drum ? 0 : t->row[i].ang_10,
                                t->row[i].role)) {
             jc[n].smooth = t->row[i].smooth != 0;
+            jc[n].solid = t->row[i].solid != 0 && !t->row[i].drum;
             /* A theme row's alpha is its opacity (theme-text-plan T2); a bake's
              * plane already carries its own. */
             if (!t->plane[i]) jc[n].opa = t->row[i].alpha;

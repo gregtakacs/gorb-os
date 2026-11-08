@@ -51,6 +51,10 @@ typedef struct { uint16_t *px; uint8_t *a; int32_t w, h, stride; } orb_ui_tgt_t;
 /* In a PNG draw's scale: magnify by the low byte (up to 16) and sample the values
  * bilinearly (radar-plan §6.9); without it the scale is 1-4, each source pixel a block. */
 #define ORB_UI_PNG_SMOOTH 0x100
+/* The glass's disc, row by row: the first pixel of row y inside it (466 - 1 - it the last). */
+const uint16_t *orb_ui_disc_left(void);
+/* A 1 px ring onto a target, opaque. */
+void orb_ui_tgt_ring(const orb_ui_tgt_t *t, int32_t cx, int32_t cy, int32_t r, uint32_t rgb);
 /* A 2 px line onto a target, opaque (radar-plan §6.16: the radar's scale bar on its layer). */
 void orb_ui_tgt_line(const orb_ui_tgt_t *t, int32_t x0, int32_t y0, int32_t x1, int32_t y1, uint32_t rgb);
 int32_t orb_ui_tgt_png8(const orb_ui_tgt_t *t, const uint8_t *png, uint32_t len, int32_t sx, int32_t sy,

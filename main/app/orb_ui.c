@@ -20,6 +20,7 @@
 #include "orb_app.h"       /* ORB_APP_CAP: the slot count the table is sized by */
 #include "orb_png8.h"      /* orb_ui_cv_png8: radar-plan §2.3 */
 #include "orb_map_raster.h" /* orb_ui_cv_roles: radar-plan §2.4 */
+#include "orb_disc.h"       /* the glass's disc: draws onto a full glass skip its corners */
 
 static const char *TAG = "appui";
 
@@ -349,10 +350,33 @@ static bool tgt_of_cv(int slot, int32_t h, orb_ui_tgt_t *t)
     return true;
 }
 
+/* The glass's disc, row by row: the first pixel in it (orb_disc.h's rule; the last is
+ * 465 minus it). A draw onto a full-glass target stops there, since the round panel never
+ * shows the corners: 21% of every full-glass draw (radar-plan §6.19). */
+static uint16_t s_disc_x0[ORB_DISC_SIDE];
+static bool s_disc_made;
+const uint16_t *orb_ui_disc_left(void)
+{
+    if (!s_disc_made) {
+        s_disc_made = true;
+        for (uint32_t y = 0; y < ORB_DISC_SIDE; y++) {
+            uint32_t a, b;
+            orb_disc_span_n(ORB_DISC_SIDE, y, &a, &b);
+            s_disc_x0[y] = (uint16_t)a;
+        }
+    }
+    return s_disc_x0;
+}
+static const uint16_t *disc_of(const orb_ui_tgt_t *t)
+{
+    return t && t->w == (int32_t)ORB_DISC_SIDE && t->h == (int32_t)ORB_DISC_SIDE ? orb_ui_disc_left() : NULL;
+}
+
 typedef struct {
     const orb_ui_tgt_t *t;
     const pal565_t *pal;
     int32_t sx, sy, dx, dy, w, h, scale;
+    const uint16_t *disc;          /* the glass's disc for a full-glass target, else NULL */
 } png_ctx_t;
 
 static int png_row(void *ctx, int y, const uint8_t *idx, int w)
@@ -361,7 +385,15 @@ static int png_row(void *ctx, int y, const uint8_t *idx, int w)
     if (y < p->sy) return 0;
     const int32_t oy = (y - p->sy) * p->scale;
     if (oy >= p->h) return 1;                         /* past the window: stop decoding */
-    for (int32_t x = 0; x * p->scale < p->w; x++) {
+    int32_t xlo = 0, xhi = (p->w + p->scale - 1) / p->scale - 1;
+    if (p->disc && p->scale == 1) {                   /* the row's disc span, in source x */
+        const int32_t Y = p->dy + oy;
+        if ((uint32_t)Y >= ORB_DISC_SIDE) return 0;
+        const int32_t a = p->disc[Y] - p->dx, b = (int32_t)ORB_DISC_SIDE - 1 - p->disc[Y] - p->dx;
+        if (a > xlo) xlo = a;
+        if (b < xhi) xhi = b;
+    }
+    for (int32_t x = xlo; x <= xhi; x++) {
         const int32_t s = p->sx + x;
         if (s < 0 || s >= w) continue;
         const pal565_t e = p->pal[idx[s]];
@@ -390,6 +422,7 @@ typedef struct {
     const uint8_t *vmap;           /* index -> value */
     int32_t sx, sy, dx, dy, w, h, k;
     int32_t prev_y, shift;         /* shift: log2(4k^2) when k is a power of two, else -1 */
+    const uint16_t *disc;          /* the glass's disc for a full-glass target, else NULL */
     uint8_t prev[ORB_PNG8_MAX_W], cur[ORB_PNG8_MAX_W];
     int16_t x0[ORB_PNG8_MAX_W];    /* per glass column: its left source column, -1 off the image */
     uint8_t fx[ORB_PNG8_MAX_W];    /* and its weight toward the right one, 0 .. 2k-1 */
@@ -433,7 +466,9 @@ static int smooth_row(void *ctx, int y, const uint8_t *idx, int w)
             if ((uint32_t)Y >= (uint32_t)p->t->h) continue;
             for (int x = 0; x < w; x++) p->col[x] = p->prev[x] * (k2 - fy) + p->cur[x] * fy;
             const int32_t base = Y * p->t->stride;
-            for (int32_t X = 0; X < xw; X++) {
+            int32_t xa = 0, xb = xw - 1;
+            if (p->disc) { xa = p->disc[Y]; if ((int32_t)ORB_DISC_SIDE - 1 - xa < xb) xb = (int32_t)ORB_DISC_SIDE - 1 - xa; }
+            for (int32_t X = xa; X <= xb; X++) {
                 const int32_t x0 = p->x0[X];
                 if (x0 < 0 || x0 + 1 >= w) continue;
                 const int32_t a = p->col[x0], b = p->col[x0 + 1];
@@ -448,6 +483,24 @@ static int smooth_row(void *ctx, int y, const uint8_t *idx, int w)
     memcpy(p->prev, p->cur, (size_t)w);
     p->prev_y = y;
     return 0;
+}
+
+/* A 1 px ring onto a target, opaque (radar-plan §6.19: rings under the rain, on the map). */
+void orb_ui_tgt_ring(const orb_ui_tgt_t *t, int32_t cx, int32_t cy, int32_t r, uint32_t rgb)
+{
+    if (!t || r < 0) return;
+    const uint16_t col = c16(rgb);
+    int32_t x = r, y = 0, err = 1 - r;
+    while (x >= y) {
+        const int32_t px[8] = { cx + x, cx + y, cx - y, cx - x, cx - x, cx - y, cx + y, cx + x };
+        const int32_t py[8] = { cy + y, cy + x, cy + x, cy + y, cy - y, cy - x, cy - x, cy - y };
+        for (int k = 0; k < 8; k++)
+            if ((uint32_t)px[k] < (uint32_t)t->w && (uint32_t)py[k] < (uint32_t)t->h)
+                over(t, py[k] * t->stride + px[k], col, 255);
+        y++;
+        if (err < 0) err += 2 * y + 1;
+        else { x--; err += 2 * (y - x) + 1; }
+    }
 }
 
 void orb_ui_tgt_line(const orb_ui_tgt_t *t, int32_t x0, int32_t y0, int32_t x1, int32_t y1, uint32_t rgb)
@@ -496,13 +549,13 @@ int32_t orb_ui_tgt_png8(const orb_ui_tgt_t *t, const uint8_t *png, uint32_t len,
         if (!sc || !vmap) { heap_caps_free(sc); heap_caps_free(vmap); heap_caps_free(pal); return ORB_PNG8_E_SCRATCH; }
         for (int i = 0; i < 256; i++) vmap[i] = np ? value[i] : (uint8_t)i;
         *sc = (smooth_ctx_t){ .t = t, .pal = pal + 256, .vmap = vmap, .sx = sx, .sy = sy, .dx = dx, .dy = dy,
-                              .w = w, .h = hh, .k = scale, .prev_y = -2 };
+                              .w = w, .h = hh, .k = scale, .prev_y = -2, .disc = disc_of(t) };
         smooth_prep(sc);
         r = orb_png8_decode(png, len, scratch, orb_png8_scratch_size(), smooth_row, sc);
         heap_caps_free(sc);
         heap_caps_free(vmap);
     } else {
-        png_ctx_t ctx = { t, pal, sx, sy, dx, dy, w, hh, scale };
+        png_ctx_t ctx = { t, pal, sx, sy, dx, dy, w, hh, scale, disc_of(t) };
         r = orb_png8_decode(png, len, scratch, orb_png8_scratch_size(), png_row, &ctx);
     }
     if (r == ORB_PNG8_E_STOP) r = ORB_PNG8_OK;        /* the window ended before the image */
@@ -523,10 +576,16 @@ void orb_ui_tgt_roles(const orb_ui_tgt_t *t, const uint8_t *raster, const uint32
     if (!t || !raster || !argb16) return;
     pal565_t pal[16];
     pal_prep(pal, argb16, 16);
+    const uint16_t *disc = disc_of(t);
     for (int y = 0; y < ORB_MAP_W; y++) {
         const int32_t Y = dy + y;
         if ((uint32_t)Y >= (uint32_t)t->h) continue;
-        for (int x = 0; x < ORB_MAP_W; x++) {
+        int xa = 0, xb = ORB_MAP_W - 1;
+        if (disc) {
+            if (disc[Y] - dx > xa) xa = disc[Y] - dx;
+            if ((int32_t)ORB_DISC_SIDE - 1 - disc[Y] - dx < xb) xb = (int32_t)ORB_DISC_SIDE - 1 - disc[Y] - dx;
+        }
+        for (int x = xa; x <= xb; x++) {
             const int32_t X = dx + x;
             if ((uint32_t)X >= (uint32_t)t->w) continue;
             const pal565_t e = pal[orb_map_role_at(raster, x, y)];

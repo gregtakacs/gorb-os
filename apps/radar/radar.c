@@ -248,6 +248,7 @@ void rd_values_default(rd_values_t *v)
     v->scale_w = 2;
     v->scale_tick = 9;
     v->scale_max = 150;
+    v->under_w = 1;                                        /* nothing under the rain: alpha 0 */
 }
 
 int rd_scale(int32_t radius_m, int unit, int max_px, int *px)

@@ -329,6 +329,7 @@ bool gfx_paint_ctx_init(gfx_paint_ctx_t *pc, const clk_sprite_t *spr,
     pc->opa = LV_OPA_COVER;           /* the art as it is unless the job builder dims it */
     pc->smooth = false;               /* nearest unless the job builder says the row smooths */
     pc->drum = false;                 /* a drum only when the job builder makes it one */
+    pc->solid = false;                /* solid only when the job builder says the row covers */
 
     pc->col = (const uint16_t *)(base + spr->color_off);
     pc->alp = base + spr->color_off
@@ -467,6 +468,16 @@ void gfx_paint_row_ctx(const gfx_paint_ctx_t *pc, int32_t y,
         const uint16_t *col = pc->col;
         const uint8_t *alp = pc->alp;
         uint32_t si = (uint32_t)sy * pc->w + (uint32_t)(xa - pc->posx);
+        if (pc->solid && pc->opa >= LV_OPA_MAX && pc->bmode == 0) {
+            /* radar-plan §6.19: a row that covers is a copy into mirror order, the restore's
+             * own cost, not a blend (the radar's map and rain, merged: 125 ms a full glass
+             * as two blended layers) */
+            const uint16_t *src = col + si;
+            for (int32_t x = xa; x <= xb; x++) { const uint16_t v = *src++; row[x] = (uint16_t)((v >> 8) | (v << 8)); }
+            n = (uint32_t)(xb - xa + 1);
+            if (pc->role < CLK_PAINT_ROLES) s_hk_role_blend[pc->role] += n;
+            return;
+        }
         for (int32_t x = xa; x <= xb; x++, si++) {
             const uint8_t a = opa_mix(alp[si], pc->opa);
             if (!a) continue;

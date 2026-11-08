@@ -15,7 +15,7 @@ app's orb_json_next runs). What it pins:
   ladder   each step's radius makes the OS's pick_level choose the step's level at its own
            scale (orb_map.c's formula, here), so the map and the rain share a pixel
   words    "Now", "-40 min", "+30 min"; the range in km, mi and nm
-  values   rd_values_t is 1,160 B; the defaults are radar-bake.js's Scope byte for byte
+  values   rd_values_t is 1,176 B; the defaults are radar-bake.js's Scope byte for byte
            (with node; skipped without)
 
 Run:  python3 tools/host_radar_test.py              (rc 0 = pass)
@@ -196,8 +196,9 @@ int main(int argc, char **argv)
 
     static rd_values_t v;
     rd_values_default(&v);
-    CK(sizeof v == 1160 && RD_VALUES_V2_B == 1144 && offsetof(rd_values_t, scale_ink) == 1144,
-       "rd_values_t is 1,160 B (layout 3: the scale's 16 B after layout 2's 1,144)");
+    CK(sizeof v == 1176 && RD_VALUES_V2_B == 1144 && offsetof(rd_values_t, scale_ink) == 1144 &&
+       RD_VALUES_V3_B == 1160 && offsetof(rd_values_t, under_argb) == 1160,
+       "rd_values_t is 1,176 B (layout 4: the under-rain 16 B after layout 3's scale, after layout 2's 1,144)");
     CK(rd_floor_value(0) == 84 && rd_floor_value(1) == 94 && rd_floor_value(2) == 104 && rd_floor_value(3) == 114,
        "the rain floor: 10, 15, 20 or 25 dBZ, as raw values (dBZ + 32) x 2");
     CK(rd_roles_at(&v, 2) == (0x7FFF & ~((1u << 5) | (1u << 13) | (1u << 14))) && rd_roles_at(&v, 3) == (0x7FFF & ~((1u << 13) | (1u << 14))) &&

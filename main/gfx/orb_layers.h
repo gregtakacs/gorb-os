@@ -84,7 +84,9 @@ typedef struct orb_layer_desc {
                               * rolled through a window art.w x 2*drum_r at the row's
                               * placement (pivot = the window's centre), scrolled by
                               * drum_phase px and foreshortened line by line */
-    uint8_t     pad2;
+    uint8_t     solid;       /* radar-plan §6.19: 1 = every pixel of the plane covers
+                              * (a merged live layer): the painter copies it. Was pad2,
+                              * so an older caller's zero reads as blended */
     int16_t     drum_r;      /* the drum's radius, px                          */
     int16_t     drum_phase;  /* the strip row under the window's centre, px    */
     /* theme-text-plan §2.3: a theme row whose pixels the OS composes (a label), not

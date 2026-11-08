@@ -60,6 +60,8 @@
   "stage_comp_set": "v(iii)",
   "stage_frame": "i(ii)",
   "stage_live": "i(iii)",
+  "stage_live_copy": "i(ii)",
+  "stage_live_merge": "i(i)",
   "stage_now": "v(iii)",
   "stage_opacity": "v(ii)",
   "stage_open": "i(i)",

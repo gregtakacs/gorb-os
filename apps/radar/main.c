@@ -179,6 +179,7 @@ static int next_frame(void)
 }
 
 static bool s_rain_dirty, s_ui_dirty;
+static bool s_merged;              /* the two layers composed as one (§6.19) */
 
 static void net_done(void)
 {
@@ -413,8 +414,29 @@ static void layers_open(void)
     const int32_t a = orb_stage_live(0, V.map_order, 0), b = orb_stage_live(1, V.rain_order, 0);
     s_layers = a == ORB_OK && b == ORB_OK;
     if (!s_layers) orb_logf("radar: the live layers refused (%d, %d)", (int)a, (int)b);
+    /* §6.19: one covering layer, the map's copy with the rain on it, is a copy for the
+     * compositor where two were a blend. Only a map that covers (its water and land
+     * opaque) can stand alone; else the two layers stay as they were. */
+    s_merged = s_layers && (V.map_pal[0] >> 24) == 0xFF && (V.map_pal[1] >> 24) == 0xFF &&
+               orb_stage_live_merge(1) == ORB_OK;
     s_map_dirty = s_rain_dirty = s_ui_dirty = true;
     s_shown = -2;
+}
+
+/* What the theme wants under the rain, drawn onto the map once a view (§6.19). */
+static void draw_under(void)
+{
+    if (!(V.under_argb >> 24)) return;
+    const uint32_t c = V.under_argb & 0xFFFFFF;
+    for (int k = 1; k <= V.under_rings; k++) {
+        const int r = 232 * k / V.under_rings;
+        for (int w = 0; w < V.under_w; w++) orb_cv_ring(ORB_CV_LIVE0, CX, CY, r - w, c);
+    }
+    if (V.under_cross)
+        for (int w = 0; w < V.under_w; w += 2) {
+            orb_cv_line(ORB_CV_LIVE0, CX - 232, CY + w, CX + 232, CY + w, c);
+            orb_cv_line(ORB_CV_LIVE0, CX + w, CY - 232, CX + w, CY + 232, c);
+        }
 }
 
 static void draw_map(void)
@@ -423,6 +445,8 @@ static void draw_map(void)
     if (!s_layers) return;
     orb_stage_live(0, V.map_order, 0);                   /* clear: the plate shows */
     if (s_view > 0) orb_map_draw(ORB_CV_LIVE0, s_view, V.map_pal, 0, 0);
+    draw_under();
+    if (s_merged) { s_shown = -2; s_rain_dirty = true; }  /* the rain's layer is the map's copy */
 }
 
 /* The scale bar under its length (owner, 2026-11-08), on the rain's layer so no rain
@@ -469,7 +493,8 @@ static void draw_rain(void)
     const int i = frame_wanted();
     const frame_t *f = i >= 0 ? &F[i] : NULL;
     if (s_shown == i && f && f->slot >= 0) return;
-    orb_stage_live(1, V.rain_order, 0);
+    if (s_merged) orb_stage_live_copy(1, 0);             /* the map, then the rain over it */
+    else orb_stage_live(1, V.rain_order, 0);
     s_shown = -1;
     if (!f || f->slot < 0 || !orb_blob_len((uint32_t)f->slot)) { draw_scale(); return; }
     const int k = rd_img_k(s_zoom);
@@ -596,7 +621,8 @@ static void view_changed(bool frames)
 static void place_changed(void)
 {
     view_changed(true);
-    if (s_layers) orb_stage_live(1, V.rain_order, 0);   /* the old place's rain goes at once */
+    if (s_merged) orb_stage_live_copy(1, 0);             /* the old place's rain goes at once */
+    else if (s_layers) orb_stage_live(1, V.rain_order, 0);
     s_shown = -1;
 }
 
@@ -651,6 +677,7 @@ static void read_values(void)
     rd_values_t got;
     const uint32_t n = s_themed ? orb_stage_values(&got, sizeof got, &ver) : 0;
     if (n == sizeof got && ver == RD_VALUES_VER) memcpy(&V, &got, sizeof V);
+    else if (n == RD_VALUES_V3_B && ver == 3) memcpy(&V, &got, RD_VALUES_V3_B);   /* nothing under the rain */
     else if (n == RD_VALUES_V2_B && ver == 2) memcpy(&V, &got, RD_VALUES_V2_B);   /* the scale's defaults stay */
     else if (n) orb_logf("radar: the theme's values are layout %u, %u B: the defaults draw", (unsigned)ver, (unsigned)n);
     if (V.names > N_NAMES) V.names = N_NAMES;
@@ -659,6 +686,9 @@ static void read_values(void)
     if (V.scale_tick > 24) V.scale_tick = 24;
     if (V.scale_max < 60) V.scale_max = 60;
     if (V.scale_max > 200) V.scale_max = 200;
+    if (V.under_rings > 6) V.under_rings = 6;
+    if (V.under_w < 1) V.under_w = 1;
+    if (V.under_w > 3) V.under_w = 3;
     pal_build();
 }
 

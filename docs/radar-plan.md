@@ -1573,3 +1573,32 @@ stops there (-70 min) on a frame with rain in it, not on a blank.
   in the orb's distance unit at the chosen place's latitude (the app's `rd_radius_m` and
   `rd_scale`, mirrored in tabs.js), it follows a units change, and the preview draws the
   bar and its length as the orb does. DFW: Wide 100 mi … Close 5 mi; 200 km … 5 km.
+
+### 6.19 The corners skipped, one covering layer, and what goes under the rain (2026-11-08, Bronze, OS v1.2.33)
+
+The owner asked whether the drawing skips the round glass's hidden corners, then ruled on
+layering: everything goes above the rain; what a theme wants under the rain is baked into
+the map, once a view, before the two layers are merged.
+
+- **The corners.** At rest the OS already stores pictures as discs (`orb_disc.h`); at work
+  it did not. The smoothed and plain PNG draws, the map's paint and a live layer's fill now
+  stop at each row's disc span when they draw onto the full glass (`orb_ui_disc_left`), and
+  `stage_live_copy` copies the disc alone: 21% of their pixels. A new layer is cleared
+  whole once, so its corners read black, not leftover memory (a capture showed the noise).
+- **One covering layer** (`stage_live_merge`, `stage_live_copy`; a row's `solid` flag, the
+  old pad byte). Merged, layer 0 is hidden but still drawn into (the backing), and layer 1,
+  the map's copy with the rain and the scale bar drawn on it, is composed as covering: the
+  compositor copies its row into mirror order, the restore's own cost, where two layers were
+  a per-pixel blend. Draws onto a merged layer blend into the colour alone. The radar merges
+  only when its map covers (the theme's water and land opaque), else keeps two layers.
+  `host_live_test.py`: a solid row is exactly the blend of a covering plane; 21 mutants.
+- **Under the rain.** Values layout 4 adds rings (0-6, out to the edge), a cross, their
+  colour and width, drawn on the map once a view with `orb_cv_ring`/`orb_cv_line`, which
+  draw onto a live layer from v1.2.33/v1.2.32. Radarscope draws none: its rings are glass
+  art, over the rain. A picture under the rain (baking a theme row into the map) waits for
+  a theme that wants one.
+
+Bronze, DFW at City, the loop playing, before → after: a full glass's live layers 388,000
+px in 125 ms → 220,800 px in 19 ms; the flush 160-220 ms → 87-99 ms a frame; the glass 3-8
+→ 13-22 fps. What is left: the smoothed rain draw itself (55-95 ms at City) and the rest of
+the commit (the restore and the theme's rows, about 30 ms a full glass).

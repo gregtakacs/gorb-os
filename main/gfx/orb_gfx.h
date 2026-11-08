@@ -71,6 +71,8 @@ typedef struct gfx_paint_ctx {
     bool     rot;                     /* false == identity (ang == 0) path */
     bool     smooth;                  /* rotated path samples 2x2 bilinear (EF_SMOOTH) */
     bool     drum;                    /* D43: a drum row (gfx_paint_ctx_drum)           */
+    bool     solid;                   /* radar-plan §6.19: an unturned row whose every pixel
+                                       * covers (a merged live layer): copied, not blended */
     int32_t  drum_cy, drum_r, drum_phase;   /* window centre row, radius, strip scroll px */
     float    drum_c;                  /* strip px per radian of the drum: h / 2pi       */
     int32_t  ang_10;                  /* the pose, kept for the span bench (forward map) */

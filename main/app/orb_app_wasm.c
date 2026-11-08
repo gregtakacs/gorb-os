@@ -788,6 +788,7 @@ m3ApiRawFunction(imp_cv_pixel)               /* void cv_pixel(i32 h, i32 x, i32 
     m3ApiSuccess();
 }
 
+static bool live_tgt_of(const wasm_slot_t *s, int32_t cv, orb_ui_tgt_t *t);   /* below */
 m3ApiRawFunction(imp_cv_ring)                /* void cv_ring(h, cx, cy, r, rgb) */
 {
     CALLER();
@@ -797,6 +798,14 @@ m3ApiRawFunction(imp_cv_ring)                /* void cv_ring(h, cx, cy, r, rgb) 
     m3ApiGetArg(int32_t, r);
     m3ApiGetArg(uint32_t, rgb);
     UI_GATE();
+    orb_ui_tgt_t t;
+    if (h < 0) {                             /* OS v1.2.33: onto a live layer (ORB_CV_LIVE0/1) */
+        if (live_tgt_of(s, h, &t) && r >= 0) {
+            orb_ui_tgt_ring(&t, cx, cy, r, rgb);
+            stage_live_damage(cx - r, cy - r, 2 * r + 1, 2 * r + 1);
+        }
+        m3ApiSuccess();
+    }
     orb_ui_cv_ring(slot_index(s), h, cx, cy, r, rgb);
     m3ApiSuccess();
 }
@@ -814,7 +823,6 @@ m3ApiRawFunction(imp_cv_disc)                /* void cv_disc(h, cx, cy, r, rgb) 
     m3ApiSuccess();
 }
 
-static bool live_tgt_of(const wasm_slot_t *s, int32_t cv, orb_ui_tgt_t *t);   /* below */
 m3ApiRawFunction(imp_cv_line)                /* void cv_line(h, x0, y0, x1, y1, rgb) */
 {
     CALLER();
@@ -1335,6 +1343,26 @@ m3ApiRawFunction(imp_stage_live)
     m3ApiReturn(stage_live_open(layer, order, argb));
 }
 
+/* radar-plan §6.19: i32 stage_live_merge(i32 on), i32 stage_live_copy(i32 dst, i32 src) */
+m3ApiRawFunction(imp_stage_live_merge)
+{
+    m3ApiReturnType(int32_t);
+    CALLER();
+    m3ApiGetArg(int32_t, on);
+    STAGE_GATE(ESP_ERR_INVALID_STATE);
+    m3ApiReturn(stage_live_merge(on != 0));
+}
+
+m3ApiRawFunction(imp_stage_live_copy)
+{
+    m3ApiReturnType(int32_t);
+    CALLER();
+    m3ApiGetArg(int32_t, dst);
+    m3ApiGetArg(int32_t, src);
+    STAGE_GATE(ESP_ERR_INVALID_STATE);
+    m3ApiReturn(stage_live_copy(dst, src));
+}
+
 /* radar-plan §2.11: u32 stage_values(void *buf, u32 cap, u32 *ver) — the theme's values,
  * their layout the app's own. Answers the full length (0 = none or no theme bound). */
 m3ApiRawFunction(imp_stage_values)
@@ -1695,6 +1723,8 @@ static const wasm_bind_t s_binds[] = {
     { "orb", "stage_open",     "i(i)",      imp_stage_open },
     { "orb", "stage_values",   "i(iii)",    imp_stage_values },
     { "orb", "stage_live",     "i(iii)",    imp_stage_live },
+    { "orb", "stage_live_merge", "i(i)",    imp_stage_live_merge },
+    { "orb", "stage_live_copy",  "i(ii)",   imp_stage_live_copy },
     { "orb", "stage_row",      "i(ii)",     imp_stage_row },
     { "orb", "stage_comp",     "i(ii)",     imp_stage_comp },
     { "orb", "stage_sound",    "i(ii)",     imp_stage_sound },

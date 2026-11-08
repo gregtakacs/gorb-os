@@ -39,7 +39,7 @@ VALUES_B = 64 + 16 + 16 + 4 + 4 + 1024 + 16 + 16 + 16 + 16    # radar.h rd_value
 # sectors and 512 KB of slack), read off the shelf so it follows them.
 SHELF = os.path.join(ROOT, "tools", "orb-manager", "themes")
 BUDGET = (8 << 20) - sum(os.path.getsize(os.path.join(SHELF, f)) for f in
-                         ("skeleton.orbtheme", "modern.orbtheme", "scope.orbtheme")) - 2 * 4096 - (512 << 10)
+                         ("skeleton.orbtheme", "flights-scope.orbtheme", "weather-scope.orbtheme")) - 2 * 4096 - (512 << 10)
 
 
 def stage():

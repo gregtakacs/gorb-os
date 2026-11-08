@@ -38,7 +38,7 @@
   /* ---- the starters (R7 adds the rest) ---- */
   var PRESETS = {
     scope: {
-      name: 'Scope', base: 'scope', // the shelf file stays radarscope.orbtheme (owner, 2026-11-08: one name per look)
+      name: 'Scope', base: 'scope', // the shelf file is radar-scope.orbtheme (owner, 2026-11-08: one name per look)
       ground: { top: '#0a1f14', foot: '#020805' },
       // the rim alone: the range ring is drawn at a round distance by the app (layout.scale)
       glass: { ring: '#3ddc84', ringA: 0.30, rings: [1.0], cross: true, track: '#3ddc84', trackA: 0.6, forecast: '#e0b040' },

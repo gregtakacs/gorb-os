@@ -159,5 +159,6 @@ Blueprint, Station, Celestial, Silver, Sectional** (radar-plan §6.26).
 - **Weather** gains **Silver** (graphite, a turned bezel, the engraved icons in silver);
   "Vintage brass" is **Brass**. Its picture draws the map behind the reading.
 - **Radar** gains **Celestial** and **Silver**; "Radarscope" is **Scope**, "Vintage" **Brass**.
-- The shelf files keep their names (modern.orbtheme, scope.orbtheme, radarscope.orbtheme);
-  the themes inside are named for their look.
+- The shelf files are the app and the look: `flights-scope.orbtheme`, `weather-scope.orbtheme`,
+  `radar-scope.orbtheme` (three apps have a Scope and the shelf is one directory; the hub's
+  library test holds a file to its own name, the app first allowed).

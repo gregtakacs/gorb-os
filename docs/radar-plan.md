@@ -1298,7 +1298,7 @@ The owner's call after §6.4: keep the map parked and redraw only the rain.
   (two range rings, a dotted crosshair, the time track's 18 ticks, the nowcast's in the
   forecast colour), the dot (white with an amber ring: the airports are amber), the cursor,
   three fonts, ten labels, the values and the preview. The shelf's starter is
-  **Radarscope** (`radarscope.orbtheme`, 1.13 MB; a shelf file is its theme's name, and
+  **Radarscope** (`radarscope.orbtheme`, now `radar-scope.orbtheme`, flights-map-plan §6; 1.13 MB; a shelf file is its theme's name, and
   Weather's is Scope), checked by `apps/radar/editor/_selftest/bake_check.py` in Chrome
   and re-baked by `tools/rebake_shelf.py radar`.
 - **Tests.** `tools/host_radar_test.py` compiles `radar.c` beside the OS's tokenizer: the

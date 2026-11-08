@@ -673,7 +673,7 @@ func dirWritable(dir string) bool {
 // is never the only place the truth could be found.
 // appTheme is the theme an install seeds for one app: the first shelf theme, by file name,
 // whose container belongs to that app and that an orb on this firmware reads. The clock's is
-// skeleton.orbtheme, the flight tracker's flights-modern.orbtheme.
+// skeleton.orbtheme, the flight tracker's flights-scope.orbtheme.
 func (l *Library) appTheme(slug string) (string, []byte, error) {
 	if l == nil || l.ThemesDir == "" {
 		return "", nil, fmt.Errorf("no theme library is resolved, so there is nothing to seed")

@@ -40,7 +40,7 @@ APPV = open(os.path.join(EDITOR, "..", "version.txt")).read().strip()
 # leaves less: the pool is shared, and the hub refuses what does not fit.
 SHELF = os.path.join(ROOT, "tools", "orb-manager", "themes")
 BUDGET = (8 << 20) - os.path.getsize(os.path.join(SHELF, "skeleton.orbtheme")) \
-    - os.path.getsize(os.path.join(SHELF, "modern.orbtheme")) - 2 * 4096 - (512 << 10)
+    - os.path.getsize(os.path.join(SHELF, "flights-scope.orbtheme")) - 2 * 4096 - (512 << 10)
 
 
 def stage():

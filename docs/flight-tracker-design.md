@@ -1156,7 +1156,7 @@ causes:
 - **No default theme.** The install's theme seed rode the clock only, and only onto a card
   with no themes at all. It is now per app: after an install, each app the library has a theme
   for is seeded when the card holds none of that app's, once the install's reboot is waited
-  out. The shelf ships `themes/modern.orbtheme` (the Modern preset, baked by the editor with
+  out. The shelf ships `themes/modern.orbtheme` (now `flights-scope.orbtheme`, flights-map-plan §6; the Modern preset, baked by the editor with
   its design, so it reopens in the editor); the clock keeps `skeleton.orbtheme`.
 
 **`os_min`.** An app can name the oldest OS it runs on in `app.json` (flights: v1.2.8). The SDK

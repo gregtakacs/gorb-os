@@ -243,9 +243,15 @@ func restoreShippedApps(src fs.FS, lib *Library, ledgerRoot string) ([]string, e
 // unparsable side or an incomparable pair is "no": the seed never replaces on a guess.
 func appIsNewer(body, have []byte) bool {
 	nb, e1 := orbnet.ParseApp(body)
-	ob, e2 := orbnet.ParseApp(have)
-	if e1 != nil || e2 != nil {
+	if e1 != nil {
 		return false
+	}
+	ob, e2 := orbnet.ParseApp(have)
+	if e2 != nil {
+		// A copy of an older FORMAT cannot be read to compare, and no firmware this hub
+		// installs onto can run it: the shipped copy supersedes it. Anything else that will
+		// not parse is not ours to judge and stays.
+		return orbnet.AppFormatOlder(have)
 	}
 	c, ok := orbnet.AppVersionCompare(nb.Version, ob.Version)
 	return ok && c > 0

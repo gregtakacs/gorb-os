@@ -7508,12 +7508,13 @@ apps participate". (4) "the build a watch's lighting to default to the as design
 - **The carousel's order** (`orb_rotation.c`): a slug list the registry's one walk gather ranks
   the installed apps by, so the carousel, the app list and the knob agree; an app the list does
   not name stands after the named ones in slot order, and the shell still leads. Set from Orb
-  Manager only (Apps > Carousel, ▲ ▼).
+  Manager only: by dragging the Apps list itself since §62 (it was a second list with ▲ ▼).
 - **The rotation**: on or off, 10 s to a day, and the apps that take part. The router asks
   `orb_rotation_pick` on every poll with no knob event and the carousel shut; it moves only from
   an app that takes part, once the knob and the glass have been quiet a whole interval (a touch
   or any screen switch restarts it), to the next app taking part in the carousel's order,
-  wrapping. Set from the hub (Apps > Carousel: the interval and an "in rotation" box per app) or
+  wrapping. Set from the hub (above the Apps list since §62: a switch, the interval, and a box
+  per app while it is on) or
   the dial (APPS > Rotate apps, knob-edited off to an hour; each app's page grows an **In
   rotation** row while it is on).
 - **`/api/v1/carousel`**: GET answers the installed apps in walk order with `rotate` each, and
@@ -7813,3 +7814,90 @@ Gold: the ring shows on a neighbour mid-read, then the card fills.
 **§61.5, 2026-11-08 (owner):** a press on the theme the app already wears goes back to the app
 itself (`input_router_show`), not to its page. A hold stays the way back to the page. Gold:
 pressing the worn Triple calendar closed the carousel onto the clock face.
+
+## 62. Orb Manager: the app list is the carousel, Update everything, a stale firmware gate — 2026-11-08
+
+**Owner, 2026-11-08.** (1) "When the orb firmware is updated, the app tab does not refresh its
+constraints and still complains about out of date firmware." (2) "an option with proper
+progress bar to update everything all at once with a single push, including apps and
+firmware." (3) "We have an app list and right under it we have another app list ... I want the
+app list itself to be draggable orderable, then select the ones with a checkbox that we want
+in the auto rotation (if the auto rotation is enabled) and set the duration of the cycles ...
+none of this arrows up/down."
+
+### 62.1 As built — hub only, no firmware change
+
+- **The stale gate.** The Apps face's "needs firmware vX" chips and its disabled Install were
+  drawn against the stamp of the status read that opened the orb. The page's 15 s status poll
+  read the new stamp after an update and only printed it. Now a poll whose `fw` differs from
+  the page's re-reads the orb as a return (`loadOrb(true)`, which re-arms every face) and asks
+  for the fleet again. The Firmware face's verdict (`fwUpdateDue`) also checks the stamp the orb
+  last answered with, because the fleet row follows the orb's announcements and still speaks
+  for the old image for a beat after an update.
+- **One list.** The Apps face draws the dial's apps first, in `/api/v1/carousel`'s order, then
+  everything only on the card or in the library under "Not on this orb". A dial row has a grip
+  (a button): dragged with pointer events on the window, so mouse, pen and touch behave alike
+  (the row's own pointer capture is lost when it moves in the document), the others sliding
+  aside, the row held inside the sortable span; or moved with the arrow keys. A drop that
+  changed the order posts `order=` once and redraws from the answer; a refusal redraws the
+  order the orb kept. Above the list: **Rotate apps** (a switch) and **every** (15 s to an
+  hour); while rotation is on, each dial row has a checkbox (`apps=`). The second list
+  (`#mn-carousel`, ▲ ▼) is gone. On a board older than v1.2.20 the list is a plain list with
+  the reason above it.
+- **Update everything.** A strip above the tabs, shown while the hub's fleet row says firmware
+  (`fwUpdateDue`) or the Apps ledger shows app updates (`updateGate`): what is behind, and one
+  press. The run opens the install panel with one plan: the firmware's bytes (the hub's own
+  `/api/orb/update`, its byte counter polled into the bar), the restart (waiting for the orb to
+  answer on the new release, up to 4 minutes), then one step per app with an update. Each
+  app's own install run (`streamInstall`, forced) splices its stages in where its placeholder
+  stood, prefixed with the slug so two apps' `check` and `restart` stay apart; its finish closes
+  only its own stages. The ledger is read again after the firmware lands, because the new
+  firmware is what lifts the apps' floors. An app no longer behind by then is skipped.
+- **orbfake** takes `-ota-fw`: the stamp a Wi-Fi update reboots into (`SetOTANextFW`).
+- **Benched** in headless Chrome against a bench hub and `orbfake`: a mouse drag of Weather from
+  last to first posts `order=` and the fake answers it; rotation on, two boxes and 5 minutes
+  land in the fake's carousel. With the fake on v1.2.30 and `-ota-fw v1.2.32`: Radar's row read
+  "needs firmware v1.2.32"; Update everything ran 18 steps (firmware, restart, Clock with its
+  theme stages, Flights, HSB) to "Done" in 49 s, and Radar's row then offered a plain Install.
+  On Gold (read only): the list follows its order (Weather, Flights, Clock, HSB, Radar), and the
+  strip stays hidden on a level orb. That read found the strip's `display:flex` beating
+  `[hidden]`.
+- **Correction, same day (owner: "the ordering does not work and neither does the
+  checkboxes").** The fake bench above proved nothing about the form: the page posted with
+  `URLSearchParams`, which writes the commas as `%2C`, and `orbfake` decoded them
+  (`url.ParseQuery`) where the device's `httpd_query_key_value` decodes nothing. On Gold
+  `order=a%2Cb` is one unknown slug: the owner's order falls back to slot order with no error,
+  so a drop snapped back; `apps=a%2Cb` puts nobody in the rotation, so only a first box (no
+  comma) ever held. The ▲ ▼ list before §62 posted the same way and was as broken. The page
+  now spells the body by hand (slugs and digits need no escaping), `orbfake` reads forms raw
+  (`rawForm`), and its carousel test posts encoded commas and expects the device's answer.
+  Benched on Gold through the page with real mouse events: Radar dragged from last to first,
+  and Gold answered radar first; three boxes clicked, Gold answered those three in the
+  rotation; one unticked, Gold answered two. Gold's carousel was then put back as it was.
+
+
+### 62.2 Users stuck on FORMAT 3 apps after v1.2.32 — 2026-11-08
+
+**Owner, 2026-11-08:** users report the apps are "wrong format". The v1.2.32 release's apps are
+the tree's, byte for byte (the released hub's seed compared with `cmp`), and FORMAT 4 as the
+firmware reads. The fault was the hub's upgrade of its own library:
+
+- `seed.go`'s `appIsNewer` read the library's old copy with today's parser, which refuses
+  FORMAT 3, so "is newer" answered no and every v1.2.16 shelf app stayed. Replayed with the
+  released binaries: v1.2.16 seeds four FORMAT 3 apps, v1.2.32 keeps them and adds only Radar.
+  Those rows had no Install or Update, only "Remove from card". Now an older FORMAT
+  (`orbnet.AppFormatOlder`: right magic, older format word) is superseded by the shipped copy,
+  whether the hub placed it or it predates the ledger; a file that is not an app stays.
+- A re-flashed orb's setup died on "writing clock to the card: rejected: app format 3; this build
+  reads format 4": the library still held the old clock. An install run now sends the copy
+  compiled into the hub when the library's is an older FORMAT, and says so.
+- A card copy the dial refuses only for its FORMAT ("app format N; this build reads format M")
+  no longer stops a plain Install: the library's bytes go over it. Any other refusal still does.
+  The Apps face shows such a copy amber, "for older firmware · Update replaces it".
+- The floor's refusal no longer names FORMAT 3: "this orb runs firmware X, and these apps need
+  v1.2.30 or newer: update its firmware first".
+- Recovery on a released v1.2.32 hub: Restore bundled apps (checked on the released binary from
+  the broken state: all four refiled as FORMAT 4), reopen the orb so its stamp is fresh, then
+  Update on each app.
+- Tests: `TestSeedReplacesAnOlderFormat`, `TestAnOlderFormatCardCopyIsReplaced`,
+  `TestAnOlderFormatLibraryCopyIsNotSent`; each fails with its fix removed.

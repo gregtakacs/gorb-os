@@ -121,3 +121,27 @@ func EligibleInterfaces() ([]*net.Interface, error) {
 	}
 	return out, nil
 }
+
+// DescribeInterfaces lists every interface with its flags and IPv4 address, for the
+// discovery card when EligibleInterfaces found nothing to join: the filter's reasons
+// have to be visible on the machine that failed it, not guessed at from another.
+func DescribeInterfaces() string {
+	all, err := net.Interfaces()
+	if err != nil {
+		return "interfaces: " + err.Error()
+	}
+	if len(all) == 0 {
+		return "the system reported none"
+	}
+	var parts []string
+	for i := range all {
+		ifi := &all[i]
+		a := ifaceIPv4(ifi)
+		v4 := "no IPv4"
+		if a != nil {
+			v4 = a.String()
+		}
+		parts = append(parts, fmt.Sprintf("%s [%v] %s", ifi.Name, ifi.Flags, v4))
+	}
+	return strings.Join(parts, "; ")
+}

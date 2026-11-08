@@ -40,12 +40,15 @@ func reuseBeforeBind(_, _ string, c syscall.RawConn) error {
 		if opErr = syscall.SetsockoptInt(f, syscall.SOL_SOCKET, syscall.SO_REUSEADDR, 1); opErr != nil {
 			return
 		}
+		if opErr = reusePort(f); opErr != nil {
+			return
+		}
 		// SO_REUSEADDR alone is the option the firmware sets (orb_mdns.c) and the one
 		// avahi and systemd-resolved set, so the fake shares 5353 with them instead of
-		// failing to start. SO_REUSEPORT is deliberately not asked for: it is absent
-		// from syscall on Linux, and with it the kernel hands each incoming datagram
-		// to only one of the sockets holding the port — which would split the fake's
-		// own answers across the hub's per-interface sockets and lose them.
+		// failing to start. On Linux SO_REUSEPORT is deliberately not asked for: it is
+		// absent from syscall there, and with it the kernel hands each incoming
+		// datagram to only one of the sockets holding the port. macOS needs it to
+		// share the port with mDNSResponder at all (reuseport_darwin.go).
 	}); err != nil {
 		return opErr
 	}

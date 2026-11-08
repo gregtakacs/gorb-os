@@ -62,11 +62,16 @@ func reuseBeforeBind(_, _ string, c syscall.RawConn) error {
 		if opErr = syscall.SetsockoptInt(f, syscall.SOL_SOCKET, syscall.SO_REUSEADDR, 1); opErr != nil {
 			return
 		}
+		if opErr = reusePort(f); opErr != nil {
+			return
+		}
 		// SO_REUSEADDR alone is what the firmware sets (orb_mdns.c) and what Linux
 		// requires before several sockets may hold 5353 at once, which is the case
 		// here: one socket per interface, each bound to the wildcard. It is also the
 		// option avahi and systemd-resolved set, so the browser shares the port with
-		// them instead of failing to start.
+		// them instead of failing to start. macOS also wants SO_REUSEPORT, because
+		// mDNSResponder holds 5353 with it (reuseport_darwin.go); reusePort is a
+		// no-op on Linux.
 	}); err != nil {
 		return opErr
 	}

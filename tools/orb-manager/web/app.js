@@ -469,13 +469,14 @@ function gateFwButtons() {
   if (reset) reset.disabled = !current.port;
   // An update reads the way the Apps and Themes faces read one: amber chip, amber press,
   // a count on the tab. Without one the press is a plain door to the flash dialog.
-  const update = !!(current.row && current.row.update === true);
+  const update = fwUpdateDue();
   const badge = $("#mn-updatebadge");
   if (badge) badge.hidden = !update;
   btn.textContent = update ? "Update firmware" : "Flash firmware\u2026";
   btn.classList.toggle("upd", update);
   btn.title = update ? "Install this hub's newer firmware on this orb" : "Flash this orb";
   if (typeof tabBadge === "function") tabBadge("fw", update ? 1 : 0, "a firmware update is available");
+  if (typeof paintUpdateAll === "function") paintUpdateAll();
   const hub = $("#mn-hubfw");
   if (hub) {
     const mine = fwRelease(hubFirmware && hubFirmware.version);
@@ -485,6 +486,15 @@ function gateFwButtons() {
       : theirs && theirs === mine ? "Up to date \u2014 this hub carries the same release."
       : "This hub carries " + mine + ".";
   }
+}
+
+// fwUpdateDue is the hub's verdict on the orb in hand (its fleet row), checked against the
+// stamp the orb last answered with: the row follows the orb's announcements, so for a beat
+// after an update it still speaks for the image the orb just left.
+function fwUpdateDue() {
+  if (!current.row || current.row.update !== true) return false;
+  const mine = fwRelease(hubFirmware && hubFirmware.version), theirs = fwRelease(current.fw);
+  return !(mine && theirs && mine === theirs);
 }
 
 // fwRelease is a stamp's release, "v1.2.11" out of "v1.2.11+1cb1341-dirty": the part an
@@ -1094,6 +1104,146 @@ async function wifiUpdate() {
     ffUploadOpen = false; ffCancelLabel();
   }
 }
+
+
+
+// ---- Update everything (owner, 2026-11-08) ---------------------------------------------
+// One press brings the orb in hand level with this hub: the firmware first when the hub
+// carries a newer release, then every app the hub library holds newer. One panel, one plan:
+// the firmware's bytes, the restart onto it, then each app's own run spliced in where its
+// placeholder stood, so the head reads Step x of n across the whole thing. The apps are
+// re-read after the firmware lands, because the new firmware is what lifts their floors.
+let updAllBusy = false;
+
+function updAllApps() {
+  return appList && typeof appRows === "function" ? appRows().filter((e) => updateGate(e)) : [];
+}
+
+function paintUpdateAll() {
+  const box = $("#mn-updall");
+  if (!box) return;
+  if (updAllBusy) { box.hidden = false; return; }
+  const fw = !!current.ip && fwUpdateDue();
+  const apps = current.ip ? updAllApps() : [];
+  box.hidden = !(fw || apps.length);
+  const what = [];
+  if (fw) what.push("firmware " + (fwRelease(hubFirmware && hubFirmware.version) || "update"));
+  for (const e of apps) what.push(e.title || e.slug);
+  $("#mn-updall-what").textContent = what.join(" · ");
+  $("#mn-updall-go").disabled = false;
+}
+
+// updAllFirmware is wifiUpdate without its dialog: the hub's blocking upload, with the
+// byte counter it keeps polled into the step's bar.
+async function updAllFirmware(ip, sl, log) {
+  const tm = setInterval(async () => {
+    try {
+      const r = await hubFetch("/api/orb/update/progress?ip=" + encodeURIComponent(ip));
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok || !j || j.ok !== true) return;
+      const p = j.data || {};
+      if (p.phase === "uploading") sl.bytes(Math.round((p.sent || 0) / 1024) + " of " + Math.round((p.total || 0) / 1024) + " KB");
+      else if (p.phase && p.phase !== "idle") sl.note(p.phase);
+    } catch (e) { /* the POST's own outcome decides */ }
+  }, 700);
+  try {
+    const r = await hubFetch("/api/orb/update", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ip, force: false }),
+    });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok || j.ok === false) throw new Error("firmware: " + (j.error || ("HTTP " + r.status)));
+    const d = j.data || {};
+    log("firmware: staged " + (d.from || "?") + " → " + (d.to || "?") + ", the orb restarts into it");
+  } finally {
+    clearInterval(tm);
+  }
+}
+
+// updAllWaitStamp waits for the orb to answer on the release it was sent. Until it reboots
+// it still answers on the old one, so an answer alone proves nothing.
+async function updAllWaitStamp(ip, want, log) {
+  const until = Date.now() + 240000;
+  while (Date.now() < until) {
+    await new Promise((res) => setTimeout(res, 3000));
+    try {
+      const st = await readDeviceJSON(await hubFetch("/orb/" + encodeURIComponent(ip) + "/api/v1/status"));
+      if (fwRelease(st.fw) === want) { log("firmware: the orb is back on " + st.fw); return; }
+    } catch (e) { /* mid-reboot */ }
+  }
+  throw new Error("the orb did not come back on firmware " + want + " within 4 minutes");
+}
+
+async function updateEverything() {
+  const ip = current.ip;
+  if (!ip || updAllBusy) return;
+  updAllBusy = true;
+  $("#mn-updall-go").disabled = true;
+  fpOpen();
+  fpLock(true);
+  const ui = fpUI();
+  ui.log.textContent = ""; ui.bar.style.width = "0%"; ui.bar.title = ""; ui.op.textContent = "";
+  ui.live.textContent = "";
+  ui.doing.textContent = "Checking what " + (current.name || ip) + " needs…";
+  const sl = stepList({ list: ui.steps, head: ui.doing, bar: ui.bar, op: ui.op });
+  const log = (t) => { ui.log.textContent += (ui.log.textContent ? "\n" : "") + t; ui.log.scrollTop = ui.log.scrollHeight; };
+  let ok = false, why = "", none = false;
+  try {
+    // The ledger as it stands now, not as a face last drew it.
+    try { await loadApps(); } catch (e) { log("the app ledger did not answer: " + e.message); }
+    const fw = fwUpdateDue();
+    const target = fwRelease(hubFirmware && hubFirmware.version);
+    const apps = updAllApps();
+    const plan = [];
+    if (fw) plan.push({ id: "fw", label: "Sending firmware " + target + " to the orb", kind: "bytes" },
+      { id: "fwboot", label: "Restarting on firmware " + target, kind: "wait", budget: 240 });
+    for (const e of apps)
+      plan.push({ id: "app:" + e.slug, label: "Updating " + (e.title || e.slug) + " to " + e.lib.version, kind: "wait" });
+    if (!plan.length) { none = true; ok = true; return; }
+    sl.set(plan);
+    if (fw) {
+      sl.enter("fw");
+      await updAllFirmware(ip, sl, log);
+      sl.enter("fwboot");
+      await updAllWaitStamp(ip, target, log);
+      await loadOrb(true);
+      try { await loadApps(); } catch (e) { log("the app ledger did not answer after the restart: " + e.message); }
+    }
+    for (const e0 of apps) {
+      const id = "app:" + e0.slug;
+      const e = updAllApps().find((x) => x.slug === e0.slug);
+      if (!e) { sl.enter(id); sl.skip("already up to date"); continue; }
+      // The app's run plans its own stages under the same names every run uses (check,
+      // restart, ...): they are prefixed with the slug so two apps' stages stay apart, and
+      // its finish closes its own stages, not the whole plan.
+      const pre = e.slug + ":";
+      const inner = Object.create(sl);
+      inner.splice = (pid, steps) => sl.splice(pid, steps.map((p) => Object.assign({}, p, { id: pre + p.id })));
+      inner.enter = (pid) => sl.enter(pre + pid);
+      inner.finish = (good) => {
+        const st = sl.plan[sl.at];
+        if (st && st.state === "active") sl.mark(st, good ? "done" : "failed", "");
+      };
+      const frame = { list: inner, splice: id, log: ui.log, doing: ui.doing, bar: ui.bar, op: ui.op };
+      if (!await streamInstall(current.ip, e.slug, false, frame, true, false))
+        throw new Error((e.title || e.slug) + ": " + (gLastRefusal || "the update was refused"));
+    }
+    ok = true;
+  } catch (e) {
+    why = (e && e.message) || String(e);
+    log("✗ " + why);
+  } finally {
+    sl.finish(ok);
+    ui.doing.textContent = none ? "Nothing to update: this orb is level with the hub"
+      : ok ? "Done · " + (current.name || "the orb") + " is up to date" : "Stopped: " + why;
+    fpLock(false);
+    updAllBusy = false;
+    try { await loadApps(); } catch (e) { /* the face says so itself */ }
+    pullFound();
+    paintUpdateAll();
+  }
+}
+$("#mn-updall-go").onclick = updateEverything;
 
 
 
@@ -4615,7 +4765,12 @@ function startPolling(ip) {
     if (!row) return; // the card was cleared; stop rather than dial unbidden
     try {
       const st = await readDeviceJSON(await hubFetch("/orb/" + ip + "/api/v1/status"));
-      row.textContent = "running " + (st.fw || "?") + " \u00b7 state " + (st.state || "?");
+      // A stamp that moved is a board that rebooted into other firmware (an update this
+      // page started, or one from anywhere else). Every face drawn against the old stamp
+      // is stale, the Apps face's "needs firmware" chips first among them: re-read the
+      // board as a return, which re-arms the faces, and let loadOrb restart this poll.
+      if (st.fw && current.ip === ip && st.fw !== current.fw) { loadOrb(true); pullFound(); return; }
+      row.textContent = "This orb runs " + (fwRelease(st.fw) || "an unknown version");
       pollDelay = 15000;
     } catch (e) {
       pollDelay = Math.min(pollDelay * 2, 240000);

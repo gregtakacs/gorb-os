@@ -1482,8 +1482,8 @@ async function loadApps() {
   if (typeof renderLibrary === "function") {
     try { await renderLibrary(); } catch (e) { /* renderLibrary reports its own failure */ }
   }
+  await loadCarousel();
   renderAppsTab();
-  loadCarousel();
 }
 
 // appPost is the one leg every apps mutation walks: the proxy's orb path, an
@@ -1498,143 +1498,195 @@ async function appPost(path) {
   return d;
 }
 
-// ---- §59: the carousel — the order the knob walks the apps in, and the rotation ----------
-// The order is set only here (owner, 2026-11-07: "may be fine if it's hub level only"); the
-// rotation is the orb's own setting, also on the dial. Every press posts and redraws from
-// the orb's answer, so the face never shows an order the orb did not take.
-const ROT_CHOICES = [[0, "Off"], [15, "every 15 s"], [30, "every 30 s"], [60, "every minute"],
-  [120, "every 2 min"], [300, "every 5 min"], [600, "every 10 min"], [900, "every 15 min"],
-  [1800, "every 30 min"], [3600, "every hour"]];
+// ---- §59: the carousel is the app list -------------------------------------------------
+// The list IS the carousel (owner, 2026-11-08: "the app list itself draggable, then select
+// the ones with a checkbox that we want in the auto rotation"): the apps on the dial come
+// first, in the order the knob walks them, each moved by dragging its grip; the apps only
+// on the card or in the hub library follow. Rotation is one switch and an interval above
+// the list, and while it is on every app on the dial carries a checkbox for whether the
+// rotation stops on it. The order is set only here (owner, 2026-11-07); the rotation is
+// also on the dial. Every change posts and redraws from the orb's answer, so the face
+// never shows an order the orb did not take.
+const ROT_CHOICES = [[15, "15 seconds"], [30, "30 seconds"], [60, "1 minute"], [120, "2 minutes"],
+  [300, "5 minutes"], [600, "10 minutes"], [900, "15 minutes"], [1800, "30 minutes"], [3600, "1 hour"]];
 let carData = null;
+let carFocus = "";          // the slug whose grip keeps the keyboard's focus across a redraw
 
 async function loadCarousel() {
-  const box = $("#mn-carousel");
-  if (!box || !current.ip) return;
-  if (fwBelow("v1.2.20")) {
-    box.innerHTML = "";
-    const h = document.createElement("h4"); h.textContent = "Carousel";
-    const p = document.createElement("p"); p.className = "hint";
-    p.textContent = "Putting the apps in your own order and rotating them needs firmware v1.2.20 or later: update this orb on the Firmware tab.";
-    box.append(h, p);
-    return;
-  }
+  carData = null;
+  if (!current.ip || fwBelow("v1.2.20")) return;
   try {
     carData = await readDeviceJSON(await hubFetch("/orb/" + encodeURIComponent(current.ip) + "/api/v1/carousel"));
   } catch (e) { carData = { error: String(e && e.message || e) }; }
-  renderCarousel();
 }
 
 async function carouselPost(form, say) {
-  const state = $("#mn-carousel-state");
-  if (state) state.textContent = "saving\u2026";
+  const state = $("#mn-rot-state");
+  if (state) state.textContent = "saving…";
+  let msg;
   try {
     const r = await hubFetch("/orb/" + encodeURIComponent(current.ip) + "/api/v1/carousel", {
       method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" },
-      body: new URLSearchParams(form).toString(),
+      // Spelled by hand, not URLSearchParams: that encodes the commas as %2C, and the
+      // device's form reader decodes nothing, so "a%2Cb" was one unknown slug and every
+      // reorder and every second rotation box was silently ignored (Gold, 2026-11-08).
+      // Slugs are [a-z0-9_] and the numbers are digits: nothing here needs escaping.
+      body: Object.entries(form).map(([k, v]) => k + "=" + v).join("&"),
     });
     const d = await readDeviceJSON(r);
     if (!d || d.error) throw new Error((d && d.error) || ("HTTP " + r.status));
     carData = d;
-    renderCarousel();
-    const st = $("#mn-carousel-state");
-    if (st) st.textContent = say || "saved";
+    msg = say || "saved";
   } catch (e) {
-    if (state) state.textContent = "the orb refused: " + (e && e.message || e);
+    msg = "the orb refused: " + (e && e.message || e);
   }
+  // A refusal redraws too: the rows go back to the order the orb still holds.
+  renderAppsTab();
+  const st = $("#mn-rot-state");
+  if (st) st.textContent = msg;
 }
 
-function renderCarousel() {
-  const box = $("#mn-carousel");
+function carApps() {
+  return carData && !carData.error && Array.isArray(carData.apps) ? carData.apps : null;
+}
+
+function renderRotation() {
+  const box = $("#mn-apps-rot");
   if (!box) return;
   box.innerHTML = "";
-  const h = document.createElement("h4");
-  h.textContent = "Carousel";
-  box.appendChild(h);
-  if (!carData || carData.error) {
-    const p = document.createElement("p"); p.className = "hint";
-    p.textContent = "the carousel did not answer" + (carData && carData.error ? ": " + carData.error : "");
-    box.appendChild(p);
+  if (!appList) return;
+  const hint = (t) => { const p = document.createElement("p"); p.className = "hint"; p.textContent = t; box.appendChild(p); };
+  if (fwBelow("v1.2.20")) {
+    hint("Putting the apps in your own order and rotating them needs firmware v1.2.20 or later: update this orb on the Firmware tab.");
     return;
   }
-  const apps = Array.isArray(carData.apps) ? carData.apps : [];
+  if (!carApps()) {
+    hint("The orb did not answer its app order" + (carData && carData.error ? ": " + carData.error : "") + ".");
+    return;
+  }
   const rot = carData.rotate || { on: false, every_s: 60 };
-  // the rotation's one control: off, or how often
   const bar = document.createElement("div");
   bar.className = "row toolbar";
-  const lab = document.createElement("label");
-  lab.textContent = "Rotate apps ";
+  const on = document.createElement("label");
+  on.className = "check inline";
+  const cb = document.createElement("input");
+  cb.type = "checkbox"; cb.id = "mn-rot-on"; cb.checked = !!rot.on;
+  on.append(cb, document.createTextNode("Rotate apps"));
+  const every = document.createElement("label");
+  every.className = "inline";
   const sel = document.createElement("select");
   sel.id = "mn-rot-every";
-  for (const [s, t] of ROT_CHOICES) {
+  sel.disabled = !rot.on;
+  const choices = ROT_CHOICES.slice();
+  if (!choices.some(([s]) => s === rot.every_s)) choices.push([rot.every_s, rot.every_s + " seconds"]);
+  for (const [s, t] of choices) {
     const o = document.createElement("option");
-    o.value = String(s); o.textContent = t;
-    if (rot.on ? s === rot.every_s : s === 0) o.selected = true;
+    o.value = String(s); o.textContent = t; o.selected = s === rot.every_s;
     sel.appendChild(o);
   }
-  if (rot.on && !ROT_CHOICES.some(([s]) => s === rot.every_s)) {
-    const o = document.createElement("option");
-    o.value = String(rot.every_s); o.textContent = "every " + rot.every_s + " s"; o.selected = true;
-    sel.appendChild(o);
-  }
-  sel.onchange = () => {
-    const s = +sel.value;
-    carouselPost(s ? { rotate: "1", every_s: String(s) } : { rotate: "0" },
-      s ? "the dial moves to the next app taking part after it is left alone that long" : "rotation off");
-  };
-  lab.appendChild(sel);
+  every.append(document.createTextNode("every "), sel);
+  cb.onchange = () => carouselPost(cb.checked ? { rotate: "1", every_s: sel.value } : { rotate: "0" },
+    cb.checked ? "rotation on: tick the apps it stops on" : "rotation off");
+  sel.onchange = () => carouselPost({ rotate: "1", every_s: sel.value },
+    "the dial moves on after " + sel.options[sel.selectedIndex].textContent + " left alone");
   const state = document.createElement("span");
-  state.className = "hint"; state.id = "mn-carousel-state";
-  state.textContent = "The order the knob and the carousel walk the apps in. Rotation moves on only from an app that takes part, once the knob has been left alone for the whole interval.";
-  bar.append(lab, state);
+  state.className = "hint"; state.id = "mn-rot-state";
+  state.textContent = rot.on
+    ? "Drag \u283f to order the apps. Rotation stops on the ticked ones, once the knob is left alone for the whole interval."
+    : "Drag \u283f to set the order the knob and the carousel walk the apps in.";
+  bar.append(on, every, state);
   box.appendChild(bar);
-  const order = apps.map((a) => a.slug);
-  const move = (i, d) => {
-    const j = i + d;
-    if (j < 0 || j >= order.length) return;
-    const o = order.slice();
-    [o[i], o[j]] = [o[j], o[i]];
-    carouselPost({ order: o.join(",") }, (apps[i].title || apps[i].slug) + " moved " + (d < 0 ? "up" : "down"));
-  };
-  apps.forEach((a, i) => {
-    const row = document.createElement("div");
-    row.className = "arow";
-    const info = document.createElement("div");
-    info.className = "tinfo";
-    const name = document.createElement("b");
-    name.textContent = (i + 1) + ". " + (a.title || a.slug);
-    info.appendChild(name);
-    const up = document.createElement("button");
-    up.className = "ghost"; up.textContent = "\u25b2"; up.title = "Earlier in the carousel";
-    up.disabled = i === 0; up.onclick = () => move(i, -1);
-    const dn = document.createElement("button");
-    dn.className = "ghost"; dn.textContent = "\u25bc"; dn.title = "Later in the carousel";
-    dn.disabled = i === apps.length - 1; dn.onclick = () => move(i, 1);
-    const tk = document.createElement("label");
-    tk.className = "hint";
-    tk.title = "Whether the rotation stops on this app";
-    const cb = document.createElement("input");
-    cb.type = "checkbox"; cb.checked = !!a.rotate;
-    cb.onchange = () => {
-      const inn = apps.filter((x) => (x.slug === a.slug ? cb.checked : x.rotate)).map((x) => x.slug);
-      carouselPost({ apps: inn.join(",") }, (a.title || a.slug) + (cb.checked ? " takes part in the rotation" : " is out of the rotation"));
-    };
-    tk.append(cb, document.createTextNode(" in rotation"));
-    row.append(info, up, dn, tk);
-    box.appendChild(row);
-  });
 }
 
-function renderAppsTab() {
-  const body = $("#mn-apps-body");
-  $("#mn-apps-tabs").innerHTML = "";
-  body.innerHTML = "";
-  if (!appList) return;
-  // D38: one list, every app the hub can see in any of its three homes — the
-  // dial's ledger, the card's folder, the hub's shelf. The section labels are
-  // gone because they were the same fact three times: an app is one thing, and
-  // the row says where it stands and what the press would do.
+// sortable lets a row be dragged by its grip. It is pointer events, not HTML5 drag and
+// drop, so a mouse, a pen and a finger behave alike: the row follows the pointer into its
+// slot as it crosses the others' midlines (the others slide aside), and a drop that moved
+// it posts the whole order once. The grip is a button, so the arrow keys move a row too.
+function sortable(list, commit) {
+  const rows = () => Array.from(list.querySelectorAll(".arow[data-sort]"));
+  const order = () => rows().map((r) => r.dataset.slug).join(",");
+  // FLIP: the rows that moved slide from where they were instead of jumping.
+  const glide = (fn, skip) => {
+    const before = new Map(rows().map((r) => [r, r.getBoundingClientRect().top]));
+    fn();
+    for (const r of rows()) {
+      if (r === skip) continue;
+      const dy = before.get(r) - r.getBoundingClientRect().top;
+      if (!dy) continue;
+      r.style.transition = "none";
+      r.style.transform = "translateY(" + dy + "px)";
+      requestAnimationFrame(() => { r.style.transition = "transform .15s ease"; r.style.transform = ""; });
+    }
+  };
+  for (const row of rows()) {
+    const grip = row.querySelector(".grip");
+    grip.addEventListener("pointerdown", (ev) => {
+      if (ev.button !== 0) return;
+      ev.preventDefault();
+      // The window hears the drag, not the grip: moving the row in the document releases
+      // the grip's pointer capture, and a grip that stopped hearing never saw the drop.
+      const pid = ev.pointerId;
+      const from = order();
+      const grab = ev.clientY - row.getBoundingClientRect().top;
+      row.classList.add("dragging");
+      list.classList.add("sorting");
+      // The lifted row follows the pointer, held inside the span of the rows it sorts among.
+      const follow = (y) => {
+        row.style.transform = "";
+        const rs = rows(), h = row.getBoundingClientRect().height;
+        const lo = rs[0].getBoundingClientRect().top, hi = rs[rs.length - 1].getBoundingClientRect().bottom - h;
+        const top = row.getBoundingClientRect().top;
+        row.style.transform = "translateY(" + (Math.min(Math.max(y - grab, lo), hi) - top) + "px)";
+      };
+      const move = (e) => {
+        if (e.pointerId !== pid) return;
+        const others = rows().filter((r) => r !== row);
+        let before = null;
+        for (const o of others) {
+          const b = o.getBoundingClientRect();
+          if (e.clientY < b.top + b.height / 2) { before = o; break; }
+        }
+        const last = others[others.length - 1];
+        const want = before ? row.nextElementSibling !== before : last && last.nextElementSibling !== row;
+        if (want) glide(() => { if (before) list.insertBefore(row, before); else last.after(row); }, row);
+        follow(e.clientY);
+      };
+      const end = (e) => {
+        if (e.pointerId !== pid) return;
+        window.removeEventListener("pointermove", move);
+        window.removeEventListener("pointerup", end);
+        window.removeEventListener("pointercancel", end);
+        row.classList.remove("dragging");
+        list.classList.remove("sorting");
+        row.style.transition = "transform .12s ease";
+        row.style.transform = "";
+        const to = order();
+        if (to !== from) commit(to, row.dataset.slug);
+      };
+      window.addEventListener("pointermove", move);
+      window.addEventListener("pointerup", end);
+      window.addEventListener("pointercancel", end);
+    });
+    grip.addEventListener("keydown", (ev) => {
+      const d = ev.key === "ArrowUp" ? -1 : ev.key === "ArrowDown" ? 1 : 0;
+      if (!d) return;
+      ev.preventDefault();
+      const rs = rows(), i = rs.indexOf(row), j = i + d;
+      if (j < 0 || j >= rs.length) return;
+      glide(() => { if (d < 0) list.insertBefore(row, rs[j]); else rs[j].after(row); });
+      carFocus = row.dataset.slug;
+      commit(order(), row.dataset.slug);
+    });
+  }
+}
+
+// appRows is D38's one list: every app the hub can see in any of its three homes — the
+// dial's ledger, the card's folder, the hub's shelf — merged by slug. The section labels
+// are gone because they were the same fact three times: an app is one thing, and the row
+// says where it stands and what the press would do.
+function appRows() {
   const seen = new Map();
-  for (const a of appList)
+  for (const a of appList || [])
     seen.set(a.slug, { slug: a.slug, title: a.title || APP_TITLES[a.slug] || a.slug, installed: a });
   for (const c of cardApps) {
     const k = c.slug || c.stem;
@@ -1647,19 +1699,60 @@ function renderAppsTab() {
     e.lib = f;
     seen.set(f.slug, e);
   }
-  const rows = Array.from(seen.values()).sort((x, y) =>
-    String(x.title).localeCompare(String(y.title)));
+  return Array.from(seen.values()).sort((x, y) => String(x.title).localeCompare(String(y.title)));
+}
+
+function renderAppsTab() {
+  const body = $("#mn-apps-body");
+  $("#mn-apps-tabs").innerHTML = "";
+  body.innerHTML = "";
+  renderRotation();
+  if (!appList) return;
+  const rows = appRows();
   if (!rows.length) {
     const p = document.createElement("p");
     p.className = "hint";
-    p.textContent = "nothing to install \u2014 the dial has no apps, its card holds none, "
+    p.textContent = "nothing to install — the dial has no apps, its card holds none, "
       + "and the hub's shelf is empty. Import one below.";
     body.appendChild(p);
   }
-  for (const e of rows) body.appendChild(appRow(e));
+  // The dial's apps in the carousel's order, then everything else by name.
+  const car = carApps();
+  let onDial = [], rest = rows;
+  if (car) {
+    const by = new Map(rows.map((e) => [e.slug, e]));
+    onDial = car.map((c) => Object.assign(by.get(c.slug) || { slug: c.slug, title: c.title || c.slug }, { car: c }));
+    const inCar = new Set(car.map((c) => c.slug));
+    rest = rows.filter((e) => !inCar.has(e.slug));
+  }
+  const rotOn = !!(car && carData.rotate && carData.rotate.on);
+  const list = document.createElement("div");
+  list.className = "applist";
+  for (const e of onDial) list.appendChild(appRow(e, { sort: onDial.length > 1, rotOn }));
+  if (onDial.length && rest.length) {
+    const sep = document.createElement("p");
+    sep.className = "hint sep";
+    sep.textContent = "Not on this orb";
+    list.appendChild(sep);
+  }
+  for (const e of rest) list.appendChild(appRow(e, { sort: false, rotOn }));
+  body.appendChild(list);
+  if (onDial.length > 1) {
+    sortable(list, (order, slug) => {
+      const t = (onDial.find((e) => e.slug === slug) || {}).title || slug;
+      carouselPost({ order }, t + " is now number " + (order.split(",").indexOf(slug) + 1) + " in the carousel");
+    });
+  }
+  if (carFocus) {
+    const g = list.querySelector('.arow[data-slug="' + carFocus + '"] .grip');
+    if (g) g.focus();
+    carFocus = "";
+  }
   const ups = rows.filter((e) => updateGate(e)).length;
   tabBadge("apps", ups, ups + " app update" + (ups === 1 ? "" : "s") + " in the hub library");
   const st = $("#mn-appstate");
+  // The list redraws on every carousel change: one chip, replaced, never one per redraw.
+  if (st) st.querySelectorAll(".tag.upd").forEach((t) => t.remove());
   if (st && ups) {
     const u = document.createElement("span");
     u.className = "tag upd";
@@ -1667,6 +1760,7 @@ function renderAppsTab() {
     u.textContent = ups + " update" + (ups === 1 ? "" : "s") + " available";
     st.appendChild(u);
   }
+  if (typeof paintUpdateAll === "function") paintUpdateAll();
   // Refused shelf files and the resolved directory lines print under the list:
   // they are the hub's own inventory report, not an app the operator can act on.
   renderLibrary();
@@ -1700,6 +1794,10 @@ function tabBadge(tab, n, tip) {
 function updateGate(e) {
   if (!e.lib || !e.lib.version) return false;
   if (!e.card && !e.installed) return false;
+  // A card copy refused for its FORMAT is a release the firmware moved past: the library's
+  // bytes replace it whatever the dial's slot says (owner, 2026-11-08; Gold showed the
+  // amber "Update replaces it" chip with no Update to press).
+  if (e.card && !e.card.ok && /^app format /.test(e.card.why || "")) return true;
   // Another build of the same release (the +hash tail differs): neither is newer, but the
   // shelf's bytes are not the dial's, and between releases that is how a rebuild reaches it.
   const have = e.installed ? e.installed.version : e.card && e.card.version;
@@ -1734,14 +1832,41 @@ function appStateSentence(e) {
   return t;
 }
 
-function appRow(e) {
+function appRow(e, opt) {
   const a = e.installed, c = e.card, f = e.lib;
+  opt = opt || {};
   // The row is the face's table (owner, 2026-11-04): the name over its chips, then the
   // presses in fixed columns, the same verb in the same column on every row. An update is
   // a filled chip and a filled button, not a clause inside a sentence; the whole sentence
   // stays on hover.
   const row = document.createElement("div");
   row.className = "arow";
+  row.dataset.slug = e.slug;
+  // §59: the grip that orders the carousel, and while rotation is on, whether it stops here.
+  // A row off the dial keeps both cells empty so the columns still line up.
+  const grip = document.createElement(opt.sort ? "button" : "span");
+  grip.className = "grip" + (opt.sort ? "" : " none");
+  grip.textContent = "\u283f";
+  if (opt.sort) {
+    row.dataset.sort = "1";
+    grip.type = "button";
+    grip.title = "Drag to move " + (e.title || e.slug) + " in the carousel (or focus it and use the arrow keys)";
+    grip.setAttribute("aria-label", "Move " + (e.title || e.slug));
+  }
+  const rc = document.createElement("span");
+  rc.className = "rotcell";
+  if (opt.rotOn && e.car) {
+    const cb = document.createElement("input");
+    cb.type = "checkbox"; cb.checked = !!e.car.rotate;
+    cb.title = "Rotation stops on " + (e.title || e.slug);
+    cb.setAttribute("aria-label", cb.title);
+    cb.onchange = () => {
+      const inn = carApps().filter((x) => (x.slug === e.slug ? cb.checked : x.rotate)).map((x) => x.slug);
+      carouselPost({ apps: inn.join(",") }, (e.title || e.slug) + (cb.checked ? " is in the rotation" : " is out of the rotation"));
+    };
+    rc.appendChild(cb);
+  }
+  row.append(grip, rc);
   const info = document.createElement("div");
   info.className = "tinfo";
   info.title = appStateSentence(e);
@@ -1764,12 +1889,20 @@ function appRow(e) {
     else if (a.failed) chip("failed: " + (a.reason || a.status || "the dial did not say why"), "err");
     else chip("installed " + (a.version || "(unstamped)"), "on");
   }
-  if (updateGate(e)) {
+  // the amber "for older firmware" chip below already says it when the card copy is the only
+  // thing behind and the dial runs the library's own release
+  const staleOnly = !!(c && !c.ok && /^app format /.test(c.why || "") && f && a && a.version === f.version);
+  if (updateGate(e) && !staleOnly) {
     const have = a ? a.version : c && c.version;
     chip(sameRelease(have, f.version) ? "another build in the hub library" : "update available \u2192 " + f.version, "upd",
       "The hub library holds " + f.version + "; Update puts it on this orb");
   } else if (a && !a.compiled && f && verCompare(a.version, f.version) > 0) chip("ahead of the hub library", "mut");
-  if (c) chip(c.ok ? "on the card" + (c.version && !a ? " " + c.version : "") : "the card refuses it: " + (c.why || "no reason given"), c.ok ? "mut" : "err");
+  // A card copy refused only for its FORMAT is an older release the firmware moved past,
+  // not damage: amber, and Update (the library's bytes over it) is the fix (owner, 2026-11-08).
+  const stale = !!(c && !c.ok && /^app format /.test(c.why || ""));
+  if (c) chip(c.ok ? "on the card" + (c.version && !a ? " " + c.version : "")
+    : stale ? "for older firmware \u00b7 " + (f ? "Update replaces it" : "the hub library has no newer copy")
+    : "the card refuses it: " + (c.why || "no reason given"), c.ok ? "mut" : stale ? "upd" : "err", c.ok ? "" : c.why);
   if (f) chip("in the hub library" + (a || c ? "" : " " + (f.version || "")), "mut");
   if (a && !a.compiled && a.caps) chip("uses " + a.caps, "mut");
   // the app's own floor (app.json os_min): an older OS loads it as a failed row, so say so

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -402,6 +403,58 @@ func TestAnInstallThatRodeTheRebootSaysSo(t *testing.T) {
 		}
 		if said != rode {
 			t.Errorf("rode=%v: restarted said %v", rode, said)
+		}
+	}
+}
+
+// TestAnOlderFormatCardCopyIsReplaced: an orb that took v1.2.32's firmware from v1.2.16 holds
+// every app's card copy in FORMAT 3, which the dial refuses by number. Install sends the
+// library's bytes over such a copy instead of refusing (owner, 2026-11-08); a card copy
+// refused for any other reason still stops the run, and nothing is uploaded over it.
+func TestAnOlderFormatCardCopyIsReplaced(t *testing.T) {
+	old := installPoll
+	installPoll = 10 * time.Millisecond
+	defer func() { installPoll = old }()
+	for _, why := range []string{"app format 3; this build reads format 4", "header CRC mismatch"} {
+		uploaded, installed := false, false
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			switch r.URL.Path {
+			case "/api/v1/apps":
+				if installed {
+					w.Write([]byte(`{"mounted":true,"apps":[{"stem":"sentinel","ok":true}],"installed":[{"slug":"sentinel"}]}`))
+					return
+				}
+				if uploaded {
+					w.Write([]byte(`{"mounted":true,"apps":[{"stem":"sentinel","ok":true}],"installed":[]}`))
+					return
+				}
+				w.Write([]byte(`{"mounted":true,"apps":[{"stem":"sentinel","ok":false,"why":"` + why + `"}],"installed":[]}`))
+			case "/api/v1/sd/app":
+				io.Copy(io.Discard, r.Body)
+				uploaded = true
+				w.Write([]byte(`{"state":"stored"}`))
+			case "/api/v1/apps/install":
+				installed = true
+				w.Write([]byte(`{"ok":true,"queued":true}`))
+			default:
+				w.Write([]byte(`{}`))
+			}
+		}))
+		s := newHub()
+		s.lib = &Library{}
+		s.device = orbnet.NewClient(deviceTimeout)
+		s.device.DevicePort = portOf(srv.URL)
+		s.ota = orbnet.NewClient(otaTimeout)
+		s.ota.DevicePort = portOf(srv.URL)
+		err := s.installOneApp(context.Background(), "127.0.0.1", "sentinel", []byte("the library's bytes"), false, func(installStep) {})
+		srv.Close()
+		if strings.HasPrefix(why, "app format") {
+			if err != nil || !uploaded || !installed {
+				t.Errorf("%q: want the copy replaced and installed, got err=%v uploaded=%v installed=%v", why, err, uploaded, installed)
+			}
+		} else if err == nil || uploaded {
+			t.Errorf("%q: want a refusal and no upload, got err=%v uploaded=%v", why, err, uploaded)
 		}
 	}
 }

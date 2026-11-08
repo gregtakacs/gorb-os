@@ -92,11 +92,7 @@ func (o *Orb) serveCarouselPost(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	q, err := url.ParseQuery(string(body))
-	if err != nil {
-		writeJSON(w, 400, `{"error":"the form did not parse"}`)
-		return
-	}
+	q := rawForm(string(body))
 	o.mu.Lock()
 	c := o.carouselLocked()
 	next := *c
@@ -122,3 +118,21 @@ func (o *Orb) serveCarouselPost(w http.ResponseWriter, r *http.Request) {
 	o.mu.Unlock()
 	writeJSON(w, 200, o.carouselJSON())
 }
+
+// rawForm reads a form body the way the device's httpd_query_key_value does: split on & and
+// the first =, and NOTHING decoded. "order=a%2Cb" is one slug named "a%2Cb" on the device,
+// which matches no app: the owner's order falls back to slot order and no error is said. A double that
+// decoded the body (url.ParseQuery, until 2026-11-08) passed a hub that sent its commas
+// percent-encoded, while Gold ignored every reorder and every second rotation box.
+func rawForm(body string) url.Values {
+	q := url.Values{}
+	for _, kv := range strings.Split(body, "&") {
+		if kv == "" {
+			continue
+		}
+		k, v, _ := strings.Cut(kv, "=")
+		q[k] = append(q[k], v)
+	}
+	return q
+}
+

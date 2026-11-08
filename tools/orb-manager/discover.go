@@ -94,9 +94,13 @@ func (s *Server) startListening(ctx context.Context) {
 	}
 	var sources []orbmdns.Source
 	var names []string
+	var firstErr error
 	for _, ifi := range ifaces {
 		c, err := orbmdns.MulticastSource(ifi)
 		if err != nil {
+			if firstErr == nil {
+				firstErr = err
+			}
 			// One interface refusing the join is no reason to have no discovery
 			// at all: a hub on a box with a VPN adapter and Wi-Fi should find the
 			// orb on whichever one works and log the other rather than dying.
@@ -107,7 +111,27 @@ func (s *Server) startListening(ctx context.Context) {
 		names = append(names, ifi.Name)
 	}
 	if len(sources) == 0 {
-		s.setDiscovery(nil, "no interface could join "+orbmdns.GroupAddr)
+		// Last resort: one socket with no interface named, the kernel's choice of
+		// route for the group. A box whose interfaces all failed the filter or the
+		// per-interface join may still hear the LAN this way.
+		if c, err := orbmdns.MulticastSource(nil); err == nil {
+			sources = append(sources, c)
+			names = append(names, "default")
+		} else if firstErr == nil {
+			firstErr = err
+		}
+	}
+	if len(sources) == 0 {
+		// Say why: "address already in use" and "no interfaces" want different
+		// fixes, and the log is not where a user looks.
+		why := "no interface could join " + orbmdns.GroupAddr
+		if firstErr != nil {
+			why += " (" + firstErr.Error() + ")"
+		}
+		if len(ifaces) == 0 {
+			why += "; no interface qualified: " + orbmdns.DescribeInterfaces()
+		}
+		s.setDiscovery(nil, why)
 		return
 	}
 	if err := b.Start(ctx, sources...); err != nil {

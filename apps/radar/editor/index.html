@@ -3,29 +3,32 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Radar editor</title>
-<!-- The radar app's editor region (docs/radar-plan.md §2.9). R5 ships it for the bake
-     (radar-bake.js, which made the shelf's Scope) and for os_min, which rides the region;
-     the editor itself, its presets, the map's detail and colours and the four other
-     starters are R7's. Until then this page says so and shows the starter. -->
+<title>Radar theme editor</title>
+<!-- The radar's theme editor (radar-plan §2.9, R7). The OS runtime the hub serves
+     (editor.json lists it); the app's own files sit beside this page. -->
 <link rel="stylesheet" href="/runtime/ui@1/ui.css">
+<link rel="stylesheet" href="/runtime/studio@1/studio.css">
 <link rel="stylesheet" href="/runtime/fonts@1/fonts.css">
 <style>
-  body { background: var(--bg); color: var(--fg); font: 13px/1.45 var(--sans); margin: 0; padding: 24px; }
-  canvas { width: 233px; height: 233px; border-radius: 50%; display: block; margin: 16px 0; }
-  .hint { color: var(--mut); max-width: 34em; }
+  html, body, #root { height: 100%; margin: 0; }
+  body { background: var(--bg); color: var(--fg); font: 13px/1.45 var(--sans); }
+  .rd-list { display: flex; flex-direction: column; gap: 6px; padding: 8px 10px; }
+  .rd-sec { padding: 10px 10px 2px; color: var(--mut); text-transform: uppercase; letter-spacing: .06em; font-size: 11px; }
 </style>
 </head>
 <body>
-<h2>Radar themes</h2>
-<p class="hint">The radar's theme editor is on its way. For now the shelf's Scope theme is the
-radar's look: install it from the Themes tab. Its map colours, line widths and rain ramp are
-the theme's, and the editor will let you change them.</p>
-<canvas id="pv" width="466" height="466"></canvas>
+<div id="root"></div>
+<script src="orb-app.js"></script>
+<script src="/runtime/react@18.3.1/react.production.min.js"></script>
+<script src="/runtime/react@18.3.1/react-dom.production.min.js"></script>
 <script src="/runtime/baker@1/orbtheme-baker.js"></script>
+<script src="/runtime/maps@1/orbmap.js"></script>
+<script src="/runtime/theme@1/send.js"></script>
+<script src="/runtime/theme@1/session.js"></script>
+<script src="/runtime/theme@1/preview.js"></script>
+<script src="/runtime/theme@1/measure.js"></script>
+<script src="/runtime/studio@1/studio.js"></script>
 <script src="radar-bake.js"></script>
-<script>
-  RadarBake.picture(RadarBake.preset('scope'), 466).then((c) => document.getElementById('pv').getContext('2d').drawImage(c, 0, 0));
-</script>
+<script src="radar-editor.js"></script>
 </body>
 </html>

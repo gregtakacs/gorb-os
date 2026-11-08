@@ -66,7 +66,148 @@
       order: { map: 0, rain: 1, rows: 2 }
     }
   };
+  /* ---- R7: the other starters (radar-plan §2.9, §0 ruling 13), each matching the same-named
+   * looks in Weather and Flights; built from a palette over Radarscope's shape ---- */
+  function starter(name, P) {
+    var d = JSON.parse(JSON.stringify(PRESETS.scope));
+    d.name = name;
+    d.ground = { top: P.top, foot: P.foot };
+    Object.assign(d.glass, P.glass);
+    Object.assign(d.words, P.words);
+    d.words.scale = Object.assign({}, d.words.scale, { colour: P.words.ink });
+    d.scale = Object.assign({}, d.scale, { ink: P.words.ink, edge: P.scaleEdge });
+    d.dot = P.dot;
+    Object.assign(d.map, P.map);
+    if (P.dash) d.map.dash = P.dash;
+    if (P.width) d.map.width = Object.assign({}, d.map.width, P.width);
+    d.rain = P.rain;
+    return d;
+  }
+  PRESETS.paper = starter('Paper', {
+    top: '#f2ead8', foot: '#e3d7bd', scaleEdge: '#f2ead8',
+    glass: { ring: '#5a4a36', ringA: 0.25, track: '#5a4a36', trackA: 0.55, forecast: '#b05a20' },
+    words: { ink: '#2a2218', forecast: '#a04a18', quiet: '#5a4a36', backing: 'rgba(242,234,216,0.88)' },
+    dot: { colour: '#c03a2a', ring: '#2a2218', r: 4.5 },
+    map: { water: '#a9c7dd', land: '#efe6d2', urban: '#e2d4ba', lake: '#9fc1d9', river: '#7fa7c6', road2: '#d08a4a',
+           road1: '#c0503a', state: '#8a7a9a', border: '#6a5a7a', coast: '#6f97b5', city: '#3a3226', airport: '#7a3a2a',
+           runway: '#9a8f7a', road3: '#c4b494', road4: '#d2c6aa' },
+    rain: [[10, '#58b858', 0.55], [20, '#2e9e3e', 0.70], [30, '#e8c020', 0.80], [40, '#e07818', 0.88],
+           [50, '#c82818', 0.92], [60, '#a01890', 1.0], [70, '#401060', 1.0]]
+  });
+  PRESETS.station = starter('Station', {
+    top: '#3a4552', foot: '#262e38', scaleEdge: '#141a20',
+    glass: { ring: '#ffffff', ringA: 0.22, track: '#ffffff', trackA: 0.6, forecast: '#ffd040' },
+    words: { ink: '#ffffff', forecast: '#ffd040', quiet: '#c8d2dc', backing: 'rgba(20,26,32,0.80)' },
+    dot: { colour: '#ffd040', ring: '#141a20', r: 4.5 },
+    map: { water: '#1d3c5a', land: '#3b4652', urban: '#47525e', lake: '#24486a', river: '#3a6a94', road2: '#8a96a2',
+           road1: '#b0bac4', state: '#d8dee4', border: '#ffffff', coast: '#7aa4c8', city: '#ffffff', airport: '#ffd040',
+           runway: '#8a96a2', road3: '#6a7682', road4: '#5a6672' },
+    width: { state: 1, border: 2 },
+    rain: [[10, '#00b000', 0.70], [20, '#00e000', 0.80], [30, '#ffff00', 0.88], [40, '#ff9000', 0.92],
+           [50, '#ff0000', 0.95], [60, '#ff00ff', 1.0], [70, '#ffffff', 1.0]]
+  });
+  PRESETS.vintage = starter('Vintage', {
+    top: '#dccaa2', foot: '#b89c6c', scaleEdge: '#e8dcc0',
+    glass: { ring: '#5a3e1e', ringA: 0.30, track: '#5a3e1e', trackA: 0.6, forecast: '#8a2a1a' },
+    words: { face: 'Cormorant Garamond', nameFace: 'Cormorant Garamond', ink: '#3a2810', forecast: '#8a2a1a', quiet: '#5a4228',
+             backing: 'rgba(232,220,192,0.88)' },
+    dot: { colour: '#8a2a1a', ring: '#3a2810', r: 4.5 },
+    map: { water: '#a8b8a8', land: '#d8c8a0', urban: '#ccb890', lake: '#9cb0a0', river: '#7c947c', road2: '#9a6a3a',
+           road1: '#7a4a2a', state: '#7a6a4a', border: '#5a3e1e', coast: '#6a8070', city: '#3a2810', airport: '#8a2a1a',
+           runway: '#8a7a5a', road3: '#b0946a', road4: '#bea47a' },
+    rain: [[10, '#8a9a5a', 0.50], [20, '#6a8a3a', 0.65], [30, '#c8a040', 0.78], [40, '#b8702a', 0.86],
+           [50, '#9a3a1a', 0.92], [60, '#6a1a2a', 1.0], [70, '#3a0a1a', 1.0]]
+  });
+  PRESETS.blueprint = starter('Blueprint', {
+    top: '#174a82', foot: '#0c2c58', scaleEdge: '#0c2c58',
+    glass: { ring: '#cfe8ff', ringA: 0.35, track: '#cfe8ff', trackA: 0.6, forecast: '#ffe07a' },
+    words: { ink: '#eaf4ff', forecast: '#ffe07a', quiet: '#a8cdf0', backing: 'rgba(12,44,88,0.82)' },
+    dot: { colour: '#ffffff', ring: '#0c2c58', r: 4.5 },
+    map: { water: '#0f3a6c', land: '#164a80', urban: '#1c5490', lake: '#123f74', river: '#6ab0e8', road2: '#8ec8f4',
+           road1: '#cfe8ff', state: '#8ec8f4', border: '#eaf4ff', coast: '#a8d4f8', city: '#ffffff', airport: '#ffe07a',
+           runway: '#a8cdf0', road3: '#6ab0e8', road4: '#4a90cc' },
+    // thin and dashed (§0 ruling 13): state lines and minor roads dashed, borders long-dashed
+    dash: { state: 'short', road3: 'short', road4: 'dot', border: 'long' },
+    width: { road1: 1, border: 1, runway: 1 },
+    // white to cyan, as contours
+    rain: [[10, '#ffffff', 0.25], [20, '#e0f4ff', 0.40], [30, '#a0e0ff', 0.55], [40, '#60c8ff', 0.70],
+           [50, '#20a8ff', 0.82], [60, '#ffe07a', 0.95], [70, '#ff8040', 1.0]]
+  });
+  PRESETS.blank = starter('Blank', {
+    top: '#1c1c1c', foot: '#101010', scaleEdge: '#000000',
+    glass: { ring: '#9a9a9a', ringA: 0.25, track: '#9a9a9a', trackA: 0.5, forecast: '#c8c8c8' },
+    words: { ink: '#e8e8e8', forecast: '#c8c8c8', quiet: '#a8a8a8', backing: 'rgba(0,0,0,0.75)' },
+    dot: { colour: '#ffffff', ring: '#000000', r: 4.5 },
+    map: { water: '#202428', land: '#2a2a2a', urban: '#323232', lake: '#24282c', river: '#4a5058', road2: '#5a5a5a',
+           road1: '#7a7a7a', state: '#4a4a4a', border: '#8a8a8a', coast: '#5a6068', city: '#d0d0d0', airport: '#d0d0d0',
+           runway: '#6a6a6a', road3: '#484848', road4: '#3c3c3c' },
+    rain: PRESETS.scope.rain
+  });
+  var STARTERS = ['scope', 'paper', 'station', 'vintage', 'blueprint'];
+  var STARTER_TITLES = { scope: 'Radarscope', paper: 'Paper', station: 'Station', vintage: 'Vintage', blueprint: 'Blueprint', blank: 'Blank' };
+  var STARTER_NOTES = { scope: 'Phosphor green on black', paper: 'A printed road atlas', station: 'The TV weather map',
+    vintage: 'Brass and parchment, a sepia map', blueprint: 'Cyan lines on blueprint blue', blank: 'Plain greys' };
+
+  /* ---- the Map step's presets (§2.9): detail, names, a colour scheme ---- */
+  var DETAILS = {
+    minimal: { title: 'Minimal', note: 'Major roads, borders, lakes and cities',
+               off: ['urban', 'river', 'state', 'runway', 'road2', 'road3', 'road4'], from: {} },
+    standard: { title: 'Standard', note: 'Adds rivers, towns\u2019 built-up areas, state lines, runways and main roads from Area in',
+                off: ['road3', 'road4'], from: { road2: 3 } },
+    detailed: { title: 'Detailed', note: 'Adds the smaller roads, each from its own zoom in',
+                off: [], from: { road2: 3, road3: 4, road4: 5 } }
+  };
+  var NAMES = { off: { title: 'Off', n: 0 }, few: { title: 'Few', n: 2 }, normal: { title: 'Normal', n: 4 }, many: { title: 'Many', n: 6 } };
+  var COLOUR_ROLES = ['water', 'land', 'urban', 'lake', 'river', 'coast', 'road1', 'road2', 'road3', 'road4', 'state', 'border', 'runway', 'city', 'airport'];
+  var ROLE_TITLES = { water: 'Sea', land: 'Land', urban: 'Built-up', lake: 'Lakes', river: 'Rivers', coast: 'Coast',
+    road1: 'Motorways', road2: 'Main roads', road3: 'Secondary roads', road4: 'Minor roads', state: 'State lines',
+    border: 'Borders', runway: 'Runways', city: 'Town dots', airport: 'Airports' };
+  var LINE_ROLES = ['river', 'coast', 'road1', 'road2', 'road3', 'road4', 'state', 'border', 'runway'];
+  function detailOf(m) {
+    for (var k in DETAILS) {
+      var D = DETAILS[k];
+      if (D.off.slice().sort().join() === (m.off || []).slice().sort().join() && JSON.stringify(D.from) === JSON.stringify(m.from || {})) return k;
+    }
+    return 'custom';
+  }
+  function namesOf(m) { for (var k in NAMES) if (NAMES[k].n === (m.names | 0)) return k; return 'normal'; }
+  // a starter's map colours over a design, its line weights and dashes kept
+  function scheme(d, k) {
+    var src = PRESETS[k].map, n = JSON.parse(JSON.stringify(d));
+    COLOUR_ROLES.forEach(function (r) { n.map[r] = src[r]; });
+    return n;
+  }
+  // a design from before a part was added: the missing parts from Radarscope
+  function complete(d) {
+    var base = preset('scope'), out = JSON.parse(JSON.stringify(d));
+    (function fill(o, b) {
+      for (var k in b) {
+        if (o[k] === undefined) o[k] = JSON.parse(JSON.stringify(b[k]));
+        else if (b[k] && typeof b[k] === 'object' && !Array.isArray(b[k]) && o[k] && typeof o[k] === 'object') fill(o[k], b[k]);
+      }
+    })(out, base);
+    return out;
+  }
+
   function preset(k) { return JSON.parse(JSON.stringify(PRESETS[k] || PRESETS.scope)); }
+  // the faces the Words step offers: the hub's own (runtime/vendor/fonts.css), each with
+  // the accented letters (§6.22)
+  var FACES = ['IBM Plex Sans', 'IBM Plex Mono', 'Space Grotesk', 'Space Mono', 'Jost', 'Barlow Condensed', 'Oswald',
+               'Cormorant Garamond', 'Playfair Display', 'Bodoni Moda'];
+  // the rain's colour per raw value, as valuesBytes writes it (the preview's rain): rgba
+  // bytes a value, from the 10 dBZ floor up, under `floorDbz` none
+  function rainLut(d, floorDbz) {
+    var out = new Uint8ClampedArray(256 * 4), f = floorDbz == null ? 10 : floorDbz;
+    for (var i = 0; i < 256; i++) {
+      var dbz = i / 2 - 32;
+      if (i < 84 || dbz < f) continue;
+      var k = 0;
+      while (k < d.rain.length - 1 && dbz >= d.rain[k + 1][0]) k++;
+      var c = hex(d.rain[k][1]);
+      out[4 * i] = c[0]; out[4 * i + 1] = c[1]; out[4 * i + 2] = c[2]; out[4 * i + 3] = Math.round(d.rain[k][2] * 255);
+    }
+    return out;
+  }
 
   /* ---- drawing helpers ---- */
   function canvas(w, h) { var c = document.createElement('canvas'); c.width = w; c.height = h; return c; }
@@ -270,6 +411,9 @@
 
   root.RadarBake = {
     SCHEMA: SCHEMA, SLOT: SLOT, N_NAMES: N_NAMES, VALUES_VER: VALUES_VER, ROLES: ROLES, PRESETS: Object.keys(PRESETS),
+    STARTERS: STARTERS, STARTER_TITLES: STARTER_TITLES, STARTER_NOTES: STARTER_NOTES, DETAILS: DETAILS, NAMES: NAMES,
+    COLOUR_ROLES: COLOUR_ROLES, ROLE_TITLES: ROLE_TITLES, LINE_ROLES: LINE_ROLES, DASH: DASH, detailOf: detailOf, namesOf: namesOf,
+    scheme: scheme, complete: complete, rainLut: rainLut, argb: argb, rgba: rgba, dotCanvas: dotCanvas, FACES: FACES,
     preset: preset, bake: bake, picture: picture, valuesBytes: valuesBytes, serialOf: serialOf,
     plateCanvas: plateCanvas, glassCanvas: glassCanvas, font: font
   };

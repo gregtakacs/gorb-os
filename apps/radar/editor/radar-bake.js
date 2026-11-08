@@ -11,9 +11,9 @@
  *   - fonts 0 (ink), 1 (forecast: the ink's glyphs in the forecast colour), 2 (quiet);
  *   - the labels: 8 the time, 9 the place, 10 the range, 11 the status, 12..17 the
  *     landmarks' names;
- *   - the values (layout 1, apps/radar/radar.h rd_values_t): the map's role palette,
- *     widths, dashes and what it draws, the names shown, the two live layers' depths, and
- *     the rain ramp as 256 ARGB words;
+ *   - the values (layout 2, apps/radar/radar.h rd_values_t): the map's role palette,
+ *     widths, dashes and what it draws, the names shown, the two live layers' depths, the
+ *     rain ramp as 256 ARGB words, and the first zoom step each role is drawn at;
  *   - the picker's preview.
  * R5 bakes the one starter the shelf ships (Scope); the editor around this (presets, the
  * map's detail and colours, Paper, Station, Vintage, Blueprint) is R7's.
@@ -25,8 +25,11 @@
   var CHARSET = (function () { var c = []; for (var i = 0x20; i < 0x7F; i++) c.push(String.fromCharCode(i)); return c; })();
   var SLOT = { dot: 0, hand: 1, time: 8, place: 9, range: 10, status: 11, name0: 12 };
   var N_NAMES = 6;
-  var VALUES_VER = 1;
-  var ROLES = ['water', 'land', 'urban', 'lake', 'river', 'road2', 'road1', 'state', 'border', 'coast', 'city', 'airport', 'runway'];
+  var VALUES_VER = 2;
+  // the map's roles by index (OS v1.2.26's FORMAT 2): road1 motorway and trunk, road2 primary,
+  // road3 secondary, road4 tertiary
+  var ROLES = ['water', 'land', 'urban', 'lake', 'river', 'road2', 'road1', 'state', 'border', 'coast', 'city', 'airport', 'runway',
+               'road3', 'road4'];
   var DASH = { solid: 0, short: 1, long: 2, dot: 3, dashdot: 4 };
 
   /* ---- the starters (R7 adds the rest) ---- */
@@ -38,10 +41,14 @@
       words: { face: 'IBM Plex Mono', px: 18, ink: '#d8f4ee', forecast: '#e0b040', quiet: '#7fa8a2', namePx: 14, nameFace: 'IBM Plex Sans' },
       dot: { colour: '#ffffff', ring: '#e0b040', r: 4.5 },   // white: the airports are amber
       map: {
-        water: '#0a2233', land: '#101a22', urban: '#18242e', lake: '#0e2c40', river: '#1f5a80', road2: '#2e3c48',
-        road1: '#5b6b78', state: '#3d4a56', border: '#6a7886', coast: '#2a5470', city: '#b8c4ce', airport: '#e0b040', runway: '#5b6b78',
-        width: { river: 1, road2: 1, road1: 2, state: 1, border: 2, coast: 1, runway: 2 },
+        water: '#0a2233', land: '#101a22', urban: '#18242e', lake: '#0e2c40', river: '#1f5a80', road2: '#4a5966',
+        road1: '#6b7b88', state: '#3d4a56', border: '#6a7886', coast: '#2a5470', city: '#b8c4ce', airport: '#e0b040', runway: '#5b6b78',
+        road3: '#3a4855', road4: '#2f3b46',
+        width: { river: 1, road2: 1, road1: 2, state: 1, border: 2, coast: 1, runway: 2, road3: 1, road4: 1 },
         dash: { state: 'long' },
+        // the first zoom step each is drawn at (Wide 0 .. Close 5): the roads thin out as the
+        // view widens (owner, 2026-11-07)
+        from: { road2: 2, road3: 3, road4: 4 },
         off: [], marks: ['city', 'airport'], names: 4
       },
       // dBZ stops: colour, opacity (the noise floor is 10 dBZ)
@@ -130,7 +137,7 @@
 
   /* ---- the values: rd_values_t, little-endian ---- */
   function valuesBytes(d) {
-    var b = new Uint8Array(64 + 16 + 16 + 4 + 4 + 1024), dv = new DataView(b.buffer), M = d.map, i;
+    var b = new Uint8Array(64 + 16 + 16 + 4 + 4 + 1024 + 16), dv = new DataView(b.buffer), M = d.map, i;
     ROLES.forEach(function (r, k) { dv.setUint32(4 * k, argb(M[r], 1), true); });
     ROLES.forEach(function (r, k) {
       b[64 + k] = Math.max(0, Math.min(4, (M.width && M.width[r]) | 0));
@@ -153,6 +160,7 @@
       }
       dv.setUint32(104 + 4 * i, w, true);
     }
+    ROLES.forEach(function (r, k) { b[1128 + k] = Math.max(0, Math.min(5, (M.from && M.from[r]) | 0)); });
     return b;
   }
 

@@ -311,6 +311,11 @@ typedef struct {
     int32_t  sx, sy, dx, dy, w, h, scale;
     const uint32_t *pal;           /* 256 entries, 0xAARRGGBB */
 } orb_png_draw_t;
+/* scale | ORB_PNG_SMOOTH (OS v1.2.26): magnify by scale (up to 16), each glass pixel
+ * sampled at its centre, sx + (x - dx + 0.5) / scale source pixels, from the four around
+ * it, their values blended bilinearly before the palette colours them. dx may be negative
+ * (the window's first source pixel can start left of the glass) for exact alignment. */
+#define ORB_PNG_SMOOTH 0x100
 ORB_IMPORT("cv_png8") int32_t orb_cv_png8(int32_t cv, const orb_png_draw_t *d);
 
 /* ---- maps (cap "location"; radar-plan §2.4, OS v1.2.20) ---------------------------- *
@@ -322,7 +327,10 @@ ORB_IMPORT("cv_png8") int32_t orb_cv_png8(int32_t cv, const orb_png_draw_t *d);
 enum {
     ORB_MAP_WATER, ORB_MAP_LAND, ORB_MAP_URBAN, ORB_MAP_LAKE, ORB_MAP_RIVER, ORB_MAP_ROAD2,
     ORB_MAP_ROAD1, ORB_MAP_STATE, ORB_MAP_BORDER, ORB_MAP_COAST, ORB_MAP_CITY, ORB_MAP_AIRPORT,
-    ORB_MAP_RUNWAY,                                                  /* the roles, 0-12 */
+    ORB_MAP_RUNWAY,
+    ORB_MAP_ROAD3, ORB_MAP_ROAD4,          /* the roles, 0-14. OS v1.2.26's maps (FORMAT 2): ROAD1
+                                            * is motorway and trunk, ROAD2 primary, ROAD3
+                                            * secondary, ROAD4 tertiary */
 };
 enum { ORB_MAP_DASH_SOLID, ORB_MAP_DASH_SHORT, ORB_MAP_DASH_LONG, ORB_MAP_DASH_DOT, ORB_MAP_DASH_DASHDOT };
 enum { ORB_MARK_CITY, ORB_MARK_TOWN, ORB_MARK_VILLAGE, ORB_MARK_AIRPORT };

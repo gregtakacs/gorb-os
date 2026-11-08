@@ -1075,8 +1075,9 @@ async function makeMaps() {
 }
 // The preview draws the level the orb would use at the chosen radius, built from the
 // tiles (this browser's cache first), so it never reads the card.
-const MAPS_PREVIEW_PAL = [0xff0b2a3c, 0xff1b2228, 0xff2c3138, 0xff123a52, 0xff2f6f99, 0xff6b7480, 0xffc9ced6,
-  0xff8a7fb0, 0xffd0d0d0, 0xff3d7fa8, 0xffffffff, 0xffffc040, 0xffe0e0e0, 0, 0, 0];
+// by role (FORMAT 2): primary road 5, motorway 6, secondary 13, tertiary 14
+const MAPS_PREVIEW_PAL = [0xff0b2a3c, 0xff1b2228, 0xff2c3138, 0xff123a52, 0xff2f6f99, 0xff8a929c, 0xffc9ced6,
+  0xff8a7fb0, 0xffd0d0d0, 0xff3d7fa8, 0xffffffff, 0xffffc040, 0xffe0e0e0, 0xff5f6771, 0xff4a5059, 0];
 async function mapsPreview() {
   const pm = $("#maps-prevmsg");
   const pl = mapsState && mapsState.places.find((q) => String(q.place) === $("#maps-place").value);
@@ -1088,7 +1089,7 @@ async function mapsPreview() {
     const tmpl = await mapsTemplate();
     const bytes = await mapsLevel(G, tmpl, pl, lv.z, () => {});
     const st = { scale: lv.scale, rot_rad: 0, role_on: 0xffff, mark_on: 0x0b,
-                 width: [0, 0, 0, 0, 1, 1, 2, 1, 2, 1, 0, 0, 2, 0, 0, 0], dash: new Array(16).fill(0) };
+                 width: [0, 0, 0, 0, 1, 1, 2, 1, 2, 1, 0, 0, 2, 1, 1, 0], dash: new Array(16).fill(0) };
     const r = G.render(bytes, st);
     const cv = $("#maps-canvas"), ctx = cv.getContext("2d"), img = ctx.createImageData(G.W, G.W);
     G.paint(r.raster, MAPS_PREVIEW_PAL, img.data);

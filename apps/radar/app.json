@@ -4,14 +4,14 @@
   "caps": ["net", "location"],
   "period_ms": 1000,
   "settings": [
-    {"id": "zoom", "type": "enum", "min": 0, "max": 2, "default": 1,
+    {"id": "zoom", "type": "enum", "min": 0, "max": 5, "default": 1,
      "label": "Zoom it opens at",
-     "help": "Wide, Region or Local: about 480, 240 or 120 km from the centre to the edge at 33°N. Press and turn the knob on the radar to zoom; this is where it starts."},
+     "help": "Wide, Region, Local, Area, City or Close: about 480, 240, 120, 60, 30 or 15 km from the centre to the edge at 33°N. Press and turn the knob on the radar to zoom; this is where it starts."},
     {"id": "source", "type": "string",
      "label": "LibreWXR source",
      "help": "Radar: LibreWXR (CC BY 4.0) from national radar services, NOAA and ECMWF via Open-Meteo. Empty uses the public server, https://api.librewxr.net; a server you run yourself takes its address here."}
   ],
   "shelf": true,
-  "os_min": "v1.2.24",
+  "os_min": "v1.2.26",
   "editor": "editor"
 }

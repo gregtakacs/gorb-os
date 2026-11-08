@@ -376,10 +376,66 @@ static int png_row(void *ctx, int y, const uint8_t *idx, int w)
     return 0;
 }
 
+/* Magnified and smoothed (radar-plan §6.9): each glass pixel samples the source at its own
+ * centre, sx + (X - dx + 0.5) / k in source pixels, between the four source pixels around
+ * it, and blends their VALUES (a raw radar frame's greys, dBZ) bilinearly before the
+ * palette colours the result, as LibreWXR's own smoothing does: colours mixed after the
+ * ramp would put orange between green and red. It covers the glass's [0, w) x [0, h); dx
+ * and dy place the source on it, to a fraction of a source pixel. Positions are in 1/(2k) of a source pixel,
+ * so every weight is exact. The decoder hands rows down the image, and the glass rows
+ * between two source rows are drawn when the second arrives. */
+typedef struct {
+    const orb_ui_tgt_t *t;
+    const pal565_t *pal;           /* by value */
+    const uint8_t *vmap;           /* index -> value */
+    int32_t sx, sy, dx, dy, w, h, k;
+    int32_t prev_y;
+    uint8_t prev[ORB_PNG8_MAX_W], cur[ORB_PNG8_MAX_W];
+} smooth_ctx_t;
+
+static int32_t floordiv(int32_t a, int32_t b) { return a >= 0 ? a / b : -((-a + b - 1) / b); }
+
+static int smooth_row(void *ctx, int y, const uint8_t *idx, int w)
+{
+    smooth_ctx_t *p = ctx;
+    const int32_t k2 = 2 * p->k;
+    for (int x = 0; x < w; x++) p->cur[x] = p->vmap[idx[x]];
+    if (p->prev_y == y - 1) {
+        /* glass rows whose sample falls in [y-1, y): v = sy*2k + 2(Y - dy) + 1 - k */
+        const int32_t c = p->sy * k2 - 2 * p->dy + 1 - p->k;
+        int32_t y0 = floordiv((y - 1) * k2 - c + 1, 2), y1 = floordiv(y * k2 - c + 1, 2);
+        if (y0 < 0) y0 = 0;
+        if (y1 > p->h) y1 = p->h;
+        for (int32_t Y = y0; Y < y1; Y++) {
+            const int32_t fy = 2 * Y + c - (y - 1) * k2;          /* 0 .. 2k-1 */
+            const int32_t GY = Y;                                 /* glass rows 0..h, as X */
+            if ((uint32_t)GY >= (uint32_t)p->t->h) continue;
+            for (int32_t X = 0; X < p->w; X++) {
+                const int32_t u = p->sx * k2 + 2 * X - 2 * p->dx + 1 - p->k;
+                const int32_t x0 = floordiv(u, k2), fx = u - x0 * k2;
+                if (x0 < 0 || x0 + 1 >= w) continue;
+                const int32_t GX = X;
+                if ((uint32_t)GX >= (uint32_t)p->t->w) continue;
+                const int32_t top = p->prev[x0] * (k2 - fx) + p->prev[x0 + 1] * fx;
+                const int32_t bot = p->cur[x0] * (k2 - fx) + p->cur[x0 + 1] * fx;
+                const int32_t v = (top * (k2 - fy) + bot * fy + k2 * k2 / 2) / (k2 * k2);
+                const pal565_t e = p->pal[v];
+                if (e.a) over(p->t, GY * p->t->stride + GX, e.c, e.a);
+            }
+        }
+        if (floordiv(y * k2 - c + 1, 2) >= p->h) return 1;  /* past the window: stop decoding */
+    }
+    memcpy(p->prev, p->cur, (size_t)w);
+    p->prev_y = y;
+    return 0;
+}
+
 int32_t orb_ui_tgt_png8(const orb_ui_tgt_t *t, const uint8_t *png, uint32_t len, int32_t sx, int32_t sy,
                         int32_t dx, int32_t dy, int32_t w, int32_t hh, int32_t scale, const uint32_t *argb)
 {
-    if (!t || !png || !argb || scale < 1 || scale > 4) return ORB_PNG8_E_FORMAT;
+    const bool smooth = (scale & ORB_UI_PNG_SMOOTH) != 0;
+    scale &= 0xFF;
+    if (!t || !png || !argb || scale < 1 || scale > (smooth ? 16 : 4)) return ORB_PNG8_E_FORMAT;
     /* One scratch for every draw: they all run on the LVGL task, one at a time. */
     static void *scratch;
     if (!scratch) scratch = heap_caps_malloc(orb_png8_scratch_size(), MALLOC_CAP_SPIRAM);
@@ -394,8 +450,21 @@ int32_t orb_ui_tgt_png8(const orb_ui_tgt_t *t, const uint8_t *png, uint32_t len,
     const int np = orb_png8_plte(png, len, value);
     if (np < 0) { heap_caps_free(pal); return np; }
     for (int i = 0; i < 256; i++) pal[i] = pal[256 + (np ? value[i] : i)];
-    png_ctx_t ctx = { t, pal, sx, sy, dx, dy, w, hh, scale };
-    int r = orb_png8_decode(png, len, scratch, orb_png8_scratch_size(), png_row, &ctx);
+    int r;
+    if (smooth) {
+        smooth_ctx_t *sc = heap_caps_malloc(sizeof *sc, MALLOC_CAP_SPIRAM);
+        uint8_t *vmap = heap_caps_malloc(256, MALLOC_CAP_SPIRAM);
+        if (!sc || !vmap) { heap_caps_free(sc); heap_caps_free(vmap); heap_caps_free(pal); return ORB_PNG8_E_SCRATCH; }
+        for (int i = 0; i < 256; i++) vmap[i] = np ? value[i] : (uint8_t)i;
+        *sc = (smooth_ctx_t){ .t = t, .pal = pal + 256, .vmap = vmap, .sx = sx, .sy = sy, .dx = dx, .dy = dy,
+                              .w = w, .h = hh, .k = scale, .prev_y = -2 };
+        r = orb_png8_decode(png, len, scratch, orb_png8_scratch_size(), smooth_row, sc);
+        heap_caps_free(sc);
+        heap_caps_free(vmap);
+    } else {
+        png_ctx_t ctx = { t, pal, sx, sy, dx, dy, w, hh, scale };
+        r = orb_png8_decode(png, len, scratch, orb_png8_scratch_size(), png_row, &ctx);
+    }
     if (r == ORB_PNG8_E_STOP) r = ORB_PNG8_OK;        /* the window ended before the image */
     heap_caps_free(pal);
     return r;

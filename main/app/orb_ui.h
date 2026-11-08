@@ -48,6 +48,9 @@ int32_t orb_ui_cv_create(int slot, int32_t parent, int32_t w, int32_t h);
  *  layer): RGB565 pixels at `stride`, and an alpha plane at the same stride, or NULL for an
  *  opaque one. The _tgt_ draws are the canvas draws below, onto it. */
 typedef struct { uint16_t *px; uint8_t *a; int32_t w, h, stride; } orb_ui_tgt_t;
+/* In a PNG draw's scale: magnify by the low byte (up to 16) and sample the values
+ * bilinearly (radar-plan §6.9); without it the scale is 1-4, each source pixel a block. */
+#define ORB_UI_PNG_SMOOTH 0x100
 int32_t orb_ui_tgt_png8(const orb_ui_tgt_t *t, const uint8_t *png, uint32_t len, int32_t sx, int32_t sy,
                         int32_t dx, int32_t dy, int32_t w, int32_t hh, int32_t scale, const uint32_t *argb);
 void    orb_ui_tgt_roles(const orb_ui_tgt_t *t, const uint8_t *raster, const uint32_t *argb16,

@@ -31,6 +31,12 @@ STAGE = os.path.join(ROOT, "main", "stage", "orb_stage.c")
 # walk anyway; the test says so for readers). The same goes for live_restack's explicit
 # stop at the two lifted layers: they carry no tag, so the tag test stops there too.
 MUTATIONS = [
+    (UI, "const int32_t v = (top * (k2 - fy) + bot * fy + k2 * k2 / 2) / (k2 * k2);", "const int32_t v = (top * (k2 - fy) + bot * fy) / (k2 * k2);"),
+    (UI, "const int32_t u = p->sx * k2 + 2 * X - 2 * p->dx + 1 - p->k;", "const int32_t u = p->sx * k2 + 2 * X - 2 * p->dx;"),
+    (UI, "const int32_t c = p->sy * k2 - 2 * p->dy + 1 - p->k;", "const int32_t c = p->sy * k2 - 2 * p->dy;"),
+    (UI, "if (x0 < 0 || x0 + 1 >= w) continue;", "if (x0 < 0 || x0 >= w) continue;"),
+    (UI, "static int32_t floordiv(int32_t a, int32_t b) { return a >= 0 ? a / b : -((-a + b - 1) / b); }", "static int32_t floordiv(int32_t a, int32_t b) { return a / b; }"),
+    (UI, "if (floordiv(y * k2 - c + 1, 2) >= p->h) return 1;", "if (0) return 1;"),
     (UI, "a + (uint32_t)da * (255u - a) / 255u", "a + (uint32_t)da * 255u / 255u"),
     (UI, "(uint8_t)(a * 255u / ao)", "a"),
     (UI, "    t->a[i] = (uint8_t)ao;\n", ""),
@@ -64,16 +70,24 @@ def lifted(mutation=None):
     uih = open(UIH).read()
     i = uih.index("typedef struct { uint16_t *px; uint8_t *a;")
     tgt = uih[i:uih.index("\n", i) + 1]
+    i = ui.index("typedef struct { uint16_t c; uint8_t a; } pal565_t;")
+    pal_t = ui[i:ui.index("\n", i) + 1]
+    i = ui.index("typedef struct {\n    const orb_ui_tgt_t *t;\n    const pal565_t *pal;           /* by value */")
+    sctx = ui[i:ui.index("} smooth_ctx_t;", i) + len("} smooth_ctx_t;") + 1]
     return "\n".join([
-        tgt,
+        tgt, "#define ORB_PNG8_MAX_W 1024", pal_t,
         func(ui, "static inline uint16_t blend565("),
         func(ui, "static inline void over("),
+        sctx,
+        ui[ui.index("static int32_t floordiv("):ui.index("\n", ui.index("static int32_t floordiv(")) + 1],   # one line
+        func(ui, "static int smooth_row("),
         func(stage, "static uint16_t depth_key("),
         func(stage, "static void live_restack(void)"),
     ])
 
 
 PRELUDE = r"""
+#include <math.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -129,8 +143,59 @@ static void both(int32_t o0, int32_t o1)       /* re-stack both, as stage_live_o
 
 static uint16_t c565(int r, int g, int b) { return (uint16_t)((r & 31) << 11 | (g & 63) << 5 | (b & 31)); }
 
+/* the smoothed draw: a source of w x h values through an identity palette (value -> colour),
+ * onto an opaque target; each glass pixel then holds the value it sampled */
+static uint16_t G[64 * 64];
+static int run_smooth(const uint8_t *src, int sw, int shh, int sx, int sy, int dx, int dy, int k, int gw, int gh)
+{
+    static pal565_t pal[256];
+    static uint8_t vmap[256];
+    for (int i = 0; i < 256; i++) { pal[i].c = (uint16_t)i; pal[i].a = 255; vmap[i] = (uint8_t)i; }
+    for (int i = 0; i < 64 * 64; i++) G[i] = 0xFFFF;
+    orb_ui_tgt_t t = { G, NULL, 64, 64, 64 };
+    static smooth_ctx_t c;
+    c = (smooth_ctx_t){ .t = &t, .pal = pal, .vmap = vmap, .sx = sx, .sy = sy, .dx = dx, .dy = dy, .w = gw, .h = gh, .k = k, .prev_y = -2 };
+    int rows = 0;
+    for (int y = 0; y < shh; y++) { rows++; if (smooth_row(&c, y, src + y * sw, sw)) break; }
+    return rows;
+}
+static double ref(const uint8_t *src, int sw, int shh, int sx, int sy, int dx, int dy, int k, int X, int Y)
+{
+    const double u = sx + (X - dx + 0.5) / k - 0.5, v = sy + (Y - dy + 0.5) / k - 0.5;
+    const int x0 = (int)floor(u), y0 = (int)floor(v);
+    if (x0 < 0 || y0 < 0 || x0 + 1 >= sw || y0 + 1 >= shh) return -1;
+    const double fx = u - x0, fy = v - y0;
+    const double a = src[y0 * sw + x0], b = src[y0 * sw + x0 + 1], cc = src[(y0 + 1) * sw + x0], d = src[(y0 + 1) * sw + x0 + 1];
+    return (a * (1 - fx) + b * fx) * (1 - fy) + (cc * (1 - fx) + d * fx) * fy;
+}
+static int check_smooth(const uint8_t *src, int sw, int shh, int sx, int sy, int dx, int dy, int k, int gw, int gh)
+{
+    run_smooth(src, sw, shh, sx, sy, dx, dy, k, gw, gh);
+    int bad = 0;
+    for (int Y = 0; Y < gh; Y++) for (int X = 0; X < gw; X++) {
+        const double r = ref(src, sw, shh, sx, sy, dx, dy, k, X, Y);
+        const int want = r < 0 ? 0xFFFF : (int)floor(r + 0.5);
+        if (G[Y * 64 + X] != want) bad++;
+    }
+    return bad;
+}
+
 int main(void)
 {
+    /* ---- the smoothed, magnified PNG draw (radar-plan §6.9) ---- */
+    static uint8_t S[16 * 16];
+    for (int y = 0; y < 16; y++) for (int x = 0; x < 16; x++) S[y * 16 + x] = (uint8_t)(x * 13 + y * 7 + ((x * y) % 5) * 3);
+    CK(check_smooth(S, 16, 16, 0, 0, 0, 0, 1, 15, 15) == 0, "smoothed at 1x: each glass pixel is its source pixel's value");
+    CK(check_smooth(S, 16, 16, 2, 3, 0, 0, 2, 26, 24) == 0, "at 2x, every glass pixel is the bilinear blend of the values at its centre");
+    CK(check_smooth(S, 16, 16, 4, 2, -3, -1, 4, 40, 44) == 0, "at 4x with the source placed a fraction of a pixel off the glass's edge");
+    CK(check_smooth(S, 16, 16, 1, 1, -5, -6, 8, 64, 64) == 0, "at 8x, Close's magnification");
+    CK(check_smooth(S, 16, 16, 10, 0, 0, 0, 2, 20, 10) == 0, "past the source's right edge the glass is left alone, never read beyond the row");
+    CK(check_smooth(S, 16, 16, 0, 0, 7, 9, 4, 40, 40) == 0, "a source placed right of and below the glass's corner: negative positions floor, not truncate");
+    { static uint8_t R[8 * 2] = { 0, 100, 0, 100, 0, 100, 0, 100,  0, 100, 0, 100, 0, 100, 0, 100 };
+      run_smooth(R, 8, 2, 0, 0, 0, 0, 2, 12, 2);
+      CK(G[64 + 1] == 25 && G[64 + 2] == 75, "values blend before the palette: halfway from 0 to 100 a quarter on is 25, not a colour mix"); }
+    CK(run_smooth(S, 16, 16, 0, 0, 0, 0, 4, 8, 8) < 16, "it stops the decode once the glass window is drawn");
+
     /* ---- over: onto a page canvas (no alpha plane) ---- */
     uint16_t px[4];
     uint8_t al[4];
@@ -213,7 +278,7 @@ def run(src, quiet=False):
         c = os.path.join(d, "t.c")
         exe = os.path.join(d, "t")
         open(c, "w").write(PRELUDE + src + HARNESS)
-        r = subprocess.run(["gcc", "-std=c11", "-Wall", "-Werror", "-Wno-unused-function", "-o", exe, c],
+        r = subprocess.run(["gcc", "-std=c11", "-Wall", "-Werror", "-Wno-unused-function", "-o", exe, c, "-lm"],
                            capture_output=True, text=True)
         if r.returncode:
             if not quiet:

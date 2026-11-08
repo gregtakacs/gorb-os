@@ -41,12 +41,12 @@ enum {
     ORB_MAP_NOMEM = -4,
 };
 
-/* The file name a place's level has on the card, under ORB_MAP_DIR: "<place>-<lat_e4>_<lon_e4>-z<z>.orbmap",
+/* The file name a place's level has on the card, under ORB_MAP_DIR: "<place>-<lat_e4>_<lon_e4>-z<z>-f2.orbmap",
  * coordinates in ten-thousandths of a degree, rounded half away from zero. tools/orbmap.py
  * and the hub's writer name files the same way. place 0 is home, 1-3 the places.
- * The name is FORMAT 1's: a later FORMAT takes a name of its own (a "-f2" before the
- * extension, say), so an OS that reads it never opens an older file, and the hub, which
- * removes every map file no place names, replaces the old files on its next Make maps. */
+ * The name is FORMAT 2's ("-f2"; FORMAT 1's had none): each FORMAT takes a name of its own,
+ * so an OS that reads it never opens an older file, and the hub, which removes every map
+ * file no place names, replaces the old files on its next Make maps. */
 void orb_map_file_name(int place, int32_t lat_e6, int32_t lon_e6, int z, char *out, int cap);
 
 /* Open a view for app_slot: answers a handle (1..ORB_MAP_VIEWS) and starts its render, or

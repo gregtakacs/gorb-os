@@ -1,5 +1,5 @@
-"""The .orbmap container (radar-plan.md §2.4), FORMAT 1: one place's map at one whole
-Mercator zoom, as vectors in role order plus its landmarks. This is the reference
+"""The .orbmap container (radar-plan.md §2.4), FORMAT 2: one place's map at one whole
+Mercator zoom, as vectors in drawing order plus its landmarks. This is the reference
 writer and reader; the hub's JS writer (web/runtime/maps@1/orbmap.js) produces the same
 bytes (tools/host_orbmap_js_test.py), and the C
 reader (main/map/orb_map_raster.c) is held to it by tools/host_map_raster_test.py.
@@ -23,7 +23,7 @@ Layout (little-endian):
     u32   n_features, n_marks
     u32   body_len, body_crc32  (zlib CRC-32 over the body)
   body:
-    features, in role order: u8 role, u8 kind (0 fill, 1 line), varint n_rings,
+    features, fills then lines, each in drawing order (DRAW below): u8 role, u8 kind (0 fill, 1 line), varint n_rings,
       then per ring varint n_points and n_points zigzag-varint (dx, dy) pairs, each
       the delta from the ring's previous point (the first from 0,0). Units are 1/16 px
       at the file's zoom, relative to the place.
@@ -34,18 +34,26 @@ import glob, math, os, struct, sys, zlib
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-MAGIC, FORMAT, HEADER = b"ORBM", 1, 36
+MAGIC, FORMAT, HEADER = b"ORBM", 2, 36
 UNIT = 16                       # 1/16 px
 HALF = 330                      # the window: ±330 px at the file's zoom
 CLIP = (HALF + 4) * UNIT        # clipped a little outside it, so no edge is drawn
 TOL = UNIT // 4                 # Douglas-Peucker tolerance: a quarter pixel
 
 WATER, LAND, URBAN, LAKE, RIVER, ROAD2, ROAD1, STATE, BORDER, COAST, CITY, AIRPORT, RUNWAY = range(13)
+ROAD3, ROAD4 = 13, 14           # FORMAT 2: the roads in four roles (radar-plan §6.9)
 FILL, LINE = 0, 1
+# FORMAT 2's roads: motorway and trunk (ROAD1), primary (ROAD2), secondary (ROAD3), tertiary
+# (ROAD4), each written only from the level it can first be shown at, a step before an app
+# shows it by default (radar's road_step), so the wide levels stay light (owner, 2026-11-07:
+# "way too high" a density at DFW and London).
+ROAD_FROM = {ROAD1: 6, ROAD2: 7, ROAD3: 8, ROAD4: 9}
+# The order lines are drawn in, minor roads under major ones; fills first, then lines.
+DRAW = {RIVER: 0, ROAD4: 1, ROAD3: 2, ROAD2: 3, ROAD1: 4, STATE: 5, BORDER: 6, COAST: 7, RUNWAY: 8}
 MARK_CITY, MARK_TOWN, MARK_VILLAGE, MARK_AIRPORT = range(4)
 
 # What each OpenMapTiles class becomes. Order here is drawing order: fills, then lines.
-def classify(layer, p, gtype):
+def classify(layer, p, gtype, zoom=11):
     c = p.get("class")
     if layer == "landuse" and c in ("residential", "commercial", "industrial", "retail") and gtype == 3:
         return URBAN, FILL
@@ -53,10 +61,10 @@ def classify(layer, p, gtype):
         return (WATER if c == "ocean" else LAKE), FILL
     if layer == "waterway" and c in ("river", "canal"):
         return RIVER, LINE
-    if layer == "transportation" and c in ("secondary", "tertiary"):
-        return ROAD2, LINE
-    if layer == "transportation" and c in ("motorway", "trunk", "primary"):
-        return ROAD1, LINE
+    if layer == "transportation":
+        role = {"motorway": ROAD1, "trunk": ROAD1, "primary": ROAD2, "secondary": ROAD3,
+                "tertiary": ROAD4}.get(c)
+        return (role, LINE) if role is not None and zoom >= ROAD_FROM[role] else None
     if layer == "boundary" and p.get("maritime") != 1:
         if p.get("admin_level") == 4: return STATE, LINE
         if p.get("admin_level") == 2: return BORDER, LINE
@@ -72,9 +80,9 @@ def e4(e6):
 
 def map_name(place, lat_e6, lon_e6, z):
     """The OS's file name for a place's level: "<place>-<lat_e4>_<lon_e4>-z<z>.orbmap".
-    FORMAT 1's name: a later FORMAT names its files apart (orb_map.h), so the hub's sweep
+    FORMAT 2's name ("-f2"): each FORMAT names its files apart (orb_map.h), so the hub's sweep
     of names no place uses is what retires an older format's files."""
-    return "%d-%d_%d-z%d.orbmap" % (place, e4(lat_e6), e4(lon_e6), z)
+    return "%d-%d_%d-z%d-f2.orbmap" % (place, e4(lat_e6), e4(lon_e6), z)
 
 
 def world(lat, lon, z):
@@ -184,9 +192,9 @@ def zz(v): return (v << 1) ^ (v >> 31) if v >= 0 else ((-v) << 1) - 1
 
 def encode(lat, lon, zoom, features, marks):
     """features: [(role, kind, [ring, ...])], rings of (x, y) in 1/16 px; marks:
-    [(kind, rank, x, y, name)]. Features are written in role order, stable."""
+    [(kind, rank, x, y, name)]. Fills are written by role, lines in DRAW order, stable."""
     body = bytearray()
-    feats = sorted(features, key=lambda f: (f[1], f[0]))   # fills first, then lines, by role
+    feats = sorted(features, key=lambda f: (f[1], DRAW.get(f[0], 16 + f[0]) if f[1] else f[0]))   # fills by role, lines by DRAW
     for role, kind, rings in feats:
         body += bytes((role, kind)); varint(len(rings), body)
         for ring in rings:
@@ -205,7 +213,7 @@ def encode(lat, lon, zoom, features, marks):
 
 def decode(buf):
     magic, fmt, hl, lat, lon, zoom, nf, nm, blen, crc = struct.unpack_from("<4sHHiiB3xIIII", buf)
-    if magic != MAGIC or fmt != FORMAT: raise ValueError("not an orbmap FORMAT 1")
+    if magic != MAGIC or fmt != FORMAT: raise ValueError("not an orbmap FORMAT %d" % FORMAT)
     body = buf[hl:hl + blen]
     if len(body) != blen or zlib.crc32(body) & 0xFFFFFFFF != crc: raise ValueError("body crc")
     i = 0
@@ -257,7 +265,7 @@ def build(tiles, lat, lon, zoom):
                     if kind is None or not name or (kind, name) in seen: continue
                     seen.add((kind, name)); marks.append((kind, rank, rnd(x), rnd(y), name))
                     continue
-                c = classify(layer, props, gtype)
+                c = classify(layer, props, gtype, zoom)
                 if not c: continue
                 role, kind = c; out = []
                 for r in rings:

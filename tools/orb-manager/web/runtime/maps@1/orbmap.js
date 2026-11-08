@@ -2,7 +2,7 @@
  *
  * Three ports, each held to its original by a test:
  *  - an OpenMapTiles vector tile (MVT v2) reader, as tools/mvt.py;
- *  - the .orbmap FORMAT 1 builder and writer, as tools/orbmap.py, byte for byte
+ *  - the .orbmap FORMAT 2 builder and writer, as tools/orbmap.py, byte for byte
  *    (tools/host_orbmap_js_test.py builds the same tiles with both and compares);
  *  - the role rasteriser, as main/map/orb_map_raster.c, pixel for pixel (the same test
  *    renders the same files with both). The C works in single-precision floats, so this
@@ -14,15 +14,20 @@
 (function (root) {
   'use strict';
 
-  var FORMAT = 1, HEADER = 36, UNIT = 16, HALF = 330;
+  var FORMAT = 2, HEADER = 36, UNIT = 16, HALF = 330;
   var CLIP = (HALF + 4) * UNIT, TOL = UNIT / 4;
   var ZOOMS = [6, 7, 8, 9, 10, 11];
   var WATER = 0, LAND = 1, URBAN = 2, LAKE = 3, RIVER = 4, ROAD2 = 5, ROAD1 = 6, STATE = 7,
-    BORDER = 8, COAST = 9, CITY = 10, AIRPORT = 11, RUNWAY = 12;
+    BORDER = 8, COAST = 9, CITY = 10, AIRPORT = 11, RUNWAY = 12, ROAD3 = 13, ROAD4 = 14;
+  /* FORMAT 2's roads (orbmap.py ROAD_FROM, DRAW): motorway and trunk, primary, secondary,
+   * tertiary, each from the level it can first be shown at; lines drawn minor under major. */
+  var ROAD_FROM = {}; ROAD_FROM[ROAD1] = 6; ROAD_FROM[ROAD2] = 7; ROAD_FROM[ROAD3] = 8; ROAD_FROM[ROAD4] = 9;
+  var DRAW = {}; DRAW[RIVER] = 0; DRAW[ROAD4] = 1; DRAW[ROAD3] = 2; DRAW[ROAD2] = 3; DRAW[ROAD1] = 4;
+  DRAW[STATE] = 5; DRAW[BORDER] = 6; DRAW[COAST] = 7; DRAW[RUNWAY] = 8;
   var FILL = 0, LINE = 1;
   var MARK_CITY = 0, MARK_TOWN = 1, MARK_VILLAGE = 2, MARK_AIRPORT = 3;
-  var ROLES = ['water', 'land', 'urban', 'lake', 'river', 'minor road', 'major road', 'state line',
-    'border', 'coast', 'city', 'airport', 'runway'];
+  var ROLES = ['water', 'land', 'urban', 'lake', 'river', 'primary road', 'motorway', 'state line',
+    'border', 'coast', 'city', 'airport', 'runway', 'secondary road', 'tertiary road'];
 
   /* ---- tools/mvt.py: the vector tile ------------------------------------------------ */
 
@@ -119,14 +124,17 @@
 
   /* ---- tools/orbmap.py: classes, geometry, the file ---------------------------------- */
 
-  function classify(layer, p, gtype) {
+  function classify(layer, p, gtype, zoom) {
+    if (zoom === undefined) zoom = 11;
     var c = p['class'];
     if (layer === 'landuse' && (c === 'residential' || c === 'commercial' || c === 'industrial' || c === 'retail') && gtype === 3)
       return [URBAN, FILL];
     if (layer === 'water' && gtype === 3) return [c === 'ocean' ? WATER : LAKE, FILL];
     if (layer === 'waterway' && (c === 'river' || c === 'canal')) return [RIVER, LINE];
-    if (layer === 'transportation' && (c === 'secondary' || c === 'tertiary')) return [ROAD2, LINE];
-    if (layer === 'transportation' && (c === 'motorway' || c === 'trunk' || c === 'primary')) return [ROAD1, LINE];
+    if (layer === 'transportation') {
+      var role = { motorway: ROAD1, trunk: ROAD1, primary: ROAD2, secondary: ROAD3, tertiary: ROAD4 }[c];
+      return role !== undefined && zoom >= ROAD_FROM[role] ? [role, LINE] : null;
+    }
     if (layer === 'boundary' && p.maritime !== 1) {
       if (p.admin_level === 4) return [STATE, LINE];
       if (p.admin_level === 2) return [BORDER, LINE];
@@ -142,10 +150,10 @@
     var v = e6 >= 0 ? e6 + 50 : e6 - 50;
     return v >= 0 ? Math.floor(v / 100) : -Math.floor(-v / 100);
   }
-  /* FORMAT 1's name. A later FORMAT names its files apart (orb_map.h), so the Places
+  /* FORMAT 2's name ("-f2"). Each FORMAT names its files apart (orb_map.h), so the Places
    * card's sweep of files no place names retires an older format's on the next Make maps. */
   function mapName(place, latE6, lonE6, z) {
-    return place + '-' + e4(latE6) + '_' + e4(lonE6) + '-z' + z + '.orbmap';
+    return place + '-' + e4(latE6) + '_' + e4(lonE6) + '-z' + z + '-f2.orbmap';
   }
   var DEG = Math.PI / 180;
   function world(lat, lon, z) {
@@ -303,7 +311,8 @@
   function encode(lat, lon, zoom, features, marks) {
     var body = new Out();
     var feats = features.map(function (f, i) { return [f, i]; }).sort(function (p, q) {
-      return p[0][1] - q[0][1] || p[0][0] - q[0][0] || p[1] - q[1];       /* kind, role; stable */
+      var k = function (f) { return f[1] ? (DRAW[f[0]] !== undefined ? DRAW[f[0]] : 16 + f[0]) : f[0]; };
+      return p[0][1] - q[0][1] || k(p[0]) - k(q[0]) || p[1] - q[1];       /* fills by role, lines by DRAW; stable */
     }).map(function (p) { return p[0]; });
     feats.forEach(function (f) {
       body.byte(f[0]); body.byte(f[1]); body.varint(f[2].length);
@@ -330,7 +339,7 @@
     return out;
   }
 
-  /* The file's header, or null when it is not a FORMAT 1 map or its body fails the CRC. */
+  /* The file's header, or null when it is not a FORMAT 2 map or its body fails the CRC. */
   function info(buf) {
     if (buf.length < HEADER || buf[0] !== 0x4F || buf[1] !== 0x52 || buf[2] !== 0x42 || buf[3] !== 0x4D) return null;
     var dv = new DataView(buf.buffer, buf.byteOffset, buf.length);
@@ -370,7 +379,7 @@
             marks.push([kind, rank, rnd(x), rnd(y), name]);
             return;
           }
-          var cl = classify(layer, props, gtype);
+          var cl = classify(layer, props, gtype, zoom);
           if (!cl) return;
           var role = cl[0], kd = cl[1], out = [];
           rings.forEach(function (r) {
@@ -415,7 +424,7 @@
 
   function render(buf, st) {
     if (buf.length < HEADER || buf[0] !== 0x4F || buf[1] !== 0x52 || buf[2] !== 0x42 || buf[3] !== 0x4D ||
-        (buf[4] | buf[5] << 8) !== 1) return { err: -1 };
+        (buf[4] | buf[5] << 8) !== FORMAT) return { err: -1 };
     var dv = new DataView(buf.buffer, buf.byteOffset, buf.length);
     var hl = dv.getUint16(6, true), nf = dv.getUint32(20, true), nm = dv.getUint32(24, true), blen = dv.getUint32(28, true);
     if (hl < HEADER || hl > buf.length || buf.length - hl < blen) return { err: -2 };

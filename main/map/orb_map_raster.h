@@ -3,7 +3,7 @@
  * pattern per line role. Plain C with no ESP-IDF dependency, so the host suite
  * (tools/host_map_raster_test.py) compiles this same file.
  *
- * R0 prototype: the file format is tools/orbmap.py's FORMAT 1. */
+ * The file format is tools/orbmap.py's FORMAT 2 (FORMAT 1 read only the old roads). */
 #pragma once
 
 #include <stddef.h>
@@ -22,7 +22,10 @@ enum {
     ORB_MAP_WATER, ORB_MAP_LAND, ORB_MAP_URBAN, ORB_MAP_LAKE, ORB_MAP_RIVER,
     ORB_MAP_ROAD2, ORB_MAP_ROAD1, ORB_MAP_STATE, ORB_MAP_BORDER, ORB_MAP_COAST,
     ORB_MAP_CITY, ORB_MAP_AIRPORT, ORB_MAP_RUNWAY,
+    ORB_MAP_ROAD3, ORB_MAP_ROAD4,     /* FORMAT 2: ROAD1 motorway and trunk, ROAD2 primary, these
+                                       * secondary and tertiary (radar-plan §6.9) */
 };
+#define ORB_MAP_FORMAT 2
 enum { ORB_MAP_DASH_SOLID, ORB_MAP_DASH_SHORT, ORB_MAP_DASH_LONG, ORB_MAP_DASH_DOT,
        ORB_MAP_DASH_DASHDOT, ORB_MAP_DASH_N };
 enum { ORB_MAP_MARK_CITY, ORB_MAP_MARK_TOWN, ORB_MAP_MARK_VILLAGE, ORB_MAP_MARK_AIRPORT };
@@ -49,7 +52,7 @@ typedef struct {
 
 enum {
     ORB_MAP_OK = 0,
-    ORB_MAP_E_FORMAT = -1,    /* not an ORBM FORMAT 1 header */
+    ORB_MAP_E_FORMAT = -1,    /* not an ORBM FORMAT 2 header */
     ORB_MAP_E_TRUNC = -2,     /* the body ends inside a record */
     ORB_MAP_E_CRC = -3,
 };

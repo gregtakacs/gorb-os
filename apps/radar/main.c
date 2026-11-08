@@ -216,7 +216,8 @@ static void net_step(bool visible)
         if (i < 0) return;
         const where_t *w = here();
         char url[200], hdr[48] = "";
-        if (!rd_frame_url(url, sizeof url, s_source, F[i].path, rd_img_z(s_zoom), w->lat_e6, w->lon_e6)) { F[i].failed = true; return; }
+        if (!rd_frame_url(url, sizeof url, s_source, F[i].path, rd_img_z(s_zoom), w->lat_e6, w->lon_e6,
+                          false)) { F[i].failed = true; return; }
         if (F[i].recheck && F[i].slot >= 0 && F[i].etag[0]) {
             memcpy(hdr, "If-None-Match: ", 15);
             memcpy(hdr + 15, F[i].etag, strlen(F[i].etag) + 1);
@@ -293,6 +294,7 @@ static void net_step(bool visible)
 
 static int32_t s_view = 0, s_view_next = 0;     /* handles; 0 = none */
 static bool    s_map_dirty, s_map_absent;
+static int     s_shown = -2;                   /* the frame on the glass, -1 none */
 
 static void view_open(void)
 {
@@ -301,7 +303,7 @@ static void view_open(void)
     orb_map_view_t v;
     memset(&v, 0, sizeof v);
     v.radius_m = rd_radius_m(s_zoom, w->lat_e6);
-    v.role_on = V.role_on;
+    v.role_on = rd_roles_at(&V, s_zoom);              /* the roads thin out as it widens */
     v.mark_on = V.mark_on;
     memcpy(v.width, V.width, sizeof v.width);
     memcpy(v.dash, V.dash, sizeof v.dash);
@@ -326,18 +328,25 @@ static void view_step(void)
         s_view_next = 0;
         s_map_absent = false;
     }
-    s_map_dirty = s_ui_dirty = true;
+    s_map_dirty = s_ui_dirty = s_rain_dirty = true;
+    s_shown = -2;                      /* the rain again, at the new view's magnification */
 }
 
 /* ---- the glass ----------------------------------------------------------------------- */
 
 static orb_dial_t s_dial = { .idle_ms = ORB_DIAL_IDLE_MS };
+static const char *const ZOOM[RD_ZOOMS] = { "Wide", "Region", "Local", "Area", "City", "Close" };
+/* A press-and-turn's clicks gather here and land together once the turn rests, so a turn of
+ * three clicks opens one view, not three (owner, 2026-11-07: zooming felt slow). */
+#define ZOOM_REST_MS 350
+static int     s_zoom_want = -1;
+static int64_t s_zoom_click_ms;
+static void zoom_step(void);
 static bool    s_visible, s_layers;
 static bool    s_play = true;                  /* untouched: the loop plays */
 static int     s_loop = 0;                     /* the loop's frame, an index into F */
 static int64_t s_loop_ms, s_zoom_said_ms;
-static int     s_shown = -2;                   /* the frame on the glass, -1 none */
-static int32_t s_sx, s_sy;                     /* the frames' draw window */
+static int32_t s_sx, s_sy, s_dx, s_dy;         /* the frames' draw window */
 
 static void pose(int32_t row, int x, int y)
 {
@@ -384,6 +393,7 @@ static void draw_map(void)
 
 static void draw_rain(void)
 {
+    if (s_view_next > 0) return;       /* a new view is rendering: the old map and rain stay up */
     s_rain_dirty = false;
     if (!s_layers) return;
     const int i = frame_wanted();
@@ -392,8 +402,9 @@ static void draw_rain(void)
     orb_stage_live(1, V.rain_order, 0);
     s_shown = -1;
     if (!f || f->slot < 0 || !orb_blob_len((uint32_t)f->slot)) return;
-    orb_png_draw_t d = { .slot = (uint32_t)f->slot, .sx = s_sx, .sy = s_sy, .dx = 0, .dy = 0,
-                         .w = RD_GLASS, .h = RD_GLASS, .scale = 1, .pal = V.rain };
+    const int k = rd_img_k(s_zoom);
+    orb_png_draw_t d = { .slot = (uint32_t)f->slot, .sx = s_sx, .sy = s_sy, .dx = s_dx, .dy = s_dy,
+                         .w = RD_GLASS, .h = RD_GLASS, .scale = k > 1 ? (k | ORB_PNG_SMOOTH) : 1, .pal = V.rain };
     const int32_t rc = orb_cv_png8(ORB_CV_LIVE1, &d);
     if (rc == ORB_OK) s_shown = i;
     else orb_logf("radar: frame %d (slot %d, %u B) did not draw: %d", i, (int)f->slot, (unsigned)orb_blob_len((uint32_t)f->slot), (int)rc);
@@ -432,7 +443,8 @@ static void draw_ui(void)
     char b[48];
     pose(R_dot, CX, CY);
     say(R_place, CX, 64, w ? w->name : "", 0);
-    if (w) rd_range_text(b, sizeof b, rd_radius_m(s_zoom, w->lat_e6), s_units.dist); else b[0] = 0;
+    if (w) rd_range_text(b, sizeof b, rd_radius_m(s_zoom_want >= 0 ? s_zoom_want : s_zoom, w->lat_e6), s_units.dist);
+    else b[0] = 0;
     say(R_range, CX, 404, b, 0);
     const int i = frame_wanted();
     if (i >= 0) {
@@ -445,9 +457,8 @@ static void draw_ui(void)
         hide(R_hand);
     }
     const char *st = "";
-    static const char *const ZOOM[RD_ZOOMS] = { "Wide", "Region", "Local" };
     if (!w) st = "Set home on the hub";
-    else if (up_ms() - s_zoom_said_ms < 2000) st = ZOOM[s_zoom];
+    else if (s_zoom_want >= 0 || up_ms() - s_zoom_said_ms < 2000) st = ZOOM[s_zoom_want >= 0 ? s_zoom_want : s_zoom];
     else if (s_map_absent) st = "No map yet";
     else if (!s_npast) st = s_net != NET_IDLE ? "Loading radar" : "No radar yet";
     else if (s_list_at && now_s() - s_list_at > STALE_S) {
@@ -458,18 +469,36 @@ static void draw_ui(void)
     draw_names();
 }
 
-static void place_changed(void)
+/* A new place or zoom. The frames go with a place, or with a zoom that fetches another
+ * image zoom; Local to Close share Local's frames, magnified (RD_IMG_ZMAX). */
+static void window_set(void)
 {
     const where_t *w = here();
-    frames_drop();
+    if (!w) return;
+    const int k = rd_img_k(s_zoom);
+    s_dx = s_dy = 0;
+    if (k > 1) rd_window_k(rd_img_z(s_zoom), k, w->lat_e6, w->lon_e6, w->lat_e6, w->lon_e6, &s_sx, &s_sy, &s_dx, &s_dy);
+    else rd_window(rd_img_z(s_zoom), w->lat_e6, w->lon_e6, w->lat_e6, w->lon_e6, &s_sx, &s_sy);
+}
+
+static void view_changed(bool frames)
+{
+    if (frames) {
+        frames_drop();
+        s_play = true;
+        s_loop = 0;
+        orb_dial_home(&s_dial);
+    }
     s_shown = -2;
-    s_play = true;
-    s_loop = 0;
-    orb_dial_home(&s_dial);
-    if (w) rd_window(rd_img_z(s_zoom), w->lat_e6, w->lon_e6, w->lat_e6, w->lon_e6, &s_sx, &s_sy);
+    window_set();
     s_map_absent = false;
     view_open();
     s_rain_dirty = s_ui_dirty = true;
+}
+
+static void place_changed(void)
+{
+    view_changed(true);
 }
 
 /* The loop (§2.5): oldest held past frame to Now, 250 ms a step, Now held 2 s. */
@@ -582,6 +611,7 @@ ORB_EXPORT("orb_suspend") void orb_suspend(void) { s_visible = false; s_layers =
 ORB_EXPORT("orb_tick") void orb_tick(uint32_t now)
 {
     (void)now;
+    zoom_step();
     loop_step();
     redraw();
 }
@@ -612,6 +642,7 @@ ORB_EXPORT("orb_service") void orb_service(void)
         s_play = true;                                   /* §51: a glance plays the loop */
         s_ui_dirty = s_rain_dirty = true;
     }
+    zoom_step();
     view_step();
     net_step(s_visible);
     if (s_visible) redraw();
@@ -641,16 +672,28 @@ ORB_EXPORT("orb_input") void orb_input(int32_t delta, int32_t pressed)
 /* Press-and-turn (§2.10): clockwise closer, anticlockwise wider; the ends stop. */
 ORB_EXPORT("orb_push") void orb_push(int32_t delta)
 {
-    int z = s_zoom + (int)delta;                         /* each click a step */
+    int z = (s_zoom_want >= 0 ? s_zoom_want : s_zoom) + (int)delta;   /* each click a step */
     if (z < 0) z = 0;
     if (z > RD_ZOOMS - 1) z = RD_ZOOMS - 1;
+    s_zoom_want = z;
+    s_zoom_click_ms = s_zoom_said_ms = up_ms();
+    s_ui_dirty = true;
+    redraw();
+}
+
+/* The gathered zoom lands once the turn has rested. */
+static void zoom_step(void)
+{
+    if (s_zoom_want < 0 || up_ms() - s_zoom_click_ms < ZOOM_REST_MS) return;
+    const int z = s_zoom_want;
+    s_zoom_want = -1;
     s_zoom_said_ms = up_ms();
     s_ui_dirty = true;
     if (z != s_zoom) {
+        const bool frames = rd_img_z(z) != rd_img_z(s_zoom);
         s_zoom = z;
-        place_changed();
+        view_changed(frames);
     }
-    redraw();
 }
 
 /* ---- the options page: the zoom it starts at ----------------------------------------- */
@@ -659,10 +702,9 @@ ORB_EXPORT("orb_opt_count") int32_t orb_opt_count(void) { return 1; }
 ORB_EXPORT("orb_opt_label") void orb_opt_label(int32_t idx) { orb_reply(idx == 0 ? "Zoom" : ""); }
 ORB_EXPORT("orb_opt_value") void orb_opt_value(int32_t idx)
 {
-    static const char *const Z[RD_ZOOMS] = { "Wide", "Region", "Local" };
     int32_t z = 1;
     orb_cfg_get("zoom", &z);
-    orb_reply(idx == 0 && z >= 0 && z < RD_ZOOMS ? Z[z] : "");
+    orb_reply(idx == 0 && z >= 0 && z < RD_ZOOMS ? ZOOM[z] : "");
 }
 ORB_EXPORT("orb_opt_arm") void orb_opt_arm(int32_t armed) { (void)armed; }
 ORB_EXPORT("orb_opt_sel") void orb_opt_sel(int32_t idx)

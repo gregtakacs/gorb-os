@@ -279,8 +279,9 @@ MUTATIONS = [
     # (Math.round is no mutant: it rounds halves up too, the same rule as floor(v + 0.5))
     ("function rnd(v) { return Math.floor(v + 0.5); }", "function rnd(v) { return Math.trunc(v); }"),
     ("var CLIP = (HALF + 4) * UNIT, TOL = UNIT / 4;", "var CLIP = (HALF + 4) * UNIT, TOL = UNIT / 3;"),
-    ("return p[0][1] - q[0][1] || p[0][0] - q[0][0] || p[1] - q[1];       /* kind, role; stable */",
-     "return p[0][0] - q[0][0] || p[1] - q[1];"),
+    ("return p[0][1] - q[0][1] || k(p[0]) - k(q[0]) || p[1] - q[1];", "return p[0][1] - q[0][1] || p[0][0] - q[0][0] || p[1] - q[1];"),
+    ("ROAD_FROM[ROAD4] = 9;", "ROAD_FROM[ROAD4] = 8;"),
+    ("DRAW[ROAD4] = 1; DRAW[ROAD3] = 2;", "DRAW[ROAD4] = 2; DRAW[ROAD3] = 1;"),
     ("x: f32(x0 + f32(f32(f32(f32(r0) + 0.5) - y0) * dxdy))", "x: x0 + (r0 + 0.5 - y0) * dxdy"),
     ("g.x = f32(g.x + g.dxdy);", "g.x = g.x + g.dxdy;"),
     ("pen.phase = f32(pen.phase + f32(f32(len - lead) - f32(stepl * f32(steps))));", "pen.phase = f32(pen.phase);"),

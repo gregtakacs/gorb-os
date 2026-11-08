@@ -182,11 +182,18 @@ static int32_t s_lastTakenDetent = 0;
  *    the hold waits however slowly the first click comes. A hold firing under a slow
  *    first turn opened the app list instead (owner, Bronze, 2026-11-07).
  *  - A release before any click: under the hold time a press, so a wobbly press is never
- *    lost; past it with intent seen, spent, so an abandoned turn opens nothing. */
+ *    lost; past it with intent seen, spent, so an abandoned turn opens nothing.
+ *  - A release counts once the switch has stayed open KG_SETTLE_MS: turning a held shaft
+ *    opens the switch for a moment, and a release taken at that first edge ended a
+ *    press-and-turn after one click, the re-close lost to the press debounce, and the
+ *    rest of the turn scrubbed time instead of zooming (owner, Bronze, 2026-11-07). A
+ *    close inside the settle is the same press, still down. */
+#define KG_SETTLE_MS 60
 typedef struct {
     uint8_t down, long_fired, push_turn, intent;
     int32_t raw_at_press;
     int64_t start_us;
+    int64_t up_at;             /* the switch opened here and has not closed since; 0 = shut */
 } knob_gesture_t;
 
 enum { KG_SPENT = 0, KG_PRESS = 1, KG_LONG = 2 };
@@ -194,6 +201,7 @@ enum { KG_SPENT = 0, KG_PRESS = 1, KG_LONG = 2 };
 static inline __attribute__((always_inline)) void kg_press(volatile knob_gesture_t *g, int64_t now, int32_t raw)
 {
     g->down = 1;
+    g->up_at = 0;
     g->long_fired = g->push_turn = g->intent = 0;
     g->raw_at_press = raw;
     g->start_us = now;
@@ -209,10 +217,11 @@ static inline __attribute__((always_inline)) int kg_click(volatile knob_gesture_
     return first ? 2 : 1;
 }
 
-/* 1 exactly when the hold fires now. */
+/* 1 exactly when the hold fires now. Not while a release settles: a press let go at
+ * 690 ms must not become a hold at 700. */
 static inline __attribute__((always_inline)) int kg_poll(volatile knob_gesture_t *g, int64_t now, int32_t raw)
 {
-    if (!g->down || g->long_fired) return 0;
+    if (!g->down || g->long_fired || g->up_at) return 0;
     const int32_t moved = raw - g->raw_at_press;
     if (moved >= KNOB_DETENT_MIN_STEPS || moved <= -KNOB_DETENT_MIN_STEPS) g->intent = 1;
     if (g->push_turn || g->intent || now - g->start_us < (int64_t)LONG_PRESS_MS * 1000) return 0;
@@ -227,6 +236,27 @@ static inline __attribute__((always_inline)) int kg_release(volatile knob_gestur
     const int long_held = now - g->start_us >= (int64_t)LONG_PRESS_MS * 1000;
     if (g->long_fired || g->push_turn || (g->intent && long_held)) return KG_SPENT;
     return long_held ? KG_LONG : KG_PRESS;   /* KG_LONG: a poll gap outran the threshold */
+}
+
+/* The switch's edges. kg_up starts a release's settle; kg_down answers 1 when the close
+ * is the same press coming back (the release is withdrawn), 0 when it is a new press to
+ * debounce and begin; kg_settle answers KG_* once the switch has stayed open, -1 before. */
+static inline __attribute__((always_inline)) void kg_up(volatile knob_gesture_t *g, int64_t now)
+{
+    if (g->down && !g->up_at) g->up_at = now ? now : 1;
+}
+static inline __attribute__((always_inline)) int kg_down(volatile knob_gesture_t *g)
+{
+    if (!g->down || !g->up_at) return 0;
+    g->up_at = 0;
+    return 1;
+}
+static inline __attribute__((always_inline)) int kg_settle(volatile knob_gesture_t *g, int64_t now)
+{
+    if (!g->down || !g->up_at || now - g->up_at < (int64_t)KG_SETTLE_MS * 1000) return -1;
+    const int64_t at = g->up_at;
+    g->up_at = 0;
+    return kg_release(g, at);
 }
 
 /* ---- end of the gesture's pure half ---- */
@@ -376,11 +406,15 @@ static void IRAM_ATTR knob_sw_isr(void *arg)
     const uint8_t lvl = (uint8_t)gpio_get_level(PIN_KNOB_SW);   /* active low */
 
     if (lvl == 1) {
-        /* RELEASE (rising). Accept instantly so the gesture can never get stuck down,
-         * but stamp the clock so release-side bounce is rejected too. */
-        const int r = kg_release(&s_g, now);
-        if (r == KG_PRESS) s_pressPend = true;
-        else if (r == KG_LONG) s_longPend = true;
+        /* RELEASE (rising). Start its settle: knob_poll ends the press once the switch
+         * has stayed open KG_SETTLE_MS, so the gesture can never get stuck down, and a
+         * contact that opens for a moment under a turning hand ends nothing. */
+        kg_up(&s_g, now);
+        s_swLastEdgeUs = now;
+        return;
+    }
+    /* A close while a release settles is the same press: no debounce, no new gesture. */
+    if (kg_down(&s_g)) {
         s_swLastEdgeUs = now;
         return;
     }
@@ -464,7 +498,10 @@ esp_err_t knob_init(void)
 void knob_poll(void)
 {
     const int64_t now = esp_timer_get_time();
-    /* A hold fires here, at the threshold, with the knob still down. */
+    /* A release that has settled ends the press here, a hold fires at its threshold. */
+    const int rel = kg_settle(&s_g, now);
+    if (rel == KG_PRESS) s_pressPend = true;
+    else if (rel == KG_LONG) s_longPend = true;
     if (kg_poll(&s_g, now, s_rawPos)) s_longPend = true;
     int32_t settled = 0, spent = 0, net_seen = 0;
     bool learned = false;

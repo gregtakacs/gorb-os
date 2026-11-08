@@ -86,7 +86,7 @@ static int32_t e4(int32_t e6) { return (e6 >= 0 ? e6 + 50 : e6 - 50) / 100; }
 
 void orb_map_file_name(int place, int32_t lat_e6, int32_t lon_e6, int z, char *out, int cap)
 {
-    snprintf(out, (size_t)cap, "%d-%ld_%ld-z%d.orbmap", place, (long)e4(lat_e6), (long)e4(lon_e6), z);
+    snprintf(out, (size_t)cap, "%d-%ld_%ld-z%d-f2.orbmap", place, (long)e4(lat_e6), (long)e4(lon_e6), z);
 }
 
 static bool place_at(int place, int32_t *lat, int32_t *lon)

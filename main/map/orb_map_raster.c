@@ -29,7 +29,7 @@ static uint32_t crc32_z(const uint8_t *p, size_t n)
 
 int orb_map_check(const uint8_t *buf, size_t len, int *zoom)
 {
-    if (len < HDR || memcmp(buf, "ORBM", 4) || (buf[4] | buf[5] << 8) != 1) return ORB_MAP_E_FORMAT;
+    if (len < HDR || memcmp(buf, "ORBM", 4) || (buf[4] | buf[5] << 8) != ORB_MAP_FORMAT) return ORB_MAP_E_FORMAT;
     const uint32_t hl = buf[6] | buf[7] << 8, blen = rd32(buf + 28);
     if (hl < HDR || hl > len || len - hl < blen) return ORB_MAP_E_TRUNC;
     if (crc32_z(buf + hl, blen) != rd32(buf + 32)) return ORB_MAP_E_CRC;
@@ -257,7 +257,7 @@ int orb_map_render(const uint8_t *buf, size_t len, const orb_map_style_t *st,
 {
     orb_map_stats_t s;
     memset(&s, 0, sizeof s);
-    if (len < HDR || memcmp(buf, "ORBM", 4) || (buf[4] | buf[5] << 8) != 1) return ORB_MAP_E_FORMAT;
+    if (len < HDR || memcmp(buf, "ORBM", 4) || (buf[4] | buf[5] << 8) != ORB_MAP_FORMAT) return ORB_MAP_E_FORMAT;
     const uint32_t hl = buf[6] | buf[7] << 8, nf = rd32(buf + 20), nm = rd32(buf + 24), blen = rd32(buf + 28);
     if (hl < HDR || hl > len || len - hl < blen) return ORB_MAP_E_TRUNC;
     rd_t r = { buf + hl, buf + hl + blen, 0 };

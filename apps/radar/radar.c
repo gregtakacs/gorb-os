@@ -82,12 +82,12 @@ static int fmt_e4(char *b, size_t cap, int32_t e6)
 }
 
 size_t rd_frame_url(char *buf, size_t cap, const char *source, const char *path, int z,
-                    int32_t lat_e6, int32_t lon_e6)
+                    int32_t lat_e6, int32_t lon_e6, bool smooth)
 {
     char la[16], lo[16];
     fmt_e4(la, sizeof la, lat_e6);
     fmt_e4(lo, sizeof lo, lon_e6);
-    const int k = snprintf(buf, cap, "%s%s/512/%d/%s/%s/255/0_0.png", source, path, z, la, lo);
+    const int k = snprintf(buf, cap, "%s%s/512/%d/%s/%s/255/%d_0.png", source, path, z, la, lo, smooth ? 1 : 0);
     return k > 0 && (size_t)k < cap ? (size_t)k : 0;
 }
 
@@ -154,6 +154,33 @@ void rd_window(int z, int32_t img_lat_e6, int32_t img_lon_e6, int32_t map_lat_e6
     *sy = (int32_t)floor(my - oy - RD_GLASS / 2.0 + 0.5);
 }
 
+/* The place's point in the image, in image pixels from its corner. */
+static void place_in_image(int z, int32_t img_lat_e6, int32_t img_lon_e6, int32_t map_lat_e6,
+                           int32_t map_lon_e6, double *ux, double *uy)
+{
+    double ix, iy, mx, my;
+    world(z, rd_e4(img_lat_e6) * 100, rd_e4(img_lon_e6) * 100, &ix, &iy);
+    world(z, map_lat_e6, map_lon_e6, &mx, &my);
+    const double n = (double)RD_IMG * pow2(z);
+    double ox = rd_round_even(ix - RD_IMG / 2), oy = rd_round_even(iy - RD_IMG / 2);
+    if (oy < 0) oy = 0;
+    if (oy > n - RD_IMG) oy = n - RD_IMG;
+    *ux = mx - ox;
+    *uy = my - oy;
+}
+
+void rd_window_k(int z, int k, int32_t img_lat_e6, int32_t img_lon_e6, int32_t map_lat_e6,
+                 int32_t map_lon_e6, int32_t *sx, int32_t *sy, int32_t *dx, int32_t *dy)
+{
+    double ux, uy;
+    place_in_image(z, img_lat_e6, img_lon_e6, map_lat_e6, map_lon_e6, &ux, &uy);
+    /* glass x <-> image sx + (x - dx) / k, and the glass's centre (233) <-> the place */
+    *sx = (int32_t)floor(ux - (RD_GLASS / 2.0) / k) - 1;
+    *sy = (int32_t)floor(uy - (RD_GLASS / 2.0) / k) - 1;
+    *dx = (int32_t)floor(k * (*sx - ux) + RD_GLASS / 2.0 + 0.5);
+    *dy = (int32_t)floor(k * (*sy - uy) + RD_GLASS / 2.0 + 0.5);
+}
+
 int32_t rd_radius_m(int step, int32_t lat_e6)
 {
     const double c = cos(lat_e6 / 1e6 * M_PI / 180.0);
@@ -176,18 +203,28 @@ void rd_range_text(char *buf, size_t cap, int32_t radius_m, int unit)
 /* Scope's look, byte for byte what radar-bake.js's valuesBytes(preset('scope')) writes
  * (tools/host_radar_test.py compares them), so a radar without a theme's values draws as
  * the shelf's starter does. */
+uint16_t rd_roles_at(const rd_values_t *v, int step)
+{
+    uint16_t on = v->role_on;
+    for (int r = 0; r < 16; r++) if (v->step_from[r] > step) on &= (uint16_t)~(1u << r);
+    return on;
+}
+
 void rd_values_default(rd_values_t *v)
 {
     static const uint32_t PAL[16] = {
-        0xFF0A2233, 0xFF101A22, 0xFF18242E, 0xFF0E2C40, 0xFF1F5A80, 0xFF2E3C48,
-        0xFF5B6B78, 0xFF3D4A56, 0xFF6A7886, 0xFF2A5470, 0xFFB8C4CE, 0xFFE0B040,
-        0xFF5B6B78, 0, 0, 0 };
+        0xFF0A2233, 0xFF101A22, 0xFF18242E, 0xFF0E2C40, 0xFF1F5A80, 0xFF4A5966,
+        0xFF6B7B88, 0xFF3D4A56, 0xFF6A7886, 0xFF2A5470, 0xFFB8C4CE, 0xFFE0B040,
+        0xFF5B6B78, 0xFF3A4855, 0xFF2F3B46, 0 };
     memset(v, 0, sizeof *v);
     memcpy(v->map_pal, PAL, sizeof PAL);
     v->width[4] = 1; v->width[5] = 1; v->width[6] = 2; v->width[7] = 1; v->width[8] = 2;
-    v->width[9] = 1; v->width[12] = 2;
+    v->width[9] = 1; v->width[12] = 2; v->width[13] = 1; v->width[14] = 1;
     v->dash[7] = 2;                                        /* state lines long-dashed */
-    v->role_on = 0x1FFF;
+    v->role_on = 0x7FFF;
+    /* the roads by step: motorways everywhere, primary from Local, secondary from 60 km,
+     * tertiary from 30 km (owner, 2026-11-07: DFW and London far too dense) */
+    v->step_from[5] = 2; v->step_from[13] = 3; v->step_from[14] = 4;
     v->mark_on = 0x09;                                     /* cities and airports */
     v->names = 4;
     v->map_order = 0;

@@ -17,7 +17,11 @@
 #define RD_FRAMES    (RD_PAST + RD_NOWCAST)
 #define RD_STEP_S   600
 #define RD_PATH_MAX  40           /* "/v2/radar/1794083400" and room */
-#define RD_ZOOMS      3           /* Wide, Region, Local: the map's z6, z7, z8 */
+#define RD_ZOOMS      6           /* Wide .. Close: the map's z6 .. z11 (owner, 2026-11-07: closer) */
+#define RD_IMG_ZMAX   7           /* frames stop at Local's z7 (~0.6 km a pixel, finer than the
+                                   * ~1 km radar): closer steps magnify the same frames, smoothed
+                                   * on the orb (orb_cv_png8 ORB_PNG_SMOOTH), so they cost no
+                                   * fetch. The server's own smoothing comes back RGBA at 100 KB. */
 #define RD_MAP_Z0     6
 #define RD_IMG        512         /* a point image's side */
 #define RD_GLASS      466
@@ -42,11 +46,11 @@ bool rd_list_token(rd_list_t *l, const orb_json_tok_t *t);
 /* A list the radar can show: at least one past frame, in time order, 600 s apart. */
 bool rd_list_ok(const rd_list_t *l);
 
-/* `source` (no trailing slash) + the frame's path + "/512/{z}/{lat}/{lon}/255/0_0.png",
- * lat and lon to four decimals, rounded half away from zero. Answers the length, 0 when it
- * does not fit. */
+/* `source` (no trailing slash) + the frame's path + "/512/{z}/{lat}/{lon}/255/{s}_0.png",
+ * lat and lon to four decimals, rounded half away from zero, s 1 for the server's
+ * smoothing. Answers the length, 0 when it does not fit. */
 size_t rd_frame_url(char *buf, size_t cap, const char *source, const char *path, int z,
-                    int32_t lat_e6, int32_t lon_e6);
+                    int32_t lat_e6, int32_t lon_e6, bool smooth);
 size_t rd_list_url(char *buf, size_t cap, const char *source);
 
 /* Python's round (ties to even), the rule LibreWXR's window origin rounds by. */
@@ -66,7 +70,14 @@ void rd_window(int z, int32_t img_lat_e6, int32_t img_lon_e6, int32_t map_lat_e6
 
 /* The zoom ladder: step 0 (Wide) is the map's z6; the image is fetched one zoom lower. */
 static inline int rd_map_z(int step) { return RD_MAP_Z0 + step; }
-static inline int rd_img_z(int step) { return RD_MAP_Z0 - 1 + step; }
+static inline int rd_img_z(int step) { const int z = RD_MAP_Z0 - 1 + step; return z < RD_IMG_ZMAX ? z : RD_IMG_ZMAX; }
+/* The magnification a step draws its frame at: 1 to Local, then 2, 4, 8. */
+static inline int rd_img_k(int step) { const int d = RD_MAP_Z0 - 1 + step - RD_IMG_ZMAX; return d > 0 ? 1 << d : 1; }
+/* The draw window of a frame magnified k times (k > 1): the source pixel sx, sy that starts
+ * it and the glass offset dx, dy (<= 0) that places it, so the place's point in the image
+ * lands on the glass's centre to within half a glass pixel. */
+void rd_window_k(int z, int k, int32_t img_lat_e6, int32_t img_lon_e6, int32_t map_lat_e6,
+                 int32_t map_lon_e6, int32_t *sx, int32_t *sy, int32_t *dx, int32_t *dy);
 /* The view's radius, centre to the glass's edge, so the map draws at its level's own scale. */
 int32_t rd_radius_m(int step, int32_t lat_e6);
 
@@ -75,8 +86,8 @@ void rd_time_text(char *buf, size_t cap, int minutes);
 /* The range, centre to edge, in the orb's distance unit (0 km, 1 mi, 2 nm): "120 km". */
 void rd_range_text(char *buf, size_t cap, int32_t radius_m, int unit);
 
-/* ---- the theme's values (§2.11), layout version 1 ------------------------------------ */
-#define RD_VALUES_VER 1
+/* ---- the theme's values (§2.11), layout version 2 ------------------------------------ */
+#define RD_VALUES_VER 2
 typedef struct {
     uint32_t map_pal[16];         /* ARGB per map role (orb_map_view's roles) */
     uint8_t  width[16];           /* line width per role, 0-4 */
@@ -87,7 +98,11 @@ typedef struct {
     uint8_t  map_order, rain_order;   /* the two live layers' depths, on the rows' scale */
     uint8_t  pad[2];
     uint32_t rain[256];           /* ARGB per raw value; dBZ = value / 2 - 32 */
+    uint8_t  step_from[16];       /* layout 2: the first zoom step a role is drawn at (0 = all):
+                                   * the roads thin out as the view widens */
 } rd_values_t;
-_Static_assert(sizeof(rd_values_t) == 64 + 16 + 16 + 4 + 4 + 1024, "the editor writes this layout");
+_Static_assert(sizeof(rd_values_t) == 64 + 16 + 16 + 4 + 4 + 1024 + 16, "the editor writes this layout");
+/* The roles a view at `step` draws: the theme's, less those not yet shown at that step. */
+uint16_t rd_roles_at(const rd_values_t *v, int step);
 /* The defaults a theme without values (or of another layout) draws with. */
 void rd_values_default(rd_values_t *v);

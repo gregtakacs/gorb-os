@@ -129,13 +129,15 @@ int main(int argc, char **argv)
     CK(!read_list("[1,2,3]", &L) && !read_list("{\"radar\":{}}", &L), "an array, or a list with no frames, is no list");
 
     char u[200];
-    CK(rd_frame_url(u, sizeof u, "https://api.librewxr.net", "/v2/radar/1794066600", 6, 32889000, -97162000) &&
+    CK(rd_frame_url(u, sizeof u, "https://api.librewxr.net", "/v2/radar/1794066600", 6, 32889000, -97162000, false) &&
        !strcmp(u, "https://api.librewxr.net/v2/radar/1794066600/512/6/32.8890/-97.1620/255/0_0.png"),
        "a frame's URL: the source, the path, 512, the image zoom, four decimals, raw 255");
-    CK(rd_frame_url(u, sizeof u, "http://nas.lan:8080", "/v2/radar/1", 5, -127650, 151209350) &&
+    CK(rd_frame_url(u, sizeof u, "http://nas.lan:8080", "/v2/radar/1", 5, -127650, 151209350, false) &&
        !strcmp(u, "http://nas.lan:8080/v2/radar/1/512/5/-0.1277/151.2094/255/0_0.png"),
        "four decimals round half away from zero, the sign kept under one degree");
-    CK(rd_frame_url(u, 40, "https://api.librewxr.net", "/v2/radar/1794066600", 6, 0, 0) == 0, "no URL that does not fit");
+    CK(rd_frame_url(u, sizeof u, "https://api.librewxr.net", "/v2/radar/1", 9, 0, 0, true) &&
+       !strcmp(u + strlen(u) - 7, "1_0.png"), "a close step asks for the server's smoothing");
+    CK(rd_frame_url(u, 40, "https://api.librewxr.net", "/v2/radar/1794066600", 6, 0, 0, false) == 0, "no URL that does not fit");
     CK(rd_list_url(u, sizeof u, "https://api.librewxr.net") && !strcmp(u, "https://api.librewxr.net/public/weather-maps.json"),
        "the list's URL");
 
@@ -154,6 +156,17 @@ int main(int argc, char **argv)
             printf("W %d %ld %ld %d %d\n", z, la, lo, (int)sx, (int)sy);
         }
     }
+    for (int i = 1; i < argc; i += 1) {                 /* the magnified windows */
+        int z; long la, lo;
+        if (sscanf(argv[i], "%d:%ld:%ld", &z, &la, &lo) == 3 && z == 7)
+            for (int k = 2; k <= 8; k *= 2) {
+                int32_t sx, sy, dx, dy;
+                rd_window_k(7, k, (int32_t)la, (int32_t)lo, (int32_t)la, (int32_t)lo, &sx, &sy, &dx, &dy);
+                printf("K %d %ld %ld %d %d %d %d\n", k, la, lo, (int)sx, (int)sy, (int)dx, (int)dy);
+            }
+    }
+    CK(rd_img_z(0) == 5 && rd_img_z(2) == 7 && rd_img_z(5) == 7 && rd_img_k(2) == 1 && rd_img_k(3) == 2 && rd_img_k(5) == 8,
+       "the frames stop at Local's z7; Area, City and Close magnify them 2, 4 and 8 times");
     for (int s = 0; s < RD_ZOOMS; s++) printf("R %d %d\n", s, (int)rd_radius_m(s, 32889000));
     for (int s = 0; s < RD_ZOOMS; s++) printf("R %d %d\n", s + 10, (int)rd_radius_m(s, 64146600));
 
@@ -170,7 +183,9 @@ int main(int argc, char **argv)
 
     static rd_values_t v;
     rd_values_default(&v);
-    CK(sizeof v == 1128, "rd_values_t is 1,128 B");
+    CK(sizeof v == 1144, "rd_values_t is 1,144 B (layout 2)");
+    CK(rd_roles_at(&v, 0) == (0x7FFF & ~((1u << 5) | (1u << 13) | (1u << 14))) && rd_roles_at(&v, 2) == (0x7FFF & ~((1u << 13) | (1u << 14))) &&
+       rd_roles_at(&v, 4) == 0x7FFF, "the roads by step: motorways at Wide, primary from Local, all from City");
     CK(v.rain[83] == 0 && v.rain[84] != 0 && v.rain[255] == 0xFFFFFFFF, "the ramp is clear under 10 dBZ (value 84) and white at the top");
     FILE *f = fopen("defaults.bin", "wb");
     if (f) { fwrite(&v, sizeof v, 1, f); fclose(f); }
@@ -218,11 +233,29 @@ def suite(src_text, quiet=False):
         bad = [w for w in W if (int(w[4]), int(w[5])) != py_window(int(w[1]), int(w[2]), int(w[3]))]
         ck(len(W) == 30 and not bad, "the frame's window is the server's window_origin's, at 10 places x 3 zooms, two at the world's edge (%d differ)" % len(bad))
         ck(all(21 <= int(w[4]) <= 25 for w in W if abs(int(w[2])) < 80000000), "and it sits about 23 px in: the image's centre is the place's")
+        K = [l.split() for l in r.stdout.splitlines() if l.startswith("K ")]
+        worst = 0.0
+        for kk in K:
+            k, la, lo, sx, sy, dx, dy = map(int, kk[1:])
+            ix, iy = py_world(7, e4(la) * 100, e4(lo) * 100)
+            mx, my = py_world(7, la, lo)
+            n = 512 * 2 ** 7
+            ox, oy = round(ix - 256), min(max(round(iy - 256), 0), n - 512)
+            ux, uy = mx - ox, my - oy                      # the place in the image
+            cx, cy = sx + (233 - dx) / k, sy + (233 - dy) / k   # the image under the glass's centre
+            worst = max(worst, abs(cx - ux) * k, abs(cy - uy) * k)
+            if dx > 0 or dy > 0 or sx + (466 - dx) / k > 511 + 1:
+                worst = 99
+            if sx < ux - 233 / k - 2 or sy < uy - 233 / k - 2:      # no rows decoded for nothing
+                worst = 98
+        ck(len(K) == 30 and worst <= 0.5 + 1e-9,
+           "magnified 2, 4 and 8 times, the place lands on the glass's centre within half a glass pixel (worst %.3f)" % worst)
         R = {int(l.split()[1]): int(l.split()[2]) for l in r.stdout.splitlines() if l.startswith("R ")}
-        okl = all(pick_level(lat, R[k + off])[0] == 6 + k and abs(pick_level(lat, R[k + off])[1] - 1) < 1e-5
-                  for off, lat in ((0, 32889000), (10, 64146600)) for k in range(3))
-        ck(okl, "each step's radius picks its own level (z6, z7, z8) at scale 1, at 33 and 64 degrees north")
-        ck(abs(R[0] - 479000) < 1500 and abs(R[2] - 120000) < 500, "Wide is ~479 km and Local ~120 km at DFW (§2.4's table)")
+        okl = all(pick_level(lat, R[k + off])[0] == 6 + k and abs(pick_level(lat, R[k + off])[1] - 1) < 1e-4
+                  for off, lat in ((0, 32889000), (10, 64146600)) for k in range(6))
+        ck(okl, "each step's radius picks its own level (z6 .. z11) at scale 1 (the radius is whole metres), at 33 and 64 degrees north")
+        ck(abs(R[0] - 479000) < 1500 and abs(R[2] - 120000) < 500 and abs(R[5] - 15000) < 100,
+           "Wide is ~479 km, Local ~120 km and Close ~15 km at DFW (§2.4's table)")
         if NODE:
             jp = os.path.join(d, "v.js"); open(jp, "w").write(JS_VALUES)
             j = subprocess.run([NODE, jp, BAKE_JS], capture_output=True, text=True)
@@ -250,6 +283,10 @@ MUTATIONS = [
     ("pow2(rd_map_z(step)) * (RD_GLASS / 2)", "pow2(rd_map_z(step)) * (RD_GLASS / 2 + 1)"),
     ("unit == 1 ? km / 1.609344", "unit == 1 ? km / 1.6"),
     ("        if (i < 84) { v->rain[i] = 0; continue; }", "        if (i < 80) { v->rain[i] = 0; continue; }"),
+    ("if (v->step_from[r] > step)", "if (v->step_from[r] >= step)"),
+    ("255/%d_0.png", "255/0_0.png"),
+    ("*dx = (int32_t)floor(k * (*sx - ux) + RD_GLASS / 2.0 + 0.5);", "*dx = (int32_t)floor(k * (*sx - ux) + RD_GLASS / 2.0);"),
+    ("*sy = (int32_t)floor(uy - (RD_GLASS / 2.0) / k) - 1;", "*sy = (int32_t)floor(uy - (RD_GLASS / 2.0)) - 1;"),
 ]
 
 

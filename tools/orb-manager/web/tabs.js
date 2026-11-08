@@ -1783,6 +1783,10 @@ function tabBadge(tab, n, tip) {
 function updateGate(e) {
   if (!e.lib || !e.lib.version) return false;
   if (!e.card && !e.installed) return false;
+  // A card copy refused for its FORMAT is a release the firmware moved past: the library's
+  // bytes replace it whatever the dial's slot says (owner, 2026-11-08; Gold showed the
+  // amber "Update replaces it" chip with no Update to press).
+  if (e.card && !e.card.ok && /^app format /.test(e.card.why || "")) return true;
   // Another build of the same release (the +hash tail differs): neither is newer, but the
   // shelf's bytes are not the dial's, and between releases that is how a rebuild reaches it.
   const have = e.installed ? e.installed.version : e.card && e.card.version;
@@ -1874,7 +1878,10 @@ function appRow(e, opt) {
     else if (a.failed) chip("failed: " + (a.reason || a.status || "the dial did not say why"), "err");
     else chip("installed " + (a.version || "(unstamped)"), "on");
   }
-  if (updateGate(e)) {
+  // the amber "for older firmware" chip below already says it when the card copy is the only
+  // thing behind and the dial runs the library's own release
+  const staleOnly = !!(c && !c.ok && /^app format /.test(c.why || "") && f && a && a.version === f.version);
+  if (updateGate(e) && !staleOnly) {
     const have = a ? a.version : c && c.version;
     chip(sameRelease(have, f.version) ? "another build in the hub library" : "update available \u2192 " + f.version, "upd",
       "The hub library holds " + f.version + "; Update puts it on this orb");

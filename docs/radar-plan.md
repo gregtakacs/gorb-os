@@ -647,8 +647,9 @@ FORMAT). It deletes the files no place uses. No app's settings page is involved.
   chosen radius, so the owner sees what the orb will draw. A host test holds the C and JS
   rasterisers to the same pixels on a set of fixture files (the pixdiff discipline).
 - **Sizes:** measured at DFW, about 800,000 vertices a place before simplification, ~2 MB
-  at 2.5 B a vertex (§1.8). *Estimate* 400–600 KB after it. Either is nothing on a 29 GB
-  card (owner, 2026-11-07).
+  at 2.5 B a vertex (§1.8). The 400–600 KB estimate after it was low: *measured (R4,
+  §6.6)* 0.84 MB for Austin, 1.19 MB for DFW and 1.92 MB for London, six levels each.
+  Still nothing on a 29 GB card (owner, 2026-11-07).
 - **Attribution** (§0 ruling 9): "© OpenStreetMap contributors · OpenMapTiles ·
   OpenFreeMap" on gorb-os's ABOUT page, beside the other credits, never on the map. The
   Places card names the source in its Map tiles row.
@@ -944,9 +945,10 @@ follow rules that keep everyone moving:
    clock on the glass Bronze has ~23 KB internal free, the largest block 7.2-7.4 KB, and
    R3's map task taking 6 KB of it was enough to stop Wi-Fi transmits. The radar's own
    headroom on the glass is R6's to measure, against this number.
-7. **The map tool's cost:** bytes fetched and time to encode six levels for one place, at
-   DFW and at a sparse place. The simplification tolerance (a quarter pixel, *estimate*)
-   against how lines look, and the `.orbmap` sizes it gives.
+7. ~~The map tool's cost~~ **Measured 2026-11-07** (§6.6): 74–85 tiles a place; Austin
+   and London together 23 MB fetched and written in 25 s, Austin alone 9.5 s from the
+   page; 0.84–1.92 MB on the card a place. The quarter-pixel tolerance stands; how lines
+   look against it is R7's to judge in the editor.
 8. ~~Canvas plus theme~~ **Ruled 2026-11-07** (§0 ruling 16): the live layer, R3c.
 9. **The OSMF tile policy's current text**, to confirm §1.3's reading before anything is
    said about it in a public doc or issue.
@@ -1160,4 +1162,56 @@ The owner's call after §6.4: keep the map parked and redraw only the rain.
 - **Tests.** `host_live_test.py` adds the two-layer stacks: each order pair both ways, both
   at one depth (layer 0 under 1), both under the glass; 9/9 mutants (a third equivalent
   edit, the explicit stop at the lifted layers, left out and said why).
+
+### 6.6 R4, the hub's map tool (2026-11-07, Bronze, hub only, uncommitted)
+
+- **`maps@1`** (`tools/orb-manager/web/runtime/maps@1/orbmap.js`, a runtime kit so the
+  radar editor can use it in R7): an MVT reader (`tools/mvt.py`'s port), the `.orbmap`
+  builder and writer (`tools/orbmap.py`'s), and the role rasteriser
+  (`orb_map_raster.c`'s, every float step rounded to 32 bits in the C's order), plus the
+  level picker, the file name, a header reader and a palette painter for previews.
+  DOM-free; the page and node run the same file.
+- **One rounding rule** for both writers: half up, `floor(v + 0.5)`. `orbmap.py` used
+  Python's `round`, which rounds halves to even and which JS cannot copy, and read tiles in
+  file-name order; both now match the JS (by column, then row). R0's six DFW files from
+  the old writer are byte for byte the new writer's, so the files on Bronze stand.
+- **`tools/host_orbmap_js_test.py`** (run by `make check-editor`; skipped without node):
+  seeded synthetic vector tiles from a small MVT encoder in the test, every layer the tool
+  reads (holes, lines across the window, maritime borders, places outside it, long and
+  non-ASCII names), at three places in three hemispheres. The JS writes `orbmap.py`'s bytes
+  for all 18 levels; 52 renders (scales 0.71–1.41, rotated, widths 1–4, every dash) are the
+  C's raster nibble for nibble; the level picker and names are the C's. 12/12 mutants
+  (`Math.round` is no mutant: it also rounds halves up). Outside the suite, on R0's real
+  DFW tiles the JS wrote the same six files byte for byte, and on Bronze the device's
+  London raster at 15 km equalled the JS's on all 217,156 pixels.
+- **The forwarder** (`maps.go`): `GET/POST /api/maps/source` keeps the TileJSON in the
+  hub's state file (absent for OpenFreeMap's default); `GET /api/maps/fetch?u=` fetches
+  only that TileJSON and the tile hosts its `tiles` templates name (learned when the
+  TileJSON is read through it, forgotten when the source changes), as
+  `gorb-os/<hub version> (+https://github.com/gregtakacs/gorb-os)`, four at a time, 8 MB at
+  most, under the launch token. `maps_test.go`: the default and its persistence, refused
+  sources, a tile host refused before its TileJSON is read and after the source changes,
+  other hosts and schemes refused, the token required, twelve asks reaching the host at
+  most four at a time.
+- **The Places card**: a Maps table, one row a place (home and the set places, with KB on
+  the card) and its state in a fixed column; out of date (a place without its six levels,
+  or moved, since a moved place has new names) is an amber tag, an amber "Maps out of date
+  — Make maps" press and a count on the Orb tab. Make maps fetches the tiles (this
+  browser's Cache Storage first, then the hub), builds each level, writes it with
+  `/api/v1/sd/write?overwrite=1` (the orb's own `.part`-and-rename, so a reader never sees
+  half a file), removes the `.orbmap` files no place names, and posts
+  `/api/v1/places/maps`; "Step n of m" as it goes and DONE at the end. A Preview draws the
+  level the orb would use at a chosen radius, from the tiles, never reading the card. The
+  Map tiles row sets the source. Saving a place re-reads the maps.
+- **On Bronze, through a hub run from this tree:** Austin and London's twelve levels made
+  in 25 s (159 tiles, 23 MB), the OS's maps gen moved, and both drawn by the OS with their
+  landmarks (AUS, Waco, Killeen; LHR, LTN, City of London). Then the page itself, in
+  headless Chrome over the DevTools protocol: with Austin's files removed and a stray file
+  planted, Austin's row read "no maps yet" in amber with a badge of 1; Make maps made only
+  Austin (six steps, 74 tiles, 9.5 s), removed the stray, and the rows went green and the
+  badge went away; Preview drew London at 30 km (z10 at 0.74x, 305 landmarks).
+- **Not built:** recognising an older FORMAT on the card (the names say place and
+  position only; a FORMAT 2 would bring its own name rule). The map credits on gorb-os's
+  ABOUT page are still owed (§0 ruling 9), as is OpenStreetMap's attribution check
+  (§4 item 11) before a public release.
 

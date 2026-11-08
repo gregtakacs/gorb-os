@@ -43,6 +43,7 @@ func main() {
 	fw := flag.String("fw", "074afed", "the fw= string; the status route reports the same value, one field two readers, as on the device")
 	port := flag.Int("mdns-port", 0, "UDP port to answer mDNS on; 0 takes the standard 5353, and an ephemeral one is what lets a second advertiser run beside avahi")
 	provisioning := flag.Bool("provisioning", false, "announce state=provisioning, the factory-reset shape item 10 depends on")
+	otaFW := flag.String("ota-fw", "", "the fw= string the board reports after a Wi-Fi update is staged and rebooted into; empty keeps -fw, as a board whose new image never took")
 	flag.Parse()
 
 	f := orbfake.New(
@@ -65,6 +66,9 @@ func main() {
 	f.SetFirmware(*fw)
 	f.SetSTA(true)
 	f.SetProvisioning(*provisioning)
+	if *otaFW != "" {
+		f.SetOTANextFW(*otaFW)
+	}
 
 	state, gmac, ip, _, _, _, _, _, _, _ := f.Device()
 	log.Printf("orbfake listening on %s (card %s, %d themes, state=%s mac=%s ip=%s)",

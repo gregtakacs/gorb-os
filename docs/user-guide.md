@@ -141,10 +141,15 @@ Click an orb in the **Orbs** list to open its card. The tabs are:
 |---|---|
 | **Orb** | the orb's name; its sound, with quiet hours in half-hour steps; its **Location**, set by search, this browser, or a click on the map beside it (the clock's time zone comes from it, and apps that need a place read it); and **App settings**, a page per installed app with every one of its settings, each with its help: the same ones the orb's menu shows, plus the ones you type (Weather's places, Flights' adsb.lol API key and where to get one) |
 | **Wi-Fi** | move the orb to another network |
-| **Apps** | the apps on this orb and in your library, one row each with its presses in fixed columns: **Install** or **Update** (amber when the library holds a newer build; the tab shows the count), **Uninstall**, the card copy, the library copy; **Import an app** (an `.orbapp` file) and **Restore bundled apps**. Under the list, **Carousel** sets the order the knob and the carousel walk the apps in (▲ and ▼), **Rotate apps**, and which apps are **in rotation**. |
+| **Apps** | the apps on this orb and in your library, one row each with its presses in fixed columns: **Install** or **Update** (amber when the library holds a newer build; the tab shows the count), **Uninstall**, the card copy, the library copy; **Import an app** (an `.orbapp` file) and **Restore bundled apps**. The apps on the orb come first, in the order the knob and the carousel walk them: drag a row by its ⠿ grip to move it (or focus the grip and use the arrow keys). Apps only on the card or in your library follow under **Not on this orb**. **Rotate apps** above the list turns rotation on, with how long the dial waits; while it is on, each app on the orb has a checkbox for whether the rotation stops on it. |
 | **Themes** | each app's themes under its own tab, the app named over the list; **Refresh from Orb**, **Compose new theme** and **Import a theme** (an `.orbtheme` file) above it. A theme the library holds a newer bake of shows an amber **Update** |
 | **Files** | the files on the orb's microSD card |
 | **Firmware** | the version the orb runs; **Update firmware** lights up when Orb Manager carries a newer one |
+
+When the orb is behind this Orb Manager, a strip above the tabs says what is out of date, and
+**Update everything** brings it level in one go: the firmware first, then every app with an
+update, in one progress panel that counts the steps. (App updates show once the Apps tab has
+read the orb; the run checks them again before it starts.)
 
 After any restart the orb opens the first app in your carousel order (set on the Apps tab).
 Installing or removing an app reboots the orb, because apps load at startup. Uninstalling

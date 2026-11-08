@@ -239,6 +239,20 @@ func (a *AppContainer) CapNames() []string {
 // round trip and a card a write. It does not replace the door's check: the device re-reads
 // every byte on the upload that follows, and for a container shipping an editor region the
 // door is the authority and this is the courtesy.
+// AppFormatOlder reports whether body is an .orbapp of an older FORMAT than this build
+// reads: the magic is right and only the format word is behind. ParseApp refuses such a
+// file outright, which is right for a file about to be sent, but the seed has to tell
+// "an older release of a shipped app" from "not an app at all": the first is superseded by
+// the shipped copy (v1.2.32's hub kept every v1.2.16 shelf app because it could not read
+// them to compare versions, owner report 2026-11-08).
+func AppFormatOlder(body []byte) bool {
+	if len(body) < (appWFormat+1)*4 {
+		return false
+	}
+	w := func(i int) uint32 { return binary.LittleEndian.Uint32(body[i*4:]) }
+	return w(appWMagic) == appMagic && w(appWFormat) < appFormat
+}
+
 func ParseApp(body []byte) (*AppContainer, error) {
 	if len(body) < appHdrBytes {
 		return nil, fmt.Errorf("orbnet: that file is %d B, shorter than the %d B header a .orbapp starts with",

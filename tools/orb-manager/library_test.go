@@ -1313,3 +1313,60 @@ func TestCleanSlateMarkIsOneShot(t *testing.T) {
 		t.Error("a hub with no slate set reported a wipe owed")
 	}
 }
+
+// TestAnOlderFormatLibraryCopyIsNotSent: a library still holding a release from before a
+// FORMAT change (a hub upgraded past it before the seed could replace it) used to send that
+// file, and a re-flashed orb's setup died on "writing clock to the card: rejected: app format
+// 3; this build reads format 4" (owner, 2026-11-08). The run sends the copy compiled into the
+// hub instead, and says so.
+func TestAnOlderFormatLibraryCopyIsNotSent(t *testing.T) {
+	// Only the upload is under test: the run's restart and theme waits are cut short.
+	op, ow, og, oh := installPoll, installRebootWait, cycleQuietGrace, installHard
+	installPoll, installRebootWait, cycleQuietGrace, installHard = 10*time.Millisecond, 200*time.Millisecond, 50*time.Millisecond, time.Second
+	defer func() { installPoll, installRebootWait, cycleQuietGrace, installHard = op, ow, og, oh }()
+	shipped := shippedClock(t)
+	lib := t.TempDir()
+	os.WriteFile(filepath.Join(lib, "clock.orbapp"), oldFormat(t, shipped), 0o644)
+
+	var got []byte
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/v1/status":
+			w.Write([]byte(`{"state":"connected","ip":"127.0.0.1","fw":"v1.2.32+66aa4bc"}`))
+		case "/api/v1/sd/app":
+			got, _ = io.ReadAll(r.Body)
+			w.Write([]byte(`{"state":"stored"}`))
+		case "/api/v1/apps":
+			if got != nil {
+				w.Write([]byte(`{"mounted":true,"apps":[{"stem":"clock","ok":true}],"installed":[{"slug":"clock"}]}`))
+				return
+			}
+			w.Write([]byte(`{"mounted":true,"apps":[],"installed":[]}`))
+		default:
+			w.Write([]byte(`{}`))
+		}
+	}))
+	defer srv.Close()
+	s := newHub()
+	s.lib = &Library{AppsDir: lib}
+	s.device = orbnet.NewClient(deviceTimeout)
+	s.device.DevicePort = portOf(srv.URL)
+	s.ota = orbnet.NewClient(otaTimeout)
+	s.ota.DevicePort = portOf(srv.URL)
+	said := false
+	s.installRun(context.Background(), "127.0.0.1", "clock", false, false, func(st installStep) {
+		if strings.Contains(st.Note, "built into this hub") {
+			said = true
+		}
+	})
+	if got == nil {
+		t.Fatal("nothing was uploaded")
+	}
+	if !bytes.Equal(got, shipped) {
+		t.Errorf("the run sent the library's older-FORMAT copy (format %d), not the hub's own", got[4])
+	}
+	if !said {
+		t.Error("the run swapped the copy without saying so")
+	}
+}

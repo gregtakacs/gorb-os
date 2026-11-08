@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io/fs"
 	"log"
 	"net/http"
+	"path"
 	"strings"
 	"time"
 
@@ -593,7 +595,7 @@ func (s *Server) installRun(ctx context.Context, ip, only string, force, card bo
 	if v, ok := firmware.ParseVersion(st.FW); !ok {
 		return fmt.Errorf("the dial reports %q, which is not a versioned firmware: flash it to %s first", st.FW, installMinFW)
 	} else if v.Compare(installMinVersion()) < 0 {
-		return fmt.Errorf("the dial runs %s and the library holds FORMAT 3 containers it will refuse: flash %s or newer first",
+		return fmt.Errorf("this orb runs firmware %s, and these apps need %s or newer: update its firmware first (Firmware tab, or flash it over the cable), then install the apps",
 			st.FW, installMinFW)
 	}
 	listing, err := s.device.AppsList(ip)
@@ -632,6 +634,20 @@ func (s *Server) installRun(ctx context.Context, ip, only string, force, card bo
 			b, err := lib.Container(slug)
 			if err != nil {
 				return fmt.Errorf("reading %s from the library: %w", slug, err)
+			}
+			// A library copy of an older FORMAT is a release no firmware this hub installs
+			// onto can run; the copy compiled into this hub is the same app, current. Send
+			// that rather than a container the orb refuses by number (owner, 2026-11-08: a
+			// re-flashed orb's setup died on "writing clock to the card: rejected: app
+			// format 3; this build reads format 4").
+			if orbnet.AppFormatOlder(b) {
+				if sb, serr := fs.ReadFile(shippedLib, path.Join(libAppsSubdir, slug+".orbapp")); serr == nil {
+					if _, perr := orbnet.ParseApp(sb); perr == nil {
+						send(installStep{Step: slug, Action: "checking",
+							Note: "the hub library's copy is for older firmware; sending the copy built into this hub (Restore bundled apps puts it in the library)"})
+						b = sb
+					}
+				}
 			}
 			// The app's own floor (app.json os_min): an older OS loads it as a failed row
 			// with no reason (Gold, 2026-11-04), so the hub says it before a byte moves.
@@ -786,6 +802,16 @@ func (s *Server) installOneApp(ctx context.Context, ip, slug string, blob []byte
 	if !force {
 		for _, row := range listing.Apps {
 			if row.Stem == slug {
+				// A card copy refused only for its FORMAT is a release the firmware has
+				// moved past (orb_app_manifest.c's "app format N; this build reads format
+				// M"): the library's bytes are its replacement, so they go over it. Every
+				// orb that took v1.2.32's firmware from v1.2.16 held four (owner,
+				// 2026-11-08). Any other refusal stays the operator's fact to read.
+				if !row.OK && len(blob) > 0 && strings.HasPrefix(row.Why, "app format ") {
+					send(installStep{Step: slug, Action: "installing",
+						Note: "the card copy is for older firmware (" + row.Why + ") — replacing it"})
+					break
+				}
 				if !row.OK {
 					return fmt.Errorf("%s.orbapp sits on the card but the dial refuses it: %s", slug, row.Why)
 				}

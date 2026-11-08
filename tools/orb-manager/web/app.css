@@ -370,6 +370,31 @@ button.upd:hover{border-color:#fff}
   .acts{grid-template-columns:repeat(auto-fill,minmax(10em,1fr));justify-content:stretch}
   .acts>.slot{display:none}
 }
+/* Update everything: the orb is behind the hub, said once above the tabs with one press. */
+.row.updall{gap:10px;align-items:center;flex-wrap:wrap;padding:8px 12px;margin:8px 0;
+  border:1px solid var(--warn);border-radius:8px}
+.row.updall #mn-updall-go{margin-left:auto}
+.row.updall[hidden]{display:none}
+/* §59: the app list is the carousel (owner, 2026-11-08): a grip to drag by, the rotation's
+   checkbox while rotation is on, then the row as before. Rows off the dial keep both cells,
+   empty, so the columns line up down the list. */
+.applist .arow{grid-template-columns:auto auto minmax(0,1fr) auto}
+.grip{width:24px;height:34px;padding:0;margin:0 -4px 0 -6px;border:0;background:none;color:var(--mut);
+  font-size:20px;line-height:1;cursor:grab;touch-action:none;user-select:none}
+.grip:hover,.grip:focus-visible{color:var(--fg);background:none}
+.grip.none{visibility:hidden;cursor:default}
+.rotcell{display:flex;align-items:center}
+.rotcell input{width:18px;height:18px;margin:0;cursor:pointer;accent-color:var(--acc)}
+.arow.dragging{border-color:var(--focus);background:var(--card);box-shadow:0 8px 22px rgba(0,0,0,.5);
+  position:relative;z-index:2;transition:none!important}
+.arow.dragging .grip{cursor:grabbing;color:var(--focus)}
+.applist.sorting{user-select:none;cursor:grabbing}
+.applist .sep{margin:16px 0 2px}
+#mn-apps-rot .toolbar{gap:14px;align-items:center}
+@media (max-width:1100px){
+  .applist .arow{grid-template-columns:auto auto minmax(0,1fr)}
+  .applist .arow>.acts{grid-column:1/-1}
+}
 .filelist{list-style:none;padding:0;margin:6px 0;display:flex;flex-direction:column;gap:2px}
 .filerow{display:flex;gap:10px;align-items:baseline;border:1px solid var(--line);border-radius:6px;padding:5px 10px}
 .filerow.dir{background:rgba(125,125,125,.07)}

@@ -139,6 +139,48 @@ func TestSeedUpdatesOnlyUntouchedCopies(t *testing.T) {
 	}
 }
 
+// oldFormat is the shipped clock with its FORMAT word set one back, as a release before a
+// format change left it on the shelf. ParseApp refuses it, which is the point.
+func oldFormat(t *testing.T, b []byte) []byte {
+	t.Helper()
+	o := append([]byte(nil), b...)
+	o[4]-- // word 1, little-endian: the FORMAT
+	if _, err := orbnet.ParseApp(o); err == nil || !orbnet.AppFormatOlder(o) {
+		t.Fatalf("the stand-in old container should refuse as an older FORMAT: %v", err)
+	}
+	return o
+}
+
+// A shelf app from before a FORMAT change cannot be read to compare versions, and the hub
+// kept it: v1.2.32 over v1.2.16 left clock, HSB, Flights and Weather as FORMAT 3 files no
+// v1.2.32 orb runs, with no Install or Update on their rows (owner, 2026-11-08). The
+// shipped copy replaces an older FORMAT whether the hub placed it or it predates the ledger.
+func TestSeedReplacesAnOlderFormat(t *testing.T) {
+	cur := shippedClock(t)
+	old := oldFormat(t, cur)
+	user := t.TempDir()
+	seedAll(t, shelf(old, []byte("skeleton")), user) // the old release placed it
+	seedAll(t, shelf(cur, []byte("skeleton")), user)
+	if got, _ := readUser(user, "apps", "clock.orbapp"); got != string(cur) {
+		t.Errorf("a hub-placed app of an older FORMAT was not replaced")
+	}
+	pre := t.TempDir() // before any ledger
+	os.MkdirAll(filepath.Join(pre, "apps"), 0o755)
+	os.WriteFile(filepath.Join(pre, "apps", "clock.orbapp"), old, 0o644)
+	seedAll(t, shelf(cur, []byte("skeleton")), pre)
+	if got, _ := readUser(pre, "apps", "clock.orbapp"); got != string(cur) {
+		t.Errorf("a pre-ledger app of an older FORMAT was not replaced")
+	}
+	// not an app at all: not the seed's to judge, it stays
+	junk := t.TempDir()
+	os.MkdirAll(filepath.Join(junk, "apps"), 0o755)
+	os.WriteFile(filepath.Join(junk, "apps", "clock.orbapp"), []byte("not an app"), 0o644)
+	seedAll(t, shelf(cur, []byte("skeleton")), junk)
+	if got, _ := readUser(junk, "apps", "clock.orbapp"); got != "not an app" {
+		t.Errorf("a file that is not an app was overwritten")
+	}
+}
+
 func TestSeedLeavesFilesItDidNotPlace(t *testing.T) {
 	newer, older := seedApps(t)
 	user := t.TempDir()

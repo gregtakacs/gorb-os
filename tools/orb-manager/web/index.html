@@ -91,6 +91,15 @@
   <button class="back" data-view="manage">&#8592; Orbs</button>
   <h2 id="mn-orbname">Orb</h2>
   <div class="row"><span class="hint" id="mn-orbident"></span></div>
+  <!-- Update everything (owner, 2026-11-08): one press brings this orb level with the hub,
+       the firmware first and then every app the library holds newer, in one progress panel.
+       Shown only while something is behind; the apps count once the Apps tab has read the
+       orb's ledger, and the run reads it again before it starts. -->
+  <div class="row updall" id="mn-updall" hidden>
+    <span class="tag upd">Updates available</span>
+    <span class="hint" id="mn-updall-what"></span>
+    <button id="mn-updall-go" class="upd">Update everything</button>
+  </div>
 
   <!-- The tabs are the orb's five faces, and they are DORMANT until opened: a
        tab makes its first request the first time it is shown, never before.
@@ -320,10 +329,12 @@
     <h3>Apps on this orb</h3>
     <p class="hint" id="mn-appstate">The app list loads when this tab first opens.</p>
     <nav class="subtabs" id="mn-apps-tabs"></nav>
+    <!-- §59: the list below IS the carousel (owner, 2026-11-08): the dial's apps in the
+         order the knob walks them, dragged by their grips. Rotation is this one switch and
+         its interval; while it is on, each app on the dial has a checkbox for whether the
+         rotation stops on it. The rotation is also on the dial (APPS > Rotate apps). -->
+    <div id="mn-apps-rot"></div>
     <div id="mn-apps-body"></div>
-    <!-- §59: the carousel's order and the rotation (owner, 2026-11-07). Order lives here
-         only; the rotation is also on the dial (APPS > Rotate apps, and each app's page). -->
-    <div id="mn-carousel"></div>
     <!-- D38: there is no "Hub library" section on this face. The shelf's files are rows
          in the list above, wearing their "in the hub library" chip and their row's own
          verbs — a separate section said "these files, too", which was the same fact

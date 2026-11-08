@@ -1152,6 +1152,11 @@ async function updAllFirmware(ip, sl, log) {
       body: JSON.stringify({ ip, force: false }),
     });
     const j = await r.json().catch(() => ({}));
+    // A retry after a cut that landed anyway finds the orb already on this release.
+    if ((!r.ok || j.ok === false) && j.verdict === "same-version") {
+      log("firmware: the orb already runs this release");
+      return;
+    }
     if (!r.ok || j.ok === false) throw new Error("firmware: " + (j.error || ("HTTP " + r.status)));
     const d = j.data || {};
     log("firmware: staged " + (d.from || "?") + " → " + (d.to || "?") + ", the orb restarts into it");
@@ -1174,6 +1179,38 @@ async function updAllWaitStamp(ip, want, log) {
   throw new Error("the orb did not come back on firmware " + want + " within 4 minutes");
 }
 
+// updAllFirmwareRetry: a Wi-Fi upload into an orb short of memory can be cut mid-stream
+// ("connection reset by peer", twice on Gold before a third press took, owner 2026-11-08).
+// The image is staged in the spare slot and the orb only boots it after a whole, verified
+// upload, so sending it again is safe; the run does that twice before it gives up.
+async function updAllFirmwareRetry(ip, sl, log) {
+  for (let n = 1; ; n++) {
+    try { return await updAllFirmware(ip, sl, log); }
+    catch (e) {
+      const msg = (e && e.message) || String(e);
+      if (n >= 3 || !/reset by peer|broken pipe|EOF|connection (was )?(closed|reset|refused)|timeout/i.test(msg)) throw e;
+      log("firmware: the upload was cut (" + msg + "); nothing was staged, sending it again (try " + (n + 1) + " of 3)");
+      sl.note("the upload was cut; sending it again (try " + (n + 1) + " of 3)");
+      await new Promise((res) => setTimeout(res, 5000));
+    }
+  }
+}
+
+// The rotation moves the dial between apps on its own clock, and each move takes and gives
+// back memory while the run is sending the orb its largest files. The run turns it off
+// first and puts it back as it was at the end, whatever the end. A board older than the
+// carousel (v1.2.20) has nothing to pause.
+async function updAllRotation(ip, form) {
+  try {
+    const r = await hubFetch("/orb/" + encodeURIComponent(ip) + "/api/v1/carousel", form ? {
+      method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: Object.entries(form).map(([k, v]) => k + "=" + v).join("&"),
+    } : undefined);
+    const d = await readDeviceJSON(r);
+    return d && !d.error ? d : null;
+  } catch (e) { return null; }
+}
+
 async function updateEverything() {
   const ip = current.ip;
   if (!ip || updAllBusy) return;
@@ -1188,6 +1225,7 @@ async function updateEverything() {
   const sl = stepList({ list: ui.steps, head: ui.doing, bar: ui.bar, op: ui.op });
   const log = (t) => { ui.log.textContent += (ui.log.textContent ? "\n" : "") + t; ui.log.scrollTop = ui.log.scrollHeight; };
   let ok = false, why = "", none = false;
+  let rotWas = null;          // the rotation as it was, while the run holds it off
   try {
     // The ledger as it stands now, not as a face last drew it.
     try { await loadApps(); } catch (e) { log("the app ledger did not answer: " + e.message); }
@@ -1201,9 +1239,14 @@ async function updateEverything() {
       plan.push({ id: "app:" + e.slug, label: "Updating " + (e.title || e.slug) + " to " + e.lib.version, kind: "wait" });
     if (!plan.length) { none = true; ok = true; return; }
     sl.set(plan);
+    const car = await updAllRotation(ip);
+    if (car && car.rotate && car.rotate.on && await updAllRotation(ip, { rotate: "0" })) {
+      rotWas = car.rotate;
+      log("rotation paused for the run (every " + rotWas.every_s + " s); it comes back at the end");
+    }
     if (fw) {
       sl.enter("fw");
-      await updAllFirmware(ip, sl, log);
+      await updAllFirmwareRetry(ip, sl, log);
       sl.enter("fwboot");
       await updAllWaitStamp(ip, target, log);
       await loadOrb(true);
@@ -1236,6 +1279,11 @@ async function updateEverything() {
     sl.finish(ok);
     ui.doing.textContent = none ? "Nothing to update: this orb is level with the hub"
       : ok ? "Done · " + (current.name || "the orb") + " is up to date" : "Stopped: " + why;
+    if (rotWas) {
+      const back = await updAllRotation(current.ip || ip, { rotate: "1", every_s: String(rotWas.every_s) });
+      log(back ? "rotation back on, every " + rotWas.every_s + " s"
+        : "\u2717 the rotation could not be turned back on: set it again on the Apps tab");
+    }
     fpLock(false);
     updAllBusy = false;
     try { await loadApps(); } catch (e) { /* the face says so itself */ }
@@ -2091,6 +2139,8 @@ function stepList(ui) {
     sl.since = Date.now();
     const st = sl.plan[k];
     sl.mark(st, "active", st.kind === "you" ? "your turn" : "");
+    // A plan longer than its list scrolls; the running stage stays in view.
+    st.li.scrollIntoView({ block: "nearest" });
     sl.headline();
     if (ui.bar) {
       const bar = ui.bar.parentElement;

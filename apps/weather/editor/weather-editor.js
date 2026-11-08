@@ -40,6 +40,9 @@
 
   /* ---- the preview: one screen, drawn from the bake's own frames, each part drawn again
    * only when its own part of the design changes (the host keeps them, c.part) ---- */
+  // the place a screen shows: Places the place control's (none while the orb has none set),
+  // every other screen home
+  function shownPlace(c) { return c.view.show === 'places' ? c.place : c.home; }
   function partsOf(d, c) {
     var plate = c.part('plate', JSON.stringify(d.plate), function () { return B.plateCanvas(d); });
     var icons = c.part('icons', JSON.stringify(d.icons) + d.plate.c1 + B.sizeOf(d, 'icon'), async function () {
@@ -59,12 +62,13 @@
       var dl = B.dayLayout(d);
       return { dl: dl, days: B.dayFrames(d, dl.dw), halo: B.haloFrame(d, dl.dw) };
     });
-    // the owner's home map at the design's area (maps@1), drawn as the orb draws it
-    var home = c.env.home, map = null;
-    if (home && d.map && d.map.on && root.GorbMaps) {
-      var mz = M.levelOf(home.lat, d.map.area).z;
-      var bytes = c.part('level', home.lat + '|' + home.lon + '|' + mz, function () { return root.GorbMaps.fetchLevel(home.lat, home.lon, mz); }, { fresh: true });
-      if (bytes) map = c.part('map', JSON.stringify(d.map) + '|' + mz + '|' + home.lat, function () { return M.view(d.map, bytes, home.lat); });
+    // the shown place's map at the design's area (maps@1), drawn as the orb draws it: home's
+    // on its screens, the place control's on Places
+    var at = shownPlace(c), map = null;
+    if (at && d.map && d.map.on && root.GorbMaps) {
+      var mz = M.levelOf(at.lat, d.map.area).z, lk = at.lat + '|' + at.lon + '|' + mz;
+      var bytes = c.part('level', lk, function () { return root.GorbMaps.fetchLevel(at.lat, at.lon, mz); }, { fresh: true });
+      if (bytes) map = c.part('map', JSON.stringify(d.map) + '|' + lk, function () { return M.view(d.map, bytes, at.lat); });
     }
     return { plate: plate, icons: icons, temps: temps, words: words, map: map };
   }
@@ -86,11 +90,12 @@
   }
   /* The places Now's elements were hit at, for the Layout step's picking: [{k, x0, y0, x1, y1}]. */
   var HITS = [];
-  function drawView(x, d, P, view, L, sel) {
+  // pname: the place Places shows, else the made-up Lisbon
+  function drawView(x, d, P, view, L, sel, pname) {
     x.clearRect(0, 0, G, G);
     if (P.plate) x.drawImage(P.plate, 0, 0); else { x.fillStyle = '#000'; x.fillRect(0, 0, G, G); }
-    // the shown place's map (flights-map-plan §5): the preview has home's; Lisbon has none
-    if (P.map && d.map && d.map.on && view !== 'places') x.drawImage(P.map, 0, 0);
+    // the shown place's map (flights-map-plan §5): home's, or on Places the chosen place's
+    if (P.map && d.map && d.map.on) x.drawImage(P.map, 0, 0);
     if (!P.icons || !P.temps || !P.words) return;
     var W = d.words, caps = function (s) { return W.caps ? s.toUpperCase() : s; };
     var tx = B.sizeOf(d, 'text'), lb = B.sizeOf(d, 'label'), nu = B.sizeOf(d, 'num'), ip = B.sizeOf(d, 'icon');
@@ -106,7 +111,7 @@
     var blit = function (c, cx, cy, op) { x.globalAlpha = op == null ? 1 : op; x.drawImage(c, cx - c.width / 2, cy - c.height / 2); x.globalAlpha = 1; };
     HITS = [];
     if (view === 'now' || view === 'places') {
-      var p = view === 'now' ? Object.assign({}, NOW, { kind: L ? L.kind : NOW.kind }) : PLACE2;
+      var p = view === 'now' ? Object.assign({}, NOW, { kind: L ? L.kind : NOW.kind }) : pname ? Object.assign({}, PLACE2, { name: pname }) : PLACE2;
       var wx = WEATHER[KIND(p.kind)] || WEATHER[2], A = B.layoutNow(d);
       if (view === 'now') drawLife(x, d, P, L);
       text(view === 'places' ? p.name : caps(p.name), A.title.y, W.label, lb, W.quiet, 'center', A.title.x, null, 'title');
@@ -224,7 +229,7 @@
 
   /* ---- the fields of each step ---- */
   function fields(step, c) {
-    var d = c.d, K = c.K, upd = c.upd, setD = c.set, base = c.base, say = c.say, getIn = c.getIn, home = c.env.home, picked = c.ui.picked;
+    var d = c.d, K = c.K, upd = c.upd, setD = c.set, base = c.base, say = c.say, getIn = c.getIn, home = c.home, picked = c.ui.picked;
     var opt = function (pairs) { return pairs.map(function (p) { return { v: p[0], label: p[1] }; }); };
     var C = function (label, path, presetPath) {
       return K.Co(label, getIn(d, path), function (nv) { upd(path, nv); }, '', path, { noAuto: true, preset: getIn(base, presetPath || path) });
@@ -433,18 +438,17 @@
     ui: { picked: 'icon' },
     fields: fields,
     views: [
-      { key: 'weather', kind: 'select', label: 'Preview weather: the condition Now shows, its icon and its effects', idle: 'Preview weather: show Now to pick the condition',
-        options: WEATHER.map(function (w) { return [w[0], w[1]]; }), init: 'partly', active: function (v) { return v.show === 'now'; } },
       { key: 'show', label: 'Screen', options: VIEWS },
+      { key: 'weather', kind: 'select', label: 'Weather', tip: 'The condition Now shows, its icon and its effects', idle: 'Show Now to pick the weather',
+        options: WEATHER.map(function (w) { return [w[0], w[1]]; }), init: 'partly', active: function (v) { return v.show === 'now'; } },
+      { key: 'place', kind: 'place', home: false, label: 'Place', tip: 'The place Places shows, from the orb’s own; with none set it shows a made-up one', idle: 'Show Places to pick the place',
+        active: function (v) { return v.show === 'places'; } },
     ],
     play: { fps: 30, on: function (v) { return v.show === 'now'; }, what: 'the weather', idle: 'The weather plays on Now' },
-    setup: function (c) {
-      if (!c.orb || !root.GorbMaps) return;
-      root.GorbMaps.orbHome(c.orb.ip).then(function (hp) { if (hp) c.env({ home: hp }); }, function () {});
-    },
     draw: function (x, d, c) {
       var view = c.view.show, P = partsOf(d, c);
-      drawView(x, d, P, view, view === 'now' ? lifeOf(d, c) : null, c.step === 'layout' ? c.ui.picked : null);
+      var sp = view === 'places' ? shownPlace(c) : null;
+      drawView(x, d, P, view, view === 'now' ? lifeOf(d, c) : null, c.step === 'layout' ? c.ui.picked : null, sp ? sp.name : null);
     },
     pointer: pointer,
     bake: function (d, o) { return B.bake(d, o); },

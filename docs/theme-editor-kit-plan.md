@@ -747,10 +747,10 @@ size and fps readouts) is the host's, done once.
 
 - **Export** uses `showSaveFilePicker`, which the app window allows (`127.0.0.1` is a secure
   context), with the plain download where a browser lacks it.
-- **The live readout** re-bakes about a second after the last edit, in a worker
-  (`baker@1` is plain JS), and shows the size and the fit, marked as updating while an
-  edit is newer than the bake. The clock's bake time is not measured yet; E5 measures it
-  first.
+- **The live readout** re-bakes about a second after the last edit and shows the size and
+  the fit, marked as updating while an edit is newer than the bake. (This sketch said "in a
+  worker"; the apps' bakes draw on canvases with the page's loaded faces, so they run on the
+  page, after a pause that grows with the bake: §8.8.)
 - **Frame rate per view:** `GorbBake.estimate3` on the bake, with `OrbTheme.motion` over
   the frames the view moves. The clock keeps `_devPace` as its own model.
 
@@ -761,8 +761,8 @@ size and fps readouts) is the host's, done once.
 | **E1** | the hosted page and the contract, with Radar on it (the smallest editor) | runtime and Radar suites; on Gold, Radar's editor opened from its Themes tab offers the four starts and the three Render actions — **built and benched on Gold 2026-11-08**, with E2's import and export (§8.5) |
 | **E2** | import into the library, Export with a Save dialog | Go suites for the import route; session suites with the hub stubbed; on Gold, an imported `.orbtheme` is in the library before it opens — **built with E1** (§8.5); the Save dialog is not benched in a headed browser |
 | **E3** | Weather and Flights on the host | each app's suites; no app code left that draws a start sheet, a Render step or a download — **built 2026-11-08**, benched on the bench fake at OS v1.2.38 (§8.6) |
-| **E4** | declared views in the centre pane, for all three | the same controls in every app; each view reaches the glass |
-| **E5** | the live size readout; Check the bake goes | the clock's bake timed first; a readout that matches the bake's bytes |
+| **E4** | declared views in the centre pane, for all three | the same controls in every app; each view reaches the glass — **built 2026-11-08**, benched on the bench fake with home and two places (§8.7) |
+| **E5** | the live size readout; Check the bake goes | the clock's bake timed first; a readout that matches the bake's bytes — **built 2026-11-08** (§8.8) |
 | **E6** | frame rate per view, every app | an estimate shown for each view; checked against Gold for at least one view per app |
 | **E7** | the clock on the host | the clock's headless suites (about 1,500 checks) green; nothing lost against the P5 checklist |
 
@@ -887,4 +887,70 @@ most, so it moves after the contract has carried the other three.
   parts with eyes, Check the bake (1,062 KB). Send to orb from each, through the card's
   duplicate question and Replace: Modern (Flights, 1,062 KB) and Scope (Weather, 1,282 KB)
   stored. The Export dialog is still unbenched in a headed browser.
+
+### 8.7 As built: E4 (2026-11-08)
+
+- **Two rows under the glass.** The upper row is what the preview shows: the play button,
+  then each of the app's views under its caption (`label`, with `tip` for the longer
+  sentence). The lower row is how the glass is shown: View, the zoom, Render (Design, Panel,
+  Split) and the screen's ⚙. Flights' one wrapping toolbar is gone, and every app's views
+  read the same.
+- **The places are the host's.** `OrbHost.places(ip)` reads the orb's home, its three
+  places and its distance unit once, for every app (home named Home, as the apps name it).
+  `draw` and `fields` get `c.home`, `c.unit`, `c.places` and `c.place`. A view with
+  `kind: 'place'` lists home and the set places; `home: false` leaves home out, and a
+  place control with nothing to list is not drawn. A choice the orb does not have falls to
+  the control's first option, so the glass and the control never disagree. `?place=p2` in
+  the address is kept until the places are read.
+- **Radar** has a Place view (Home and the orb's places, as its knob walks them) beside
+  Zoom and Time. Its map is the chosen place's at the chosen zoom, read on demand and kept
+  per zoom, and the preview names home "Home" as `main.c` does (it said the home's place
+  name). Its `setup` is gone.
+- **Weather's Places screen** shows the place control's choice from the orb's own places,
+  with that place's map; with none set it still shows the made-up Lisbon. Its Place
+  control acts on Places only. Its `setup` is gone. The place's clock is still Lisbon's
+  UTC, as before: the orb's places carry no zone the editor can read.
+- **Flights** reads home and the unit from the host. Its levels are read per range on
+  demand (a step back is at once), and its `setup` is gone. Its views read Shows and Range.
+- **Suites.** `headless-host.test.js` (48 checks) drives the real `host.js` with a made-up
+  app through a small hooks runtime: the start step, the address, `init`, `show` and
+  `active`, the two rows and their captions, the place list, the frame clock (`dt` on a
+  tick only, pause, a view it does not play in), Panel and Split, kept parts (a promise
+  drawing again, `fresh`), Reset (asked twice, undoable), the pointer in glass px, the
+  app's own state, the Render step, an app's refused bake, off the hub, and an orb with no
+  home or places. Ten mutants caught.
+- **Benched 2026-11-08** on the bench fake (`v1.2.38+abc1234`) with home at Fort Worth and
+  places Lisbon (1) and Houston (3), its library in scratch copies. Radar: Place
+  `Home | Lisbon | Houston`, Zoom, Time; Houston picked, its map built and drawn, the name
+  Houston on the glass. Weather: Screen, Weather, Place `Lisbon | Houston` (no Home);
+  Places showed Lisbon, then Houston with Houston's map. Flights: Shows and Range, with
+  Design, Panel and Split on the lower row.
+
+### 8.8 As built: E5 (2026-11-08)
+
+- **Timed first**, in headless Chrome against the bench fake, every template of each app:
+  Radar 230–320 ms (1.8 MB), Weather 160–220 ms (1.25–1.35 MB), Flights 160–320 ms
+  (0.8–1.2 MB); the clock's Skeleton, through its own Download, 1.1 s cold and 0.44 s warm
+  (3.4 MB). A heavier clock (a 30 fps sweep) will take longer. A worker was not used: the
+  apps' bakes draw on canvases with the page's loaded faces.
+- **The readout.** A pause after the last edit, the host bakes the design and keeps the
+  bake for the design it was made from. The pause is twice the last bake, at least 1.2 s
+  (`OrbHost.SIZE_PAUSE_MS`) and at most 6 s, so a slow design is not baked at every breath;
+  an edit while it waits starts the wait again, and a bake an edit overtook is not shown.
+  Bakes run one at a time.
+- **Where it is said.** The top bar's fit reads "Fits · 1,062 KB" ("…" while it measures,
+  "not baked" when the app refuses, the dot red past what an orb takes). The Render step
+  leads with a Size line: "1,062 KB of the 8,320 KB an orb takes (13%) · baked in 0.2 s",
+  "Measuring its size when you pause…", "Not baked: <the app's reason>", or "an orb will
+  refuse it" past `GorbBake.THEME_UPLOAD_MAX`. Check the bake is gone.
+- **Send to orb and Export reuse the kept bake** when nothing changed since it, so pressing
+  either after the readout settles bakes nothing again.
+- **Suites.** The host suite (55 checks) adds the readout: measuring before the pause, the
+  size after it in the top bar and on Render, Export reusing the kept bake, an edit
+  restarting the pause and two edits baking once, an app's refusal said in both places, and
+  the over-the-limit line. Five more mutants caught (no kept bake, edits not restarting the
+  pause, the refusal unsaid, no over-limit, the top bar without the size).
+- **Benched 2026-11-08** in headless Chrome on the bench fake: Flights opened at
+  "Fits · 1,062 KB" (it read MB until the top bar was put in KB, as Render is); renaming the
+  theme put both back to measuring, and 1.2 s later they read 1,062 KB, baked in 0.2 s.
 

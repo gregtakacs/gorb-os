@@ -3,8 +3,8 @@
  *
  * Orb Manager owns the page (host@1): the start step, the library, import, the Render step,
  * the stage and its controls, the fit, history and the send. What is the radar's is here,
- * registered with OrbHost: the design's fields, its parts, its two views (zoom and time),
- * and the preview, drawn on the owner's own home map. The map is built from the Map tiles
+ * registered with OrbHost: the design's fields, its parts, its views (the place, the zoom and
+ * the time), and the preview, drawn on the owner's own map of the chosen place. The map is built from the Map tiles
  * source through the hub, as the Orb tab's Maps preview builds it (maps@1), and drawn by
  * the same rasteriser the orb's matches, in the design's colours; the rain over it is made
  * up, coloured through the design's ramp. The bake is radar-bake.js. */
@@ -29,8 +29,8 @@
     return 0.2126 * f(n >> 16) + 0.7152 * f((n >> 8) & 255) + 0.0722 * f(n & 255);
   }
 
-  // one level of the owner's home map, built on the hub from the Map tiles source (maps@1)
-  function level(home, z) { return root.GorbMaps.fetchLevel(home.lat, home.lon, z); }
+  // one level of a place's map, built on the hub from the Map tiles source (maps@1)
+  function level(pl, z) { return root.GorbMaps.fetchLevel(pl.lat, pl.lon, z); }
   // the radar's view radius at a zoom (radar.c rd_radius_m) and the scale bar there (rd_scale)
   function radiusM(step, lat) { return Math.floor(156543.03392 * Math.cos(lat * Math.PI / 180) / Math.pow(2, 6 + step) * 233 + 0.5); }
   function scaleOf(radius, unit, max) {
@@ -139,15 +139,18 @@
 
   /* ---- the preview's parts, each drawn again only when its own part of the design changes ---- */
   function partsOf(d, c) {
-    var P = c.memo, env = c.env, bytes = env.bytes || {}, home = env.home;
-    var kMap = JSON.stringify(d.map) + JSON.stringify(Object.keys(bytes)) + (home ? home.lat : '');
-    if (P.kMap !== kMap) {
-      P.kMap = kMap; P.map = {};
-      var dd = Object.assign({}, d, { __lat: home ? home.lat : 0 });
-      Object.keys(bytes).forEach(function (st) {
-        try { P.map[st] = mapCanvas(dd, bytes[st], +st); } catch (e) { c.say('The map could not be drawn: ' + e.message); }
-      });
-    }
+    var P = c.memo, pl = c.place, st = c.view.zoom;
+    // the chosen place's map at the toolbar's zoom (maps@1), one kept per zoom so a step back is at once
+    P.map = {};
+    if (pl && root.GorbMaps) {
+      var lk = pl.lat + '|' + pl.lon + '|' + st;
+      var bytes = c.part('level' + st, lk, function () { return level(pl, 6 + st); }, { fresh: true });
+      if (!bytes && P.building !== lk) { P.building = lk; c.say('Building the map of ' + pl.name + ' for the preview…'); }
+      if (bytes) {
+        if (P.building === lk) { P.building = null; c.say(''); }
+        P.map[st] = c.part('map' + st, JSON.stringify(d.map) + '|' + lk, function () { return mapCanvas(Object.assign({}, d, { __lat: pl.lat }), bytes, st); });
+      }
+    } else if (c.placesRead && !pl && !P.homeless) { P.homeless = true; c.say('Set home on the Orb tab to preview the map'); }
     var kRain = JSON.stringify(d.rain);
     if (P.kRain !== kRain) { P.kRain = kRain; P.rain = { now: rainCanvas(d, 0), past: rainCanvas(d, 40), next: rainCanvas(d, -30) }; }
     var kArt = JSON.stringify(d.ground) + JSON.stringify(d.glass) + JSON.stringify(d.dot);
@@ -287,25 +290,6 @@
     return out;
   }
 
-  /* ---- the owner's home and units, then its map at each preview zoom ---- */
-  function setup(c) {
-    if (!c.orb) return;
-    (async function () {
-      try {
-        var hp = await root.GorbMaps.orbHome(c.orb.ip);
-        if (!hp) { c.say('Set home on the Orb tab to preview the map'); return; }
-        c.env({ home: hp, unit: hp.unit });
-        var bytes = {};
-        for (const zz of ZOOMS) {                     // const: each update keeps its own level
-          c.say('Building your home map for the preview (' + zz[1] + ')…');
-          bytes[zz[0]] = await level(hp, 6 + zz[0]);
-          c.env({ bytes: Object.assign({}, bytes) });
-        }
-        c.say('');
-      } catch (e) { c.say('The map preview could not be built: ' + (e && e.message ? e.message : e)); }
-    })();
-  }
-
   var app = {
     slug: 'radar', title: 'Radar', schema: B.SCHEMA,
     check: checkDesign, complete: B.complete,
@@ -322,13 +306,12 @@
     ],
     fields: fields,
     views: [
+      { key: 'place', kind: 'place', label: 'Place', tip: 'Where the preview is: home or one of the orb’s places, as turning the knob steps them' },
       { key: 'zoom', label: 'Zoom', options: ZOOMS.map(function (z) { return [z[0], z[1], 'The map at ' + z[1]]; }) },
       { key: 'time', label: 'Time', options: TIMES },
     ],
-    setup: setup,
     draw: function (x, d, c) {
-      var env = c.env;
-      drawFrame(x, d, partsOf(d, c), c.hidden, c.view.time, c.view.zoom, env.home || null, env.unit || 'km');
+      drawFrame(x, d, partsOf(d, c), c.hidden, c.view.time, c.view.zoom, c.place, c.unit);
     },
     bake: function (d, o) { return B.bake(d, o); },
     fit: function () { return { rows: LIVE_ROWS, cap: 64 }; },

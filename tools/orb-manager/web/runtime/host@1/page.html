@@ -14,6 +14,11 @@
   html, body, #root { height: 100%; margin: 0; }
   body { background: var(--bg); color: var(--fg); font: 13px/1.45 var(--sans); }
   .hs-list { display: flex; flex-direction: column; gap: 6px; padding: 8px 10px; }
+  .hs-view { display: inline-flex; align-items: center; gap: 6px; }
+  .st-tool + .st-tool { padding-top: 0; }
+  .hs-size { display: flex; flex-direction: column; gap: 2px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; }
+  .hs-size b { font-size: 11px; color: var(--mut); text-transform: uppercase; letter-spacing: .06em; }
+  .hs-size.hs-over { border-color: #f85149; color: #f85149; }
 </style>
 </head>
 <body>

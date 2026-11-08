@@ -64,6 +64,8 @@
 
   /* ---- the preview's parts, each drawn again only when its own part of the design changes
    * (the host keeps them, c.part) ---- */
+  // the orb's distance unit, as main.c reads it (a unit it has no ranges for is km)
+  var unitOf = function (c) { return RANGES[c.unit] ? c.unit : 'km'; };
   function partsOf(d, c) {
     var plate = c.part('plate', JSON.stringify(d.scope), function () { return B.plateCanvas(d); });
     var arm = c.part('arm', JSON.stringify(d.arm) + d.scope.face, async function () { var a = B.arm(d); return { c: await B.rast(a.svg, a.size[0], a.size[1]), piv: a.pivot }; });
@@ -79,11 +81,13 @@
       try { await document.fonts.load(z.body + 'px "' + d.words.face + '"'); await document.fonts.load(z.quiet + 'px "' + d.words.face + '"'); } catch (e) { /* fallback face */ }
       return out;
     });
-    // the owner's home map at the toolbar's range, drawn as the orb draws it, names and all
-    var home = c.env.home, unit = home ? home.unit : 'nm', rng = c.view.range, map = null;
-    if (home && d.map && d.map.on) {
-      var rangeKm = RANGES[unit][rng] * UNIT_KM[unit], z = M.levelOf(home.lat, rangeKm).z, b = (c.env.bytes || {})[z];
-      if (b) map = c.part('map', JSON.stringify(d.map) + '|' + rng + '|' + z + '|' + home.lat, function () {
+    // the owner's home map at the toolbar's range, drawn as the orb draws it, names and all;
+    // a level kept per range, so a step back is at once
+    var home = c.home, unit = unitOf(c), rng = c.view.range, map = null;
+    if (home && d.map && d.map.on && root.GorbMaps) {
+      var rangeKm = RANGES[unit][rng] * UNIT_KM[unit], z = M.levelOf(home.lat, rangeKm).z;
+      var b = c.part('level' + rng, home.lat + '|' + home.lon + '|' + z, function () { return root.GorbMaps.fetchLevel(home.lat, home.lon, z); }, { fresh: true });
+      if (b) map = c.part('map' + rng, JSON.stringify(d.map) + '|' + z + '|' + home.lat, function () {
         return document.fonts.load((d.map.nameSize | 0) + 'px "' + (d.map.nameFace || d.words.face) + '"').catch(function () {})
           .then(function () { return M.view(d.map, b, home.lat, rangeKm, rng); });
       });
@@ -182,7 +186,7 @@
 
   /* ---- the fields of each step ---- */
   function fields(step, c) {
-    var a = A(), d = c.d, K = c.K, upd = c.upd, setD = c.set, base = c.base, say = c.say, getIn = c.getIn, home = c.env.home;
+    var a = A(), d = c.d, K = c.K, upd = c.upd, setD = c.set, base = c.base, say = c.say, getIn = c.getIn, home = c.home;
     var opt = function (pairs) { return pairs.map(function (p) { return { v: p[0], label: p[1] }; }); };
     // a colour at a path, the preset's own offered first
     var C = function (label, path, X) {
@@ -508,33 +512,15 @@
     ],
     fields: fields,
     views: [
-      { key: 'mode', label: 'What the scope shows', options: MODES, init: 'info' },
-      { key: 'range', label: 'The map’s range', init: 2, show: function (d) { return !!(d.map && d.map.on); },
-        options: function (d, env) {
-          var unit = env.home ? env.home.unit : 'nm';
+      { key: 'mode', label: 'Shows', tip: 'What the scope shows', options: MODES, init: 'info' },
+      { key: 'range', label: 'Range', tip: 'The map’s range', init: 2, show: function (d) { return !!(d.map && d.map.on); },
+        options: function (d, env, g) {
+          var unit = RANGES[g.unit] ? g.unit : 'km';
           return RANGES[unit].map(function (r, k) { return [k, r + ' ' + unit, 'The map at the ' + ['nearest', 'second', 'third', 'widest'][k] + ' range, as a press steps it on the orb']; });
         } },
     ],
     play: { fps: function () { return B.SWEEP_FPS; }, what: 'the traffic' },
     layers: true,
-    // the owner's home and unit, then the levels the four ranges draw from (maps@1)
-    setup: function (c) {
-      if (!c.orb || !root.GorbMaps) return;
-      (async function () {
-        try {
-          var hp = await root.GorbMaps.orbHome(c.orb.ip);
-          if (!hp) return;
-          if (!RANGES[hp.unit]) hp.unit = 'km';
-          c.env({ home: hp });
-          var zs = [], bytes = {};
-          RANGES[hp.unit].forEach(function (r) { var z = M.levelOf(hp.lat, r * UNIT_KM[hp.unit]).z; if (zs.indexOf(z) < 0) zs.push(z); });
-          for (const z of zs) {
-            bytes[z] = await root.GorbMaps.fetchLevel(hp.lat, hp.lon, z);
-            c.env({ bytes: Object.assign({}, bytes) });
-          }
-        } catch (e) { c.say('The map preview could not be built: ' + (e && e.message ? e.message : e)); }
-      })();
-    },
     draw: draw,
     bake: function (d, o) {
       if (d.planes.family === 'custom' && !(d.planes.custom && d.planes.custom.image)) return Promise.reject(new Error('pick your plane picture on the Planes step first'));

@@ -1394,3 +1394,31 @@ zoom's word was lost in the map; still too many roads.
 - **Roads, further:** motorways and trunks to Local, primary from Area, secondary from
   City, tertiary at Close alone.
 
+### 6.11 Display buffers off the glass, and choosing a zoom (2026-11-07, Bronze, OS v1.2.27, uncommitted)
+
+The owner's rulings after the third hand test:
+
+- **No app holds display buffers off the glass** (owner: "this should be a given"). When
+  an app leaves the glass the stage frees its live layers and the glass overlay's square
+  (`stage_run(false)`, 651 KB each; the square is expanded again from the theme, and the
+  widget and the table's glass row repointed, on the way back), and the map service closes
+  its views and frees their rasters (`orb_map_note_glass`); the map task frees its render
+  scratch whenever no render waits. On Bronze: 1.26 MB free on the radar, 3.35 MB on
+  Weather after it, the radar whole again on its return. What stays is data, not pixels:
+  the kept frames and the map's level files, freed 15 minutes off the glass (§2.3) so a
+  return does not fetch or read again. The weather's and clock's animated plates' canvases
+  are the stage's next to look at under the same rule.
+- **Choosing a zoom freezes the radar** (owner: "only perform the load and change when I
+  release the button"): from a press-and-turn's first click until the knob is let go, only
+  the pill moves; the loop holds, nothing is fetched, no view opens. The OS tells the end:
+  `orb_push(0)` (OS v1.2.27; `knob_take_push_end`, the router's `orb_app_push_end`; the
+  bench door's `push_end=1`). A safety lands the choice after 60 s with no end. Benched:
+  the pill over a frozen view, the time held, the new zoom loading only after the end.
+- **The stray press at a zoom's end** (owner: holding at an extreme, "sometimes the end
+  also registers a push and the location changes"): the switch opened past the 60 ms
+  settle, the press-and-turn ended, the re-close began a new press, and its quick let-go
+  read as a press. A press-and-turn now ends `KG_GRACE_MS` (400 ms) after its release, and
+  a press inside the grace continues it, undebounced, its let-go spent; the end is told
+  only when the grace has run out. `host_knob_test.py`: the continuation, the end once,
+  a hold's release starting no grace; 18/18 gesture mutants. The owner's hand is the test.
+

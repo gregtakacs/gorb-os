@@ -27,6 +27,7 @@
  * module statics into widgets lv_screen_load() just invalidated.
  */
 
+#include "orb_map_credit.h"   /* radar-plan §2.4: activate hides the map credit */
 #include "orb_app.h"
 
 #include <stdio.h>      /* card_fill's snprintf into the row's own buffers */
@@ -826,6 +827,7 @@ esp_err_t orb_app_activate(const orb_app_t *app_cp)
      * the direct-activate path (?to=<card-slug>, a route) so a below-ABI package
      * can never reach the iface derefs below and take the dial down with it. */
     if (!app->iface) return ESP_ERR_NOT_SUPPORTED;
+    orb_map_credit_hide();     /* radar-plan §2.4: the map credit goes with its app */
 
     /* D35's open follow-up (bench orb-B 2026-10-21): a card row that landed AFTER
      * the boot gather — an app installed after the boot — was never init()ed, and its

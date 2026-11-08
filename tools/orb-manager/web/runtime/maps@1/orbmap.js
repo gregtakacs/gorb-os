@@ -142,6 +142,8 @@
     var v = e6 >= 0 ? e6 + 50 : e6 - 50;
     return v >= 0 ? Math.floor(v / 100) : -Math.floor(-v / 100);
   }
+  /* FORMAT 1's name. A later FORMAT names its files apart (orb_map.h), so the Places
+   * card's sweep of files no place names retires an older format's on the next Make maps. */
   function mapName(place, latE6, lonE6, z) {
     return place + '-' + e4(latE6) + '_' + e4(lonE6) + '-z' + z + '.orbmap';
   }

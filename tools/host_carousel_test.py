@@ -148,9 +148,9 @@ void lv_obj_get_coords(const lv_obj_t *o, lv_area_t *a)
 { (void)o; a->x1 = 80; a->y1 = 306; a->x2 = 399; a->y2 = 369; }
 
 /* The compositor's keep-out, as the chip drives it. */
-void gfx_keepout_set(int32_t x0, int32_t y0, int32_t x1, int32_t y1)
-{ T("keepout(%d,%d,%d,%d)", (int)x0, (int)y0, (int)x1, (int)y1); }
-void gfx_keepout_clear(void) { T("keepout_clear"); }
+void gfx_keepout_set(int slot, int32_t x0, int32_t y0, int32_t x1, int32_t y1)
+{ T("keepout%d(%d,%d,%d,%d)", slot, (int)x0, (int)y0, (int)x1, (int)y1); }
+void gfx_keepout_clear(int slot) { T("keepout_clear%d", slot); }
 void lv_obj_set_size(lv_obj_t *o, int32_t w, int32_t h) { (void)o; (void)w; (void)h; }
 void lv_obj_set_width(lv_obj_t *o, int32_t w) { (void)o; (void)w; }
 void lv_obj_align(lv_obj_t *o, int a, int32_t x, int32_t y) { (void)o; (void)a; (void)x; (void)y; }
@@ -244,7 +244,7 @@ int main(void)
     CK("init hides the chip, so no boot screen ever carries a name",
        has("hide") && !has("show"));
     CK("and a hidden chip hands its pixels back to the dial",
-       has("hide|keepout_clear"));
+       has("hide|keepout_clear0"));
 
     /* At rest: the quiet direction, which is the dangerous one. */
     reset(); orb_carousel_init();
@@ -263,7 +263,7 @@ int main(void)
     CK("the named title reaches the label", has("text(HSB)"));
     CK("a peek shows the chip", has("show"));
     CK("and fences its own box off from the direct-push painter",
-       has("show|keepout(80,306,399,369)"));
+       has("show|keepout0(80,306,399,369)"));
     CK("a lone detent is not due on the fast window — it is a stop to read",
        !orb_carousel_due(AFTER(SETTLE + 1)));
     CK("and it is due only when the read window closes",
@@ -486,8 +486,9 @@ def main():
                       "lv_color_t lv_color_black(void);\nlv_color_t lv_color_white(void);\n",
             # Only the keep-out pair: the chip must not reach for the painter.
             "orb_gfx.h": "#pragma once\n#include <stdint.h>\n"
-                         "void gfx_keepout_set(int32_t, int32_t, int32_t, int32_t);\n"
-                         "void gfx_keepout_clear(void);\n",
+                         "enum { GFX_KO_CHIP, GFX_KO_CREDIT, GFX_KO_N };\n"
+                         "void gfx_keepout_set(int, int32_t, int32_t, int32_t, int32_t);\n"
+                         "void gfx_keepout_clear(int);\n",
             # Only the four gates the carousel is allowed to touch. The rest of
             # orb_sched.h is dial policy it must never reach for, and a stub
             # header that declared more than that would let it.

@@ -896,7 +896,15 @@ static bool slug_on_dial(const char *slug);
 
 static int rows_apps(void)   { return perm_rows() + card_rows_n() + 2; } /* +1 cap, +1 back */
 static int rows_appact(void) { return appact_n() + 1; }                  /* this subject's doors + back */
-static int rows_about(void)  { return 5 + 1; }             /* 5 facts + back      */
+static const char *const ABOUT_CREDITS[] = {
+    "maps  OpenStreetMap contributors",
+    "openstreetmap.org/copyright",
+    "tiles  OpenMapTiles, OpenFreeMap",
+    "radar  LibreWXR (CC BY 4.0)",
+    "weather  Open-Meteo (CC BY 4.0)",
+};
+#define ABOUT_CREDITS_N ((int)(sizeof ABOUT_CREDITS / sizeof ABOUT_CREDITS[0]))
+static int rows_about(void)  { return 5 + ABOUT_CREDITS_N + 1; }   /* facts, credits, back */
 
 /* ABOUT's first row is the address, and with the cursor on it (the page opens
  * there) the glass shows a QR code for the orb's own page instead of the list:
@@ -1447,9 +1455,15 @@ static void job_cardrm(void *arg)
     worker_publish(&out);
 }
 
-/* ABOUT is a read-only list and says so in its hint: five facts, no press that
- * changes anything. Every getter here is a RAM read — no NVS, no card, no
- * queue — so the page paints instantly and cannot answer "working...". */
+/* ABOUT is a read-only list and says so in its hint: five facts, then the data the
+ * OS draws from and whose it is, no press that changes anything. Every getter here
+ * is a RAM read — no NVS, no card, no queue — so the page paints instantly and
+ * cannot answer "working...".
+ *
+ * The credits (radar-plan §2.4, weather-plan): OpenStreetMap's licence asks for
+ * its address "in an easily locatable part of the application" beside the credit
+ * the glass shows when a map first appears (orb_map_credit.c), and Open-Meteo's
+ * and LibreWXR's data are CC BY 4.0. */
 static void label_about(int row, char *out, size_t outsz, bool *sel_hi)
 {
     if (sel_hi) *sel_hi = false;
@@ -1477,7 +1491,10 @@ static void label_about(int row, char *out, size_t outsz, bool *sel_hi)
             snprintf(out, outsz, "zone  %s", zl);
         }
         return;
-    default: snprintf(out, outsz, "<- back"); return;
+    default:
+        if (row >= 5 && row < 5 + ABOUT_CREDITS_N) { snprintf(out, outsz, "%s", ABOUT_CREDITS[row - 5]); return; }
+        snprintf(out, outsz, "<- back");
+        return;
     }
 }
 

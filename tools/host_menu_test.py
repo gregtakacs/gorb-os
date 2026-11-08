@@ -1662,12 +1662,12 @@ int main(void)
        s_pg == &s_pages[PG_APPS] && s_door_slot == -1 && s_doormode == 0 &&
        s_card_sub == -1 && s_uninst_arm == -1 && s_cardrm_arm == -1);
 
-    /* ABOUT: the address first (the QR's row), five facts, and no press that
-     * does anything */
+    /* ABOUT: the address first (the QR's row), five facts, the five credits
+     * (radar-plan §6.7), and no press that does anything */
     s_pg = &s_pages[PG_TOP]; s_cur = 0; g_posts = 0;
     menu_view_apply_input(0, true);
     ck("ABOUT opens on its address row, and the QR is what shows",
-       s_pg == &s_pages[PG_ABOUT] && page_rows() == 6 && s_cur == 0 && about_qr_on());
+       s_pg == &s_pages[PG_ABOUT] && page_rows() == 11 && s_cur == 0 && about_qr_on());
     ck("on the QR the hint says who scans it",
        !strcmp(page_hint(), "scan with a phone on this Wi-Fi"));
     ck("the facts are the address, the image, the card, the count and the zone",
@@ -1676,7 +1676,13 @@ int main(void)
        !strcmp(rowline(2), "card  SDSC") &&
        !strcmp(rowline(3), "installed  2 of 8") &&
        !strcmp(rowline(4), "zone  Europe/Bucharest") &&
-       !strcmp(rowline(5), "<- back"));
+       !strcmp(rowline(10), "<- back"));
+    ck("then the credits: OpenStreetMap and its licence's address, the tiles, the radar and the weather",
+       !strcmp(rowline(5), "maps  OpenStreetMap contributors") &&
+       !strcmp(rowline(6), "openstreetmap.org/copyright") &&
+       !strcmp(rowline(7), "tiles  OpenMapTiles, OpenFreeMap") &&
+       !strcmp(rowline(8), "radar  LibreWXR (CC BY 4.0)") &&
+       !strcmp(rowline(9), "weather  Open-Meteo (CC BY 4.0)"));
     turn_down(1);
     ck("a turn off the address puts the list back",
        s_cur == 1 && !about_qr_on() && strstr(page_hint(), "nothing here") != NULL);

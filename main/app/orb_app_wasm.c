@@ -54,6 +54,7 @@
 #include "orb_places.h"         /* orb_places_gen, behind orb.places_gen */
 #include "orb_app_blob.h"       /* radar-plan §2.3: kept bodies */
 #include "orb_map.h"            /* radar-plan §2.4: the OS maps */
+#include "orb_map_credit.h"     /* radar-plan §2.4: the first map drawn shows the credit */
 #include "orb_map_raster.h"     /* ORB_MAP_W: a view's raster, drawn onto the live layer */
 #include "esp_timer.h"
 #include <setjmp.h>
@@ -1234,9 +1235,11 @@ m3ApiRawFunction(imp_map_draw)                /* i32 map_draw(i32 cv, i32 h, con
         if (!live_tgt(s, cv, &t)) m3ApiReturn(ORB_MAP_ABSENT);
         orb_ui_tgt_roles(&t, ras, p, dx, dy);
         stage_live_damage(dx, dy, ORB_MAP_W, ORB_MAP_W);
+        orb_map_credit_drawn(s->app);
         m3ApiReturn(ORB_MAP_READY);
     }
     orb_ui_cv_roles(slot_index(s), cv, ras, p, dx, dy);
+    orb_map_credit_drawn(s->app);
     m3ApiReturn(ORB_MAP_READY);
 }
 

@@ -85,7 +85,7 @@ static void chip_hide(void)
     /* The dial owns the pixels the chip was standing on from here on: the
      * compositor's keep-out lifts, re-marks the rect, and the next commit
      * repaints the band whole. */
-    gfx_keepout_clear();
+    gfx_keepout_clear(GFX_KO_CHIP);
 }
 
 /* Name `app` on the chip and raise it. Re-texts one pre-built label rather than
@@ -105,7 +105,7 @@ static void chip_show(const orb_app_t *app)
      * second place to be wrong about it. */
     lv_area_t a;
     lv_obj_get_coords(s_chip, &a);
-    gfx_keepout_set(a.x1, a.y1, a.x2, a.y2);
+    gfx_keepout_set(GFX_KO_CHIP, a.x1, a.y1, a.x2, a.y2);
 }
 
 esp_err_t orb_carousel_init(void)

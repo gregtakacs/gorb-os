@@ -250,6 +250,10 @@ void orb_svc_current_note(const orb_app_t *a)
 {
     T("cur_note:%s", a && a->slug ? a->slug : "?");
 }
+/* radar-plan §2.4: an activate takes the map credit down with the app it stood for.
+ * Counted, not traced, so the swap traces above read as they always did. */
+static int g_credit_hides;
+void orb_map_credit_hide(void) { g_credit_hides++; }
 
 esp_err_t art_bank_map_extra(size_t off, size_t need, int *out_slot)
 {
@@ -740,6 +744,7 @@ int main(void)
     ck("the two real apps are tagged apps",
        A("clock")->kind == ORB_APP_KIND_APP && A("color_picker")->kind == ORB_APP_KIND_APP);
     ck("the table fits the installed-app cap B5 sets", ORB_APP_N <= ORB_APP_CAP);
+    ck("activating an app takes the map credit down", g_credit_hides > 0);
 
     printf("%s\n", g_fail ? "SOME FAILED" : "ALL PASS");
     return g_fail ? 1 : 0;

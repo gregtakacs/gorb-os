@@ -85,6 +85,7 @@
 #include "display.h"
 #include "orb_gfx.h"   /* the OS compositor: gfx_commit() paints the layers this file picks */
 #include "orb_sched.h" /* the delta bank + frame tick: the canvas, the plate frames, the ladder */
+#include "orb_map_credit.h"  /* the live bench draws a map as an app would */
 #include "orb_ui.h"      /* §43: the stage builds on its app's own page */
 #include "orb_app_wasm.h" /* orb_wasm_tick: the app's frame, run from the scheduler */
 #include "orb_svc.h"    /* orb_time_now(): the dial's wall second, OS-owned since the P3 time commit */
@@ -1639,6 +1640,7 @@ static void live_bench_step(void)
         if (s_lb.ras) {
             orb_ui_tgt_roles(&t, s_lb.ras, s_lb.pal, 0, 0);
             stage_live_damage(0, 0, CLK_SCR_W, CLK_SCR_H);
+            orb_map_credit_drawn(s_lay_app);    /* as orb_map_draw does */
         }
         s_lb.roles_us = (uint32_t)(esp_timer_get_time() - t1);
         const int64_t t2 = esp_timer_get_time();

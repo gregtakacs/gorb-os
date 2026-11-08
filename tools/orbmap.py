@@ -71,7 +71,9 @@ def e4(e6):
 
 
 def map_name(place, lat_e6, lon_e6, z):
-    """The OS's file name for a place's level: "<place>-<lat_e4>_<lon_e4>-z<z>.orbmap"."""
+    """The OS's file name for a place's level: "<place>-<lat_e4>_<lon_e4>-z<z>.orbmap".
+    FORMAT 1's name: a later FORMAT names its files apart (orb_map.h), so the hub's sweep
+    of names no place uses is what retires an older format's files."""
     return "%d-%d_%d-z%d.orbmap" % (place, e4(lat_e6), e4(lon_e6), z)
 
 

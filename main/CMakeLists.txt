@@ -15,6 +15,7 @@ idf_component_register(
         # handle tables, so an app names its own objects and never an OS pointer.
         "app/orb_ui.c"
         "app/orb_carousel.c"
+        "app/orb_map_credit.c"
         "app/orb_jobs.c"
         # §43: the HTTPS service a wasm app fetches through (the flight feed's gate
         # and TLS discipline, with no idea what a flight is) and the per-app

@@ -517,6 +517,16 @@ void orb_maps_bump(void)
     if (s_busy) xSemaphoreGive(s_busy);
 }
 
+uint32_t orb_map_app_bytes(int app_slot)
+{
+    const app_maps_t *a = app_of(app_slot);
+    if (!a) return 0;
+    uint32_t b = 0;
+    for (int i = 0; i < FILES_PER_APP; i++) if (a->f[i].buf) b += a->f[i].len;
+    for (int i = 0; i < ORB_MAP_VIEWS; i++) if (a->v[i].raster) b += ORB_MAP_RASTER_B;
+    return b;
+}
+
 void orb_map_stats(uint32_t *renders, uint32_t *last_ms, uint32_t *files, uint32_t *file_bytes)
 {
     uint32_t n = 0, b = 0;

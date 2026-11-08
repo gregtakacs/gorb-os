@@ -69,3 +69,5 @@ void     orb_maps_bump(void);
 
 /* For /api/v1/status: renders done, the last one's ms, and the files held. */
 void orb_map_stats(uint32_t *renders, uint32_t *last_ms, uint32_t *files, uint32_t *file_bytes);
+/* PSRAM an app holds here: its level files and its views' rasters (/status, §6.21). */
+uint32_t orb_map_app_bytes(int app_slot);

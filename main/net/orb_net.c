@@ -63,6 +63,7 @@ static uint8_t s_ap_last_mac[6];    /* DIAGNOSTIC: the client we are watching */
 #include "orb_home.h"
 #include "orb_places.h"  /* /api/v1/places, radar-plan §2.1 */
 #include "orb_map.h"     /* POST /api/v1/places/maps, radar-plan §2.4 */
+#include "orb_app_blob.h"   /* /status: an app's kept bodies (§6.21) */
 #include "orb_png8.h"    /* /api/v1/debug/png_bench, radar-plan R3 */
 #include "orb_rotation.h"   /* §59: /api/v1/carousel */
 #include "orb_units.h"   /* /api/v1/home: the OS home location (flight-tracker-design §6.4) */
@@ -2590,7 +2591,7 @@ static esp_err_t h_status(httpd_req_t *req)
                 "%s{\"slug\":\"%s\",\"grants\":[%s],\"declared\":[%s],\"calls\":%u,"
                 "\"denials\":%u,\"denied_mask\":%u,\"beat_ms\":%u,\"cfg_used\":%u,"
                 "\"faults\":%u,\"layers\":[%d,%u],\"failed\":%s,\"status\":\"%s\","
-                "\"reason\":\"%s\"}",
+                "\"reason\":\"%s\",\"psram\":{\"kept\":%u,\"maps\":%u}}",
                 i ? "," : "", a->slug, grants, declared,
                 (unsigned)orb_svc_calls(a),
                 (unsigned)orb_svc_denials(a), (unsigned)orb_svc_denied_mask(a),
@@ -2598,7 +2599,11 @@ static esp_err_t h_status(httpd_req_t *req)
                 (unsigned)orb_svc_cfg_used(a), (unsigned)orb_svc_fault_count(a),
                 orb_svc_layers_live(a), (unsigned)orb_svc_layers_refused(a),
                 orb_app_failed_live(a) ? "true" : "false", orb_svc_last_status(a),
-                orb_svc_fault_reason(a));
+                orb_svc_fault_reason(a),
+                /* radar-plan §6.21: what the app holds in PSRAM through the OS (its own
+                 * module and canvases are its slot's) */
+                (unsigned)(a->flash_slot >= 0 ? orb_blob_used(a->flash_slot) : 0),
+                (unsigned)(a->flash_slot >= 0 ? orb_map_app_bytes(a->flash_slot) : 0));
             if (w < 0 || (size_t)w >= APPS_JSON_BYTES - (size_t)off) break;
             off += w;
         }
@@ -2631,9 +2636,15 @@ static esp_err_t h_status(httpd_req_t *req)
 
     uint32_t lvm_total, lvm_free, lvm_biggest, lvm_peak;
     display_lv_mem(&lvm_total, &lvm_free, &lvm_biggest, &lvm_peak);
+    multi_heap_info_t ps_info;
+    heap_caps_get_info(&ps_info, MALLOC_CAP_SPIRAM);
     const int n = snprintf(json, sizeof(json),
         "{\"state\":\"%s\",\"ip\":\"%s\",\"mac\":\"%s\",\"rssi\":%d,\"fw\":\"%s\",\"idf\":\"%s\","
         "\"heap_internal\":%u,\"heap_internal_largest\":%u,\"heap_psram\":%u,"
+        /* radar-plan §6.21: free is not enough. A big ask needs one block, and PSRAM
+         * cut into pieces refuses it with plenty free (Gold, 2026-11-08: 919 KB free,
+         * a 312 KB map refused) */
+        "\"psram\":{\"largest\":%u,\"free_blocks\":%u,\"used_blocks\":%u,\"min_free\":%u},"
         /* §43: the deepest the wasm apps' shared native stack has run, in bytes of
          * its ORB_WASM_NATIVE_STACK. The interpreter's depth is measured, not assumed. */
         "\"wasm_stack_peak\":%u,"
@@ -2713,6 +2724,8 @@ static esp_err_t h_status(httpd_req_t *req)
         (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
         (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL),
         (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM),
+        (unsigned)ps_info.largest_free_block, (unsigned)ps_info.free_blocks,
+        (unsigned)ps_info.allocated_blocks, (unsigned)ps_info.minimum_free_bytes,
         (unsigned)orb_wasm_stack_peak(),
         (unsigned)orb_wasm_budget_slips(),
         (unsigned)lvm_total, (unsigned)lvm_free, (unsigned)lvm_biggest, (unsigned)lvm_peak,

@@ -123,7 +123,10 @@ enum {
 };
 #define ORB_RADIUS_CIRCLE 0x7FFF
 
-enum { ORB_FONT_14 = 0, ORB_FONT_16 = 1, ORB_FONT_48 = 2 };
+/* The system fonts (Montserrat, ASCII and LVGL's symbols): an app's text is 18 px, 14 the
+ * small print, 48 the one big figure. OS v1.2.38: the 16 px font became 18 in its slot, so an
+ * app built for 16 draws at 18. */
+enum { ORB_FONT_14 = 0, ORB_FONT_18 = 1, ORB_FONT_48 = 2 };
 
 ORB_IMPORT("ui_create")  int32_t orb_ui_create(int32_t kind, int32_t parent);
 ORB_IMPORT("ui_set")     void    orb_ui_set(int32_t h, int32_t prop, int32_t v);

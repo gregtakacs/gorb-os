@@ -839,9 +839,9 @@ ORB_EXPORT("orb_init") int32_t orb_init(void)
     }
     if (!s_themed) orb_set_beat(60000);  /* widgets: once a minute, for the age line */
     if (!s_themed) {
-        W_title  = text(ORB_FONT_16, 0xB0B0B0, ORB_AL_TOP_MID, 60);
+        W_title  = text(ORB_FONT_18, 0xB0B0B0, ORB_AL_TOP_MID, 60);
         W_big    = text(ORB_FONT_48, 0xFFFFFF, ORB_AL_CENTER, -30);
-        W_line   = text(ORB_FONT_16, 0xE0E0E0, ORB_AL_CENTER, 30);
+        W_line   = text(ORB_FONT_18, 0xE0E0E0, ORB_AL_CENTER, 30);
         W_detail = text(ORB_FONT_14, 0x909090, ORB_AL_CENTER, 90);
     }
     load_places();

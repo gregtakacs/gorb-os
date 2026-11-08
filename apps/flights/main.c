@@ -1057,9 +1057,9 @@ ORB_EXPORT("orb_init") int32_t orb_init(void)
         if (!s_cv) return ORB_ERR_NO_MEM;
     }
     if (!s_labels) {                 /* a theme's labels draw the words: no widget at all */
-        s_head = text(ORB_FONT_16, 0xD0D0D0, ORB_AL_TOP_MID, 16);
+        s_head = text(ORB_FONT_18, 0xD0D0D0, ORB_AL_TOP_MID, 16);
         s_foot = text(ORB_FONT_14, 0x909090, ORB_AL_BOTTOM_MID, -14);
-        s_card = text(ORB_FONT_16, 0xFFFFFF, ORB_AL_BOTTOM_MID, -40);
+        s_card = text(ORB_FONT_18, 0xFFFFFF, ORB_AL_BOTTOM_MID, -40);
         orb_ui_set(s_card, ORB_P_TEXT_ALIGN, 1);
         orb_ui_set(s_card, ORB_P_BG, 0x101820);
         orb_ui_set(s_card, ORB_P_BG_OPA, 204);

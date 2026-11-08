@@ -92,7 +92,7 @@ static int32_t free_handle(const ui_slot_t *u)
 static const lv_font_t *font_of(int32_t f)
 {
     switch (f) {
-    case 1:  return &lv_font_montserrat_16;
+    case 1:  return &lv_font_montserrat_18;   /* ORB_FONT_18 (was 16 before OS v1.2.38) */
     case 2:  return &lv_font_montserrat_48;
     default: return &lv_font_montserrat_14;
     }

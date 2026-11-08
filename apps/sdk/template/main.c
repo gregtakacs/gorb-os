@@ -57,11 +57,11 @@ ORB_EXPORT("orb_init") int32_t orb_init(void)
     orb_knob_dial();                     /* every turn and press is ours while we show */
     s_cfg_gen = orb_cfg_gen();
     orb_cfg_get("saved", &s_saved);
-    s_title = label(ORB_FONT_16, 0x909090, "@TITLE@");
+    s_title = label(ORB_FONT_18, 0x909090, "@TITLE@");
     orb_ui_align(s_title, ORB_AL_TOP_MID, 0, 90);
     s_value_lbl = label(ORB_FONT_48, 0xFFFFFF, "0");
     orb_ui_align(s_value_lbl, ORB_AL_CENTER, 0, -10);
-    s_clock = label(ORB_FONT_16, 0x606060, "");
+    s_clock = label(ORB_FONT_18, 0x606060, "");
     orb_ui_align(s_clock, ORB_AL_CENTER, 0, 50);
     s_hint = label(ORB_FONT_14, 0x909090, "");
     orb_ui_align(s_hint, ORB_AL_BOTTOM_MID, 0, -70);

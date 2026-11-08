@@ -39,9 +39,10 @@ CONFIG_COMPILER_OPTIMIZATION_PERF=y
 # LVGL 9 configuration (managed component lvgl/lvgl)
 CONFIG_LV_COLOR_DEPTH_16=y
 CONFIG_LV_FONT_MONTSERRAT_48=y
-# Small fonts for the color-picker chips + hint line
+# The small fonts: 14 for the menu, the picker's chips and hints; 18 an app's text font
+# (ORB_FONT_18; owner, 2026-11-08: no app text under 18 px, so 16 is gone)
 CONFIG_LV_FONT_MONTSERRAT_14=y
-CONFIG_LV_FONT_MONTSERRAT_16=y
+CONFIG_LV_FONT_MONTSERRAT_18=y
 # Plan §54: the carousel's app names.
 CONFIG_LV_FONT_MONTSERRAT_28=y
 # The menu's ABOUT page draws a QR code for the orb's own page (http://<ip>/)

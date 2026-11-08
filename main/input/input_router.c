@@ -474,8 +474,13 @@ static void poll_timer_cb(lv_timer_t *timer)
      * app can never leave it, and the way between apps is one list. A press still arms
      * a view that has one. */
     /* A press-and-turn's end (radar-plan §6.11): the app that took its clicks hears it as
-     * orb_push(0), and acts on the choice only now. */
-    if (push_end) orb_app_push_end();
+     * orb_push(0), and acts on the choice only now. Clicks taken in the same pass go
+     * first: an end ahead of them left the choice open (the bench door's push_turn and
+     * push_end, one frame apart). */
+    if (push_end) {
+        if (push && screen_armed(s_current) && orb_app_push(push)) push = 0;
+        orb_app_push_end();
+    }
 
     if (!screen_armed(s_current)) {
         delta += push;                       /* nobody to take it: an ordinary turn */

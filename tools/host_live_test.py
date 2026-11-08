@@ -31,8 +31,10 @@ STAGE = os.path.join(ROOT, "main", "stage", "orb_stage.c")
 # walk anyway; the test says so for readers). The same goes for live_restack's explicit
 # stop at the two lifted layers: they carry no tag, so the tag test stops there too.
 MUTATIONS = [
-    (UI, "const int32_t v = (top * (k2 - fy) + bot * fy + k2 * k2 / 2) / (k2 * k2);", "const int32_t v = (top * (k2 - fy) + bot * fy) / (k2 * k2);"),
-    (UI, "const int32_t u = p->sx * k2 + 2 * X - 2 * p->dx + 1 - p->k;", "const int32_t u = p->sx * k2 + 2 * X - 2 * p->dx;"),
+    (UI, "const int32_t half = k2 * k2 / 2,", "const int32_t half = 0,"),
+    (UI, "const int32_t u = p->sx * k2 + 2 * X - 2 * p->dx + 1 - p->k, x0", "const int32_t u = p->sx * k2 + 2 * X - 2 * p->dx, x0"),
+    (UI, "p->pal[p->shift >= 0 ? n >> p->shift : n / (k2 * k2)]", "p->pal[p->shift >= 0 ? n >> (p->shift - 1) : n / (k2 * k2)]"),
+    (UI, "for (int x = 0; x < w; x++) p->col[x] = p->prev[x] * (k2 - fy) + p->cur[x] * fy;", "for (int x = 0; x < w; x++) p->col[x] = p->prev[x] * (k2 - fy) + p->cur[x] * (fy ? fy : 1);"),
     (UI, "const int32_t c = p->sy * k2 - 2 * p->dy + 1 - p->k;", "const int32_t c = p->sy * k2 - 2 * p->dy;"),
     (UI, "if (x0 < 0 || x0 + 1 >= w) continue;", "if (x0 < 0 || x0 >= w) continue;"),
     (UI, "static int32_t floordiv(int32_t a, int32_t b) { return a >= 0 ? a / b : -((-a + b - 1) / b); }", "static int32_t floordiv(int32_t a, int32_t b) { return a / b; }"),
@@ -80,6 +82,7 @@ def lifted(mutation=None):
         func(ui, "static inline void over("),
         sctx,
         ui[ui.index("static int32_t floordiv("):ui.index("\n", ui.index("static int32_t floordiv(")) + 1],   # one line
+        func(ui, "static void smooth_prep("),
         func(ui, "static int smooth_row("),
         func(stage, "static uint16_t depth_key("),
         func(stage, "static void live_restack(void)"),
@@ -155,6 +158,7 @@ static int run_smooth(const uint8_t *src, int sw, int shh, int sx, int sy, int d
     orb_ui_tgt_t t = { G, NULL, 64, 64, 64 };
     static smooth_ctx_t c;
     c = (smooth_ctx_t){ .t = &t, .pal = pal, .vmap = vmap, .sx = sx, .sy = sy, .dx = dx, .dy = dy, .w = gw, .h = gh, .k = k, .prev_y = -2 };
+    smooth_prep(&c);
     int rows = 0;
     for (int y = 0; y < shh; y++) { rows++; if (smooth_row(&c, y, src + y * sw, sw)) break; }
     return rows;

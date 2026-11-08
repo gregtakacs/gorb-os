@@ -389,11 +389,27 @@ typedef struct {
     const pal565_t *pal;           /* by value */
     const uint8_t *vmap;           /* index -> value */
     int32_t sx, sy, dx, dy, w, h, k;
-    int32_t prev_y;
+    int32_t prev_y, shift;         /* shift: log2(4k^2) when k is a power of two, else -1 */
     uint8_t prev[ORB_PNG8_MAX_W], cur[ORB_PNG8_MAX_W];
+    int16_t x0[ORB_PNG8_MAX_W];    /* per glass column: its left source column, -1 off the image */
+    uint8_t fx[ORB_PNG8_MAX_W];    /* and its weight toward the right one, 0 .. 2k-1 */
+    int32_t col[ORB_PNG8_MAX_W];   /* the row pair blended down one glass row, per source column */
 } smooth_ctx_t;
 
 static int32_t floordiv(int32_t a, int32_t b) { return a >= 0 ? a / b : -((-a + b - 1) / b); }
+
+/* Each glass column's source column and weight, once a draw, and the divide's shift. */
+static void smooth_prep(smooth_ctx_t *p)
+{
+    const int32_t k2 = 2 * p->k;
+    p->shift = -1;
+    if (!(p->k & (p->k - 1))) for (p->shift = 0; (1 << p->shift) < k2 * k2; p->shift++) {}
+    for (int32_t X = 0; X < p->w && X < ORB_PNG8_MAX_W; X++) {
+        const int32_t u = p->sx * k2 + 2 * X - 2 * p->dx + 1 - p->k, x0 = floordiv(u, k2);
+        p->x0[X] = (int16_t)(x0 < 0 || x0 >= ORB_PNG8_MAX_W ? -1 : x0);
+        p->fx[X] = (uint8_t)(u - x0 * k2);
+    }
+}
 
 static int smooth_row(void *ctx, int y, const uint8_t *idx, int w)
 {
@@ -406,21 +422,25 @@ static int smooth_row(void *ctx, int y, const uint8_t *idx, int w)
         int32_t y0 = floordiv((y - 1) * k2 - c + 1, 2), y1 = floordiv(y * k2 - c + 1, 2);
         if (y0 < 0) y0 = 0;
         if (y1 > p->h) y1 = p->h;
+        /* The same sum as blending each source row across and then the two down, in the
+         * other order: down once per source column, then across per glass pixel. Exact
+         * either way; a blank stretch (both values 0 under a clear palette 0) is skipped. */
+        const int32_t half = k2 * k2 / 2, sum0 = !p->pal[0].a;
+        int32_t xw = p->w < (int32_t)p->t->w ? p->w : (int32_t)p->t->w;
+        if (xw > ORB_PNG8_MAX_W) xw = ORB_PNG8_MAX_W;
         for (int32_t Y = y0; Y < y1; Y++) {
             const int32_t fy = 2 * Y + c - (y - 1) * k2;          /* 0 .. 2k-1 */
-            const int32_t GY = Y;                                 /* glass rows 0..h, as X */
-            if ((uint32_t)GY >= (uint32_t)p->t->h) continue;
-            for (int32_t X = 0; X < p->w; X++) {
-                const int32_t u = p->sx * k2 + 2 * X - 2 * p->dx + 1 - p->k;
-                const int32_t x0 = floordiv(u, k2), fx = u - x0 * k2;
+            if ((uint32_t)Y >= (uint32_t)p->t->h) continue;
+            for (int x = 0; x < w; x++) p->col[x] = p->prev[x] * (k2 - fy) + p->cur[x] * fy;
+            const int32_t base = Y * p->t->stride;
+            for (int32_t X = 0; X < xw; X++) {
+                const int32_t x0 = p->x0[X];
                 if (x0 < 0 || x0 + 1 >= w) continue;
-                const int32_t GX = X;
-                if ((uint32_t)GX >= (uint32_t)p->t->w) continue;
-                const int32_t top = p->prev[x0] * (k2 - fx) + p->prev[x0 + 1] * fx;
-                const int32_t bot = p->cur[x0] * (k2 - fx) + p->cur[x0 + 1] * fx;
-                const int32_t v = (top * (k2 - fy) + bot * fy + k2 * k2 / 2) / (k2 * k2);
-                const pal565_t e = p->pal[v];
-                if (e.a) over(p->t, GY * p->t->stride + GX, e.c, e.a);
+                const int32_t a = p->col[x0], b = p->col[x0 + 1];
+                if (sum0 && !(a | b)) continue;
+                const int32_t fx = p->fx[X], n = a * (k2 - fx) + b * fx + half;
+                const pal565_t e = p->pal[p->shift >= 0 ? n >> p->shift : n / (k2 * k2)];
+                if (e.a) over(p->t, base + X, e.c, e.a);
             }
         }
         if (floordiv(y * k2 - c + 1, 2) >= p->h) return 1;  /* past the window: stop decoding */
@@ -458,6 +478,7 @@ int32_t orb_ui_tgt_png8(const orb_ui_tgt_t *t, const uint8_t *png, uint32_t len,
         for (int i = 0; i < 256; i++) vmap[i] = np ? value[i] : (uint8_t)i;
         *sc = (smooth_ctx_t){ .t = t, .pal = pal + 256, .vmap = vmap, .sx = sx, .sy = sy, .dx = dx, .dy = dy,
                               .w = w, .h = hh, .k = scale, .prev_y = -2 };
+        smooth_prep(sc);
         r = orb_png8_decode(png, len, scratch, orb_png8_scratch_size(), smooth_row, sc);
         heap_caps_free(sc);
         heap_caps_free(vmap);

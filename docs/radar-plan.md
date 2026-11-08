@@ -1448,3 +1448,25 @@ the words were too small.
   level's ground scale goes with cos(latitude): 51.5° N against 32.9° N is
   cos 51.5 / cos 32.9 = 0.74. Fixed distances per step would mean resampling the map off
   its levels (blurrier roads); not done unless the owner asks.
+
+### 6.13 "Loading radar" after every flip (2026-11-08, Bronze, OS v1.2.29, radar v1.1.0)
+
+The owner: every place flipped to sat at "Loading radar". The kept bodies are 768 KB an
+app, and a stormy day fills them. When the list moved on (every 10 minutes), its newest
+frame came back with the old frames still held; the OS refused to keep it (by design: "the
+app frees an old one") and the radar took that as a fetch failure, backing off 1, 2, 5,
+then 10 minutes. A flip dropped the frames but kept the backoff, so the new place asked
+for nothing. Now the newest past frame and the nowcast make room, the oldest past frames
+held going first (the loop starts later); a new place or image zoom clears the backoff; a
+frame in flight for the old view is dropped on landing; and frames the OS freed 15 minutes
+off the glass are noticed on return instead of drawing nothing.
+
+Benched with a fetch-state log: zoom to Close, flip, the new place's 12 + 6 frames fetched
+at once. The bench door's `push_turn` and `push_end` landing in one router pass delivered
+the end first and left the choice open: clicks in the same pass now go before the end.
+
+The smoothed draw costs 120-140 ms a frame at Close on a stormy day (the glass falls to
+3 fps while the loop plays). Each column's source position is now worked out once a draw
+and the row pair blended once per glass row, bit-exact with the reference
+(`host_live_test.py`, 17 mutants), but the cost barely moved (140 → 120 ms): it is
+elsewhere (the decode or the canvas), and is the next thing to measure.

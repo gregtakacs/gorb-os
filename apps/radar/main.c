@@ -125,6 +125,7 @@ static int slot_free(void)
 }
 static void frames_drop(void)                    /* a new place or zoom: none of these fit it */
 {
+    s_net_frame = -1;                            /* a frame in flight was the old view's */
     for (int i = 0; i < RD_FRAMES; i++) {
         if (F[i].slot >= 0) orb_blob_free((uint32_t)F[i].slot);
         F[i].slot = -1;
@@ -269,7 +270,18 @@ static void net_step(bool visible)
     }
     if (ni.state != ORB_NET_DONE || ni.status != 200 || ni.len < 40) { net_failed(&ni); return; }
     const int s = f->slot >= 0 ? f->slot : slot_free();
-    const int32_t kept = s < 0 ? ORB_ERR_NO_MEM : orb_net_keep((uint32_t)s);
+    int32_t kept = s < 0 ? ORB_ERR_NO_MEM : orb_net_keep((uint32_t)s);
+    /* The newest past frame and the nowcast make room: the oldest past frames held go,
+     * and the loop starts later. Refused here, a new list's newest frame backed off for
+     * up to 10 minutes, and a place flipped meanwhile sat at "Loading radar" (owner,
+     * Bronze, 2026-11-08). */
+    for (int k = 0; kept == ORB_ERR_NO_MEM && s >= 0 && (f->now || s_net_frame == idx_newest()) && k < idx_newest(); k++) {
+        if (F[k].slot < 0) continue;
+        orb_blob_free((uint32_t)F[k].slot);
+        F[k].slot = -1;
+        F[k].failed = true;
+        kept = orb_net_keep((uint32_t)s);
+    }
     if (kept == ORB_ERR_NO_MEM && !f->now && s_net_frame < idx_newest()) {
         /* The OS keeps 768 KB of bodies an app, and a stormy day's frames are 50-70 KB:
          * the older past frames go unfetched for this list, and the loop starts later.
@@ -515,6 +527,8 @@ static void view_changed(bool frames)
 {
     if (frames) {
         frames_drop();
+        s_retry_ms = 0;                          /* a new place asks at once */
+        s_backoff_ms = 0;
         s_play = true;
         s_loop = 0;
         orb_dial_home(&s_dial);
@@ -626,6 +640,8 @@ static void on_glass(void)
     stage_read();
     /* the OS closed the map's views when the app left (no display buffers off the glass,
      * OS v1.2.27): a new one, the frames kept unless nothing has been shown yet */
+    for (int i = 0; i < RD_FRAMES; i++)              /* the OS frees kept bodies 15 min off the glass */
+        if (F[i].slot >= 0 && !orb_blob_len((uint32_t)F[i].slot)) { F[i].slot = -1; F[i].etag[0] = 0; }
     const bool first = !s_view && !s_view_next && !s_npast;
     s_view = s_view_next = 0;
     if (first) place_changed();

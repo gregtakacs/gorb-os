@@ -22,13 +22,13 @@
 #define DEFAULT_SOURCE "https://api.librewxr.net"
 
 /* the theme's slots (apps/radar/editor/radar-bake.js) */
-enum { T_DOT = 0, T_HAND = 1, T_TIME = 8, T_PLACE = 9, T_RANGE = 10, T_STATUS = 11, T_NAME0 = 12 };
+enum { T_DOT = 0, T_HAND = 1, T_TIME = 8, T_PLACE = 9, T_RANGE = 10, T_STATUS = 11, T_NAME0 = 12, T_ZOOM = 18 };
 #define N_NAMES 6
 #define N_ROWS 64
 
 static orb_stage_info_t s_stage;
 static bool  s_themed;
-static int32_t R_dot = -1, R_hand = -1, R_time = -1, R_place = -1, R_range = -1, R_status = -1;
+static int32_t R_dot = -1, R_hand = -1, R_time = -1, R_place = -1, R_range = -1, R_status = -1, R_zoom = -1;
 static int32_t R_name[N_NAMES];
 static rd_values_t V;
 
@@ -294,7 +294,18 @@ static void net_step(bool visible)
 
 static int32_t s_view = 0, s_view_next = 0;     /* handles; 0 = none */
 static bool    s_map_dirty, s_map_absent;
+static int64_t s_map_retry_ms;                  /* a map that failed for want of memory: again */
 static int     s_shown = -2;                   /* the frame on the glass, -1 none */
+
+/* No map on the card (or no card) is "No map yet" until the hub makes one; anything else
+ * (memory, a read) is tried again in 3 s, the old view kept up meanwhile. */
+static void map_failed(int32_t why)
+{
+    s_view_next = 0;
+    if (why == ORB_MAP_ABSENT || why == ORB_MAP_NOCARD) { s_map_absent = true; s_map_dirty = true; }
+    else s_map_retry_ms = up_ms() + 3000;
+    orb_logf("radar: the map did not open (%d)%s", (int)why, s_map_absent ? "" : ", again in 3 s");
+}
 
 static void view_open(void)
 {
@@ -309,7 +320,7 @@ static void view_open(void)
     memcpy(v.dash, V.dash, sizeof v.dash);
     if (s_view_next > 0) orb_map_close(s_view_next);
     s_view_next = orb_map_open((uint32_t)w->os, &v);
-    if (s_view_next < 0) { s_map_absent = true; s_view_next = 0; s_map_dirty = true; }
+    if (s_view_next < 0) map_failed(s_view_next);
     s_maps_gen = orb_maps_gen();
 }
 
@@ -320,8 +331,8 @@ static void view_step(void)
     if (r == 0) return;
     if (r < 0) {
         orb_map_close(s_view_next);
-        s_view_next = 0;
-        s_map_absent = true;
+        map_failed(r);
+        if (!s_map_absent) return;
     } else {
         if (s_view > 0) orb_map_close(s_view);
         s_view = s_view_next;
@@ -457,10 +468,25 @@ static void draw_ui(void)
         hide(R_hand);
     }
     const char *st = "";
+    /* the zoom, large, while it changes (owner, 2026-11-07: the small word was lost in the
+     * map); a theme without the large row says it on the status line */
+    const bool zooming = s_zoom_want >= 0 || up_ms() - s_zoom_said_ms < 2000;
+    const int zs = s_zoom_want >= 0 ? s_zoom_want : s_zoom;
+    if (R_zoom >= 0 && zooming && w) {
+        char zb[40];
+        rd_range_text(b, sizeof b, rd_radius_m(zs, w->lat_e6), s_units.dist);
+        snprintf(zb, sizeof zb, "%s  %s", ZOOM[zs], b);
+        say(R_zoom, CX, CY + 56, zb, 0);
+    } else {
+        hide(R_zoom);
+    }
+    const int want = frame_wanted();
     if (!w) st = "Set home on the hub";
-    else if (s_zoom_want >= 0 || up_ms() - s_zoom_said_ms < 2000) st = ZOOM[s_zoom_want >= 0 ? s_zoom_want : s_zoom];
+    else if (zooming && R_zoom < 0) st = ZOOM[zs];
+    else if (s_view_next > 0 || s_map_retry_ms) st = "Loading map";
     else if (s_map_absent) st = "No map yet";
     else if (!s_npast) st = s_net != NET_IDLE ? "Loading radar" : "No radar yet";
+    else if (want >= 0 && F[want].slot < 0 && !F[want].failed) st = "Loading radar";
     else if (s_list_at && now_s() - s_list_at > STALE_S) {
         snprintf(b, sizeof b, "updated %d min ago", (int)((now_s() - s_list_at) / 60));
         st = b;
@@ -528,7 +554,7 @@ static void redraw(void)
 
 static void find_rows(void)
 {
-    R_dot = R_hand = R_time = R_place = R_range = R_status = -1;
+    R_dot = R_hand = R_time = R_place = R_range = R_status = R_zoom = -1;
     for (int k = 0; k < N_NAMES; k++) R_name[k] = -1;
     for (int32_t i = 0; i < (int32_t)s_stage.n_rows && i < N_ROWS; i++) {
         clk_row_t r;
@@ -540,6 +566,7 @@ static void find_rows(void)
         else if (t == T_PLACE) R_place = i;
         else if (t == T_RANGE) R_range = i;
         else if (t == T_STATUS) R_status = i;
+        else if (t == T_ZOOM) R_zoom = i;
         else if (t >= T_NAME0 && t < T_NAME0 + N_NAMES) R_name[t - T_NAME0] = i;
     }
 }
@@ -555,33 +582,29 @@ static void read_values(void)
     if (V.names > N_NAMES) V.names = N_NAMES;
 }
 
-static int32_t W_msg;
-
 /* The stage, read afresh: at a boot the theme may not be bound while the app builds, and
- * a theme may be swapped while the app is away, so every arrival on the glass asks. Without
- * this app's layout the page says why, in a widget made only then, on the glass: a widget on
- * the page, hidden or not, takes the dial off its fast path (orb_stage.c's veto). */
-static void stage_read(bool arriving)
+ * a theme may be swapped or fail to bind (PSRAM ran short: Bronze, 2026-11-07), so every
+ * arrival asks, and the service asks again every 2 s while it has none. No widget stands in
+ * for it: a widget on the page, hidden or not, took the dial off its fast path for good
+ * (orb_stage.c's veto), and the hub installs the shelf's theme with the app. */
+static int64_t s_stage_retry_ms;
+static void stage_read(void)
 {
+    const bool was = s_themed;
     s_themed = orb_stage_open(&s_stage) == ORB_OK && !s_stage.base;
     if (s_themed) find_rows();
     if (s_themed && R_time < 0) s_themed = false;      /* not this app's layout */
     read_values();
-    orb_set_beat(s_themed ? 0 : 60000);
-    if (!s_themed && !W_msg && arriving) {
-        W_msg = orb_ui_create(ORB_UI_LABEL, 0);
-        orb_ui_set(W_msg, ORB_P_FONT, ORB_FONT_16); orb_ui_set(W_msg, ORB_P_TEXT_ALIGN, 1); orb_ui_set(W_msg, ORB_P_TEXT_COLOR, 0xC0C0C0);
-        orb_ui_text(W_msg, "Radar draws on its theme:\ninstall one from the hub");
-        orb_ui_align(W_msg, ORB_AL_CENTER, 0, 0);
-    }
-    if (W_msg) orb_ui_set(W_msg, ORB_P_HIDDEN, s_themed);
+    orb_set_beat(s_themed ? 0 : 2000);
+    if (was != s_themed) orb_logf("radar: %s", s_themed ? "on its theme" : "no theme bound yet: asking again");
+    s_stage_retry_ms = up_ms() + 2000;
 }
 
 ORB_EXPORT("orb_init") int32_t orb_init(void)
 {
     orb_knob_dial();
     for (int i = 0; i < RD_FRAMES; i++) F[i].slot = -1;
-    stage_read(false);
+    stage_read();
     load_settings();
     load_places();
     orb_units(&s_units);
@@ -595,7 +618,7 @@ static void on_glass(void)
 {
     s_visible = true;
     s_layers = false;                  /* the stage frees the layers when another app binds */
-    stage_read(true);
+    stage_read();
     if (!s_view && !s_view_next) place_changed();
     else s_map_dirty = true;
     orb_logf("radar on the glass: %s, rows %d, time %d, %d places, zoom %d", s_themed ? "themed" : "no theme",
@@ -643,6 +666,8 @@ ORB_EXPORT("orb_service") void orb_service(void)
         s_ui_dirty = s_rain_dirty = true;
     }
     zoom_step();
+    if (s_visible && !s_themed && up_ms() >= s_stage_retry_ms) { stage_read(); s_layers = false; s_map_dirty = s_rain_dirty = s_ui_dirty = true; }
+    if (s_map_retry_ms && up_ms() >= s_map_retry_ms) { s_map_retry_ms = 0; view_open(); }
     view_step();
     net_step(s_visible);
     if (s_visible) redraw();

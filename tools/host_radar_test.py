@@ -184,8 +184,9 @@ int main(int argc, char **argv)
     static rd_values_t v;
     rd_values_default(&v);
     CK(sizeof v == 1144, "rd_values_t is 1,144 B (layout 2)");
-    CK(rd_roles_at(&v, 0) == (0x7FFF & ~((1u << 5) | (1u << 13) | (1u << 14))) && rd_roles_at(&v, 2) == (0x7FFF & ~((1u << 13) | (1u << 14))) &&
-       rd_roles_at(&v, 4) == 0x7FFF, "the roads by step: motorways at Wide, primary from Local, all from City");
+    CK(rd_roles_at(&v, 2) == (0x7FFF & ~((1u << 5) | (1u << 13) | (1u << 14))) && rd_roles_at(&v, 3) == (0x7FFF & ~((1u << 13) | (1u << 14))) &&
+       rd_roles_at(&v, 4) == (0x7FFF & ~(1u << 14)) && rd_roles_at(&v, 5) == 0x7FFF,
+       "the roads by step: motorways and trunks to Local, primary from Area, secondary from City, tertiary at Close");
     CK(v.rain[83] == 0 && v.rain[84] != 0 && v.rain[255] == 0xFFFFFFFF, "the ramp is clear under 10 dBZ (value 84) and white at the top");
     FILE *f = fopen("defaults.bin", "wb");
     if (f) { fwrite(&v, sizeof v, 1, f); fclose(f); }

@@ -84,11 +84,11 @@ def check(name, raw, exe):
     if not h or int(h["x"]) + int(h["pivot_x"]) != 233 or int(h["y"]) + int(h["pivot_y"]) != 233:
         bad.append("the time cursor at 1 does not turn about the glass's centre")
     fonts = sorted(int(e["slot"]) for e in els if int(e["class"]) == ts.CLASS_TEXT)
-    if fonts != [0, 1, 2]:
+    if fonts != [0, 1, 2, 3]:
         bad.append("fonts: %s" % fonts)
-    labs = [s for s in range(8, 18) if s in aux and int(aux[s]["kind"]) == ts.SHAPE_TEXT]
-    if labs != list(range(8, 18)):
-        bad.append("labels at %s, not 8..17" % labs)
+    labs = [s for s in range(8, 19) if s in aux and int(aux[s]["kind"]) == ts.SHAPE_TEXT]
+    if labs != list(range(8, 19)):
+        bad.append("labels at %s, not 8..18" % labs)
     vals = [e for e in els if int(e["class"]) == ts.CLASS_VALUES]
     if len(vals) != 1 or int(vals[0]["src"]) != 2:
         bad.append("no values of layout 2")

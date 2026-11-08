@@ -222,9 +222,10 @@ void rd_values_default(rd_values_t *v)
     v->width[9] = 1; v->width[12] = 2; v->width[13] = 1; v->width[14] = 1;
     v->dash[7] = 2;                                        /* state lines long-dashed */
     v->role_on = 0x7FFF;
-    /* the roads by step: motorways everywhere, primary from Local, secondary from 60 km,
-     * tertiary from 30 km (owner, 2026-11-07: DFW and London far too dense) */
-    v->step_from[5] = 2; v->step_from[13] = 3; v->step_from[14] = 4;
+    /* the roads by step: motorways and trunks everywhere, primary from Area (60 km),
+     * secondary from City (30 km), tertiary at Close alone (owner, 2026-11-07, twice: DFW
+     * and London far too dense) */
+    v->step_from[5] = 3; v->step_from[13] = 4; v->step_from[14] = 5;
     v->mark_on = 0x09;                                     /* cities and airports */
     v->names = 4;
     v->map_order = 0;

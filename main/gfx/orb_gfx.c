@@ -1072,6 +1072,14 @@ void gfx_prep_mode(int mode)
     memset(s_pz_r, 0, sizeof s_pz_r);
     memset(s_pz_full, 0, sizeof s_pz_full);
     pp_stale_clear_all();
+    if (!s_pp_mode && (s_pf || s_pb || s_pfn || s_pbn)) {
+        /* Off: the four planes (1.7 MB of PSRAM) go back. They used to stay for the rest
+         * of the boot once one plan had played, and the radar, beside its two live layers,
+         * ran PSRAM down to 600 KB (Bronze, 2026-11-07: a map that would not open, a theme
+         * that would not bind). Every reader is behind s_pp_mode. */
+        heap_caps_free(s_pf); heap_caps_free(s_pb); heap_caps_free(s_pfn); heap_caps_free(s_pbn);
+        s_pf = s_pb = s_pfn = s_pbn = NULL;
+    }
     if (s_pp_mode && !s_pf) {
         const size_t n = (size_t)CLK_SCR_W * CLK_SCR_H * 2;
         s_pf  = heap_caps_malloc(n, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);

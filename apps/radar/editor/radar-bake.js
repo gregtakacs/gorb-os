@@ -8,9 +8,10 @@
  *     map and the rain (the live layers stand between the plate and the rows);
  *   - slot 0: the place's dot; slot 1: the time cursor, a dot on the rim the app turns
  *     (1.5 degrees a minute from Now at the top);
- *   - fonts 0 (ink), 1 (forecast: the ink's glyphs in the forecast colour), 2 (quiet);
- *   - the labels: 8 the time, 9 the place, 10 the range, 11 the status, 12..17 the
- *     landmarks' names;
+ *   - fonts 0 (ink), 1 (forecast: the ink's glyphs in the forecast colour), 2 (quiet),
+ *     3 (the zoom's word, large);
+ *   - the labels: 8 the time, 9 the place, 10 the range, 11 the status (on a backing),
+ *     12..17 the landmarks' names, 18 the zoom while it changes (large, on a backing);
  *   - the values (layout 2, apps/radar/radar.h rd_values_t): the map's role palette,
  *     widths, dashes and what it draws, the names shown, the two live layers' depths, the
  *     rain ramp as 256 ARGB words, and the first zoom step each role is drawn at;
@@ -23,7 +24,7 @@
 
   var SCHEMA = 1, G = 466, CX = 233, NONE = 0xF;
   var CHARSET = (function () { var c = []; for (var i = 0x20; i < 0x7F; i++) c.push(String.fromCharCode(i)); return c; })();
-  var SLOT = { dot: 0, hand: 1, time: 8, place: 9, range: 10, status: 11, name0: 12 };
+  var SLOT = { dot: 0, hand: 1, time: 8, place: 9, range: 10, status: 11, name0: 12, zoom: 18 };
   var N_NAMES = 6;
   var VALUES_VER = 2;
   // the map's roles by index (OS v1.2.26's FORMAT 2): road1 motorway and trunk, road2 primary,
@@ -38,7 +39,8 @@
       name: 'Radarscope',           // the shelf file is its name (radarscope.orbtheme): weather's is Scope
       ground: { top: '#0b1822', foot: '#05090d' },
       glass: { ring: '#5fd4c4', ringA: 0.30, rings: [0.5, 1.0], cross: true, track: '#5fd4c4', trackA: 0.55, forecast: '#e0b040' },
-      words: { face: 'IBM Plex Mono', px: 18, ink: '#d8f4ee', forecast: '#e0b040', quiet: '#7fa8a2', namePx: 14, nameFace: 'IBM Plex Sans' },
+      words: { face: 'IBM Plex Mono', px: 18, ink: '#d8f4ee', forecast: '#e0b040', quiet: '#7fa8a2', namePx: 14, nameFace: 'IBM Plex Sans',
+               zoomPx: 34, backing: 'rgba(4,10,14,0.78)' },   // the zoom's word while it changes, on a backing
       dot: { colour: '#ffffff', ring: '#e0b040', r: 4.5 },   // white: the airports are amber
       map: {
         water: '#0a2233', land: '#101a22', urban: '#18242e', lake: '#0e2c40', river: '#1f5a80', road2: '#4a5966',
@@ -48,7 +50,7 @@
         dash: { state: 'long' },
         // the first zoom step each is drawn at (Wide 0 .. Close 5): the roads thin out as the
         // view widens (owner, 2026-11-07)
-        from: { road2: 2, road3: 3, road4: 4 },
+        from: { road2: 3, road3: 4, road4: 5 },
         off: [], marks: ['city', 'airport'], names: 4
       },
       // dBZ stops: colour, opacity (the noise floor is 10 dBZ)
@@ -195,21 +197,29 @@
       plane(dotCanvas(d)), true, false);
     St.row({ n: St.id(), class: AUX, slot: SLOT.hand, x: CX - HAND_W / 2, y: 0, w: HAND_W, h: HAND_H, pivot_x: HAND_W / 2, pivot_y: CX,
       order: rowsOrder, alpha: 255, n_frames: 1 }, plane(handCanvas(d)), true, false);
-    var W = d.words, F = [await font(W.face, W.px, W.ink), await font(W.face, W.px, W.forecast), await font(W.nameFace, W.namePx, W.quiet)];
-    var colours = [W.ink, W.forecast, W.quiet];
+    var W = d.words, F = [await font(W.face, W.px, W.ink), await font(W.face, W.px, W.forecast), await font(W.nameFace, W.namePx, W.quiet),
+      await font(W.face, W.zoomPx || 34, W.ink)];
+    var colours = [W.ink, W.forecast, W.quiet, W.ink];
     F.forEach(function (fo, fi) {
       St.font({ n: St.id(), class: TEXT, slot: fi, x: 0, y: 0, w: fo.w, h: fo.h, order: 0, pivot_x: Math.min(fo.space, fo.w), pivot_y: fo.track },
         fo.glyphs.map(plane), colours[fi]);
     });
     var tones = function (t) { return t.reduce(function (s, fn, k) { return s + (fn << (4 * k)); }, 0); };
     var L = [{ slot: SLOT.time, t: [0, 1, NONE, NONE], w: 200, f: 0 }, { slot: SLOT.place, t: [0, NONE, NONE, NONE], w: 300, f: 0 },
-             { slot: SLOT.range, t: [2, NONE, NONE, NONE], w: 160, f: 2 }, { slot: SLOT.status, t: [2, NONE, NONE, NONE], w: 260, f: 2 }];
+             { slot: SLOT.range, t: [2, NONE, NONE, NONE], w: 160, f: 2 },
+             { slot: SLOT.status, t: [2, NONE, NONE, NONE], w: 200, f: 2, backing: true, grow: 8 },
+             { slot: SLOT.zoom, t: [3, NONE, NONE, NONE], w: 340, f: 3, backing: true, grow: 16 }];
     for (var k = 0; k < N_NAMES; k++) L.push({ slot: SLOT.name0 + k, t: [2, NONE, NONE, NONE], w: 180, f: 2 });
     L.forEach(function (l) {
-      var h = F[l.f].h + 2;
+      var h = F[l.f].h + 2 + (l.grow || 0), panel = canvas(l.w, h);
+      if (l.backing) {           // a rounded backing the words stand on, legible over map and rain
+        var x = panel.getContext('2d'), r = h / 2;
+        x.fillStyle = W.backing || 'rgba(4,10,14,0.78)';
+        x.beginPath(); x.moveTo(r, 0); x.arcTo(l.w, 0, l.w, h, r); x.arcTo(l.w, h, 0, h, r); x.arcTo(0, h, 0, 0, r); x.arcTo(0, 0, l.w, 0, r); x.closePath(); x.fill();
+      }
       St.row(Object.assign({ n: St.id(), class: AUX, kind: 2, src: GB.SOURCES.indexOf('text'), w: l.w, h: h,
-        pivot_x: l.w >> 1, pivot_y: h >> 1, alpha: 255, n_frames: 1, str: tones(l.t), radius: 1, digit: 1, end: 1 },
-        centred(l.w, h, l.slot)), plane(canvas(l.w, h)), true, false);
+        pivot_x: l.w >> 1, pivot_y: h >> 1, alpha: 255, n_frames: 1, str: tones(l.t), radius: l.backing ? 8 : 1, digit: 1, end: 1 },
+        centred(l.w, h, l.slot)), plane(panel), true, false);
     });
     St.values(valuesBytes(d), VALUES_VER);
     St.preview({ plane: plane(await picture(d, 128)), x: 0, y: 0, order: 3 });

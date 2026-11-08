@@ -419,7 +419,10 @@ getting each place's offset from Open-Meteo, and the radar labels frames relativ
   stays shown with a quiet "updated 40 min ago".
 - **Coverage:** one coverage image per place and zoom, fetched with the first frame and
   kept for the session (~1.3 KB). Where it says 0, the glass dims the area rather than
-  showing it as dry.
+  showing it as dry. *Not built (R5, §6.8):* LibreWXR's coverage image marks where a
+  frame's data is non-zero (its renderer: `mask = values > 0`), an echo mask rather than
+  where radar reaches: 2.6 % of DFW at z6, all of it under NEXRAD. It cannot tell dry from
+  unwatched, so the radar shows no such state.
 - **Attribution**, in the app's settings help, as Weather credits Open-Meteo: "Radar:
   LibreWXR (CC BY 4.0) from national radar services, NOAA and ECMWF via Open-Meteo." Italy's
   DPC data is CC-BY-SA; the help names it. The map's credit (OpenStreetMap) is the OS's
@@ -686,7 +689,9 @@ colour, width, dash, preset and timing is the theme's (§0 ruling 17).
 
 **What it keeps** in its 64 KB: the frame list (18 × time, path and blob slot, about
 1 KB), the palettes (1 KB for rain, 64 B for the map), the place on the glass and its zoom.
-The frames are blobs (§2.3); the map is the OS's (§2.4).
+The frames are blobs (§2.3); the map is the OS's (§2.4). *As built (§6.8):* a stormy day's
+frames are 40–70 KB, so 18 can pass the OS's 768 KB; when a frame will not fit, the older
+past frames go unfetched for that list and the loop starts later.
 
 **Zoom:** three steps, the map's z6, z7 and z8: 479, 239 and 120 km from the centre to the
 edge at DFW, and 366, 183 and 92 km at 50°N. **Each asks LibreWXR for its 512 px image one
@@ -710,7 +715,9 @@ frames are fetched separately, and a step change opens a new map view.
   anticlockwise wider; the ends stop. The rim shows the three steps while it is used.
 - **A hold** is the OS's app list and menu.
 
-**On the glass**, drawn into one 466×466 canvas, back to front:
+**On the glass**, back to front (*as built:* no canvas: the map in live layer 0, drawn
+once a view, the rain in live layer 1, cleared and drawn alone each step, §6.5; the
+overlay is the theme's rows and glass):
 
 1. The ground fill, then the map (`orb_map_draw` of the open view, with the theme's role
    palette; the view carries the theme's line widths).
@@ -724,7 +731,9 @@ frames are fetched separately, and a step change opens a new map view.
 
 *Estimate:* one step costs the map's blend from its role raster, the radar decode and the
 overlay, 30–60 ms, inside 250 ms at 4 fps. The map's render (§2.4) happens once a view, not
-once a step.
+once a step. *Measured (§6.8):* 85–90 ms a step on Bronze (the frame's decode and blend;
+the map is not redrawn), four a second while the loop plays, which `orb_burst` holds up:
+a theme with no moving rows ticks its app once a second.
 
 ### 2.6 Budget
 
@@ -1247,4 +1256,64 @@ The owner's call after §6.4: keep the map parked and redraw only the rain.
   is its FORMAT's (`orb_map.h`, `orbmap.py`, `maps@1` say so): a later FORMAT names its
   files apart, so the OS never opens an older one, and the Places card's sweep of names no
   place uses removes them on the next Make maps.
+
+### 6.8 R5, the radar app (2026-11-07, Bronze, radar v1.0.0 on OS v1.2.25, uncommitted)
+
+- **`apps/radar`** (24.8 KB of wasm, 46 imports, on the hub's shelf; `os_min` v1.2.24).
+  `radar.c` is the model, free of imports: LibreWXR's frame list read token by token, the
+  frame and list URLs, the image's draw window, the zoom ladder, the words, and
+  `rd_values_t` (layout 1, 1,128 B: the map's palette, widths, dashes, roles, marks and
+  names shown, the two layers' depths, the rain as 256 ARGB words) with Scope's defaults.
+  `main.c` is the app:
+  - **places:** home and the OS's three, a press for the next, the step kept;
+  - **frames:** the list every 10 minutes; the newest past frame first, then the nowcast
+    (a held one asked again with `If-None-Match`; Bronze answered 304 for the five it held
+    and 200 for the new one), then
+    the older past ones newest first; one request at a time; a frame that turns from
+    nowcast to past is fetched afresh; failures back off 1, 2, 5, 10 minutes, a 404 (the
+    server no longer keeps it) does not; past 30 minutes the age is shown;
+  - **the glass:** the map in live layer 0 at the theme's depth, opened per place and zoom
+    at the step's exact radius and drawn once it is ready; the rain in layer 1, cleared
+    and drawn through the theme's ramp at the window `rd_window` gives; the dot, the time
+    cursor (1.5 degrees a minute from Now), the place, the time ("Now", "-40 min", the
+    nowcast's in the theme's forecast colour), the range in the orb's unit, a status line
+    ("No map yet", "Loading radar", the zoom's name for 2 s, the age) and up to six
+    landmark names kept off the dot, off each other and off the labels' bands;
+  - **the knob:** the dial is time, centred on Now; untouched, the past loops at four a
+    second and holds Now 2 s; a turn stops it; the idle return starts it again;
+    press-and-turn zooms a step a click (Wide, Region, Local; the ends stop).
+  The stage is read afresh at every arrival on the glass: at a boot the theme was not yet
+  bound while the app built, and the first bench run drew only the plate and glass.
+- **The image against the map:** the server centres a point image on the URL's four
+  decimals with `round(px - 256)` (Python's round, its y clamped to the world); the app
+  draws the window from `round(place_px - origin - 233)`, so the rain sits within half a
+  pixel of the map. The guest's libm has no log, so the model carries its own for the
+  Mercator y (`rd_ln`, libm's to 1e-14).
+- **The theme** (`apps/radar/editor/radar-bake.js`, in the app's editor region, which R5
+  ships because `os_min` rides it; its page says the editor is R7's): the plate, the glass
+  (two range rings, a dotted crosshair, the time track's 18 ticks, the nowcast's in the
+  forecast colour), the dot (white with an amber ring: the airports are amber), the cursor,
+  three fonts, ten labels, the values and the preview. The shelf's starter is
+  **Radarscope** (`radarscope.orbtheme`, 1.13 MB; a shelf file is its theme's name, and
+  Weather's is Scope), checked by `apps/radar/editor/_selftest/bake_check.py` in Chrome
+  and re-baked by `tools/rebake_shelf.py radar`.
+- **Tests.** `tools/host_radar_test.py` compiles `radar.c` beside the OS's tokenizer: the
+  list (whole, torn, out of order, gaps, a path too long), the URLs, `rd_ln`, the window
+  against the server's formula at 10 places x 3 zooms including both poles' clamps,
+  Python's round, the ladder against `pick_level`, the words, and the C defaults against
+  the baker's Scope values byte for byte (with node); 11/11 mutants (one equivalent edit
+  left out, said why).
+- **On Bronze, DFW with a storm to the south-west and Austin under it:** the map, the rain
+  over it with the roads through it, the names (Wichita Falls, Sherman, Dallas, Tyler,
+  Waco), the loop playing (-60, then -10), a turn stopping it at -30 min, a press to
+  Austin with its own rain, press-and-turn to Local (z7 frames, 30–37 KB) and two clicks
+  out to Wide (z5, 25 KB). A Region step costs 85–90 ms on the LVGL task. The OS's
+  "Map data: OpenStreetMap" showed with the first map after each boot.
+- **Found and fixed on the way:** Austin's Region frames (51–69 KB) filled the 768 KB of
+  kept bodies, and the app read it as a network failure and backed off; it now stops
+  fetching older frames instead. The bench door gained `push_turn=N` (a press-and-turn,
+  debug builds, OS v1.2.25) to drive the zoom without a hand.
+- **For R6:** the internal RAM under the radar with both layers and the map (Bronze showed
+  33 KB free, the largest block 13 KB, and the display's tile ring re-funded short once);
+  an hour on the glass; a card pulled mid-read.
 

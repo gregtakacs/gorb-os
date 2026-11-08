@@ -46,11 +46,13 @@
 #include "orb_sd.h"        /* orb_sd_mounted(), for the reason line only */
 #include "orb_app.h"       /* D35: this app's own ledger row */
 #include "orb_svc.h"
+#include "display.h"      /* §60.2: display_dma_parked, the prefetch's pacing */
 
 #include <stdio.h>
 #include <string.h>
 
 #include "freertos/FreeRTOS.h"
+#include "freertos/task.h"      /* §60.2: the preview work's own task */
 #include "freertos/semphr.h"
 #include "esp_log.h"
 #include "esp_err.h"
@@ -169,6 +171,50 @@ static void pv_publish(const pv_t *src)
     s_pv_dirty = true;                /* published last, as publish() does */
 }
 
+/* ---- §60.2: the compressed-preview cache ------------------------------------------
+ * Owner, 2026-11-07: the page should load ahead and let the owner rotate through themes
+ * without each one stopping to load. A card read lends the display's DMA ring for its whole
+ * length (orb_sd_lock), so the page freezes while one runs; inflating bytes already in PSRAM
+ * does not touch the card. So while the cursor rests, the worker fetches the stored previews
+ * of the themes nearest it (here, then +1, -1, +2, -2), one at a time, into this cache; a
+ * landing on a cached theme inflates from memory, never the card; and a turn never starts a
+ * card read. Clock themes run ~150-225 KB each and twenty of them would not fit in PSRAM, so
+ * the cache is bounded and evicts the entry farthest from the cursor. LVGL task only: the
+ * worker gets a pointer at post time, and nothing is evicted while a job is outstanding. */
+#define ZC_MAX       8
+#define ZC_BUDGET    (900u * 1024u)
+#define ZC_REST_MS   350       /* the cursor rests this long before a fetch starts */
+typedef struct {
+    char      id[ORB_THEME_HANDLE_MAX + 1];
+    uint8_t  *z;
+    uint32_t  n;
+    uint16_t  side;
+} zc_t;
+static zc_t     s_zc[ZC_MAX];
+static struct { char id[ORB_THEME_HANDLE_MAX + 1]; uint8_t *z; uint32_t n; uint16_t side; } s_zx;
+static volatile bool s_z_dirty;        /* a fetch's answer is waiting in s_zx    */
+static bool     s_z_fly;               /* a fetch is posted and unreaped         */
+static int64_t  s_moved_us;            /* the cursor's last move                 */
+static bool     s_zc_drop;             /* the page left: empty the cache once free */
+static int64_t  s_z_done_us;           /* when the last fetch was filed           */
+#define ZC_GAP_MS    300       /* the glass draws this long between two fetches */
+
+static const zc_t *zc_find(const char *id)
+{
+    for (int i = 0; i < ZC_MAX; i++) if (s_zc[i].z && !strcmp(s_zc[i].id, id)) return &s_zc[i];
+    return NULL;
+}
+static uint32_t zc_bytes(void)
+{
+    uint32_t t = 0;
+    for (int i = 0; i < ZC_MAX; i++) if (s_zc[i].z) t += s_zc[i].n;
+    return t;
+}
+static void zc_drop_all(void)
+{
+    for (int i = 0; i < ZC_MAX; i++) { if (s_zc[i].z) heap_caps_free(s_zc[i].z); memset(&s_zc[i], 0, sizeof s_zc[i]); }
+}
+
 static void publish(const cui_t *src)
 {
     xSemaphoreTake(s_mx, portMAX_DELAY);
@@ -219,13 +265,48 @@ static void job_run(void *arg)
  * errors, so they publish an empty; the caller that shows status reads e for
  * the rest. A post that raced a card pull answers NO_SLOT from the reader's
  * own door and is reported the same quiet way. */
-static void pv_job_run(void *arg)
+/* §60.2: what a display job is handed. From the cache: the stored bytes, inflated here with
+ * no card at all. Not cached: the id alone, and the job reads the card as it always has. */
+typedef struct {
+    char            id[ORB_THEME_HANDLE_MAX + 1];
+    const uint8_t  *z;
+    uint32_t        n;
+    uint16_t        side;
+} pv_ask_t;
+
+/* §60.2: a prefetch, on the worker: one theme's stored preview into PSRAM, published for the
+ * service to file in the cache. The card read is the cost the cache exists to pay ahead. */
+static void zc_job_run(void *arg)
 {
     const char *id = (const char *)arg;
+    char why[72] = "";
+    uint32_t n = 0;
+    uint16_t side = 0;
+    uint8_t *z = (orb_sd_mounted() && !orb_theme_upload_busy())
+               ? orb_theme_preview_zcopy(id, &n, &side, why, sizeof why) : NULL;
+    xSemaphoreTake(s_mx, portMAX_DELAY);
+    strlcpy(s_zx.id, id, sizeof s_zx.id);
+    s_zx.z = z; s_zx.n = n; s_zx.side = side;
+    xSemaphoreGive(s_mx);
+    s_z_dirty = true;
+}
+
+static void pv_job_run(void *arg)
+{
+    const pv_ask_t *ask = (const pv_ask_t *)arg;
+    const char *id = ask->id;
     pv_t out;
     memset(&out, 0, sizeof out);
     strlcpy(out.id, id, sizeof out.id);
     out.gen = ++s_pv_gen;                 /* worker-owned counter, one writer */
+
+    if (ask->z) {                         /* §60.2: cached — memory only, no card */
+        out.px = orb_preview_inflate(ask->z, ask->n, ask->side);
+        if (out.px) { out.w = out.h = ask->side; }
+        else { out.e = ESP_FAIL; strlcpy(out.why, "the cached preview did not inflate", sizeof out.why); }
+        pv_publish(&out);
+        return;
+    }
 
     if (!orb_sd_mounted() || orb_theme_upload_busy()) {
         pv_publish(&out);                 /* empty, quiet: no card, no plane */
@@ -308,6 +389,8 @@ void themes_page_reset(void)
      * is on the card" again rather than holding a picture of the theme the
      * cursor last sat on. */
     themes_page_drop_preview();
+    s_zc_drop = true;                  /* §60.2: the cache goes with the page, once no job holds it */
+    s_moved_us = 0;
 }
 
 /* Drop the displayed plane and any published-but-unreaped answer. Runs on the
@@ -320,6 +403,42 @@ void themes_page_drop_preview(void)
     memset(&s_pvu, 0, sizeof s_pvu);
     s_pv_row = -1;
     s_pv_since = 0;
+}
+
+/* §60.2: the preview work's own task. On the jobs worker it froze the page: the shell drops
+ * every turn while orb_jobs_busy() (a running job owns the cursor's row), so a prefetch in
+ * flight swallowed the owner's turns (Gold, 2026-11-07: three detents, two landed). Here it
+ * never counts as the page being busy; the card lock still orders it against the worker.
+ * One request at a time, the service retrying a post the task is not free to take. */
+static TaskHandle_t s_pvt;
+static volatile bool s_pvt_busy;
+static void (*s_pvt_fn)(void *);
+static uint8_t s_pvt_arg[sizeof(pv_ask_t)];
+static void pvt_main(void *arg)
+{
+    (void)arg;
+    for (;;) {
+        ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+        if (s_pvt_fn) s_pvt_fn(s_pvt_arg);
+        s_pvt_busy = false;
+    }
+}
+static esp_err_t pvt_post(void (*fn)(void *), const void *arg, size_t n)
+{
+    if (!s_pvt) {
+        if (xTaskCreatePinnedToCoreWithCaps(pvt_main, "theme_pv", 8192, NULL, 2, &s_pvt,
+                                            tskNO_AFFINITY, MALLOC_CAP_SPIRAM) != pdPASS) {
+            s_pvt = NULL;
+            return ESP_ERR_NO_MEM;
+        }
+    }
+    if (s_pvt_busy || n > sizeof s_pvt_arg) return ESP_ERR_INVALID_STATE;
+    s_pvt_busy = true;
+    s_pvt_fn = fn;
+    memset(s_pvt_arg, 0, sizeof s_pvt_arg);
+    memcpy(s_pvt_arg, arg, n);
+    xTaskNotifyGive(s_pvt);
+    return ESP_OK;
 }
 
 void themes_page_service(void)
@@ -361,21 +480,89 @@ void themes_page_service(void)
         }
     }
 
+    /* §60.2: the page left — give the memory back once no job can hold a pointer into it */
+    if (s_zc_drop && !s_armed && !s_pvt_busy && !s_z_fly) {
+        zc_drop_all();
+        s_zc_drop = false;
+    }
+    if (s_armed) s_zc_drop = false;
+    /* §60.2: a fetch landed: file it, making room by dropping what is farthest from the
+     * cursor (never while a job may still hold a pointer — the worker is free here). */
+    if (s_z_dirty && !s_pvt_busy) {
+        s_z_dirty = false;
+        s_z_fly = false;
+        s_z_done_us = esp_timer_get_time();
+        xSemaphoreTake(s_mx, portMAX_DELAY);
+        zc_t got = { .z = s_zx.z, .n = s_zx.n, .side = s_zx.side };
+        strlcpy(got.id, s_zx.id, sizeof got.id);
+        memset(&s_zx, 0, sizeof s_zx);
+        xSemaphoreGive(s_mx);
+        if (got.z && !zc_find(got.id)) {
+            const int cur = s_pv_row - ROW_ITEMS;
+            for (;;) {
+                bool slot_free = false;
+                for (int i = 0; i < ZC_MAX; i++) if (!s_zc[i].z) slot_free = true;
+                if (slot_free && zc_bytes() + got.n <= ZC_BUDGET) break;
+                int far = -1, fd = -1;
+                for (int i = 0; i < ZC_MAX; i++) {
+                    if (!s_zc[i].z) continue;
+                    int at = -1;
+                    for (int k = 0, m = 0; k < s_ui.n; k++)
+                        if (!strcmp(s_ui.e[k].app, s_for)) { if (!strcmp(s_ui.e[k].id, s_zc[i].id)) at = m; m++; }
+                    const int d = at < 0 ? 1 << 20 : (at > cur ? at - cur : cur - at);
+                    if (d > fd) { fd = d; far = i; }
+                }
+                if (far < 0) break;
+                heap_caps_free(s_zc[far].z);
+                memset(&s_zc[far], 0, sizeof s_zc[far]);
+            }
+            int slot = -1;
+            for (int i = 0; i < ZC_MAX && slot < 0; i++) if (!s_zc[i].z) slot = i;
+            if (slot >= 0 && zc_bytes() + got.n <= ZC_BUDGET) s_zc[slot] = got;
+            else heap_caps_free(got.z);
+        } else if (got.z) {
+            heap_caps_free(got.z);
+        }
+    }
+
     /* The settle: post one read once the cursor has rested on a theme row for
      * PV_SETTLE_MS with the worker free. The rest rule is the whole reason a
      * land queues a read at all — a read per detent through a 62-row spin is
      * ~108 KB of card work per stop and the knob never answers; a read after
      * the spin costs the one theme the owner stopped on. */
     const int pvi = mine(s_pv_row - ROW_ITEMS);
-    if (pvi >= 0 && s_pv_since && !orb_jobs_busy() &&
+    if (pvi >= 0 && s_pv_since && !orb_jobs_busy() && !s_pvt_busy &&
         esp_timer_get_time() / 1000 - s_pv_since / 1000 >= PV_SETTLE_MS) {
         const int i = pvi;
         if (!s_pvu.px || strcmp(s_pvu.id, s_ui.e[i].id) != 0) {
-            s_pv_since = 0;                   /* one post per land, settled */
-            const esp_err_t e = orb_jobs_post(pv_job_run, s_ui.e[i].id,
-                                              strlen(s_ui.e[i].id) + 1);
+            pv_ask_t ask;
+            memset(&ask, 0, sizeof ask);
+            strlcpy(ask.id, s_ui.e[i].id, sizeof ask.id);
+            const zc_t *c = zc_find(ask.id);   /* §60.2: cached = no card */
+            if (c) { ask.z = c->z; ask.n = c->n; ask.side = c->side; }
+            const esp_err_t e = pvt_post(pv_job_run, &ask, sizeof ask);
+            if (e == ESP_OK) s_pv_since = 0;   /* one post per land, settled */
             if (e != ESP_OK && e != ESP_ERR_INVALID_STATE)
                 ESP_LOGW(TAG, "preview post refused (%s)", esp_err_to_name(e));
+        }
+    }
+
+    /* §60.2: the prefetch. Only while the page is up, the cursor has rested ZC_REST_MS,
+     * the worker is free and its own preview is in hand; nearest the cursor first. */
+    /* ... and never back to back: each fetch holds the card, and the card holds the display's
+     * DMA ring, so five in a row kept the glass still for seconds and the owner's turns looked
+     * ignored. The next waits for the ring to come home and the glass to draw a while. */
+    if (s_armed && !s_z_fly && !s_z_dirty && !orb_jobs_busy() && !s_pvt_busy && s_pv_since == 0 &&
+        !display_dma_parked() && esp_timer_get_time() - s_z_done_us >= (int64_t)ZC_GAP_MS * 1000 &&
+        s_moved_us && esp_timer_get_time() - s_moved_us >= (int64_t)ZC_REST_MS * 1000) {
+        const int cur = s_pv_row - ROW_ITEMS;
+        static const int8_t ORDER[] = { 0, 1, -1, 2, -2 };
+        for (size_t o = 0; o < sizeof ORDER; o++) {
+            const int k = mine(cur + ORDER[o]);
+            if (k < 0 || zc_find(s_ui.e[k].id) || s_ui.e[k].err != ESP_OK) continue;
+            if (pvt_post(zc_job_run, s_ui.e[k].id, strlen(s_ui.e[k].id) + 1) == ESP_OK)
+                s_z_fly = true;
+            break;
         }
     }
 }
@@ -580,6 +767,7 @@ void themes_opt_focus(orb_app_t *app, int idx)
      * only re-arms when the row changes. */
     if (idx == s_pv_row) return;
     s_pv_row = idx;
+    s_moved_us = esp_timer_get_time();   /* §60.2: a move restarts the prefetch's rest */
     s_pv_since = idx >= ROW_ITEMS ? esp_timer_get_time() : 0;
     if (mine(idx - ROW_ITEMS) < 0) {
         if (s_pvu.px) heap_caps_free(s_pvu.px);

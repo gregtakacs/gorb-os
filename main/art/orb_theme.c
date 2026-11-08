@@ -13,6 +13,7 @@
  * projects the fixture through the Python and reads it back through this C.
  */
 #include "orb_disc.h"   /* a preview stored as its disc */
+#include "orb_inflate.h" /* §60: and deflated */
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -1128,11 +1129,28 @@ static const char *region_from_card3(int fd, const orb_bundle3_hdr_t *h,
  * registry's vocabulary so a caller branches on the enum, not a sentence: NO_SLOT
  * and EMPTY both mean the theme chose not to carry the row, and NO_CONTENT is
  * exactly what the preview's absence rule (docs/history/theme-preview-plan.md §1) names. */
+/* zsize: non-NULL asks for a deflated preview's STORED bytes (§60, the hub's wire form):
+ * they are copied as they lie and *zsize says how many; a plane that is not deflated
+ * answers ORB_ASSET_CLASS and copies nothing, so the caller reads it the plain way. */
+static orb_asset_ans_t read_one_plane_ex(int fd, const orb_bundle_sec_t *sec,
+                                         uint16_t cls, uint16_t slot, uint32_t frame,
+                                         uint8_t *buf, size_t cap,
+                                         uint16_t *w, uint16_t *h,
+                                         char *why, size_t whysz, uint32_t *zsize);
 static orb_asset_ans_t read_one_plane(int fd, const orb_bundle_sec_t *sec,
                                        uint16_t cls, uint16_t slot, uint32_t frame,
                                        uint8_t *buf, size_t cap,
                                        uint16_t *w, uint16_t *h,
                                        char *why, size_t whysz)
+{
+    return read_one_plane_ex(fd, sec, cls, slot, frame, buf, cap, w, h, why, whysz, NULL);
+}
+
+static orb_asset_ans_t read_one_plane_ex(int fd, const orb_bundle_sec_t *sec,
+                                         uint16_t cls, uint16_t slot, uint32_t frame,
+                                         uint8_t *buf, size_t cap,
+                                         uint16_t *w, uint16_t *h,
+                                         char *why, size_t whysz, uint32_t *zsize)
 {
     orb_elem_t e;
     char seat_why[192];
@@ -1180,7 +1198,21 @@ static orb_asset_ans_t read_one_plane(int fd, const orb_bundle_sec_t *sec,
      * black) it sized by the probe. */
     const bool disc = cls == ORB_ASSET_PREVIEW && e.plane_w == e.plane_h &&
                       e.size == orb_disc_px(e.plane_w) * 2u;
-    if (disc && (uint64_t)e.plane_w * e.plane_h * 2u > cap) {
+    /* §60: or its disc deflated (orb_elems accepts it by its size), inflated by the ROM's
+     * tinfl into the head of the buffer and expanded like a raw disc. */
+    const bool zpv = cls == ORB_ASSET_PREVIEW && e.plane_w == e.plane_h &&
+                     e.size >= 6u && e.size < orb_disc_px(e.plane_w) * 2u;
+    if (zsize) {                                   /* the stored stream, or the plain way */
+        if (!zpv) return ORB_ASSET_CLASS;
+        size_t zpos = sec->art_off + e.off;
+        if (rd_at(fd, &zpos, buf, e.size) != (ssize_t)e.size || !orb_inflate_head_ok(buf, e.size)) {
+            if (why && whysz) strlcpy(why, "the preview's compressed plane could not be read", whysz);
+            return ORB_ASSET_NO_SLOT;
+        }
+        *zsize = e.size;
+        return ORB_ASSET_OK;
+    }
+    if ((disc || zpv) && (uint64_t)e.plane_w * e.plane_h * 2u > cap) {
         if (why && whysz) snprintf(why, whysz,
             "the plane is %lux%lu (%lu B of RGB565) and the buffer holds %lu B",
             (unsigned long)e.plane_w, (unsigned long)e.plane_h,
@@ -1188,6 +1220,26 @@ static orb_asset_ans_t read_one_plane(int fd, const orb_bundle_sec_t *sec,
         return ORB_ASSET_ROOM;
     }
     size_t pos = sec->art_off + e.off;
+    if (zpv) {
+        uint8_t *z = heap_caps_malloc(e.size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        if (!z) {
+            if (why && whysz) strlcpy(why, "no room to read the compressed preview", whysz);
+            return ORB_ASSET_NO_SLOT;
+        }
+        const bool ok = rd_at(fd, &pos, z, e.size) == (ssize_t)e.size &&
+                        orb_inflate_head_ok(z, e.size) &&
+                        orb_inflate(z, e.size, buf, orb_disc_px(e.plane_w) * 2u);
+        heap_caps_free(z);
+        if (!ok) {
+            if (w) *w = 0;
+            if (h) *h = 0;
+            if (why && whysz) strlcpy(why,
+                "the preview's compressed plane does not inflate to its disc", whysz);
+            return ORB_ASSET_NO_SLOT;
+        }
+        orb_disc_expand_inplace(buf, e.plane_w);
+        return ORB_ASSET_OK;
+    }
     const ssize_t got = rd_at(fd, &pos, buf, e.size);
     if (got != (ssize_t)e.size) {
         if (w) *w = 0;
@@ -1249,6 +1301,95 @@ orb_asset_ans_t orb_theme_preview_read(const char *handle,
     heap_caps_free(region);
     card_close(fd);
     return ans;
+}
+
+/* §60: a deflated preview as it lies on the card, for the hub to inflate (orb_theme.h). */
+orb_asset_ans_t orb_theme_preview_z(const char *handle, uint8_t *buf, size_t cap,
+                                    uint16_t *w, uint16_t *h, uint32_t *zsize,
+                                    char *why, size_t whysz)
+{
+    if (why && whysz) why[0] = '\0';
+    if (w) *w = 0;
+    if (h) *h = 0;
+
+    char slug[ORB_BUNDLE_SLUG_MAX + 1], hex[THEME_ID_HEX + 1];
+    if (!theme_stem_split(handle, slug, sizeof slug, hex, sizeof hex)) {
+        if (why && whysz) strlcpy(why,
+            "that theme id is not one this device issued", whysz);
+        return ORB_ASSET_NO_SLOT;
+    }
+
+    orb_bundle3_hdr_t h3;
+    uint32_t fsz = 0;
+    const char *card_why = NULL;
+    const int fd = card_open_verified_slug3(slug, handle, &h3, &fsz, &card_why);
+    if (fd < 0) {
+        if (why && whysz && card_why) strlcpy(why, card_why, whysz);
+        return ORB_ASSET_NO_SLOT;
+    }
+
+    orb_bundle_t b;
+    uint8_t *region = NULL;
+    const char *rv = region_from_card3(fd, &h3, fsz, &b, &region);
+    if (rv) {
+        card_close(fd);
+        if (why && whysz) strlcpy(why, rv, whysz);
+        return ORB_ASSET_NO_SLOT;
+    }
+
+    const orb_bundle_sec_t *sec = orb_bundle_find(&b, slug);
+    if (!sec) {
+        heap_caps_free(region);
+        card_close(fd);
+        if (why && whysz) strlcpy(why,
+            "the theme's bundle carries no section for its own stem's app", whysz);
+        return ORB_ASSET_NO_SLOT;
+    }
+
+    *zsize = 0;
+    const orb_asset_ans_t ans = read_one_plane_ex(fd, sec,
+                                                  (uint16_t)ORB_ASSET_PREVIEW, 0, 0,
+                                                  buf, cap, w, h, why, whysz, zsize);
+    heap_caps_free(region);
+    card_close(fd);
+    return ans;
+}
+
+/* §60.2: the two halves the preview caches use (orb_theme.h). The card half is the only one
+ * that holds the card; the inflate half is CPU on whichever task calls it. */
+uint8_t *orb_theme_preview_zcopy(const char *handle, uint32_t *n, uint16_t *side,
+                                 char *why, size_t whysz)
+{
+    *n = 0;
+    *side = 0;
+    uint16_t w = 0, h = 0;
+    if (orb_theme_preview_read(handle, NULL, 0, &w, &h, why, whysz) != ORB_ASSET_OK || !w || w != h)
+        return NULL;
+    const uint32_t cap = orb_disc_px(w) * 2u;
+    uint8_t *buf = heap_caps_malloc(cap, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!buf) return NULL;
+    uint32_t zn = 0;
+    if (orb_theme_preview_z(handle, buf, cap, &w, &h, &zn, why, whysz) != ORB_ASSET_OK || !zn) {
+        heap_caps_free(buf);
+        return NULL;
+    }
+    uint8_t *fit = heap_caps_realloc(buf, zn, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    *n = zn;
+    *side = w;
+    return fit ? fit : buf;
+}
+
+uint8_t *orb_preview_inflate(const uint8_t *z, uint32_t n, uint16_t side)
+{
+    if (!z || !n || !side) return NULL;
+    uint8_t *sq = heap_caps_malloc((size_t)side * side * 2u, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!sq) return NULL;
+    if (!orb_inflate_head_ok(z, n) || !orb_inflate(z, n, sq, orb_disc_px(side) * 2u)) {
+        heap_caps_free(sq);
+        return NULL;
+    }
+    orb_disc_expand_inplace(sq, side);
+    return sq;
 }
 
 /* D43 P7 (§8): a card theme's app design, streamed back for its editor. The OS never reads

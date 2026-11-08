@@ -24,6 +24,8 @@ idf_component_register(
         # host-tested as shipped by tools/host_json_test.py.
         "app/orb_json.c"
         "app/orb_setui.c"
+        # §59: the carousel's owner order and its rotation; pure decisions, host-tested.
+        "app/orb_rotation.c"
         "app/orb_svc.c"
         "display/display.c"
         # C2 (theme-delta plan §6.2): the boot/install overlay — the one painter
@@ -76,6 +78,8 @@ idf_component_register(
         # coverage is tools/host_orbelems_test.py; the file itself carries no
         # dialect knowledge and no allocator, exactly like the two above it.
         "art/orb_elems.c"
+        # §60: a deflated preview, inflated by the ROM's tinfl.
+        "art/orb_inflate.c"
         # P5b: the asset registry. Its own directory because it is the one file in
         # the tree that knows what a slot IS, and it compiles without LVGL on
         # purpose — tools/host_orbapp_reader_test.py links it straight into the

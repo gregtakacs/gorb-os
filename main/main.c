@@ -16,6 +16,7 @@
 
 #include "board_config.h"
 #include "display.h"
+#include "orb_rotation.h"
 #include "esp_timer.h"
 #include "orb_boot_overlay.h"
 #include "orb_app.h"
@@ -254,6 +255,7 @@ void app_main(void)
     orb_home_init();
     /* The units (weather-plan §2.1) load beside it for the same reason. */
     orb_units_init();
+    orb_rotation_init();     /* §59: the carousel's order, read before the registry walks */
     /* P7.4's rung: the code tier loads after the broker's words are known (a
      * quarantined app must not cost its D27 memory) and before init_all asks each
      * module to build — the wasm module's init answers OK only once its slot

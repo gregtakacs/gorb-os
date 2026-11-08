@@ -12,6 +12,7 @@
 #include "input_router.h"
 #include "knob.h"
 #include "idle_dim.h"
+#include "orb_rotation.h"     /* §59: the owner's rotation */
 #include "orb_app.h"
 #include "orb_carousel.h"   /* cancel only: §51 retired the walk, so nothing puts a peek up */
 #include "orb_fx.h"         /* the transition bench's run, served from this poll */
@@ -39,6 +40,7 @@ static const char *TAG = "input";
  * without this file being rebuilt, and an index burned into a log line is a
  * claim about position nobody can check. NULL until the first switch. */
 static const orb_app_t *s_current;
+static int64_t s_quiet_from;     /* §59: the last knob event or screen switch, for the rotation */
 static lv_timer_t      *s_poll_timer;
 
 /* Screen requested from another task (GET /api/v1/screen). Held as a single
@@ -295,6 +297,7 @@ static esp_err_t set_screen(const orb_app_t *app, bool load)
              (long long)((esp_timer_get_time() - sw_t0) / 1000));
     ESP_LOGI(TAG, "screen -> %s", screen_name(app));
     page_remember(app);   /* this view is the glass's now — a reboot returns here */
+    s_quiet_from = esp_timer_get_time();   /* §59: a new view starts its own interval */
 
     /* Remember what the glass was showing the moment the shell took over, so a
      * menu exit can walk the owner back there (owner ruling, 2026-10-25). Keyed
@@ -343,6 +346,29 @@ static void arm_current(void)
 }
 
 /* Runs on the LVGL task (created via lv_timer), so widget calls are legal here. */
+/* §59: the rotation. Quiet means no knob event and no screen switch since s_quiet_from;
+ * the decision is orb_rotation_pick's, over the carousel's own walk. */
+static void rotation_poll(int64_t now)
+{
+    orb_rotation_t r;
+    orb_rotation_get(&r);
+    if (!r.on || !s_current || s_current->kind != ORB_APP_KIND_APP) return;
+    const char *walk[ORB_ROTATION_MAX + 4];
+    const orb_app_t *row[ORB_ROTATION_MAX + 4];
+    int n = 0, cur = -1;
+    for (size_t i = 0; i < orb_app_count() && n < (int)(sizeof walk / sizeof walk[0]); i++) {
+        const orb_app_t *a = orb_app_at(i);
+        if (!a || a->kind != ORB_APP_KIND_APP) continue;
+        if (a == s_current) cur = n;
+        row[n] = a; walk[n++] = a->slug;
+    }
+    const int next = orb_rotation_pick(&r, walk, n, cur, now - s_quiet_from);
+    if (next < 0) return;
+    ESP_LOGI(TAG, "rotation: %s -> %s after %lu s", s_current->slug, row[next]->slug,
+             (unsigned long)r.every_s);
+    if (input_router_show(row[next]) != ESP_OK) s_quiet_from = now;   /* refused: wait a turn */
+}
+
 static void poll_timer_cb(lv_timer_t *timer)
 {
     (void)timer;
@@ -387,6 +413,7 @@ static void poll_timer_cb(lv_timer_t *timer)
      * a bench turn over HTTP and an encoder that bounced by itself are
      * indistinguishable, and telling "nobody touched it" from "the bench touched
      * it" is the whole question when the dial refuses to dim. */
+    if (delta || pressed || lpress) s_quiet_from = now;   /* §59: a touch holds the rotation */
     if (delta || pressed || lpress)
         idle_dim_activity(inj || ip || il
                           ? "http"
@@ -431,6 +458,10 @@ static void poll_timer_cb(lv_timer_t *timer)
      * finishes while the user has rotated to the clock must still land, or the
      * list would come back showing a stale answer (C7). */
     orb_app_service_all();
+
+    /* §59: the owner's rotation, on a poll that carried no knob event and with the
+     * carousel shut. */
+    if (!delta && !pressed && !lpress && !orb_strip_active()) rotation_poll(now);
 
     /* §54: while the carousel is up, every knob event is its own, and its frames are
      * drawn from here. It hands the glass back itself. */

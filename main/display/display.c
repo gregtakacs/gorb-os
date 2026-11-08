@@ -1800,6 +1800,9 @@ size_t display_dma_borrow(void)
  *  word, and the answer names an instant, not an interval. input_router's
  *  switch probe asks this before treating a silent window as a stall; without
  *  it, a 20 s SD write would read exactly like a wedged pipeline. */
+/* The ring is out (lent, or back but not yet re-funded): frames are dropped. */
+bool display_dma_parked(void) { return s_ring_parked; }
+
 bool display_dma_lent(void)
 {
     return s_ring_loan > 0;

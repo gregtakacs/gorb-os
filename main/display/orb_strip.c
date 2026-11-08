@@ -56,8 +56,13 @@ typedef struct {
 typedef struct {
     char      slug[24];
     uint16_t *px;               /* side x side wire order, corners black; NULL = none */
-    int       side;             /* the theme's own preview size: 232 for the clock's,
-                                 * 128 for Weather's — the disc scales either */
+    uint8_t  *z;                /* §60.2: the full preview as stored (deflated disc), kept so
+                                 * the centre's full plane never needs the card again */
+    uint32_t  zn;
+    uint16_t  zside;
+    int       side;             /* the theme's own preview size: 232 for every shipped
+                                 * app's (Weather's was 128 before v1.4.1) — the disc
+                                 * scales any square up to PV */
 } pv_t;
 
 /* SETTLE: the app is switched in under the held glass and is drawing into the mirror;
@@ -67,6 +72,18 @@ typedef enum { ST_OFF, ST_IN, ST_IDLE, ST_TURN, ST_OUT, ST_SETTLE, ST_FADE } st_
 static pv_t      s_pv[MAX_ITEMS];
 static int       s_pv_n;
 static volatile bool s_pv_ready;
+/* §60: one full-glass plane, the centre app's, inflated on the preview task once a turn
+ * settles, so the zoom into the app is drawn 1:1 rather than from the 232 cache magnified.
+ * §60.2: inflated from the app's kept bytes, never read off the card: a card read lends the
+ * display's DMA ring for its whole length, and every frame of the carousel dropped while one
+ * ran (Gold, 2026-11-07: 6,856 of 6,856 skips with the ring out, three 0.6 s reads a run). The
+ * task clears ready before it writes, and the strip uses the plane only while ready and while
+ * it names the app that opens. */
+static uint16_t *s_hi;
+static char      s_hi_slug[24];
+static volatile bool s_hi_ready;
+static char      s_hi_want[24];
+static TaskHandle_t s_pv_th;
 static uint16_t *s_gear;        /* PV x PV wire order */
 static uint16_t *s_snap;        /* W x H: the glass at open */
 static uint16_t *s_names;       /* MAX_ITEMS name planes, back to back */
@@ -120,6 +137,48 @@ static void make_gear(void)
 
 /* ---- the preview cache ----------------------------------------------------------- */
 
+/* §60: a plane of side sw (RGB565, native order) down to side dw by box averaging, the
+ * strip's cache size from a full-glass preview. */
+static void box_down(const uint16_t *src, int sw, uint16_t *dst, int dw)
+{
+    for (int y = 0; y < dw; y++) {
+        const int y0 = y * sw / dw, y1 = ((y + 1) * sw / dw > y0 + 1) ? (y + 1) * sw / dw : y0 + 1;
+        for (int x = 0; x < dw; x++) {
+            const int x0 = x * sw / dw, x1 = ((x + 1) * sw / dw > x0 + 1) ? (x + 1) * sw / dw : x0 + 1;
+            uint32_t r = 0, g = 0, b = 0, n = 0;
+            for (int yy = y0; yy < y1 && yy < sw; yy++)
+                for (int xx = x0; xx < x1 && xx < sw; xx++) {
+                    const uint16_t c = src[(size_t)yy * sw + xx];
+                    r += c >> 11; g += (c >> 5) & 63; b += c & 31; n++;
+                }
+            dst[(size_t)y * dw + x] = n ? (uint16_t)(((r / n) << 11) | ((g / n) << 5) | (b / n)) : 0;
+        }
+    }
+}
+
+/* One theme's preview, read at its own size into a fresh buffer (wire order is the
+ * caller's to make). NULL when it has none or the read fails. */
+static uint16_t *pv_read(const char *stem, uint16_t *w_out, const char *slug)
+{
+    uint16_t w = 0, h = 0;
+    char why[96];
+    if (orb_theme_preview_read(stem, NULL, 0, &w, &h, why, sizeof why) != ORB_ASSET_OK ||
+        w != h || w == 0 || w > W) {
+        ESP_LOGW(TAG, "no preview for %s (%s): %ux%u %s", slug, stem, w, h, why);
+        return NULL;
+    }
+    const size_t cap = (size_t)w * h * 2;
+    uint16_t *buf = heap_caps_malloc(cap, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!buf) return NULL;
+    if (orb_theme_preview_read(stem, (uint8_t *)buf, cap, &w, &h, why, sizeof why) != ORB_ASSET_OK) {
+        ESP_LOGW(TAG, "preview %s (%s) did not read: %s", slug, stem, why);
+        heap_caps_free(buf);
+        return NULL;
+    }
+    *w_out = w;
+    return buf;
+}
+
 static const pv_t *pv_for(const orb_app_t *a)
 {
     if (!a || !a->slug) return NULL;
@@ -145,27 +204,35 @@ static void pv_load(void)
         if (!a || a->kind == ORB_APP_KIND_SHELL || !a->slug) continue;
         pv_t *p = &s_pv[s_pv_n];
         snprintf(p->slug, sizeof p->slug, "%s", a->slug);
-        p->px = NULL;
+        p->px = NULL; p->z = NULL; p->zn = 0; p->zside = 0;
         char stem[64];
         while (orb_jobs_busy() || orb_theme_upload_busy()) vTaskDelay(pdMS_TO_TICKS(500));
         if (orb_theme_pool_stem(a->slug, stem, sizeof stem)) {
-            uint16_t *buf = heap_caps_malloc(cap, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-            uint16_t w = 0, h = 0;
-            char why[96];
             const int64_t t0 = esp_timer_get_time();
-            const orb_asset_ans_t ans = buf
-                ? orb_theme_preview_read(stem, (uint8_t *)buf, cap, &w, &h, why, sizeof why)
-                : ORB_ASSET_NO_SLOT;
-            if (ans == ORB_ASSET_OK && w == h && w > 0 && w <= PV) {
-                for (size_t k = 0; k < (size_t)w * h; k++) buf[k] = wire(buf[k]);
+            uint16_t w = 0;
+            uint16_t *buf = NULL;
+            char why[96];
+            /* §60.2: the stored bytes first, kept; the cache plane is derived from them */
+            p->z = orb_theme_preview_zcopy(stem, &p->zn, &p->zside, why, sizeof why);
+            if (p->z) {
+                buf = (uint16_t *)orb_preview_inflate(p->z, p->zn, p->zside);
+                w = p->zside;
+            } else {
+                buf = pv_read(stem, &w, a->slug);         /* a raw preview, an older bake */
+            }
+            if (buf && w > PV) {                 /* §60: a full-glass preview, boxed down */
+                uint16_t *sm = heap_caps_malloc((size_t)PV * PV * 2, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+                if (sm) box_down(buf, w, sm, PV);
+                heap_caps_free(buf);
+                buf = sm;
+                w = PV;
+            }
+            if (buf) {
+                for (size_t k = 0; k < (size_t)w * w; k++) buf[k] = wire(buf[k]);
                 p->px = buf;
                 p->side = w;
-                ESP_LOGI(TAG, "preview %s (%s): %d ms", a->slug, stem,
-                         (int)((esp_timer_get_time() - t0) / 1000));
-            } else {
-                heap_caps_free(buf);
-                ESP_LOGW(TAG, "no preview for %s (%s): answer %d %ux%u", a->slug, stem,
-                         (int)ans, w, h);
+                ESP_LOGI(TAG, "preview %s (%s): %d ms, %lu B kept", a->slug, stem,
+                         (int)((esp_timer_get_time() - t0) / 1000), (unsigned long)p->zn);
             }
         }
         s_pv_n++;
@@ -183,13 +250,44 @@ static void pv_task(void *arg)
     (void)arg;
     vTaskDelay(pdMS_TO_TICKS(8000));
     pv_load();
-    vTaskSuspend(NULL);
+    /* §60: then the centre app's full-glass plane, each time the strip asks */
+    for (;;) {
+        ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+        char want[sizeof s_hi_want];
+        memcpy(want, s_hi_want, sizeof want);
+        want[sizeof want - 1] = '\0';
+        if (!want[0] || (s_hi_ready && strcmp(want, s_hi_slug) == 0)) continue;
+        const pv_t *src = NULL;
+        for (int i = 0; i < s_pv_n; i++) if (!strcmp(s_pv[i].slug, want)) src = &s_pv[i];
+        if (!src || !src->z || src->zside != W) continue;  /* no kept bytes: the cache is it */
+        s_hi_ready = false;
+        const int64_t t0 = esp_timer_get_time();
+        uint16_t *buf = (uint16_t *)orb_preview_inflate(src->z, src->zn, src->zside);
+        if (!buf) continue;
+        for (size_t k = 0; k < (size_t)W * W; k++) buf[k] = wire(buf[k]);
+        uint16_t *old = s_hi;
+        s_hi = buf;
+        memcpy(s_hi_slug, want, sizeof s_hi_slug);
+        s_hi_ready = true;
+        if (old) heap_caps_free(old);
+        ESP_LOGI(TAG, "full preview %s: %d ms (inflated, no card)", want,
+                 (int)((esp_timer_get_time() - t0) / 1000));
+    }
+}
+
+/* Ask for the centre app's full-glass plane (LVGL task). */
+static void hi_want(const orb_app_t *a)
+{
+    if (!a || !a->slug || !s_pv_th) return;
+    if (s_hi_ready && strcmp(a->slug, s_hi_slug) == 0) return;
+    snprintf(s_hi_want, sizeof s_hi_want, "%s", a->slug);
+    xTaskNotifyGive(s_pv_th);
 }
 
 void orb_strip_init(void)
 {
     make_gear();
-    if (xTaskCreatePinnedToCoreWithCaps(pv_task, "strip_pv", 8192, NULL, 2, NULL,
+    if (xTaskCreatePinnedToCoreWithCaps(pv_task, "strip_pv", 8192, NULL, 2, &s_pv_th,
                                         tskNO_AFFINITY, MALLOC_CAP_SPIRAM) != pdPASS)
         ESP_LOGE(TAG, "the preview task did not start; the text list stays");
 }
@@ -339,6 +437,12 @@ static void layout(float pos, float z, float k)
         if (ad < 0.5f && z > 0.0f) q->d = PV + (float)(W - PV) * z;   /* z 1: the glass, 1:1 */
         q->px = it->px;
         q->side = it->side;
+        /* §60: the centre growing toward the glass draws from its full plane once it is in */
+        if (ad < 0.5f && z > 0.0f && it->px != s_snap && it->app && s_hi_ready && s_hi &&
+            strcmp(it->app->slug, s_hi_slug) == 0) {
+            q->px = s_hi;
+            q->side = W;
+        }
     }
     const float frac = fabsf(pos - (float)c);
     s_label = (frac < 0.02f && z <= 0.0f) ? s_it[wrap(c)].name : NULL;
@@ -346,7 +450,7 @@ static void layout(float pos, float z, float k)
 
 /* One open's figures, logged at its close: where a slow turn went. */
 static struct {
-    int      frames, skipped;
+    int      frames, skipped, card_skipped;
     uint64_t frame_us, compose_us;
     uint32_t frame_max_us, gap_max_us, events;
     int64_t  last_poll_us;
@@ -360,7 +464,7 @@ static bool frame_kept(bool keep)
     display_fx_stats_t st;
     display_fx_shadow_next(keep);
     const esp_err_t e = display_fx_frame_try(compose, NULL, true, &st);
-    if (e != ESP_OK) { s_m.skipped++; return false; }
+    if (e != ESP_OK) { s_m.skipped++; if (display_dma_parked()) s_m.card_skipped++; return false; }
     const uint32_t us = st.frame_us + st.te_us;
     s_m.frames++;
     s_m.frame_us += us;
@@ -371,11 +475,11 @@ static bool frame_kept(bool keep)
 
 static void log_figures(const char *how)
 {
-    ESP_LOGI(TAG, "%s: %d frames (avg %lu us, compose %lu us, max %lu us), %d skipped (card had the ring), "
-             "%lu knob events, longest poll gap %lu ms", how, s_m.frames,
+    ESP_LOGI(TAG, "%s: %d frames (avg %lu us, compose %lu us, max %lu us), %d skipped (%d with the ring "
+             "out to the card), %lu knob events, longest poll gap %lu ms", how, s_m.frames,
              (unsigned long)(s_m.frames ? s_m.frame_us / (uint64_t)s_m.frames : 0),
              (unsigned long)(s_m.frames ? s_m.compose_us / (uint64_t)s_m.frames : 0),
-             (unsigned long)s_m.frame_max_us, s_m.skipped, (unsigned long)s_m.events,
+             (unsigned long)s_m.frame_max_us, s_m.skipped, s_m.card_skipped, (unsigned long)s_m.events,
              (unsigned long)(s_m.gap_max_us / 1000));
 }
 
@@ -543,6 +647,7 @@ static void step_once(int32_t delta, bool pressed, bool lpress, int64_t now)
             if (t >= 1.0f) {
                 s_pos = (float)s_target;
                 s_st = ST_IDLE;
+                hi_want(s_it[wrap(s_target)].app);   /* §60: fetch its full plane for the zoom */
             }
             layout(s_pos, 0.0f, 1.0f);
             s_dirty = !frame_kept(s_st == ST_IDLE) && s_st == ST_IDLE;   /* a skipped last frame is owed */

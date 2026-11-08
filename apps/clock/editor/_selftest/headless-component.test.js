@@ -83,14 +83,14 @@ const txt = (s) => ({ name: 'x', _url: 'data:text/plain;base64,' + Buffer.from(s
     iv.frameCanvas = (f, hidden, date) => { iv._pose = [f, date]; return {
       width: 466, height: 466, getContext: () => ({ getImageData: () => ({ data: SRC }) }) }; };
     const plane = iv.previewPlane3();
-    eq([plane.w, plane.h, plane.rgba.length], [232, 232, 232 * 232 * 4], 'previewPlane3 ships a 232² RGBA plane');
+    eq([plane.w, plane.h, plane.rgba.length], [466, 466, 466 * 466 * 4], 'previewPlane3 ships the whole glass, a 466² RGBA plane (§60)');
     eq(iv._pose[0], 0, 'the plane composes at keyframe 0, never the live transport');
     ok(iv._pose[1].getHours() === 10 && iv._pose[1].getMinutes() === 9 && iv._pose[1].__moon === 0.34,
        'the plane composes at the design pose: 10:09:36, moon 0.34');
-    const oi = (13 * 232 + 7) * 4;
+    const oi = (27 * 466 + 15) * 4;
     ok(plane.rgba[oi] === 15 && plane.rgba[oi + 1] === 27 && plane.rgba[oi + 3] === 255,
-       'nearest-half samples the odd texel centre of each 2x2 cell');
-    const bi = (5 * 232 + 210) * 4;   // source x 421: inside the transparent band
+       'every pixel is the frame\u2019s own, none dropped or averaged');
+    const bi = (5 * 466 + 421) * 4;   // source x 421: inside the transparent band
     ok(plane.rgba[bi] === 0 && plane.rgba[bi + 1] === 0 && plane.rgba[bi + 2] === 0 && plane.rgba[bi + 3] === 255,
        'transparent art mattes to black, never to alpha');
     const plane2 = iv.previewPlane3();

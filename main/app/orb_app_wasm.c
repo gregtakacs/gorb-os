@@ -1230,6 +1230,18 @@ m3ApiRawFunction(imp_stage_snd_play)          /* i32 stage_snd_play(i, flags, i6
     m3ApiReturn(STAGE_ON(s) ? stage_snd_play(i, flags, at, anchor) : -1);
 }
 
+m3ApiRawFunction(imp_stage_snd_play_v)        /* i32 stage_snd_play_v(i, flags, i64 at, i64 anchor, vol) */
+{
+    m3ApiReturnType(int32_t);
+    CALLER();
+    m3ApiGetArg(int32_t, i);
+    m3ApiGetArg(uint32_t, flags);
+    m3ApiGetArg(int64_t, at);
+    m3ApiGetArg(int64_t, anchor);
+    m3ApiGetArg(int32_t, vol);
+    m3ApiReturn(STAGE_ON(s) ? stage_snd_play_v(i, flags, at, anchor, vol) : -1);
+}
+
 m3ApiRawFunction(imp_stage_snd_stop)
 {
     CALLER();
@@ -1362,6 +1374,7 @@ static const wasm_bind_t s_binds[] = {
     { "orb", "stage_snd_cfg",      "v(i)",     imp_stage_snd_cfg },
     { "orb", "stage_snd_quiet",    "i(i)",     imp_stage_snd_quiet },
     { "orb", "stage_snd_play",     "i(iiII)",  imp_stage_snd_play },
+    { "orb", "stage_snd_play_v",   "i(iiIIi)", imp_stage_snd_play_v },
     { "orb", "stage_snd_stop",     "v(i)",     imp_stage_snd_stop },
     { "orb", "stage_snd_active",   "i(i)",     imp_stage_snd_active },
     { "orb", "stage_snd_reanchor", "v(iI)",    imp_stage_snd_reanchor },

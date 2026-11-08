@@ -923,6 +923,9 @@ const char *orb_clock3_parse(const orb_bundle_sec_t *sec, orb_clock3_io_t *io)
             want = sp.size;
         if (on_preview && sp.w == sp.h && sp.size == (uint64_t)orb_disc_px(sp.w) * 2u)
             want = sp.size;
+        /* §60: or that disc deflated, smaller than it (the read checks the stream) */
+        if (on_preview && sp.w == sp.h && sp.size >= 6u && sp.size < (uint64_t)orb_disc_px(sp.w) * 2u)
+            want = sp.size;
         if (sp.off != at)
             return reject("the sprite catalogue is not contiguous at row %u: it starts "
                           "at %lu, the previous plane ends at %lu",

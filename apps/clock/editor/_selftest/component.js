@@ -2,7 +2,7 @@ window.COMP_CLASS = function (DCLogic) {
 
 class Component extends DCLogic {
   DEF = { tick: 'sweep', favour: 'sweep', plan: '', shSmooth: 0, balance: '1', plate: 'train', spokes: 'train', etching: 'none', pinion: 'on', center: 'jewel', finish: 'train', glow: 1, temp: 2200, innerAngle: 90, outerLight: 1, outerAngle: 315, outerTemp: 2200, trainAngle: 0, plateAngle: 0, plateScale: 1, hue: 30, hueSat: 0, outerHue: 210, outerSat: 0, wb: 6500, orbD: 128, orbTip: 194, cageD: 107, rearFinish: 'train', shAngle: -1, shDist: 1, shBlur: 1, shOp: 1, shMove: 1, shRelief: 1 };
-  state = { frame: 0, playing: true, slow: false, seam: 'Rendering…', status: '', seeds: { spokes: 1, pinion: 1, center: 1, finish: 1, etching: 1 }, dial: 'skeleton', designs: {}, sel: null, selKind: null, themeName: '', artSlot: null, pickKey: null, guide: 'auto', hands: 'auto', handFinish: 'auto', hidden: {}, timeMode: 'live', caseStyle: 'polished', caseMetal: 'auto', caseOpen: 221.5, glassStyle: 'domed', train: 'classic', tab: 'start', cfg: {}, view: 'fit', fitPx: 466, addOpen: false, zoom: 2, viewCal: 1, hubIp: null, hubCheck: false, dup: null, sounds: {}, sndSim: true, sndCut: true, sndUp: 'tick_loop', sndMsg: '', render: 'design', wipe: 233, step: 'start', diag: false, more: {}, sending: null };
+  state = { frame: 0, playing: true, slow: false, seam: 'Rendering…', status: '', seeds: { spokes: 1, pinion: 1, center: 1, finish: 1, etching: 1 }, dial: 'skeleton', designs: {}, sel: null, selKind: null, themeName: '', artSlot: null, pickKey: null, guide: 'auto', hands: 'auto', handFinish: 'auto', hidden: {}, timeMode: 'live', caseStyle: 'polished', caseMetal: 'auto', caseOpen: 221.5, glassStyle: 'domed', train: 'classic', tab: 'start', cfg: {}, view: 'fit', fitPx: 466, addOpen: false, zoom: 2, viewCal: 1, hubIp: null, hubCheck: false, dup: null, sounds: {}, sndSim: true, sndCut: true, sndMsg: '', render: 'design', wipe: 233, step: 'start', diag: false, more: {}, sending: null };
   KEYS = Object.keys(this.DEF);
   RND = ['spokes', 'pinion', 'center', 'finish', 'etching'];
   TABS = [['dial', 'Dial'], ['comps', 'Complications'], ['hands', 'Hand set'], ['timing', 'Timing'], ['move', 'Geartrain'], ['insides', 'Clock insides'], ['light', 'Light'], ['case', 'Case & glass'], ['sound', 'Sound'], ['export', 'Export']];
@@ -911,6 +911,47 @@ class Component extends DCLogic {
     });
     return out.length ? { sounds: out, soundPattern: d.pattern || 'none' } : {};
   }
+  /* §59 (owner, 2026-11-07): every sound takes the owner's own file, and every one can go back
+   * to the built-in. Back means the preset's own choice for that sound, or the first built-in
+   * that fits it when the preset leaves it silent; the uploaded bytes leave the design, so the
+   * next Send carries none of them. */
+  SND_LONG_S = 10;
+  SND_WARN_B = 512 * 1024;           // sounds this large: say so
+  SND_EXCESS_B = 2 * 1024 * 1024;    // and this large: say the art may not fit beside them
+  sndBuiltin(slot) {
+    const SE = window.SoundEngine, P = (SE && SE.PRESETS[this.state.dial]) || { tick: null, slots: {} };
+    if (slot === 'tick_loop') {
+      if (P.tick) return P.tick;
+      const rr = this.sndRate();
+      return Object.keys(SE.VOICES).find((v) => (rr.sweep && v === 'geiger') || SE.VOICES[v].rates.indexOf(rr.rate) >= 0) || null;
+    }
+    return (P.slots && P.slots[slot]) || (SE.fits(slot)[0] || null);
+  }
+  sndUnupload(slot) {
+    this.sndStop();
+    this.sndUpd((d) => {
+      delete d.up[slot];
+      if (slot === 'tick_loop') { if (d.tick === 'upload') d.tick = this.sndBuiltin(slot); }
+      else if (d.slots[slot] === 'upload') { const b = this.sndBuiltin(slot); if (b) d.slots[slot] = b; else delete d.slots[slot]; }
+    });
+    this.setState({ sndMsg: slot.replace(/_/g, ' ') + ' is back to its built-in sound' });
+  }
+  sndUnuploadAll() {
+    const ups = Object.keys(this.sndDesign().up || {});
+    if (!ups.length) return;
+    ups.forEach((slot) => this.sndUnupload(slot));
+    this.setState({ sndMsg: 'Your ' + ups.length + ' sound' + (ups.length > 1 ? 's are' : ' is') + ' gone from this theme; every one is back to its built-in' });
+  }
+  /* The bytes a clip costs in the bake (ADPCM where it holds, else PCM16), cached per clip. */
+  sndBaked(pcm) {
+    const G = window.GorbBake;
+    if (!pcm) return 0;
+    if (!G || !G.soundEncode) return pcm.length * 2;
+    this._sndB = this._sndB || new WeakMap();
+    let b = this._sndB.get(pcm);
+    if (b === undefined) { b = G.soundEncode(pcm).bytes.length; this._sndB.set(pcm, b); }
+    return b;
+  }
   sndCtx() {
     if (!this._actx) this._actx = new (window.AudioContext || window.webkitAudioContext)();
     return this._actx;
@@ -950,10 +991,10 @@ class Component extends DCLogic {
    * becomes a varied loop at the hand's rate; a longer one is a recorded loop, which is
    * trimmed to whole seconds, crossfaded at its seam, and refused if it does not beat at
    * the rate the hand steps (§7 "uploaded ticks"). */
-  async sndUpload(e) {
+  async sndUpload(e, slotArg) {
     const f = e && e.target && e.target.files && e.target.files[0];
     if (!f) return;
-    const slot = this.state.sndUp, SE = window.SoundEngine, SR = SE.SR;
+    const slot = slotArg || 'tick_loop', SE = window.SoundEngine, SR = SE.SR;
     try {
       const raw = await f.arrayBuffer();
       const dec = await this.sndCtx().decodeAudioData(raw.slice(0));
@@ -988,7 +1029,9 @@ class Component extends DCLogic {
           if (slot === 'tick_loop') d.tick = 'upload'; else d.slots[slot] = 'upload';
         });
       }
-      this.setState({ sndMsg: f.name + ' → ' + slot.replace(/_/g, ' ') + ' (' + (pcm.length / SR).toFixed(2) + ' s, ' + (pcm.length * 2) + ' B)' });
+      const secs = pcm.length / SR, kb = this.sndBaked(pcm) / 1024;
+      this.setState({ sndMsg: f.name + ' → ' + slot.replace(/_/g, ' ') + ' (' + secs.toFixed(2) + ' s, ' + kb.toFixed(0) + ' KB in the theme)'
+        + (secs > this.SND_LONG_S ? ' — that is a long sound: every second of it is room the art cannot use. Trim it if you can.' : '') });
     } catch (err) {
       this.setState({ sndMsg: 'Not used: ' + (err && err.message ? err.message : String(err)) });
     }
@@ -1985,21 +2028,21 @@ class Component extends DCLogic {
    * the design pose (10:09:36, moon 0.34 — previewDate's own ruling) on KEYFRAME
    * 0, never the live transport, so re-baking an untouched dial reproduces these
    * bytes exactly and the content serial stays the quiet no-op it promises.
-   * Full panel, matted on black, nearest halved to 232x232 (texel 2x+1): the
-   * design's one figure, the size every picker buffers it at. The matte is the
-   * exact divide — the baker quantizes to 565 steps right after this, and an
-   * off-by-one here would be the one visible kind. */
+   * Full panel, matted on black, at the glass's own 466x466 (§60, owner 2026-11-07:
+   * the halved preview read soft; the baker deflates it and the orb inflates it). The
+   * matte is the exact divide — the baker quantizes to 565 steps right after this, and
+   * an off-by-one here would be the one visible kind. */
   /* The dial's white balance on pixels the bake reads. The stage and the Panel view balance
    * every layer they show (drawPanel); the bake once balanced only the carriage, so a Night
    * dial (wb 6000) shipped its plate, hands and crystal unbalanced. 6500 changes nothing. */
   wbPix(px) { return WatchEngine.wbData(px, +((this.cfg && this.cfg().wb) || 6500)); }
   previewPlane3() {
-    const P = 232, c = this.frameCanvas(0, {}, WatchEngine.previewDate());
+    const P = 466, c = this.frameCanvas(0, {}, WatchEngine.previewDate());
     const src = this.wbPix(c.getContext('2d').getImageData(0, 0, 466, 466).data);
     const out = new Uint8Array(P * P * 4);
     for (let y = 0; y < P; y++) {
       for (let x = 0; x < P; x++) {
-        const si = (((y * 2 + 1) * 466) + (x * 2 + 1)) * 4, di = (y * P + x) * 4;
+        const si = (y * 466 + x) * 4, di = (y * P + x) * 4;
         const a = src[si + 3];
         out[di] = Math.round(src[si] * a / 255);
         out[di + 1] = Math.round(src[si + 1] * a / 255);
@@ -4345,50 +4388,70 @@ class Component extends DCLogic {
       const catLabel = (id) => SE.CATALOG[id].group + ' · ' + SE.CATALOG[id].label;
       const slotOpts = (slot) => [{ v: '', label: 'Silent' }]
         .concat(SE.fits(slot).map((id) => ({ v: id, label: catLabel(id) })))
-        .concat(sd.up[slot] ? [{ v: 'upload', label: 'Uploaded · ' + sd.up[slot].name }] : []);
+        .concat(sd.up[slot] ? [{ v: 'upload', label: 'Yours · ' + sd.up[slot].name }] : []);
       const setSlot = (slot) => (v) => this.sndUpd((d) => { if (v) d.slots[slot] = v; else delete d.slots[slot]; });
-      const play = (slot) => Ch('', '', [{ v: 'p', label: '▶ ' + nice(slot) }, { v: 's', label: '■' }], (v) => (v === 'p' ? this.sndPlay(slot) : this.sndStop()));
+      /* §59: every sound row carries its own file and its own way back. */
+      const own = (slot) => {
+        const u = sd.up[slot], secs = u ? u.pcm.length / SE.SR : 0;
+        const ch = [{ v: 'p', label: '▶ ' + nice(slot) }, { v: 's', label: '■' }].concat(u ? [{ v: 'b', label: '↺ Back to built-in' }] : []);
+        return [Ch('', '', ch, (v) => (v === 'p' ? this.sndPlay(slot) : v === 'b' ? this.sndUnupload(slot) : this.sndStop())),
+          Fi('Your own', (e) => this.sndUpload(e, slot), u ? u.name + ' · ' + secs.toFixed(1) + ' s' + (secs > this.SND_LONG_S ? ' · long' : '') : '', 'audio/*')];
+      };
       const voices = Object.keys(SE.VOICES).filter((v) => {
         const r = SE.VOICES[v].rates;
         return (rr.sweep && v === 'geiger') || r.indexOf(rr.rate) >= 0;
       });
       fields.push(H('Tick'),
         Sl('Voice', sd.tick || '', [{ v: '', label: 'Silent' }].concat(voices.map((v) => ({ v, label: SE.VOICES[v].label })))
-          .concat(sd.up.tick_loop ? [{ v: 'upload', label: 'Uploaded · ' + sd.up.tick_loop.name }] : []),
+          .concat(sd.up.tick_loop ? [{ v: 'upload', label: 'Yours · ' + sd.up.tick_loop.name }] : []),
           (v) => this.sndUpd((d) => { d.tick = v || null; })),
         K.Rd('Beat', (rr.sweep ? 'The seconds hand sweeps, so the loop beats with the balance: ' : 'The seconds hand steps ')
           + rr.rate + ' time' + (rr.rate > 1 ? 's' : '') + ' a second' + (rr.sweep ? '' : ', so the loop does too')
           + '. Change it on the Movement tab (Motion and Balance beats).'),
-        play('tick_loop'));
+        ...own('tick_loop'),
+        Nt('', 'A file under half a second is one tick, made into a varied loop at the hand’s rate; a longer one is used as a recorded loop.'));
       fields.push(H('Quarters & hour'));
       ['chime_q1', 'chime_half', 'chime_q3', 'chime_hour'].forEach((slot) => {
-        fields.push(Sl({ chime_q1: ':15', chime_half: ':30', chime_q3: ':45', chime_hour: ':00' }[slot], sd.slots[slot] || '', slotOpts(slot), setSlot(slot)), play(slot));
+        fields.push(Sl({ chime_q1: ':15', chime_half: ':30', chime_q3: ':45', chime_hour: ':00' }[slot], sd.slots[slot] || '', slotOpts(slot), setSlot(slot)), ...own(slot));
       });
       fields.push(H('Hour pattern'),
         Ch('Pattern', sd.pattern, [['count', 'Count the hour'], ['ships_bells', 'Ship’s bells'], ['morse', 'Morse'], ['repeater', 'Repeater'], ['none', 'None']]
           .map(([v, label]) => ({ v, label })), (v) => this.sndUpd((d) => { d.pattern = v; })));
       const need = { count: ['strike_hour'], ships_bells: ['strike_hour'], morse: ['morse_dit', 'morse_dah'],
                      repeater: ['strike_hour', 'strike_qtr', 'strike_min'], none: [] }[sd.pattern] || [];
-      need.forEach((slot) => fields.push(Sl(nice(slot), sd.slots[slot] || '', slotOpts(slot), setSlot(slot)), play(slot)));
+      need.forEach((slot) => fields.push(Sl(nice(slot), sd.slots[slot] || '', slotOpts(slot), setSlot(slot)), ...own(slot)));
       if (sd.pattern === 'ships_bells') fields.push(Nt('', 'Every half hour, 1 to 8 strokes in pairs through each four-hour watch. Ship’s bells replace the quarters.'));
       if (sd.pattern === 'repeater') fields.push(Nt('', 'At the hour a repeater strikes the hours; the quarters and minutes sound when it is asked to repeat.'));
       const miss = need.filter((slot) => !sd.slots[slot]);
       if (miss.length) fields.push(Nt('', 'The pattern needs ' + miss.map(nice).join(' and ') + ' — the bake refuses a pattern with a stroke missing.'));
       fields.push(H('Jumps'));
       ['jump_minute', 'jump_hour', 'jump_date'].forEach((slot) => {
-        fields.push(Sl({ jump_minute: 'Each minute', jump_hour: 'Each hour', jump_date: 'At midnight' }[slot], sd.slots[slot] || '', slotOpts(slot), setSlot(slot)), play(slot));
+        fields.push(Sl({ jump_minute: 'Each minute', jump_hour: 'Each hour', jump_date: 'At midnight' }[slot], sd.slots[slot] || '', slotOpts(slot), setSlot(slot)), ...own(slot));
       });
-      fields.push(H('Your own sounds'),
-        Sl('For', s.sndUp, G.SOUND_SLOTS.map((v) => ({ v, label: nice(v) })), (v) => this.setState({ sndUp: v })),
-        Fi('File', (e) => this.sndUpload(e), '', 'audio/*'),
-        Ch('Low cut', s.sndCut ? 'on' : 'off', [{ v: 'on', label: 'Cut below 350 Hz' }, { v: 'off', label: 'Keep' }], (v) => this.setState({ sndCut: v === 'on' })),
-        Nt('', 'WAV, MP3, OGG or FLAC at any rate. A tick under half a second becomes a varied loop at the hand’s rate; a longer one is used as a recorded loop.'));
-      let total = 0;
-      const rows = G.SOUND_SLOTS.map((slot) => { const p = this.sndPcm(slot); if (p) total += p.length * 2; return p ? nice(slot) + ' ' + (p.length * 2 / 1024).toFixed(0) + ' KB' : null; }).filter(Boolean);
+      let total = 0, mine = 0;
+      const rows = G.SOUND_SLOTS.map((slot) => {
+        const p = this.sndPcm(slot);
+        if (!p) return null;
+        const b = this.sndBaked(p);
+        total += b;
+        if ((slot === 'tick_loop' ? sd.tick : sd.slots[slot]) === 'upload') mine += b;
+        return nice(slot) + ' ' + (b / 1024).toFixed(0) + ' KB';
+      }).filter(Boolean);
+      const ups = Object.keys(sd.up || {});
       fields.push(H('Listen & budget'),
         Ch('Speaker', s.sndSim ? 'orb' : 'full', [{ v: 'orb', label: 'Orb speaker' }, { v: 'full', label: 'Full range' }], (v) => this.setState({ sndSim: v === 'orb' })),
+        Ch('Your files', s.sndCut ? 'on' : 'off', [{ v: 'on', label: 'Cut below 350 Hz' }, { v: 'off', label: 'Keep the lows' }], (v) => this.setState({ sndCut: v === 'on' })),
         Ch('Variation', '', [{ v: 'r', label: '⟳ Re-roll the generated sounds' }], () => this.sndUpd((d) => { d.seed = 1 + Math.floor(Math.random() * 1e6); })),
-        K.Rd('Bytes', (rows.length ? rows.join(' · ') + ' — ' : 'No sounds — ') + (total / 1024 / 1024).toFixed(2) + ' MB of the theme’s ' + (G.ART_CAP / 1024 / 1024).toFixed(1) + ' MB'));
+        K.Rd('Bytes', (rows.length ? rows.join(' · ') + ' — ' : 'No sounds — ') + (total / 1024 / 1024).toFixed(2) + ' MB in the theme, of the '
+          + (G.ART_CAP / 1024 / 1024).toFixed(1) + ' MB it shares with the art', 'What the bake stores: compressed where the sound stays clean, raw where it would not'));
+      if (total >= this.SND_EXCESS_B)
+        fields.push(Nt('', '⚠ Excessive: ' + (total / 1024 / 1024).toFixed(1) + ' MB of sound' + (mine ? ', ' + (mine / 1024 / 1024).toFixed(1) + ' MB of it your own files' : '')
+          + '. The art may no longer fit beside it, and every install of this theme carries it. Shorten your files or send some back to built-in.'));
+      else if (total >= this.SND_WARN_B)
+        fields.push(Nt('', 'Getting large: ' + (total / 1024).toFixed(0) + ' KB of sound' + (mine ? ', ' + (mine / 1024).toFixed(0) + ' KB of it your own files' : '')
+          + '. It shares the theme’s room with the art and slows every install.'));
+      if (ups.length)
+        fields.push(Ch('Your sounds', '', [{ v: 'x', label: '↺ Remove all ' + ups.length + ' of your own sound' + (ups.length > 1 ? 's' : '') }], () => this.sndUnuploadAll()));
       if (s.sndMsg) fields.push(Nt('', s.sndMsg));
     }
     if (ready && s.tab === 'case') {

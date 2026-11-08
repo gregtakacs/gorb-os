@@ -285,9 +285,10 @@ func TestThemeStepIsPerApp(t *testing.T) {
 // release's scheduler). The weather now needs v1.2.17: its temperature fonts are sparse (the
 // digits, the minus and the degree sign alone), which no earlier reader accepts. All three now
 // need v1.2.19: §57's FORMAT 4 container carries the settings schema, which no earlier
-// reader accepts, and the OS renders their settings from it.
+// reader accepts, and the OS renders their settings from it. The clock needs v1.2.20: it plays
+// its ticks and chimes at the owner's two levels through stage_snd_play_v (§59).
 func TestShelfAppsCarryTheirOSFloor(t *testing.T) {
-	for slug, want := range map[string]string{"flights": "v1.2.19", "weather": "v1.2.19", "clock": "v1.2.19"} {
+	for slug, want := range map[string]string{"flights": "v1.2.20", "weather": "v1.2.20", "clock": "v1.2.20"} {
 		body, err := os.ReadFile(filepath.Join("apps", slug+".orbapp"))
 		if err != nil {
 			t.Fatalf("%s: %v", slug, err)

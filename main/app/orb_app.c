@@ -33,7 +33,8 @@
 #include <string.h>
 
 #include "orb_app_wasm.h"   /* P7.2: orb_wasm_iface, registered below as a behaviour module */
-#include "orb_setui.h"      /* §57: an app's settings schema, parsed for the dial */
+#include "orb_setui.h"
+#include "orb_rotation.h"   /* §59: the owner's carousel order */      /* §57: an app's settings schema, parsed for the dial */
 
 #include "esp_heap_caps.h"   /* the card table lives in PSRAM, not internal .bss */
 
@@ -413,6 +414,15 @@ int orb_app_card_upsert(const orb_app_t *row)
     if (!card_table()) return -1;                       /* no PSRAM: table full    */
 
     card_entry_t *s = card_find(row->slug);           /* re-install: keep the index */
+    /* A re-install over a row this boot already built is left as it is. card_fill
+     * rewrites the entry from the worker while the LVGL task reads it — the row it
+     * copies in carries no iface, and the schema it frees may be the page on the glass
+     * — so the app showing read iface NULL and the dial faulted in current_armed (Gold,
+     * 2026-11-07, v1.2.19: a clock reinstalled while the clock showed). Every app
+     * install ends in the reboot that rebuilds the row from its slot (a module loads
+     * only at boot), so until then the old row is the honest one. */
+    if (s && (s->app.init_done || s->app.active || s_current == &s->app))
+        return ORB_APP_BASE + (int)(s - s_card);
     if (!s) {
         /* P4a: a card row lives at the index its FLASH slot names, so the
          * broker's g/c/x/r/e words for ORB_APP_BASE+slot always belong to this
@@ -492,11 +502,30 @@ static size_t orb_app_walk_gather(orb_app_t **list, size_t max)
     size_t n = 0;
     for (size_t i = 0; i < ORB_APP_N && n < max; i++)
         if (!s_apps[i].failed) list[n++] = &s_apps[i];
+    const size_t first_card = n;
+    int rank[ORB_APP_CAP];
     if (s_card)
         for (int k = 0; k < ORB_APP_CAP && n < max; k++)
             if (s_card[k].used &&
-                !s_card[k].app.failed && s_card[k].app.iface)
+                !s_card[k].app.failed && s_card[k].app.iface) {
+                rank[n - first_card] = orb_rotation_rank(s_card[k].app.slug, k);
                 list[n++] = &s_card[k].app;
+            }
+    /* §59: the installed apps stand in the owner's order (orb_rotation.h); an app the
+     * order does not name stands after the named ones, in slot order. Insertion sort,
+     * stable: a handful of rows, and every walk asks this one gather. */
+    for (size_t i = first_card + 1; i < n; i++) {
+        orb_app_t *a = list[i];
+        const int r = rank[i - first_card];
+        size_t j = i;
+        while (j > first_card && rank[j - 1 - first_card] > r) {
+            list[j] = list[j - 1];
+            rank[j - first_card] = rank[j - 1 - first_card];
+            j--;
+        }
+        list[j] = a;
+        rank[j - first_card] = r;
+    }
     return n;
 }
 

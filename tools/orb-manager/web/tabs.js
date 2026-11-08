@@ -1137,6 +1137,7 @@ async function loadApps() {
     try { await renderLibrary(); } catch (e) { /* renderLibrary reports its own failure */ }
   }
   renderAppsTab();
+  loadCarousel();
 }
 
 // appPost is the one leg every apps mutation walks: the proxy's orb path, an
@@ -1149,6 +1150,132 @@ async function appPost(path) {
   const d = await readDeviceJSON(r);
   if (!d || d.error) throw new Error((d && d.error) || ("HTTP " + r.status));
   return d;
+}
+
+// ---- §59: the carousel — the order the knob walks the apps in, and the rotation ----------
+// The order is set only here (owner, 2026-11-07: "may be fine if it's hub level only"); the
+// rotation is the orb's own setting, also on the dial. Every press posts and redraws from
+// the orb's answer, so the face never shows an order the orb did not take.
+const ROT_CHOICES = [[0, "Off"], [15, "every 15 s"], [30, "every 30 s"], [60, "every minute"],
+  [120, "every 2 min"], [300, "every 5 min"], [600, "every 10 min"], [900, "every 15 min"],
+  [1800, "every 30 min"], [3600, "every hour"]];
+let carData = null;
+
+async function loadCarousel() {
+  const box = $("#mn-carousel");
+  if (!box || !current.ip) return;
+  if (fwBelow("v1.2.20")) {
+    box.innerHTML = "";
+    const h = document.createElement("h4"); h.textContent = "Carousel";
+    const p = document.createElement("p"); p.className = "hint";
+    p.textContent = "Putting the apps in your own order and rotating them needs firmware v1.2.20 or later: update this orb on the Firmware tab.";
+    box.append(h, p);
+    return;
+  }
+  try {
+    carData = await readDeviceJSON(await hubFetch("/orb/" + encodeURIComponent(current.ip) + "/api/v1/carousel"));
+  } catch (e) { carData = { error: String(e && e.message || e) }; }
+  renderCarousel();
+}
+
+async function carouselPost(form, say) {
+  const state = $("#mn-carousel-state");
+  if (state) state.textContent = "saving\u2026";
+  try {
+    const r = await hubFetch("/orb/" + encodeURIComponent(current.ip) + "/api/v1/carousel", {
+      method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams(form).toString(),
+    });
+    const d = await readDeviceJSON(r);
+    if (!d || d.error) throw new Error((d && d.error) || ("HTTP " + r.status));
+    carData = d;
+    renderCarousel();
+    const st = $("#mn-carousel-state");
+    if (st) st.textContent = say || "saved";
+  } catch (e) {
+    if (state) state.textContent = "the orb refused: " + (e && e.message || e);
+  }
+}
+
+function renderCarousel() {
+  const box = $("#mn-carousel");
+  if (!box) return;
+  box.innerHTML = "";
+  const h = document.createElement("h4");
+  h.textContent = "Carousel";
+  box.appendChild(h);
+  if (!carData || carData.error) {
+    const p = document.createElement("p"); p.className = "hint";
+    p.textContent = "the carousel did not answer" + (carData && carData.error ? ": " + carData.error : "");
+    box.appendChild(p);
+    return;
+  }
+  const apps = Array.isArray(carData.apps) ? carData.apps : [];
+  const rot = carData.rotate || { on: false, every_s: 60 };
+  // the rotation's one control: off, or how often
+  const bar = document.createElement("div");
+  bar.className = "row toolbar";
+  const lab = document.createElement("label");
+  lab.textContent = "Rotate apps ";
+  const sel = document.createElement("select");
+  sel.id = "mn-rot-every";
+  for (const [s, t] of ROT_CHOICES) {
+    const o = document.createElement("option");
+    o.value = String(s); o.textContent = t;
+    if (rot.on ? s === rot.every_s : s === 0) o.selected = true;
+    sel.appendChild(o);
+  }
+  if (rot.on && !ROT_CHOICES.some(([s]) => s === rot.every_s)) {
+    const o = document.createElement("option");
+    o.value = String(rot.every_s); o.textContent = "every " + rot.every_s + " s"; o.selected = true;
+    sel.appendChild(o);
+  }
+  sel.onchange = () => {
+    const s = +sel.value;
+    carouselPost(s ? { rotate: "1", every_s: String(s) } : { rotate: "0" },
+      s ? "the dial moves to the next app taking part after it is left alone that long" : "rotation off");
+  };
+  lab.appendChild(sel);
+  const state = document.createElement("span");
+  state.className = "hint"; state.id = "mn-carousel-state";
+  state.textContent = "The order the knob and the carousel walk the apps in. Rotation moves on only from an app that takes part, once the knob has been left alone for the whole interval.";
+  bar.append(lab, state);
+  box.appendChild(bar);
+  const order = apps.map((a) => a.slug);
+  const move = (i, d) => {
+    const j = i + d;
+    if (j < 0 || j >= order.length) return;
+    const o = order.slice();
+    [o[i], o[j]] = [o[j], o[i]];
+    carouselPost({ order: o.join(",") }, (apps[i].title || apps[i].slug) + " moved " + (d < 0 ? "up" : "down"));
+  };
+  apps.forEach((a, i) => {
+    const row = document.createElement("div");
+    row.className = "arow";
+    const info = document.createElement("div");
+    info.className = "tinfo";
+    const name = document.createElement("b");
+    name.textContent = (i + 1) + ". " + (a.title || a.slug);
+    info.appendChild(name);
+    const up = document.createElement("button");
+    up.className = "ghost"; up.textContent = "\u25b2"; up.title = "Earlier in the carousel";
+    up.disabled = i === 0; up.onclick = () => move(i, -1);
+    const dn = document.createElement("button");
+    dn.className = "ghost"; dn.textContent = "\u25bc"; dn.title = "Later in the carousel";
+    dn.disabled = i === apps.length - 1; dn.onclick = () => move(i, 1);
+    const tk = document.createElement("label");
+    tk.className = "hint";
+    tk.title = "Whether the rotation stops on this app";
+    const cb = document.createElement("input");
+    cb.type = "checkbox"; cb.checked = !!a.rotate;
+    cb.onchange = () => {
+      const inn = apps.filter((x) => (x.slug === a.slug ? cb.checked : x.rotate)).map((x) => x.slug);
+      carouselPost({ apps: inn.join(",") }, (a.title || a.slug) + (cb.checked ? " takes part in the rotation" : " is out of the rotation"));
+    };
+    tk.append(cb, document.createTextNode(" in rotation"));
+    row.append(info, up, dn, tk);
+    box.appendChild(row);
+  });
 }
 
 function renderAppsTab() {

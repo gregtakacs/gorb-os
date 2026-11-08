@@ -811,7 +811,8 @@
         pivot_x: b[2] >> 1, pivot_y: b[3] >> 1, order: 4, alpha: 255, n_frames: 1, str: toneStr(lab.tones), radius: L.pad,
         digit: 1, end: 1 }, plane(await panelCanvas(d, lab.name)), true, false);
     }
-    S.preview({ plane: plane(await picture(plateC, armC, ar.pivot, frames, px, 232)), x: 0, y: 0, order: 3 });
+    // §60: the whole glass, deflated by the baker and inflated by the orb (owner, 2026-11-07)
+    S.preview({ plane: plane(await picture(plateC, armC, ar.pivot, frames, px, 466)), x: 0, y: 0, order: 3 });
     // the bake time rides the header (word 10) so the hub can tell a newer copy from an older one;
     // it is not content, so the serial above stays the design's own
     var out = S.finish({ name: d.name || 'Flights', slug: 'flights', serial: o.serial || serialOf(d, o.design), abi: GB.GEOM_ABI6, design: o.design || null,

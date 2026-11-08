@@ -95,6 +95,11 @@ ORB_IMPORT("stage_snd_cfg")      void    orb_stage_snd_cfg(orb_stage_sound_cfg_t
 ORB_IMPORT("stage_snd_quiet")    int32_t orb_stage_snd_quiet(int32_t hour);
 ORB_IMPORT("stage_snd_play")     int32_t orb_stage_snd_play(int32_t i, uint32_t flags, int64_t at_us,
                                                           int64_t anchor_us);
+/** The same at the app's own level for this voice, 0..100 (OS v1.2.20): half a dB a step
+ *  down from full and 0 silent, the OS volume's own law; the OS volume still applies on
+ *  top. The clock plays its ticks and its chimes at the owner's two settings. */
+ORB_IMPORT("stage_snd_play_v")   int32_t orb_stage_snd_play_v(int32_t i, uint32_t flags, int64_t at_us,
+                                                            int64_t anchor_us, int32_t vol);
 ORB_IMPORT("stage_snd_stop")     void    orb_stage_snd_stop(int32_t h);
 ORB_IMPORT("stage_snd_active")   int32_t orb_stage_snd_active(int32_t h);
 ORB_IMPORT("stage_snd_reanchor") void    orb_stage_snd_reanchor(int32_t h, int64_t anchor_us);

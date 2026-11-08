@@ -102,6 +102,7 @@ STUBS = r'''
 #include "lvgl.h"
 #include "orb_app.h"
 #include "orb_setui.h"
+#include "orb_rotation.h"
 #include "orb_stage.h"
 #include "menu_view.h"
 #include "art_bank.h"
@@ -423,6 +424,13 @@ int main(void)
     ck("NULL start means the first walkable entry, the shell",
        orb_app_neighbour(NULL, 1) == A("menu"));
     ck("long press homes to the shell (C8 as amended)", orb_app_home() == A("menu"));
+    /* §59: the owner's order ranks the installed apps; the compiled tier still leads. */
+    orb_rotation_set_order("color_picker");
+    ck("an order naming the picker puts it before the clock, the shell still first",
+       orb_app_at(0) == A("menu") && orb_app_at(1) == A("color_picker") && orb_app_at(2) == A("clock") &&
+       orb_app_neighbour(A("color_picker"), 1) == A("clock") && orb_app_neighbour(A("clock"), 1) == A("menu"));
+    orb_rotation_set_order("");
+    ck("an empty order is slot order again", orb_app_at(1) == A("clock") && orb_app_at(2) == A("color_picker"));
     restore_table(); PCK->failed = true;
     ck("a failed entry is skipped in both directions",
        orb_app_neighbour(A("clock"), 1) == A("menu")
@@ -687,6 +695,17 @@ int main(void)
     TR(); orb_app_activate(crow);
     ck("activating the installed card runs its hooks around the load and stamps its slot",
        strcmp(g_trace, "hsb2_act|load|hsb2_show|cur_note:hsb2|") == 0);
+    /* A re-install over the row on the glass leaves it whole until the reboot: the
+     * worker refilling it under the LVGL task faulted the dial (Gold, v1.2.19). */
+    {
+        orb_app_t again; memset(&again, 0, sizeof again);
+        again.slug = (char *)"hsb2"; again.title = (char *)"HSB Card v2";
+        again.kind = ORB_APP_KIND_APP; again.behaviour_kind = ORB_BEHAVIOUR_WASM;
+        const int ridx = orb_app_card_upsert(&again);
+        ck("a re-install over the live row keeps its index and leaves it whole until the reboot",
+           ridx == cidx && crow->iface == &orb_wasm_iface && crow->init_done &&
+           strcmp(crow->title, "HSB Card") == 0 && orb_app_current() == crow);
+    }
     restore_table(); orb_app_card_reset();
 
     /* An unknown behaviour_kind names no module: the row is in the ledger but
@@ -791,7 +810,9 @@ def build_and_run(tmpdir):
            "-I", P("main", "stage"),
            "-I", P("main", "menu"),
            # §57: card_fill parses a card's settings schema, through the real parser.
+           "-DORB_ROTATION_HOST",              # §59: the order's pure half, no NVS
            cpath, P("main", "app", "orb_setui.c"), P("main", "app", "orb_json.c"),
+           P("main", "app", "orb_rotation.c"),
            "-o", exe]
     r = subprocess.run(cmd, capture_output=True, text=True)
     if r.returncode != 0:

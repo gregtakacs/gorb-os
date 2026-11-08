@@ -203,6 +203,10 @@ def lifts(src):
         "static void job_dim_en(void *a) { (void)a; }",
         "static void job_dim_to(void *a) { (void)a; }",
         "static void job_units(void *a) { (void)a; }",
+        # §59: the rotation's choices, its row text and its two jobs, lifted whole and run
+        # against the shipped orb_rotation.c (compiled beside, NVS left out).
+        '#include "orb_rotation.h"',
+        lift(src, r"static const uint32_t ROT_S\[\][\s\S]*?static void job_rot_member\(void \*arg\)\n\{[\s\S]*?\n\}", MENU_C),
         # go_to's exit answer reaches through the public door; the harness
         # declares it before the lifted dispatcher and defines the real one
         # among the funcs, so a press on the exit row is testable. g_setg_rc
@@ -1048,6 +1052,17 @@ int main(void)
     menu_view_apply_input(0, true);
     ck("back from Themes lands on the app's page at its Themes row",
        s_pg == &s_pages[PG_APP] && s_app == FAKE_APP && s_cur == 2 && s_theme_of == NULL);
+    /* §59: while the rotation is on, the page carries an In rotation row after
+     * Permissions; a press posts the membership flip. */
+    orb_rotation_set(true, 60, "");
+    ck("with the rotation on, the page grows an In rotation row after Permissions",
+       page_rows() == 8 && !strcmp(rowline(4), "In rotation  (no)") && !strcmp(rowline(5), "uninstall"));
+    s_cur = 4; g_posts = 0;
+    menu_view_apply_input(0, true);
+    ck("its press posts the flip into the rotation for this app",
+       g_posts == 1 && g_posted_fn == job_rot_member && g_posted_pack == ((0 << 1) | 1));
+    orb_rotation_set(false, 60, "");
+    ck("off, the row goes", page_rows() == 7 && !strcmp(rowline(4), "uninstall"));
     s_cur = page_rows() - 1;
     menu_view_apply_input(0, true);
     ck("back from an app's page lands on its own row in APPS and disarms it",
@@ -1500,11 +1515,40 @@ int main(void)
     menu_view_apply_input(0, true);
     ck("the APPS row opens the catalog on its first app",
        s_pg == &s_pages[PG_APPS] && s_cur == 0);
-    ck("the catalog is every installed app, the B5 count, then back",
-       page_rows() == 4 && !strcmp(rowline(0), "Clock  installed") &&
+    ck("the catalog is every installed app, the B5 count, the rotation, then back",
+       page_rows() == 5 && !strcmp(rowline(0), "Clock  installed") &&
        !strcmp(rowline(1), "HSB  installed") &&
        !strcmp(rowline(2), "2 of 8 slots used") &&
-       !strcmp(rowline(3), "<- back"));
+       !strcmp(rowline(3), "Rotate apps  (off)") &&
+       !strcmp(rowline(4), "<- back"));
+    /* §59: the Rotate apps row edits by knob through its interval choices, off first,
+     * and saves through its job, which writes the rotation the owner chose. */
+    {
+        menu_edit_t e; memset(&e, 0, sizeof e);
+        ck("the Rotate apps row is the one row the knob edits here, off to an hour",
+           edit_apps(3, &e) && e.r.min == 0 && e.r.max == ROT_N - 1 && e.v == 0 && !e.r.wrap &&
+           !edit_apps(2, &e) && !edit_apps(0, &e));
+        char t[48];
+        fmt_apps(3, 3, t, sizeof t);
+        ck("each choice reads as the interval", !strcmp(t, "Rotate apps  (every 1 min)"));
+        int c = 2; g_publish_calls = 0;
+        job_rot_every(&c);
+        orb_rotation_t rr; orb_rotation_get(&rr);
+        ck("saving a choice turns the rotation on at that interval and says so",
+           rr.on && rr.every_s == 30 && g_publish_calls == 1 && !strcmp(g_pub_line, "rotate apps: every 30 s") &&
+           !strcmp(rowline(3), "Rotate apps  (every 30 s)"));
+        int pk = (0 << 1) | 1;
+        job_rot_member(&pk);
+        ck("an app's In rotation press puts it in, by its own slug",
+           orb_rotation_takes_part("clock") && strstr(g_pub_line, "in the rotation"));
+        pk = 0 << 1;
+        job_rot_member(&pk);
+        ck("and the next takes it out again", !orb_rotation_takes_part("clock") && strstr(g_pub_line, "out of"));
+        c = 0;
+        job_rot_every(&c);
+        orb_rotation_get(&rr);
+        ck("choosing off turns it off and keeps the interval", !rr.on && rr.every_s == 30);
+    }
     ck("an installed app reads installed — there is no off (§43.3)",
        strstr(rowline(0), "off") == NULL && strstr(rowline(0), "enabled") == NULL);
     ck("chrome keeps out of the catalog", strstr(rowline(0), "Menu") == NULL &&
@@ -1518,9 +1562,9 @@ int main(void)
        !strcmp(rowline(0), "Clock  failed: two faults in a row"));
     g_fake_app.failed = false; g_fault_why = "";
     g_app_rows_n = 0;
-    ck("no installed app is a count row and a back row, not an empty page",
-       page_rows() == 2 && !strcmp(rowline(0), "0 of 8 slots used") &&
-       !strcmp(rowline(1), "<- back"));
+    ck("no installed app is a count row, the rotation and a back row, not an empty page",
+       page_rows() == 3 && !strcmp(rowline(0), "0 of 8 slots used") &&
+       !strcmp(rowline(2), "<- back"));
     g_app_rows_n = 3;
     s_cur = page_rows() - 1; menu_view_apply_input(0, true);
     ck("the catalog's back row lands on its own top row",
@@ -2037,8 +2081,8 @@ def build_and_run(src):
         f.write(src)
     r = subprocess.run(["cc", "-O0", "-std=gnu11", "-Wall", "-Wextra",
                         "-Wno-unused-parameter", "-Wno-unused-function",
-                        "-Werror", "-I", d, "-I", P("main","app"), "-I", P("main","net"), "-I", P("main","menu"),
-                        "-o", exe, cf],
+                        "-Werror", "-I", d, "-I", P("main","app"), "-I", P("main","net"), "-I", P("main","menu"), "-DORB_ROTATION_HOST",
+                        "-o", exe, cf, P("main", "app", "orb_rotation.c")],
                        capture_output=True, text=True)
     if r.returncode:
         return False, "COMPILE FAILED:\n" + r.stderr[-2500:]
@@ -2333,8 +2377,20 @@ MUTATIONS = [
     ("a group that lands after entry stays shut behind its inert header",
      "    if (app_grew && s_group_open < 0) {",
      "    if (0) {"),
-    ("the catalog stops counting the back row", "static int rows_apps(void)   { return perm_rows() + card_rows_n() + 2; }",
-     "static int rows_apps(void)   { return perm_rows() + card_rows_n() + 1; }"),
+    ("the Rotate apps row is not a knob edit",
+     "    if (row != perm_rows() + card_rows_n() + 1) return false;",
+     "    return false;"),
+    ("the In rotation row stands with the rotation off",
+     "static bool own_rotating(void) { orb_rotation_t r; orb_rotation_get(&r); return r.on; }",
+     "static bool own_rotating(void) { return true; }"),
+    ("the In rotation press asks to stay where it is",
+     "                                 (orb_rotation_takes_part(s_app->slug) ? 0 : 1));",
+     "                                 (orb_rotation_takes_part(s_app->slug) ? 1 : 0));"),
+    ("choosing off leaves the rotation on",
+     "    const char *why = orb_rotation_set(c > 0, c > 0 && c < ROT_N ? ROT_S[c] : r.every_s, NULL);",
+     "    const char *why = orb_rotation_set(true, c > 0 && c < ROT_N ? ROT_S[c] : r.every_s, NULL);"),
+    ("the catalog stops counting the back row", "static int rows_apps(void)   { return perm_rows() + card_rows_n() + 3; }",
+     "static int rows_apps(void)   { return perm_rows() + card_rows_n() + 2; }"),
     ("a failed app loses its reason",
      'snprintf(out, outsz, "%s  failed: %s", a->title ? a->title : a->slug,\n                 orb_svc_fault_reason(a));',
      'snprintf(out, outsz, "%s  failed", a->title ? a->title : a->slug);'),
@@ -2449,8 +2505,8 @@ MUTATIONS = [
      ".back_to = PG_TOP, .back_cur = 1, .edit = edit_display },",
      ".back_to = PG_TOP, .back_cur = 0, .edit = edit_display },"),
     ("back from the app list opens the top page on the wrong row",
-     ".act = act_apps, .enter = enter_apps,\n                     .back_to = PG_TOP, .back_cur = 3 },",
-     ".act = act_apps, .enter = enter_apps,\n                     .back_to = PG_TOP, .back_cur = 0 },"),
+     ".act = act_apps, .enter = enter_apps,\n                     .back_to = PG_TOP, .back_cur = 3, .edit = edit_apps },",
+     ".act = act_apps, .enter = enter_apps,\n                     .back_to = PG_TOP, .back_cur = 0, .edit = edit_apps },"),
     ("back from the app page loses its row in the dynamic run",
      ".act = act_app, .open = open_app, .ordinal = ord_app,",
      ".act = act_app, .open = open_app,"),

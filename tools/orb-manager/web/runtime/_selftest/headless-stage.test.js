@@ -28,8 +28,9 @@ const readBack = (b) => { const v = G.verifyBundle3(b.bytes); return { v, sec: v
   const pvBytes = B.preview({ plane: plane(116, 116, [10, 40, 20]), x: 0, y: 0 });
   ok(p.frame0 === 0 && arm.frame0 === 1 && jet.frame0 === 2 && pool.every((r) => r.frame0 === 2), 'each row names its plane; a pool shares one sprite', [p.frame0, arm.frame0, jet.frame0].join());
   ok(B.elements.map((e) => e.n).join() === '1,2,3,4,5,6' && B.bank.sprites.length === 4, 'ids run in the order rows enter; the preview is one more sprite', B.elements.map((e) => e.n).join());
-  // OS v1.2.12: the preview is stored as its RGB565 disc (orb_disc.h), so the picker shows it round
-  ok(pvBytes === G.discBytes(116), 'the preview is RGB565 only', pvBytes);
+  // OS v1.2.12: the preview is stored as its RGB565 disc (orb_disc.h), so the picker shows it
+  // round; §60: deflated, as a flat plane always shrinks
+  ok(pvBytes > 6 && pvBytes < G.discBytes(116), 'the preview is its RGB565 disc, deflated', pvBytes);
   const b = B.finish({ name: 'Scope', slug: 'radar', abi: G.GEOM_ABI6, scalars: {} });
   const { sec, hdr } = readBack(b);
   ok(hdr.name === 'Scope' && sec.blob.elements.length === 6 && sec.blob.sprites.length === 4, 'the section reads back through the card’s reader: its rows and sprites', JSON.stringify([hdr.name, sec.blob.elements.length, sec.blob.sprites.length]));
@@ -105,8 +106,8 @@ const readBack = (b) => { const v = G.verifyBundle3(b.bytes); return { v, sec: v
   const B = G.stage3({});
   let e1 = null; try { B.preview({ plane: plane(100, 80, [0, 0, 0]) }); } catch (e) { e1 = e.message; }
   ok(/a preview is a square/.test(e1 || ''), 'a preview that is not square is refused', e1);
-  let e2 = null; try { B.preview({ plane: plane(300, 300, [0, 0, 0]) }); } catch (e) { e2 = e.message; }
-  ok(/half-res of the glass/.test(e2 || ''), 'and one past half the panel', e2);
+  let e2 = null; try { B.preview({ plane: plane(470, 470, [0, 0, 0]) }); } catch (e) { e2 = e.message; }
+  ok(/the glass itself/.test(e2 || ''), 'and one past the glass (§60)', e2);
   const F = G.stage3({});
   F.rowFrames(plateRow(F, 20), Array.from({ length: 20 }, (_, k) => scope(k % 4)), false, false);
   let e3 = null; try { F.finish({ name: 'Too big', slug: 'radar', abi: 6 }); } catch (e) { e3 = e.message; }

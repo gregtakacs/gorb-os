@@ -569,7 +569,7 @@ MUTANTS = (
     ("a frame window off the end of the bank",
      "if (row >= sec->n_spr) {", "if (0) {"),
     ("a plane of any size is believed",
-     "if (!masked && sp.size != px * 2u) {", "if (0) {"),
+     "if (!masked && !adpcm && !disc_o && !deflated && sp.size != px * 2u) {", "if (0) {"),
     ("table and bank extents are not compared",
      "if (e->w && e->h && (sp.w != e->w || sp.h != e->h)) {", "if (0) {"),
     ("EF_ALPHA is ignored and a theme's alpha draws opaque",

@@ -7476,3 +7476,142 @@ permissions into their own sub-menus ... it's too confusing the way it is."
   APPS walk; 101 mutants, all caught. The registry suite pins that an app's page carries no
   theme rows and that the provider is menu-only. Benched on Gold.
 
+## 59 — Clock sounds per chime, two clock levels, the carousel's order and rotation — 2026-11-07
+
+**Owner, 2026-11-07.** (1) "load unique sound for every chime type ... part of every single
+sound type. Warn the user if their sounds are turning excessive size wise. There has to be a
+way to ... remove the custom sound from a theme and revert it back to the built-in." (2) "change
+volumes independent of each other for ticks and bells ... make it a clock app option. Master
+volume is still on the OS level." (3) "order the apps on the carousel (may be fine if it's hub
+level only)" and "auto swap/rotate apps on the dial at a time interval with selecting which
+apps participate". (4) "the build a watch's lighting to default to the as designed setting."
+
+### 59.1 As built — OS v1.2.20, clock v1.2.29
+
+- **Every sound takes its own file** in the Theme Editor's Sound tab: each row (the tick, the
+  four chimes, the pattern's strokes, the three jumps) has **Your own** and, when it holds the
+  author's file, **↺ Back to built-in**: the preset's own choice for that sound, or the first
+  built-in that fits it when the preset leaves it silent. **Remove all your own sounds** does
+  every one. The bytes leave the design, so the next Send carries none. The single upload with
+  a "For" dropdown is gone; the low cut is one switch for every file.
+- **The budget is what the bake stores** (`GorbBake.soundEncode`: ADPCM where it holds, PCM16
+  where it would not), against the slot it shares with the art: past 512 KB "getting large",
+  past 2 MB "excessive" with how much of it is the author's own; a sound over 10 s is "long"
+  on its own row.
+- **Two clock levels.** The clock declares `tick_vol` (default 70) and `chime_vol` (default 100)
+  in its schema, so they are on the dial and in Orb Manager. Ticks are the tick loop and the
+  three jump clicks; chimes are everything else. A new import, `stage_snd_play_v(i, flags, at,
+  anchor, vol)`, plays a theme sound at a level on the OS volume's own law: half a dB a step down
+  from full, 0 silent (`stage_snd_gain`), with the OS volume still on top in the codec. The old
+  import stays and plays at full. A changed tick level restarts the loop, which re-enters on its
+  second.
+- **The carousel's order** (`orb_rotation.c`): a slug list the registry's one walk gather ranks
+  the installed apps by, so the carousel, the app list and the knob agree; an app the list does
+  not name stands after the named ones in slot order, and the shell still leads. Set from Orb
+  Manager only (Apps > Carousel, ▲ ▼).
+- **The rotation**: on or off, 10 s to a day, and the apps that take part. The router asks
+  `orb_rotation_pick` on every poll with no knob event and the carousel shut; it moves only from
+  an app that takes part, once the knob and the glass have been quiet a whole interval (a touch
+  or any screen switch restarts it), to the next app taking part in the carousel's order,
+  wrapping. Set from the hub (Apps > Carousel: the interval and an "in rotation" box per app) or
+  the dial (APPS > Rotate apps, knob-edited off to an hour; each app's page grows an **In
+  rotation** row while it is on).
+- **`/api/v1/carousel`**: GET answers the installed apps in walk order with `rotate` each, and
+  `{on, every_s}`; POST takes a form body (`order`, `rotate`, `every_s`, `apps`; an empty `apps=`
+  is "none") and answers the same. Allowlisted in the hub and modelled in `orbfake`.
+- **From scratch** starts with its light As designed (the engine defaults), not No light.
+- **Found on the way:** a reinstall over the app on the glass faulted the dial (v1.2.19,
+  `LoadProhibited` in `orb_app_current_armed`): `card_fill` rewrote the live row from the worker,
+  and the row it copies in carries no iface. `orb_app_card_upsert` now leaves a row this boot
+  already built as it is; the reboot every app install ends in rebuilds it from its slot.
+- Suites: `host_rotation_test.py` (19 checks, 7 of 7 mutants), the registry suite (the order in
+  the walk, the live re-install), the menu suite (the Rotate row, the jobs, In rotation; 105
+  mutants), the editor's UI suite (per-row files, back to built-in, remove all, both warnings)
+  and flow suite (From scratch's light), `orbfake`'s carousel route. Benched on Gold: the clock's
+  two levels on its page and from `/api/v1/apps/settings`, the Rotate row, and a 10 s rotation
+  over Weather and Flights alternating on the glass.
+
+### 59.2 Weather's preview at 232 — weather v1.4.1
+
+**Owner, 2026-11-07:** Weather's preview was "really pixelated and overall looks illegible", and
+could previews be stored at full resolution, compressed? Measured on Gold first: Weather baked its
+preview at **128 px** (since v1.0.2, with no recorded reason; nothing showed a preview larger
+than a thumbnail then, and nothing checks the size), Clock and Flights at 232, the carousel
+centre's own size, so Weather's was stretched ~1.8x there; and the bake shrank 466 to 128 in one
+drawImage, which drops most of the rows a hairline word sits on. Full resolution would work:
+lossless deflate of real 466x466 frames is 83 KB (Weather), 94 KB (Flights), 208 KB (Clock), and
+the ROM's tinfl inflates them in 55, 55 and 83 ms (state in internal RAM; PSRAM +6 ms), against a
+card read of ~0.4 MB/s through the theme reader (today's 107 KB previews take 260-290 ms). It
+would only show in the zoom into an app and the Themes sub-menu, though: the carousel's centre is
+232. **Owner's choice: 232 first, then decide.** Weather now bakes 232, shrunk by halves with
+high-quality smoothing (`shrink`); the full-res deflate format stays on the table with these
+numbers if the zoom and the Themes sub-menu still read soft.
+
+## 60 — Previews at full resolution, deflated — 2026-11-07
+
+**Owner, 2026-11-07,** having seen Weather at 232 (59.2) and the rest: "we should go lossless
+compress instead and have them full res", and the themes already on the card are to be re-baked.
+
+### 60.1 As built — OS v1.2.20, clock v1.2.29, flights v1.4.1, weather v1.4.1
+
+- **The bake.** Every editor's preview is the whole glass, 466x466: the clock's
+  `previewPlane3` (no more nearest-halving), flights' and weather's `picture(.., 466)`. The baker
+  (`GorbBake.zlibFixed`) stores it as its disc (OS v1.2.12) deflated: a zlib wrapper round one
+  fixed-Huffman block, matches by a 64-deep hash chain, deterministic in any browser and in node,
+  ~30 ms. It keeps the raw disc when deflate would not be smaller. The half-glass refusal became
+  a whole-glass one. Measured: Skeleton 224 KB, Scope ~110 KB, Modern ~114 KB (fixed codes are
+  ~15% over zlib's dynamic ones; a dynamic-Huffman encoder is the knob if the bytes ever matter).
+- **The orb.** `orb_elems.c` and `orb_clock3.c` accept a square preview whose size is under its
+  raw disc's (the baker's own rule); `orb_theme.c` reads those bytes into PSRAM, checks the zlib
+  header, inflates with the ROM's tinfl (`main/art/orb_inflate.c`, its ~11 KB state on the heap,
+  internal RAM first) to exactly the disc, and expands it like a raw disc. Measured inflate on
+  Gold: 55 ms (Weather, Flights), 83 ms (Clock). Callers get the 466 square as before.
+- **The carousel** keeps its cache at 232 (box-averaged from the full plane at boot, ~0.4 MB of
+  PSRAM for five apps) and prefetches ONE full plane, the centre app's, on its own task once a
+  turn settles; the zoom into an app draws from it when it has landed (before then, from the 232).
+  The Themes sub-menu shows a full plane 1:1 (its scale is the glass over the plane).
+- **The hub** asks `/api/v1/sd/preview?enc=z` and gets a deflated preview as it lies,
+  `[w][h | 0x8000][zlib]` (~100-240 KB on the air instead of 434 KB), and inflates it
+  (`orbnet.ExpandZPreview`); a library file's preview inflates the same way (`planeInBlob`).
+  Without `enc=z` the orb answers the plain plane, so an older hub still reads it.
+- **Floor:** a theme from these editors needs OS v1.2.20 (an older reader refuses the size), so
+  all three apps carry `os_min` v1.2.20 and the shelf was re-baked.
+- Suites: the bundle suite (the stored preview is the disc deflated and inflates to it, the raw
+  fallback on noise, the whole-glass refusal), the dither and stage suites, the component suite
+  (466, every pixel the frame's own), `host_orbelems` (its stale mutant re-pinned), the hub's
+  `ExpandZPreview` (round trip, bad checksum, truncation) and the shipped default at 466.
+
+### 60.2 No card while the knob turns — 2026-11-07
+
+**Owner, 2026-11-07:** "the carousel feels slow ... jerky. Is that SD card to flash load? Or is
+that how slow flash to display is?", and the Themes page should load ahead and "let them rotate
+through items without having to load each of them".
+
+- **Measured on Gold:** the panel was never the limit. A carousel frame is the whole glass,
+  ~35 ms (compose ~11 ms, the rest the QSPI send and its tearing wait), ~29 fps in motion. Every
+  dropped frame (6,856 of 6,856 skips in one run, a counter that now tells the card's share apart)
+  was the display's DMA ring out to the SD card: `orb_sd_lock` lends it for the whole card hold,
+  and 60.1's full-preview prefetch read the card for ~0.6 s after every settled turn.
+- **The carousel no longer reads the card after boot.** The boot load keeps each app's stored
+  preview bytes (`orb_theme_preview_zcopy`, ~430 KB for the three themed apps) and derives the 232
+  cache from them; the centre's full plane is inflated from those bytes (`orb_preview_inflate`,
+  97-115 ms, no card). Same run after: 0 skips, 57 frames against 46.
+- **The Themes page caches ahead.** While the cursor rests (350 ms), its own task fetches the
+  stored previews nearest the cursor (here, +1, -1, +2, -2) one at a time into a bounded cache
+  (900 KB, eight entries, the farthest from the cursor evicted first; twenty Clock previews are
+  ~3.7 MB and would not fit). A landing on a cached theme inflates from memory; a turn never
+  starts a card read. The cache is freed when the page is left.
+- **Its own task, not the jobs worker:** the shell drops every turn while `orb_jobs_busy()`, so a
+  prefetch on the worker swallowed turns (three detents, two landed, one ~0.85 s late). On
+  `theme_pv` all three land at their own pace (436 ms apart for 400 ms sends).
+- A theme not yet cached still reads the card when the cursor rests on it, and the glass is still
+  for that read: the card and the display share the one DMA ring.
+
+- **"working..." that never left (owner, 2026-11-07).** After a fast scroll, and again after a
+  theme pick's reboot, the Themes page sat on "working..." with nothing loading. The job had
+  finished; the hint was stale. The shell paints "working..." while the card walk runs, and the
+  walk lands through the themes provider without changing the row count, so none of the menu's
+  three repaint triggers fired and the hint stayed until the next detent. The menu now remembers
+  the busy state its last paint drew (`s_painted_busy`) and repaints when `orb_jobs_busy()`
+  disagrees. Gold: the page clears on its own after entry and after a pick's reboot. Previews land
+  after erratic fast-scroll rounds (2-10 detents at 0-80 ms, three-detent bursts 400 ms apart).

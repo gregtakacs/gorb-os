@@ -47,6 +47,7 @@
 #include "orb_sd.h"
 #include "orb_app.h"
 #include "themes_page.h"     /* §58: an app's Themes sub-menu */
+#include "orb_rotation.h"     /* §59: the owner's rotation */
 #include "orb_app_install.h"   /* APPS: the uninstall and fault-clear doors (P5.3) */
 #include "orb_app_scan.h"      /* D38: the APPS catalog walks the card too */
 #include "idle_dim.h"          /* DISPLAY submenu: the two runtime settings */
@@ -206,6 +207,11 @@ static const char *page_title(void);
 static void title_line(char *, size_t);
 static int  rows_on_glass(void);
 static const char *page_hint(void);
+/* The busy state the last paint drew: "working..." is painted while a job
+ * runs, and a job that lands without changing a row count (a theme walk
+ * publishing through its provider) would otherwise leave the hint up until
+ * the next detent — read as a stuck page (Gold, 2026-11-07). */
+static bool s_painted_busy;
 static void edit_end(void);      /* the knob edit mode, docs/knob-edit-plan.md */
 static void go_back(void);       static void activate(void);
 static void repaint(void);       static void job_post(orb_job_fn fn, int idx);
@@ -270,7 +276,7 @@ static int      s_perm_slot = -1;              /* the Permissions sub-menu's app
  * whose, so back returns to that app's page and not to the top. */
 static const orb_app_t *s_theme_of;
 /* An app page's own rows after its settings: these two sub-menu rows, else a door id. */
-enum { OWN_THEMES = -2, OWN_PERMS = -3 };
+enum { OWN_THEMES = -2, OWN_PERMS = -3, OWN_ROT = -4 };
 static const orb_cap_t OWNER_CAPS[] = { CAP_POWER, CAP_NET,
                                         CAP_SD_READ, CAP_THEMES, CAP_SOUND, CAP_LOCATION };
 #define N_OWNER_CAPS ((int)(sizeof OWNER_CAPS / sizeof OWNER_CAPS[0]))
@@ -392,6 +398,61 @@ static void job_units(void *arg)
                   kind == ORB_UNITS_SPEED ? "speed" : kind == ORB_UNITS_TIME ? "time" :
                   kind == ORB_UNITS_PRESSURE ? "pressure" : "distance",
                   l ? l : "?");
+    worker_publish(&out);
+}
+
+/* §59: the rotation's interval choices, 0 = off. */
+static const uint32_t ROT_S[] = { 0, 15, 30, 60, 120, 300, 600, 900, 1800, 3600 };
+#define ROT_N ((int)(sizeof ROT_S / sizeof ROT_S[0]))
+static void rot_text(int choice, char *out, size_t outsz)
+{
+    const uint32_t v = (choice > 0 && choice < ROT_N) ? ROT_S[choice] : 0;
+    if (!v)            snprintf(out, outsz, "off");
+    else if (v < 60)   snprintf(out, outsz, "every %lu s", (unsigned long)v);
+    else               snprintf(out, outsz, "every %lu min", (unsigned long)(v / 60));
+}
+static int rot_choice(void)
+{
+    orb_rotation_t r;
+    orb_rotation_get(&r);
+    if (!r.on) return 0;
+    int best = 1;
+    for (int i = 1; i < ROT_N; i++)
+        if ((ROT_S[i] > r.every_s ? ROT_S[i] - r.every_s : r.every_s - ROT_S[i]) <
+            (ROT_S[best] > r.every_s ? ROT_S[best] - r.every_s : r.every_s - ROT_S[best])) best = i;
+    return best;
+}
+static void job_rot_every(void *arg)
+{
+    const int c = *(const int *)arg;
+    ui_t out; memset(&out, 0, sizeof out);
+    orb_rotation_t r;
+    orb_rotation_get(&r);
+    const char *why = orb_rotation_set(c > 0, c > 0 && c < ROT_N ? ROT_S[c] : r.every_s, NULL);
+    char t[24];
+    rot_text(c, t, sizeof t);
+    snprintf(out.status, sizeof out.status, why ? "%.60s" : "rotate apps: %s", why ? why : t);
+    worker_publish(&out);
+}
+/* pack: (registry index << 1) | take part */
+static void job_rot_member(void *arg)
+{
+    const int pack = *(const int *)arg;
+    ui_t out; memset(&out, 0, sizeof out);
+    const orb_app_t *a = orb_app_row((size_t)(pack >> 1));
+    if (!a || !a->slug) { snprintf(out.status, sizeof out.status, "that app is gone"); worker_publish(&out); return; }
+    orb_rotation_t r;
+    orb_rotation_get(&r);
+    char csv[ORB_ROTATION_MAX * ORB_ROTATION_SLUG] = "";
+    size_t at = 0;
+    for (int i = 0; i < r.n; i++) {
+        if (!strcmp(r.apps[i], a->slug)) continue;
+        at += (size_t)snprintf(csv + at, sizeof csv - at, "%s%s", at ? "," : "", r.apps[i]);
+    }
+    if (pack & 1) snprintf(csv + at, sizeof csv - at, "%s%s", at ? "," : "", a->slug);
+    const char *why = orb_rotation_set(r.on, r.every_s, csv);
+    snprintf(out.status, sizeof out.status, "\"%.30s\": %s", a->title ? a->title : a->slug,
+             why ? why : (pack & 1) ? "in the rotation" : "out of the rotation");
     worker_publish(&out);
 }
 
@@ -819,7 +880,7 @@ static int  appact_n(void);
 static const orbapp_scan_entry_t *card_subject(void);
 static bool slug_on_dial(const char *slug);
 
-static int rows_apps(void)   { return perm_rows() + card_rows_n() + 2; } /* +1 cap, +1 back */
+static int rows_apps(void)   { return perm_rows() + card_rows_n() + 3; } /* +cap, +rotate, +back */
 static int rows_appact(void) { return appact_n() + 1; }                  /* this subject's doors + back */
 static int rows_about(void)  { return 5 + 1; }             /* 5 facts + back      */
 
@@ -998,6 +1059,12 @@ static void label_apps(int row, char *out, size_t outsz, bool *sel_hi)
             snprintf(out, outsz, "%d of %d slots used", n, ORB_APP_CAP);
             return;
         }
+        if (row == n + cn + 1) {   /* §59: the rotation, knob-edited (edit_apps) */
+            char t[24];
+            rot_text(rot_choice(), t, sizeof t);
+            snprintf(out, outsz, "Rotate apps  (%s)", t);
+            return;
+        }
         snprintf(out, outsz, "<- back");
         return;
     }
@@ -1048,6 +1115,25 @@ static void act_apps(int row)
 }
 
 static const char *title_apps(void) { return "APPS"; }
+
+/* §59: the Rotate apps row edits by knob through its interval choices, off first. */
+static void fmt_apps(int row, int32_t v, char *out, size_t outsz)
+{
+    (void)row;
+    char t[24];
+    rot_text((int)v, t, sizeof t);
+    snprintf(out, outsz, "Rotate apps  (%s)", t);
+}
+static void commit_apps(int row, int32_t v) { (void)row; job_post(job_rot_every, (int)v); }
+static bool edit_apps(int row, menu_edit_t *e)
+{
+    if (row != perm_rows() + card_rows_n() + 1) return false;
+    e->r = (knob_range_t){ 0, ROT_N - 1, false, 1 };
+    e->v = rot_choice();
+    e->fmt = fmt_apps;
+    e->commit = commit_apps;
+    return true;
+}
 static const char *hint_apps(void)  { return "rotate: choose   push: open"; }
 
 /* Leaving the list ends the door page's claim on a subject and both arms with
@@ -1201,11 +1287,14 @@ static int own_caps_n(const orb_app_t *a)
 /* The page's own rows after the settings, in order: Themes when the card holds any
  * of the app's, Permissions when it declared or reached for a cap, then the doors. */
 static bool own_has_themes(const orb_app_t *a) { return themes_page_count_for(a->slug) > 0; }
+/* §59: the In rotation row stands only while the rotation is on. */
+static bool own_rotating(void) { orb_rotation_t r; orb_rotation_get(&r); return r.on; }
 static int own_at(int i)                     /* OWN_* or a door id, -1 past the end */
 {
     if (!app_owned(s_app)) return -1;
     if (own_has_themes(s_app) && i-- == 0) return OWN_THEMES;
     if (own_caps_n(s_app) > 0 && i-- == 0) return OWN_PERMS;
+    if (own_rotating() && i-- == 0) return OWN_ROT;
     return appact_id(i);
 }
 static int own_rows(void)
@@ -1244,6 +1333,12 @@ static void label_own(int i, char *out, size_t outsz, bool *sel_hi)
                  orb_svc_denied_mask(s_app) ? "  *" : "");
         return;
     }
+    if (what == OWN_ROT) {
+        const bool in = orb_rotation_takes_part(s_app->slug);
+        if (sel_hi) *sel_hi = in;
+        snprintf(out, outsz, "In rotation  (%s)", in ? "yes" : "no");
+        return;
+    }
     if (what >= 0) { label_door(what, out, outsz, sel_hi); return; }
     snprintf(out, outsz, "<- back");
 }
@@ -1265,6 +1360,12 @@ static void act_own(int i)
         s_perm_slot = orb_app_index_of(s_app);
         go_to(PG_CAPS, 0);
         repaint();
+        return;
+    }
+    if (what == OWN_ROT) {
+        job_post(job_rot_member, (orb_app_index_of(s_app) << 1) |
+                                 (orb_rotation_takes_part(s_app->slug) ? 0 : 1));
+        repaint();                                      /* shows "working..." */
         return;
     }
     if (what >= 0) act_door(what);
@@ -2008,6 +2109,7 @@ static void repaint(void)
         lv_label_set_text(s_title, "MENU");
         lv_obj_set_style_text_font(s_title, &lv_font_montserrat_48, 0);
         lv_label_set_text(s_hint, "push to open");
+        s_painted_busy = orb_jobs_busy();   /* this hint never says "working..." */
         lv_label_set_text(s_status, "");
     } else {
         char head[64];
@@ -2521,7 +2623,7 @@ const menu_page_t s_pages[PG_N] = {
      * changing — rows_top() reads TOP_OS_N by sizeof. */
     [PG_APPS]    = { .rows = rows_apps, .label = label_apps, .title = title_apps,
                      .hint = hint_apps, .act = act_apps, .enter = enter_apps,
-                     .back_to = PG_TOP, .back_cur = 3 },
+                     .back_to = PG_TOP, .back_cur = 3, .edit = edit_apps },
     [PG_APPACT]  = { .rows = rows_appact, .label = label_appact, .title = title_appact,
                      .hint = hint_appact, .act = act_appact,
                      .ordinal = ord_appact,
@@ -2727,8 +2829,9 @@ static void title_line(char *out, size_t outsz)
 
 static const char *page_hint(void)
 {
+    s_painted_busy = orb_jobs_busy();
     if (s_note[0]) return "push: OK";
-    if (orb_jobs_busy()) return "working...";
+    if (s_painted_busy) return "working...";
     if (s_edit.on) return "rotate: adjust   push: save   hold: cancel";
     return s_pg->hint ? s_pg->hint() : "rotate: choose   push: open";
 }
@@ -2885,7 +2988,8 @@ void menu_view_service(void)
     const bool pv_landed = (px != NULL) != (s_pv_stamp != 0) ||
                            (px && (pst != s_pv_stamp || pw != s_pv_w || ph != s_pv_h));
     const bool own_result = s_dirty;
-    if (!own_result && !app_grew && !pv_landed) return;
+    const bool busy_flip = s_armed && orb_jobs_busy() != s_painted_busy;
+    if (!own_result && !app_grew && !pv_landed && !busy_flip) return;
     s_dirty = false;
 
     /* §58: a Themes sub-menu's group arrives with the card walk, which can land

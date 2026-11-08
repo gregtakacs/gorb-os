@@ -112,6 +112,16 @@ hold to go back where you were. The last row, **settings**, opens the orb's own 
   on its own row and on its Permissions row;
 - the USB drive and sound pages.
 
+APPS also carries **Rotate apps**: off, or every 15 seconds up to every hour. While it is
+on, each app's page has an **In rotation** row, and the orb moves on to the next app in
+rotation once the knob has been left alone that long. It moves only from an app that is in
+the rotation, so opening any other app keeps it there; touching the knob starts the wait
+again.
+
+The Clock's page starts with **Tick volume** and **Chime volume**: the ticking (with the
+minute, hour and date clicks) and the chimes and strikes each have their own level, under
+the orb's own volume on the Sound page.
+
 In settings, a hold goes back to the app you came from.
 
 The display dims when nobody has touched the orb for a while. Moving the orb wakes it.
@@ -124,7 +134,7 @@ Click an orb in the **Orbs** list to open its card. The tabs are:
 |---|---|
 | **Orb** | the orb's name; its sound, with quiet hours in half-hour steps; its **Location**, set by search, this browser, or a click on the map beside it (the clock's time zone comes from it, and apps that need a place read it); and **App settings**, a page per installed app with every one of its settings, each with its help: the same ones the orb's menu shows, plus the ones you type (Weather's places, Flights' adsb.lol API key and where to get one) |
 | **Wi-Fi** | move the orb to another network |
-| **Apps** | the apps on this orb and in your library, one row each with its presses in fixed columns: **Install** or **Update** (amber when the library holds a newer build; the tab shows the count), **Uninstall**, the card copy, the library copy; **Import an app** (an `.orbapp` file) and **Restore bundled apps** |
+| **Apps** | the apps on this orb and in your library, one row each with its presses in fixed columns: **Install** or **Update** (amber when the library holds a newer build; the tab shows the count), **Uninstall**, the card copy, the library copy; **Import an app** (an `.orbapp` file) and **Restore bundled apps**. Under the list, **Carousel** sets the order the knob and the carousel walk the apps in (▲ and ▼), **Rotate apps**, and which apps are **in rotation**. |
 | **Themes** | each app's themes under its own tab, the app named over the list; **Refresh from Orb**, **Compose new theme** and **Import a theme** (an `.orbtheme` file) above it. A theme the library holds a newer bake of shows an amber **Update** |
 | **Files** | the files on the orb's microSD card |
 | **Firmware** | the version the orb runs; **Update firmware** lights up when Orb Manager carries a newer one |
@@ -140,6 +150,17 @@ to the library first, then bakes and sends it. **Save to library**, beside it, k
 design without sending; the start page only opens things. **Download .orbtheme** keeps a
 file (the theme, with its design inside) that you can open again or share. Anything a theme can do, the editor can rebuild, so there is no "restore bundled
 themes" button.
+
+On the Finish step's **Sound** tab every sound (the tick, each quarter and the hour, the
+strikes and the jumps) has its own **Your own** file and plays with ▶. **Back to built-in**
+puts one sound back to the editor's own, and **Remove all your own sounds** clears every
+file you added; either way the next Send carries none of those bytes. A **From scratch**
+watch starts with its light **As designed**. Every theme carries a full-size, losslessly compressed picture of
+itself, which the orb shows in the carousel and when you choose a theme; themes made before
+firmware v1.2.20 need sending again from the editor (or **Rebake all** on the Themes tab). Sounds share the theme's room with the art, so
+the tab counts what the bake stores and says when it is getting large (from 512 KB) or
+excessive (from 2 MB, where the art may no longer fit); a single sound over ten seconds is
+marked long on its own row.
 
 ## Your library
 

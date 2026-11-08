@@ -253,6 +253,8 @@ esp_err_t display_dma_return(void);
 /** True while the ring is lent and the flush path drops frames on purpose —
  *  the explanation a stall probe must take before it believes the silence. */
 bool    display_dma_lent(void);
+/** True while the ring is lent OR returned but not yet re-funded: every frame drops. */
+bool    display_dma_parked(void);
 /** The ring's return when nothing else would make it: the flush path re-funds the
  *  ring and re-sends the frames it dropped, but a still page (the menu after a card
  *  walk) never flushes, so the panel kept the picture from before the read until a

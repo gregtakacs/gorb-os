@@ -420,7 +420,9 @@ var deviceRoutes = map[string][]string{
 	"/api/v1/apps/cfg": {http.MethodGet, http.MethodPost},
 	// §57: an app's settings schema and current values, which App settings renders from.
 	"/api/v1/apps/settings": {http.MethodGet},
-	"/api/v1/sd/app":        {http.MethodPost},
+	// §59: the carousel's order and the rotation, which the Apps tab sets.
+	"/api/v1/carousel": {http.MethodGet, http.MethodPost},
+	"/api/v1/sd/app":   {http.MethodPost},
 	// v1.1.18's file-manager doors and the LAN twin of serial RESET ALL. The
 	// proxy forwards these verbatim (token, caps, lane) and owns none of the
 	// policy: the device already refuses traversal, the device-owned

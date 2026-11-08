@@ -69,6 +69,8 @@ type device struct {
 	Home Home
 	// Units is the orb's units (/api/v1/units, orb_units.c). Zero value = metric.
 	Units Units
+	// Carousel is the owner's app order and rotation (/api/v1/carousel, orb_rotation.c).
+	Carousel Carousel
 	// Name is the device's own, and the DEVICE is the authority for it — the
 	// hub's fleet row caches this value rather than owning it. Empty means
 	// unnamed, which the firmware reports as "" and never as a placeholder, so a

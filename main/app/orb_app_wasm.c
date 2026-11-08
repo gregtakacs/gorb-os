@@ -33,6 +33,7 @@
 
 #include <math.h>             /* the orb.sin/cos/... imports are the OS's libm */
 #include <stdio.h>            /* snprintf — the C2 fault reason is built, not literal */
+#include <stdlib.h>
 #include <string.h>
 #include <time.h>
 
@@ -813,6 +814,7 @@ m3ApiRawFunction(imp_cv_disc)                /* void cv_disc(h, cx, cy, r, rgb) 
     m3ApiSuccess();
 }
 
+static bool live_tgt_of(const wasm_slot_t *s, int32_t cv, orb_ui_tgt_t *t);   /* below */
 m3ApiRawFunction(imp_cv_line)                /* void cv_line(h, x0, y0, x1, y1, rgb) */
 {
     CALLER();
@@ -823,6 +825,15 @@ m3ApiRawFunction(imp_cv_line)                /* void cv_line(h, x0, y0, x1, y1, 
     m3ApiGetArg(int32_t, y1);
     m3ApiGetArg(uint32_t, rgb);
     UI_GATE();
+    orb_ui_tgt_t t;
+    if (h < 0) {                             /* OS v1.2.32: onto a live layer (ORB_CV_LIVE0/1) */
+        if (live_tgt_of(s, h, &t)) {
+            orb_ui_tgt_line(&t, x0, y0, x1, y1, rgb);
+            const int32_t lx = x0 < x1 ? x0 : x1, ly = y0 < y1 ? y0 : y1;
+            stage_live_damage(lx, ly, abs(x1 - x0) + 2, abs(y1 - y0) + 2);
+        }
+        m3ApiSuccess();
+    }
     orb_ui_cv_line(slot_index(s), h, x0, y0, x1, y1, rgb);
     m3ApiSuccess();
 }
@@ -1144,6 +1155,10 @@ static bool live_tgt(const wasm_slot_t *s, int32_t cv, orb_ui_tgt_t *t)
     if (!stage_on(s) || !stage_live_target(ORB_CV_LIVE0 - cv, &px, &a)) return false;
     *t = (orb_ui_tgt_t){ px, a, CLK_SCR_W, CLK_SCR_H, CLK_SCR_W };
     return true;
+}
+static bool live_tgt_of(const wasm_slot_t *s, int32_t cv, orb_ui_tgt_t *t)
+{
+    return CV_IS_LIVE(cv) && live_tgt(s, cv, t);
 }
 
 /* i32 cv_png8(i32 cv, const orb_png_draw_t *d): d is slot, sx, sy, dx, dy, w, h, scale,

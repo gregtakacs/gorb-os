@@ -244,3 +244,15 @@ void rd_values_default(rd_values_t *v)
         v->rain[i] = RAMP[k].argb;
     }
 }
+
+int rd_scale(int32_t radius_m, int unit, int max_px, int *px)
+{
+    static const int NICE[] = { 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000 };
+    const double u = unit == 1 ? 1609.344 : unit == 2 ? 1852.0 : 1000.0;
+    const double mpp = radius_m / (RD_GLASS / 2.0);
+    int best = NICE[0];
+    for (size_t i = 0; i < sizeof NICE / sizeof NICE[0]; i++)
+        if (NICE[i] * u / mpp <= max_px) best = NICE[i];
+    *px = (int)floor(best * u / mpp + 0.5);
+    return best;
+}

@@ -376,6 +376,7 @@ static int64_t s_loop_ms, s_zoom_said_ms;
 /* A press's new place, said at once in the large pill until its map is up (owner,
  * 2026-11-08: seconds with no sign the press took, so a second press went one further). */
 static int64_t s_flip_ms;
+static bool    s_pill_up;          /* the large pill is on the glass: its end must redraw */
 #define FLIP_SAY_MS 1200
 static int32_t s_sx, s_sy, s_dx, s_dy;         /* the frames' draw window */
 
@@ -422,6 +423,27 @@ static void draw_map(void)
     if (s_view > 0) orb_map_draw(ORB_CV_LIVE0, s_view, V.map_pal, 0, 0);
 }
 
+/* The scale bar under its length (owner, 2026-11-08), on the rain's layer so no rain
+ * covers it: ink on a dark edge, end ticks up. */
+#define SCALE_Y   440
+#define SCALE_MAX 150
+static void draw_scale(void)
+{
+    const where_t *w = here();
+    if (!w) return;
+    int px;
+    (void)rd_scale(rd_radius_m(s_zoom, w->lat_e6), s_units.dist, SCALE_MAX, &px);
+    const int x0 = CX - px / 2, x1 = x0 + px;
+    for (int d = -2; d <= 3; d += 5) {                      /* the dark edge, above and below */
+        orb_cv_line(ORB_CV_LIVE1, x0 - 1, SCALE_Y + d, x1 + 1, SCALE_Y + d, 0x05090d);
+    }
+    orb_cv_line(ORB_CV_LIVE1, x0 - 2, SCALE_Y - 10, x0 - 2, SCALE_Y + 3, 0x05090d);
+    orb_cv_line(ORB_CV_LIVE1, x1 + 1, SCALE_Y - 10, x1 + 1, SCALE_Y + 3, 0x05090d);
+    orb_cv_line(ORB_CV_LIVE1, x0, SCALE_Y, x1, SCALE_Y, 0xd8f4ee);
+    orb_cv_line(ORB_CV_LIVE1, x0, SCALE_Y - 9, x0, SCALE_Y, 0xd8f4ee);
+    orb_cv_line(ORB_CV_LIVE1, x1 - 1, SCALE_Y - 9, x1 - 1, SCALE_Y, 0xd8f4ee);
+}
+
 static void draw_rain(void)
 {
     if (s_view_next > 0) return;       /* a new view is rendering: the old map and rain stay up */
@@ -432,11 +454,12 @@ static void draw_rain(void)
     if (s_shown == i && f && f->slot >= 0) return;
     orb_stage_live(1, V.rain_order, 0);
     s_shown = -1;
-    if (!f || f->slot < 0 || !orb_blob_len((uint32_t)f->slot)) return;
+    if (!f || f->slot < 0 || !orb_blob_len((uint32_t)f->slot)) { draw_scale(); return; }
     const int k = rd_img_k(s_zoom);
     orb_png_draw_t d = { .slot = (uint32_t)f->slot, .sx = s_sx, .sy = s_sy, .dx = s_dx, .dy = s_dy,
                          .w = RD_GLASS, .h = RD_GLASS, .scale = k > 1 ? (k | ORB_PNG_SMOOTH) : 1, .pal = V.rain };
     const int32_t rc = orb_cv_png8(ORB_CV_LIVE1, &d);
+    draw_scale();
     if (rc == ORB_OK) s_shown = i;
     else orb_logf("radar: frame %d (slot %d, %u B) did not draw: %d", i, (int)f->slot, (unsigned)orb_blob_len((uint32_t)f->slot), (int)rc);
 }
@@ -474,9 +497,12 @@ static void draw_ui(void)
     char b[48];
     pose(R_dot, CX, CY);
     say(R_place, CX, 58, w ? w->name : "", 0);
-    if (w) rd_range_text(b, sizeof b, rd_radius_m(s_zoom_want >= 0 ? s_zoom_want : s_zoom, w->lat_e6), s_units.dist);
-    else b[0] = 0;
-    say(R_range, CX, 412, b, 0);
+    if (w) {                                              /* the scale bar's length */
+        int px;
+        const int len = rd_scale(rd_radius_m(s_zoom, w->lat_e6), s_units.dist, SCALE_MAX, &px);
+        snprintf(b, sizeof b, "%d %s", len, s_units.dist == 1 ? "mi" : s_units.dist == 2 ? "nm" : "km");
+    } else b[0] = 0;
+    say(R_range, CX, 414, b, 0);
     const int i = frame_wanted();
     if (i >= 0) {
         const int min = (int)((F[i].t - F[idx_newest()].t) / 60);
@@ -492,6 +518,7 @@ static void draw_ui(void)
      * map); a theme without the large row says it on the status line */
     const bool zooming = s_zoom_want >= 0 || up_ms() - s_zoom_said_ms < 2000;
     const int zs = s_zoom_want >= 0 ? s_zoom_want : s_zoom;
+    s_pill_up = R_zoom >= 0 && w && (zooming || s_flip_ms);
     if (R_zoom >= 0 && s_flip_ms && w && !zooming) {
         say(R_zoom, CX, CY + 62, w->name, 0);
     } else if (R_zoom >= 0 && zooming && w) {
@@ -692,7 +719,10 @@ ORB_EXPORT("orb_service") void orb_service(void)
         if (!moved && here()) moved = true;             /* the place may have moved */
     }
     if (orb_maps_gen() != s_maps_gen && here()) { view_open(); }
-    if (orb_units_gen() != s_units_gen) { orb_units(&s_units); s_units_gen = orb_units_gen(); s_ui_dirty = true; }
+    if (orb_units_gen() != s_units_gen) {               /* the scale's unit: the bar too */
+        orb_units(&s_units); s_units_gen = orb_units_gen();
+        s_ui_dirty = s_rain_dirty = true; s_shown = -2;
+    }
     if (moved) place_changed();
     /* The scrub reaches back only as far as frames the loop can show: past ones given up
      * for room are no stop on the dial (owner: blank frames behind the loop's start). */
@@ -709,6 +739,9 @@ ORB_EXPORT("orb_service") void orb_service(void)
     if (s_visible && !s_themed && up_ms() >= s_stage_retry_ms) { stage_read(); s_layers = false; s_map_dirty = s_rain_dirty = s_ui_dirty = true; }
     if (s_map_retry_ms && up_ms() >= s_map_retry_ms) { s_map_retry_ms = 0; view_open(); }
     view_step();
+    /* The zoom's pill goes 2 s after it lands. Playing, the loop's next frame redrew it away;
+     * scrubbed, nothing did, and it stayed until the loop played again (owner, 2026-11-08). */
+    if (s_pill_up && s_zoom_want < 0 && !s_flip_ms && up_ms() - s_zoom_said_ms >= 2000) s_ui_dirty = true;
     if (s_flip_ms && ((!s_view_next && up_ms() - s_flip_ms > FLIP_SAY_MS) || up_ms() - s_flip_ms > 10000)) {
         s_flip_ms = 0;                                   /* the new map is up: the pill goes */
         s_ui_dirty = true;

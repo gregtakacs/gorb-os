@@ -450,6 +450,25 @@ static int smooth_row(void *ctx, int y, const uint8_t *idx, int w)
     return 0;
 }
 
+void orb_ui_tgt_line(const orb_ui_tgt_t *t, int32_t x0, int32_t y0, int32_t x1, int32_t y1, uint32_t rgb)
+{
+    if (!t) return;
+    const uint16_t col = c16(rgb);
+    const int32_t dx = abs(x1 - x0), sx = x0 < x1 ? 1 : -1;
+    const int32_t dy = -abs(y1 - y0), sy = y0 < y1 ? 1 : -1;
+    int32_t err = dx + dy;
+    for (int guard = 0; guard < 4096; guard++) {
+        for (int k = 0; k < 3; k++) {          /* the canvas line's 2 px pen */
+            const int32_t X = x0 + (k == 1), Y = y0 + (k == 2);
+            if ((uint32_t)X < (uint32_t)t->w && (uint32_t)Y < (uint32_t)t->h) over(t, Y * t->stride + X, col, 255);
+        }
+        if (x0 == x1 && y0 == y1) break;
+        const int32_t e2 = 2 * err;
+        if (e2 >= dy) { err += dy; x0 += sx; }
+        if (e2 <= dx) { err += dx; y0 += sy; }
+    }
+}
+
 int32_t orb_ui_tgt_png8(const orb_ui_tgt_t *t, const uint8_t *png, uint32_t len, int32_t sx, int32_t sy,
                         int32_t dx, int32_t dy, int32_t w, int32_t hh, int32_t scale, const uint32_t *argb)
 {

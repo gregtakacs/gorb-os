@@ -1523,3 +1523,20 @@ opaque layer is the candidate fix.
 At City the 256 px frames held all 12 past frames on a stormy day (7-24 KB each, 1.6 MB of
 PSRAM free); at Region the 512s still fill the 768 KB at frame 4 of 12, and the scrub now
 stops there (-70 min) on a frame with rain in it, not on a blank.
+
+### 6.16 The pill on a scrub, and a scale bar (2026-11-08, Bronze, OS v1.2.32)
+
+- **The zoom pill stayed on a scrub** (owner). It goes 2 s after the zoom lands, but only a
+  redraw takes it away: playing, the loop's next frame did; scrubbed, nothing redrew until
+  the loop played again. The service now redraws when the pill's time is up. Benched: Area,
+  scrub to -10 min, zoom to City: the pill gone at 7 s, the scrub held.
+- **A scale bar for the odd radius** (owner: "62 km", "11 km", and no saying what it
+  measures). The bottom words are now a round 1-2-5 length in the orb's unit (`rd_scale`:
+  the longest no wider than 150 px), and a bar that long is drawn under them: ink on a dark
+  edge with end ticks, on the rain's layer so rain never covers it. `orb_cv_line` draws onto
+  a live layer from OS v1.2.32 (radar's `os_min`). DFW: Region 50 km, City 10 km.
+- **Is it raining?** The frames are LibreWXR's live radar mosaic, not a simulation: a
+  frame's value is (dBZ + 32) x 2, and the server sends nothing under 10 dBZ. At 01:53 KDFW
+  reported "Cloudy", no rain in the hour, while over half of the DFW frame held 10-25 dBZ:
+  light echoes (drizzle, virga, rain aloft) that do not reach a ground gauge. The theme's
+  ramp starts at 10 dBZ; starting it at 15-20 dBZ, as many apps do, would hide them.

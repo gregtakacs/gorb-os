@@ -51,6 +51,8 @@ typedef struct { uint16_t *px; uint8_t *a; int32_t w, h, stride; } orb_ui_tgt_t;
 /* In a PNG draw's scale: magnify by the low byte (up to 16) and sample the values
  * bilinearly (radar-plan §6.9); without it the scale is 1-4, each source pixel a block. */
 #define ORB_UI_PNG_SMOOTH 0x100
+/* A 2 px line onto a target, opaque (radar-plan §6.16: the radar's scale bar on its layer). */
+void orb_ui_tgt_line(const orb_ui_tgt_t *t, int32_t x0, int32_t y0, int32_t x1, int32_t y1, uint32_t rgb);
 int32_t orb_ui_tgt_png8(const orb_ui_tgt_t *t, const uint8_t *png, uint32_t len, int32_t sx, int32_t sy,
                         int32_t dx, int32_t dy, int32_t w, int32_t hh, int32_t scale, const uint32_t *argb);
 void    orb_ui_tgt_roles(const orb_ui_tgt_t *t, const uint8_t *raster, const uint32_t *argb16,

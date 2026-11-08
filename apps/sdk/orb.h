@@ -141,6 +141,7 @@ ORB_IMPORT("cv_fill")    void orb_cv_fill(int32_t h, uint32_t rgb);
 ORB_IMPORT("cv_pixel")   void orb_cv_pixel(int32_t h, int32_t x, int32_t y, uint32_t rgb);
 ORB_IMPORT("cv_ring")    void orb_cv_ring(int32_t h, int32_t cx, int32_t cy, int32_t r, uint32_t rgb);
 ORB_IMPORT("cv_disc")    void orb_cv_disc(int32_t h, int32_t cx, int32_t cy, int32_t r, uint32_t rgb);
+/* h may be ORB_CV_LIVE0/1 (OS v1.2.32): a 2 px opaque line onto the live layer. */
 ORB_IMPORT("cv_line")    void orb_cv_line(int32_t h, int32_t x0, int32_t y0, int32_t x1, int32_t y1,
                                           uint32_t rgb);
 ORB_IMPORT("cv_text")    void orb_cv_text(int32_t h, int32_t x, int32_t y, int32_t w, int32_t font,

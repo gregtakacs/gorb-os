@@ -182,6 +182,17 @@ int main(int argc, char **argv)
     rd_range_text(b, sizeof b, 120000, 2); const bool r2 = !strcmp(b, "65 nm");
     rd_range_text(b, sizeof b, 479000, 1); const bool r3 = !strcmp(b, "298 mi");
     CK(r0 && r1 && r2 && r3, "the range in the orb's unit: 120 km, 75 mi, 65 nm; 479 km is 298 mi");
+    int px, sc_ok = 1;
+    for (int st = 0; st < RD_ZOOMS; st++)
+        for (int u = 0; u < 3; u++)
+            for (int la = 0; la <= 64000000; la += 32000000) {
+                const int L = rd_scale(rd_radius_m(st, la), u, 150, &px);
+                const int one = L == 1 || L == 2 || L == 5 || L % 10 == 0;
+                int px2; const int up = rd_scale(rd_radius_m(st, la), u, 400, &px2);
+                if (!one || px > 150 || px < 59 || up <= L) sc_ok = 0;   /* 1-2-5: the next is <= 2.5x */
+            }
+    const int L120 = rd_scale(120000, 0, 150, &px);
+    CK(sc_ok && L120 == 50 && px == 97, "the scale bar: a 1-2-5 length, 60-150 px wide at every step, unit and latitude; 120 km radius: 50 km in 97 px");
 
     static rd_values_t v;
     rd_values_default(&v);

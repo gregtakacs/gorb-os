@@ -90,6 +90,10 @@ int32_t rd_radius_m(int step, int32_t lat_e6);
 void rd_time_text(char *buf, size_t cap, int minutes);
 /* The range, centre to edge, in the orb's distance unit (0 km, 1 mi, 2 nm): "120 km". */
 void rd_range_text(char *buf, size_t cap, int32_t radius_m, int unit);
+/* The scale bar (owner, 2026-11-08: a round length, drawn, not the odd radius): the longest
+ * 1-2-5 length in the orb's unit no wider than max_px on a view whose radius_m spans the
+ * glass's 233 px. Answers its length in units; *px its width on the glass. */
+int rd_scale(int32_t radius_m, int unit, int max_px, int *px);
 
 /* ---- the theme's values (§2.11), layout version 2 ------------------------------------ */
 #define RD_VALUES_VER 2

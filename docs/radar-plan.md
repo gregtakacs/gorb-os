@@ -1801,3 +1801,67 @@ Silver, Sectional), **the mock-up's layout** for the radar, **one name per look*
   (Scope 1.76 MB with its sweep).
 - **Bronze:** Scope (dimmed forecast, sweep, 16-17 fps) and Paper (hatched forecast) as
   previewed.
+
+### 6.27 The rain through the sweep's slack: the clock's engine for every app (2026-11-08, Bronze, OS v1.2.38, radar v1.2.2)
+
+The owner: with the rain drawn, the sweep's fps "severely degrades … the exact same problem the
+clock solved. Can we use the same engine … is it built into the OS or does the clock do it
+itself … can it be generalised so other apps can take advantage?" The engine is the OS's: the
+compositor's pre-paint (`orb_gfx.c`, plan §49.8/§49.15) and the scheduler's plan
+(`orb_sched.c`). The clock app has none of it. It was switched on only for the clock's gear
+plan, and a live layer's new picture was the one change it could not hold.
+
+**Measured first** (Bronze, Scope over DFW rain): loop playing 4-9 fps (median 9), held 20.
+Three costs fell on the frame a rain step took:
+
+1. the frame's decode, inside the radar's guest call (~117 ms);
+2. the present: `lv_image_set_src` on the layer's classic image, which LVGL then drew in
+   software, the whole disc, under L4's own composite (~150 ms; `mirror` 32 ms/s playing, 0
+   held);
+3. the new picture composed the long way over the whole disc in one frame (~120 ms, mostly the
+   panel's push: ~76 ms a full page).
+
+**What the OS does now** (any app with a live layer; nothing radar-specific):
+
+- **Back copies and the live worker** (`orb_live_work.c`): `orb_stage_live_back(layer, src,
+  argb)` begins the next picture in the layer's back copy; draws to `ORB_CV_BACK0/1`
+  (`orb_cv_png8`, `_ring`, `_line`) queue onto a task under the LVGL task (PSRAM stack and
+  queue); `orb_stage_live_present(layer)` has the worker compare back and front (`LW_DIFF`, on
+  its own core), then swaps the pointers and repaints only the rows that changed. A rain step
+  changes ~185 rows × ~200 px, not the disc. The swap repoints the row's plane in place
+  (`clock_layers_refresh`), never a rebuild of the rows, and the classic image's data alone
+  (LVGL keeps no image cache).
+- **The lean plan for an app's sweep:** a stage bound for an app (`orb_sched_plan_app`) whose
+  theme sweeps (`second_sweep`, `tick_rate` on the 60 Hz grid) is paced to its rate and
+  pre-painted with the two front planes only (`GFX_PREP_LEAN`: 868 KB, not the clock's
+  1.7 MB, since nothing is built ahead).
+- **Lagging rows** (`gfx_prep_lag`): a present's changed rows are shown from the planes, the
+  old picture, until the present's slack rebuilds them top down, a slice a frame (~90 µs a
+  row), each repainted as it is rebuilt. No tick composes them the long way; the sweep keeps
+  its pace while the rain lays in over a few frames.
+- **Fast by motion:** a slow job that moves on four commits in a row joins the fast set, keyed
+  by its art, so a sweep posed by an app needs no role. Scope's sweep is already a seconds row
+  (role 2); nothing was promoted on Bronze.
+
+**And two radar fixes found on the way:** after a reboot the radar asked for its stage before
+the OS had bound the theme, went bare, and stayed bare over its own theme (the bare canvas is a
+widget, which keeps the stage off for good). `orb_init` and an arrival now only ask, and the
+service's next ask, 300 ms later, decides. The radar draws its rain through the back copy and
+presents it from `redraw`.
+
+**Measured after** (Bronze, the same theme and rain):
+
+| | before | after |
+|---|---|---|
+| loop playing | min 4, median 9 | min 15, median 17-18, max 20 |
+| loop held | 20 | 20 |
+| worst guest call | ~117 ms | ~12 ms |
+| the same pacing, pre-paint off | | median 15 (the planes earn ~3 fps) |
+
+Flights (Blueprint, its arm on the same plan): 20 fps (min 19); its aircraft step a pixel at a
+time, slow jobs with small stale boxes. With the radar up: the glass heap 34 KB free and one
+plane from the general PSRAM (800 KB left), internal 25 KB (largest 7 KB).
+
+**Owed:** a loop step's own tick (the time label and the track's cursor, ~10 ms) still costs
+a frame now and then; heavy rain over the whole disc lays in more slowly (the sweep keeps its
+pace, the rain trails); Gold has not run it; weather has no sweep and is untouched.

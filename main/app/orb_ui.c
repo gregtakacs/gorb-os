@@ -539,13 +539,20 @@ void orb_ui_tgt_line(const orb_ui_tgt_t *t, int32_t x0, int32_t y0, int32_t x1, 
 int32_t orb_ui_tgt_png8(const orb_ui_tgt_t *t, const uint8_t *png, uint32_t len, int32_t sx, int32_t sy,
                         int32_t dx, int32_t dy, int32_t w, int32_t hh, int32_t scale, const uint32_t *argb)
 {
-    const bool smooth = (scale & ORB_UI_PNG_SMOOTH) != 0, hatch = (scale & ORB_UI_PNG_HATCH) != 0;
-    scale &= 0xFF;
-    if (!t || !png || !argb || scale < 1 || scale > (smooth ? 16 : 4)) return ORB_PNG8_E_FORMAT;
-    /* One scratch for every draw: they all run on the LVGL task, one at a time. */
+    /* One scratch for every draw on the LVGL task, one at a time; the live worker brings
+     * its own (orb_ui_tgt_png8_s). */
     static void *scratch;
     if (!scratch) scratch = heap_caps_malloc(orb_png8_scratch_size(), MALLOC_CAP_SPIRAM);
     if (!scratch) return ORB_PNG8_E_SCRATCH;
+    return orb_ui_tgt_png8_s(t, scratch, png, len, sx, sy, dx, dy, w, hh, scale, argb);
+}
+
+int32_t orb_ui_tgt_png8_s(const orb_ui_tgt_t *t, void *scratch, const uint8_t *png, uint32_t len, int32_t sx, int32_t sy,
+                          int32_t dx, int32_t dy, int32_t w, int32_t hh, int32_t scale, const uint32_t *argb)
+{
+    const bool smooth = (scale & ORB_UI_PNG_SMOOTH) != 0, hatch = (scale & ORB_UI_PNG_HATCH) != 0;
+    scale &= 0xFF;
+    if (!t || !png || !argb || !scratch || scale < 1 || scale > (smooth ? 16 : 4)) return ORB_PNG8_E_FORMAT;
     /* The app colours values, not indices: a grey PNG's index is its encoder's choice
      * (LibreWXR's raw frames number their greys afresh in every frame), so each index
      * takes the colour of its palette entry's grey. A file without a palette is its own. */

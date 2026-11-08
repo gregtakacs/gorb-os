@@ -62,6 +62,10 @@ void orb_ui_tgt_ring(const orb_ui_tgt_t *t, int32_t cx, int32_t cy, int32_t r, u
 void orb_ui_tgt_line(const orb_ui_tgt_t *t, int32_t x0, int32_t y0, int32_t x1, int32_t y1, uint32_t rgb);
 int32_t orb_ui_tgt_png8(const orb_ui_tgt_t *t, const uint8_t *png, uint32_t len, int32_t sx, int32_t sy,
                         int32_t dx, int32_t dy, int32_t w, int32_t hh, int32_t scale, const uint32_t *argb);
+/* The same draw with the caller's scratch (orb_png8_scratch_size() bytes): for a draw off the
+ * LVGL task (OS v1.2.38: the live worker, orb_live_work.c). */
+int32_t orb_ui_tgt_png8_s(const orb_ui_tgt_t *t, void *scratch, const uint8_t *png, uint32_t len, int32_t sx, int32_t sy,
+                          int32_t dx, int32_t dy, int32_t w, int32_t hh, int32_t scale, const uint32_t *argb);
 void    orb_ui_tgt_roles(const orb_ui_tgt_t *t, const uint8_t *raster, const uint32_t *argb16,
                          int32_t dx, int32_t dy);
 void    orb_ui_cv_fill(int slot, int32_t h, uint32_t rgb);

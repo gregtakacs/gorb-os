@@ -81,6 +81,7 @@
 #include "esp_heap_caps.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"   /* stage_bench_live waits a frame */
+#include "freertos/semphr.h" /* the back copies' mutex (OS v1.2.38) */
 #include "lvgl.h"
 #include "display.h"
 #include "orb_gfx.h"   /* the OS compositor: gfx_commit() paints the layers this file picks */
@@ -187,6 +188,23 @@ static uint32_t s_stage_objs;     /* how many of the page's children the stage b
 #define LIVE_OFF  16u
 #define LIVE_PICK 0xFFFFu          /* a layer's pick in clock_layers_build: no theme class */
 static uint8_t *s_live[STAGE_LIVE_N];
+/* OS v1.2.38 (radar-plan §6.27): each layer's back copy, drawn by the live worker
+ * (orb_live_work.c) off the frame path and swapped in whole by stage_live_present. The
+ * worker holds s_back_mux while it draws; whatever frees a layer or its back takes it too. */
+static uint8_t *s_live_back[STAGE_LIVE_N];
+static SemaphoreHandle_t s_back_mux;
+static void back_lock(void)
+{
+    if (!s_back_mux) s_back_mux = xSemaphoreCreateMutex();
+    if (s_back_mux) xSemaphoreTake(s_back_mux, portMAX_DELAY);
+}
+static void back_unlock(void) { if (s_back_mux) xSemaphoreGive(s_back_mux); }
+static void back_free_all(void)
+{
+    back_lock();
+    for (int l = 0; l < STAGE_LIVE_N; l++) { orb_glass_free(s_live_back[l]); s_live_back[l] = NULL; }
+    back_unlock();
+}
 static int32_t s_live_order[STAGE_LIVE_N] = { -1, -1 };
 static lv_obj_t *s_live_obj[STAGE_LIVE_N];
 static lv_image_dsc_t s_live_dsc[STAGE_LIVE_N];
@@ -2100,6 +2118,7 @@ static void clock_layers_refresh(void)
             show = r->slot < STAGE_LIVE_N && s_live[r->slot] && !(s_live_merged && r->slot == 0)
                    ? 1 : 0;                       /* its plane changes, its pose never; a
                                                   * merged layer 0 is layer 1's backing */
+            if (show) d.plane = s_live[r->slot];  /* v1.2.38: a present swapped the front in */
             break;
         case ORB_ASSET_BANK: {
             /* FORMAT 3 admits no comp kind but the window, so one row is one
@@ -2390,6 +2409,9 @@ esp_err_t stage_init(orb_app_t *self)
      * because of the gate, not by default: without it a still dial would mark
      * rows nobody welds. */
     s_lay_app = self;
+#if CONFIG_ORB_DEBUG_HTTP
+    orb_sched_plan_app(self->slug && strcmp(self->slug, "clock") != 0);   /* §6.27 */
+#endif
     clock_layers_build(self);
 
     /* The carriage's frame bank: descriptors for its widget's swap. Reset the frame
@@ -2658,6 +2680,7 @@ static void stage_release(void)
         if (s_plate_obj) { lv_obj_delete(s_plate_obj); s_plate_obj = NULL; }
         orb_bg_release();
     }
+    back_free_all();
     for (int l = 0; l < STAGE_LIVE_N; l++) {
         if (s_live_obj[l]) { lv_obj_delete(s_live_obj[l]); s_live_obj[l] = NULL; }
         orb_glass_free(s_live[l]);
@@ -2670,6 +2693,9 @@ static void stage_release(void)
     s_base = false;
     s_art = NULL;
     s_lay_app = NULL;
+#if CONFIG_ORB_DEBUG_HTTP
+    orb_sched_plan_app(false);
+#endif
 }
 
 bool stage_bound(const orb_app_t *app)
@@ -2826,6 +2852,7 @@ static void live_restack(void)
  * expanded again from the theme on the way back. */
 static void live_drop_all(void)
 {
+    back_free_all();
     for (int l = 0; l < STAGE_LIVE_N; l++) {
         if (s_live_obj[l]) { lv_obj_delete(s_live_obj[l]); s_live_obj[l] = NULL; if (s_stage_objs) s_stage_objs--; }
         orb_glass_free(s_live[l]);
@@ -2843,8 +2870,11 @@ esp_err_t stage_live_open(int32_t layer, int32_t order, uint32_t argb)
     const bool rebuild = order != s_live_order[l];
     if (order < 0) {
         if (s_live_obj[l]) { lv_obj_delete(s_live_obj[l]); s_live_obj[l] = NULL; s_stage_objs--; }
+        back_lock();
+        orb_glass_free(s_live_back[l]); s_live_back[l] = NULL;
         orb_glass_free(s_live[l]);
         s_live[l] = NULL;
+        back_unlock();
     } else if (!s_live[l]) {
         s_live[l] = orb_glass_alloc(live_bytes());
         if (!s_live[l]) return ESP_ERR_NO_MEM;
@@ -2895,6 +2925,7 @@ esp_err_t stage_live_merge(bool on)
 {
     if (on && (!s_live[0] || !s_live[1])) return ESP_ERR_INVALID_STATE;
     if (on == s_live_merged) return ESP_OK;
+    back_free_all();                                      /* the backs are the old size */
     s_live_merged = on;
     /* Both layers again at their new size (colour alone merged, §6.21): the old go first, so
      * the new fit where they were; the app draws both afresh after asking. */
@@ -2942,6 +2973,82 @@ esp_err_t stage_live_copy(int dst, int src)
             memcpy(s_live[dst] + LIVE_OFF + 2 * n + i, s_live[src] + LIVE_OFF + 2 * n + i, k);
     }
     stage_live_damage(0, 0, CLK_SCR_W, CLK_SCR_H);
+    return ESP_OK;
+}
+
+/* ---- OS v1.2.38: the back copies (radar-plan §6.27) ---------------------------------- */
+
+esp_err_t stage_live_back_ensure(int l)
+{
+    if (l < 0 || l >= STAGE_LIVE_N || !s_live[l]) return ESP_ERR_INVALID_STATE;
+    if (s_live_back[l]) return ESP_OK;
+    uint8_t *b = orb_glass_alloc(live_bytes());
+    if (!b) return ESP_ERR_NO_MEM;
+    memcpy(b, s_live[l], LIVE_OFF);                       /* the image header, as the front's */
+    back_lock();
+    s_live_back[l] = b;
+    back_unlock();
+    return ESP_OK;
+}
+
+bool stage_live_back_lock(int l, uint16_t **px, uint8_t **a, uint16_t **src_px, uint8_t **src_a, int src)
+{
+    back_lock();
+    if (l < 0 || l >= STAGE_LIVE_N || !s_live_back[l]) { back_unlock(); return false; }
+    const size_t n = (size_t)CLK_SCR_W * CLK_SCR_H;
+    *px = (uint16_t *)(s_live_back[l] + LIVE_OFF);
+    *a = s_live_merged ? NULL : s_live_back[l] + LIVE_OFF + 2 * n;
+    if (src_px) {
+        const bool ok = src >= 0 && src < STAGE_LIVE_N && s_live[src];
+        *src_px = ok ? (uint16_t *)(s_live[src] + LIVE_OFF) : NULL;
+        *src_a = ok && !s_live_merged ? s_live[src] + LIVE_OFF + 2 * n : NULL;
+    }
+    return true;                                          /* held: stage_live_back_unlock */
+}
+void stage_live_back_unlock(void) { back_unlock(); }
+
+esp_err_t stage_live_present(int l, const int16_t *x0, const int16_t *x1)
+{
+    if (l < 0 || l >= STAGE_LIVE_N || !s_live[l] || !s_live_back[l]) return ESP_ERR_INVALID_STATE;
+    back_lock();
+    uint8_t *t = s_live[l];
+    s_live[l] = s_live_back[l];
+    s_live_back[l] = t;
+    back_unlock();
+    /* The classic path's image, repointed and no more: LVGL keeps no image cache (sdkconfig
+     * LV_CACHE_DEF_SIZE 0) and reads the data at its next draw, which the damage below
+     * asks for where the picture changed. A set_src invalidated the whole image, and LVGL
+     * drew the disc in software under L4's own composite (Bronze: ~150 ms a present). */
+    if (s_live_obj[l]) s_live_dsc[l].data = s_live[l] + LIVE_OFF;
+    /* The row's plane, repointed in place (refresh reads the front): a build deletes and
+     * adds every row of the theme. */
+    if (s_lay_app && orb_svc_layers_live(s_lay_app) > 0) clock_layers_refresh();
+#if CLK_BG_DIRECT_PUSH && CONFIG_ORB_DEBUG_HTTP
+    /* Pre-painted (an app's sweep, §6.27): the new picture comes in through the slack, a
+     * slice a frame, and no tick composes the disc the long way (Bronze: ~120 ms, the
+     * sweep at 9 fps while the loop played). A merged layer 0 is no job of its own. */
+    const size_t n = (size_t)CLK_SCR_W * CLK_SCR_H;
+    if (orb_sched_l4_active() && !(s_live_merged && l == 0) &&
+        gfx_prep_lag(x0, x1, s_live[l] + LIVE_OFF + 2 * n))
+        return ESP_OK;
+#endif
+    if (!x0 || !x1) { stage_live_damage(0, 0, CLK_SCR_W, CLK_SCR_H); return ESP_OK; }
+#if CLK_BG_DIRECT_PUSH
+    if (orb_sched_l4_active()) {                          /* the changed rows alone */
+        for (int y = 0; y < CLK_SCR_H; y++)
+            if (x0[y] <= x1[y]) stage_live_damage(x0[y], y, x1[y] - x0[y] + 1, 1);
+        return ESP_OK;
+    }
+#endif
+    int y0 = CLK_SCR_H, y1 = -1, a = CLK_SCR_W, b = -1;  /* LVGL's path: one box round them */
+    for (int y = 0; y < CLK_SCR_H; y++) {
+        if (x0[y] > x1[y]) continue;
+        if (y < y0) y0 = y;
+        y1 = y;
+        if (x0[y] < a) a = x0[y];
+        if (x1[y] > b) b = x1[y];
+    }
+    if (y1 >= y0) stage_live_damage(a, y0, b - a + 1, y1 - y0 + 1);
     return ESP_OK;
 }
 

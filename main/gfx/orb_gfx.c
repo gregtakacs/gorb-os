@@ -1016,14 +1016,32 @@ static int       s_st_rows;                           /* rows with a stale segme
  * stale rebuild or the next build-ahead may touch either plane. */
 static int16_t   s_bk0[CLK_SCR_H], s_bk1[CLK_SCR_H];
 static int       s_bk_rows;
+/* Lagging rows (radar-plan §6.27, gfx_prep_lag): the planes hold a job's old picture, which
+ * is shown until the slack rebuilds the row from the new. s_lg_alp is the job's new alpha:
+ * the commit takes its key's change as no move. s_lg_wait: the last commit's job list still
+ * reads the old pixels (which the app may now draw over), so the slack waits for a commit. */
+EXT_RAM_BSS_ATTR static int16_t s_lg0[CLK_SCR_H], s_lg1[CLK_SCR_H];
+static int       s_lg_rows;
+static const uint8_t *s_lg_alp;
+static bool      s_lg_wait;
+static bool      s_pp_lean;                           /* GFX_PREP_LEAN: no back planes */
+/* Fast by motion (§6.27): a slow job that moved on PP_MOVE_RUN commits in a row is a
+ * fast one from then on (an app's sweep, the tracker's arm), known by its art. The
+ * seconds rows are fast by role. */
+#define PP_MOVE_RUN 4
+#define PP_MOVED_MAX 4
+static const uint16_t *s_pp_moved[PP_MOVED_MAX];
+static int       s_pp_nmoved;
+EXT_RAM_BSS_ATTR static uint8_t s_pp_run[PP_JOBS];
 
 static void pp_stale_clear_all(void)
 {
     for (int y = 0; y < CLK_SCR_H; y++) {
-        s_st0[y] = s_ps0[y] = s_bk0[y] = INT16_MAX;
-        s_st1[y] = s_ps1[y] = s_bk1[y] = -1;
+        s_st0[y] = s_ps0[y] = s_bk0[y] = s_lg0[y] = INT16_MAX;
+        s_st1[y] = s_ps1[y] = s_bk1[y] = s_lg1[y] = -1;
     }
-    s_st_rows = s_bk_rows = 0;
+    s_st_rows = s_bk_rows = s_lg_rows = 0;
+    s_lg_alp = NULL;
 }
 /* Settle one back-sourced row into the front planes. */
 static void pp_bk_settle(int32_t y)
@@ -1075,7 +1093,11 @@ static void pp_stale_pose(const gfx_paint_ctx_t *pc)
 
 void gfx_prep_mode(int mode)
 {
+    s_pp_lean = (mode & GFX_PREP_LEAN) != 0;
+    mode &= ~GFX_PREP_LEAN;
     s_pp_mode = mode < 0 ? 0 : (mode > 2 ? 2 : mode);
+    s_pp_nmoved = 0;
+    memset(s_pp_run, 0, sizeof s_pp_run);
     s_pp_valid = false;
     s_pp_nj = -1;
     s_pp_nx_frame = -1;
@@ -1094,13 +1116,19 @@ void gfx_prep_mode(int mode)
         orb_glass_free(s_pfn); orb_glass_free(s_pbn);
         s_pf = s_pb = s_pfn = s_pbn = NULL;
     }
-    if (s_pp_mode && !s_pf) {
+    if (s_pp_mode && s_pp_lean && s_pfn) {            /* §6.27: lean keeps the fronts alone */
+        orb_glass_free(s_pfn); orb_glass_free(s_pbn);
+        s_pfn = s_pbn = NULL;
+    }
+    if (s_pp_mode && (!s_pf || (!s_pp_lean && !s_pfn))) {
         const size_t n = (size_t)CLK_SCR_W * CLK_SCR_H * 2;
-        s_pf  = orb_glass_alloc(n);         /* §6.21: the glass region */
-        s_pb  = orb_glass_alloc(n);
-        s_pfn = orb_glass_alloc(n);
-        s_pbn = orb_glass_alloc(n);
-        if (!s_pf || !s_pb || !s_pfn || !s_pbn) {
+        if (!s_pf)  s_pf  = orb_glass_alloc(n);         /* §6.21: the glass region */
+        if (!s_pb)  s_pb  = orb_glass_alloc(n);
+        if (!s_pp_lean) {
+            if (!s_pfn) s_pfn = orb_glass_alloc(n);
+            if (!s_pbn) s_pbn = orb_glass_alloc(n);
+        }
+        if (!s_pf || !s_pb || (!s_pp_lean && (!s_pfn || !s_pbn))) {
             orb_glass_free(s_pf);  orb_glass_free(s_pb);
             orb_glass_free(s_pfn); orb_glass_free(s_pbn);
             s_pf = s_pb = s_pfn = s_pbn = NULL;
@@ -1109,7 +1137,24 @@ void gfx_prep_mode(int mode)
         }
     }
 }
-int gfx_prep_on(void) { return s_pp_mode; }
+int gfx_prep_on(void) { return s_pp_mode ? s_pp_mode | (s_pp_lean ? GFX_PREP_LEAN : 0) : 0; }
+bool gfx_prep_lag(const int16_t *x0, const int16_t *x1, const uint8_t *alp)
+{
+    if (!s_pp_mode || !s_pp_valid) return false;
+    for (int32_t y = 0; y < CLK_SCR_H; y++) {
+        int32_t a = x0 && x1 ? x0[y] : 0, b = x0 && x1 ? x1[y] : CLK_SCR_W - 1;
+        if (a < 0) a = 0;
+        if (b > CLK_SCR_W - 1) b = CLK_SCR_W - 1;
+        if (a > b) continue;
+        if (s_lg0[y] > s_lg1[y]) s_lg_rows++;
+        if (a < s_lg0[y]) s_lg0[y] = (int16_t)a;
+        if (b > s_lg1[y]) s_lg1[y] = (int16_t)b;
+    }
+    s_lg_alp = alp;
+    s_lg_wait = true;
+    s_pps.lags++;
+    return true;
+}
 void gfx_prep_stale(int32_t y0, int32_t y1, int32_t x0, int32_t x1)
 {
     if (!s_pp_mode || !s_pp_valid) return;
@@ -1134,7 +1179,10 @@ static bool pp_key_eq(const ppkey_t *a, const ppkey_t *b)
 static void pp_classify(int nj, const gfx_paint_ctx_t *jc)
 {
     s_pp_low = nj;
-    for (int i = 0; i < nj; i++) s_pp_fast[i] = jc[i].role == 2;
+    for (int i = 0; i < nj; i++) {
+        s_pp_fast[i] = jc[i].role == 2;
+        for (int m = 0; m < s_pp_nmoved && !s_pp_fast[i]; m++) s_pp_fast[i] = jc[i].col == s_pp_moved[m];
+    }
     for (int i = 0; i < nj; i++) {
         if (jc[i].role != 3 || !jc[i].rot) continue;
         for (int k = i + 1; k < nj && k <= i + 2; k++)
@@ -1255,7 +1303,7 @@ static void pp_rebuild_box(int32_t x0, int32_t y0, int32_t x1, int32_t y1)
 void gfx_prep_landed(int frame, const gfx_prep_rect_t *cur, int ncur,
                      int next, const gfx_prep_rect_t *nxt, int nnext)
 {
-    if (!s_pp_mode) return;
+    if (!s_pp_mode || !s_pfn) return;                 /* lean: nothing is built ahead */
     if (ncur > PP_RECTS) ncur = PP_RECTS;
     if (nnext > PP_RECTS) nnext = PP_RECTS;
     memcpy(s_pp_land, cur, (size_t)ncur * sizeof *cur);
@@ -1286,12 +1334,24 @@ bool gfx_prep_idle(int64_t deadline_us)
         if (esp_timer_get_time() >= deadline_us) return true;
         pp_bk_settle(y);
     }
+    if (s_lg_wait) return false;                      /* §6.27: a commit first */
     for (int32_t y = 0; y < CLK_SCR_H && s_st_rows; y++) {
         if (s_st0[y] > s_st1[y]) continue;
         if (esp_timer_get_time() >= deadline_us) return true;
         pp_build_row(y, s_st0[y], s_st1[y], s_pb, s_pf, NULL, 0);
         s_st0[y] = INT16_MAX; s_st1[y] = -1; s_st_rows--;
         s_pps.rows_sync++;
+    }
+    /* §6.27: the lagging rows, top down, each repainted by the next commit from the planes */
+    for (int32_t y = 0; y < CLK_SCR_H && s_lg_rows; y++) {
+        if (s_lg0[y] > s_lg1[y]) continue;
+        if (esp_timer_get_time() >= deadline_us) return true;
+        const int32_t a = s_lg0[y], b = s_lg1[y];
+        pp_build_row(y, a, b, s_pb, s_pf, NULL, 0);
+        s_lg0[y] = INT16_MAX; s_lg1[y] = -1; s_lg_rows--;
+        row_add(y, a, b);
+        display_mark_rows_clocked(y, y);
+        s_pps.rows_lag++;
     }
     if (s_pp_nx_frame < 0 || s_pp_prep_done) return false;
     if (s_pp_prep_gen != s_pp_gen) { s_pp_prep_y = 0; s_pp_prep_gen = s_pp_gen; }
@@ -1319,7 +1379,21 @@ static void pp_commit(int nj, const gfx_paint_ctx_t *jc, const uint16_t *canvas,
                       const gfx_spans_t *const *bsp)
 {
     s_pp_jc = jc; s_pp_jn = nj; s_pp_canvas = canvas;
+    s_lg_wait = false;                                /* §6.27: the job list reads the new pixels */
     pp_classify(nj, jc);
+    {
+        static int64_t s_said;
+        const int64_t now = esp_timer_get_time();
+        if (s_pp_lean && now - s_said > 10000000) {        /* §6.27: the app plan's account */
+            s_said = now;
+            int nf = 0;
+            for (int i = 0; i < nj; i++) nf += s_pp_fast[i];
+            ESP_LOGI("gfx", "pre-paint%s: %d jobs, %d fast (%d by motion) | lag %llu rows in %llu swaps, %d behind | stale %llu rows | live %llu px, copied %llu px",
+                     s_pp_lean ? " (lean)" : "", nj, nf, s_pp_nmoved, (unsigned long long)s_pps.rows_lag,
+                     (unsigned long long)s_pps.lags, s_lg_rows, (unsigned long long)s_pps.rows_sync,
+                     (unsigned long long)s_pps.live_px, (unsigned long long)s_pps.copy_px);
+        }
+    }
     const bool zones = pp_zones(nj, jc);
     /* Slow jobs that moved, appeared or vanished: their old and new boxes are rebuilt now,
      * and anything built ahead against the old poses is void. */
@@ -1328,7 +1402,22 @@ static void pp_commit(int nj, const gfx_paint_ctx_t *jc, const uint16_t *canvas,
         for (int i = 0; i < nj; i++) {
             if (s_pp_fast[i]) continue;
             ppkey_t k; pp_key_of(&jc[i], &k);
-            if (!pp_key_eq(&k, &s_pp_key[i])) {
+            if (s_lg_alp && k.alp == s_lg_alp) {
+                /* §6.27: a lagging job's new pixels, the pose unchanged: the slack has its rows */
+                ppkey_t was = s_pp_key[i];
+                was.alp = k.alp;
+                if (pp_key_eq(&k, &was)) { s_pp_run[i] = 0; continue; }
+            }
+            if (pp_key_eq(&k, &s_pp_key[i])) { s_pp_run[i] = 0; continue; }
+            /* §6.27: the same art moving commit after commit is fast from now on (one whole
+             * rebuild, next commit, as its zone joins the planes' cut) */
+            if (k.alp == s_pp_key[i].alp && ++s_pp_run[i] >= PP_MOVE_RUN && s_pp_nmoved < PP_MOVED_MAX) {
+                s_pp_moved[s_pp_nmoved++] = jc[i].col;
+                s_pp_run[i] = 0;
+                s_pps.promoted++;
+                ESP_LOGI("gfx", "pre-paint: job %d (role %u) moves every frame: fast from now on", i, jc[i].role);
+            }
+            {
                 static int64_t s_pp_said;
                 if (esp_timer_get_time() - s_pp_said > 2000000) {
                     s_pp_said = esp_timer_get_time();
@@ -1351,6 +1440,7 @@ static void pp_commit(int nj, const gfx_paint_ctx_t *jc, const uint16_t *canvas,
         }
     } else {
         pp_stale_clear_all();
+        memset(s_pp_run, 0, sizeof s_pp_run);
         pp_rebuild_box(0, 0, CLK_SCR_W - 1, CLK_SCR_H - 1);
         s_pp_valid = true;
         s_pp_gen++; s_pps.rebuilds++;
@@ -1358,6 +1448,7 @@ static void pp_commit(int nj, const gfx_paint_ctx_t *jc, const uint16_t *canvas,
     }
     s_pp_nj = nj;
     for (int i = 0; i < nj; i++) pp_key_of(&jc[i], &s_pp_key[i]);
+    s_lg_alp = NULL;                                  /* the keys hold the new alpha now */
     /* The frame that landed on the canvas this tick: swap in its rows if they were built
      * ahead against these same slow poses, or build them now. */
     if (s_pp_land_pending) {

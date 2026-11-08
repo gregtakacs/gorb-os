@@ -250,7 +250,17 @@ void gfx_bench_totals(gfx_bench_totals_t *o);
  * every row the shipped way and counts the pixels that differ (must stay 0). */
 typedef struct { int16_t x, y, w, h; const uint16_t *src; } gfx_prep_rect_t;   /* src: LE, stride w */
 void gfx_prep_mode(int mode);                     /* 0 off, 1 on, 2 on + exactness check */
-int  gfx_prep_on(void);
+/* radar-plan §6.27: or'd into the mode, the two front planes alone (868 KB, not 1.7 MB): a
+ * plan that builds no gear frame ahead (an app's sweep over its live layers). */
+#define GFX_PREP_LEAN 4
+int  gfx_prep_on(void);                           /* the mode, GFX_PREP_LEAN included */
+/* radar-plan §6.27: a slow job's pixels were replaced (a live layer's new picture, its
+ * alpha now at `alp`) under the same pose, row y's changes in [x0[y], x1[y]] (none where
+ * x0 > x1; the whole glass when x0 is NULL). Those rows LAG: shown from the planes, the old
+ * picture, until the slack rebuilds them top down, a slice a frame, each row repainted as it
+ * is rebuilt; no tick composites them the long way. False when pre-paint is not holding the
+ * job's planes (the caller damages the rows as before). */
+bool gfx_prep_lag(const int16_t *x0, const int16_t *x1, const uint8_t *alp);
 /* radar-plan §2.9: a slow job's pixels changed under a pose that did not (the live layer):
  * rebuild the box from them and repaint it this tick. A no-op while pre-paint is off. */
 void gfx_prep_stale(int32_t y0, int32_t y1, int32_t x0, int32_t x1);
@@ -262,6 +272,7 @@ bool gfx_prep_idle(int64_t deadline_us);
 typedef struct {
     uint64_t rows_ahead, rows_sync, swaps_ready, swaps_late, rebuilds, mismatch_px, checked_px;
     uint64_t live_px, copy_px;
+    uint64_t rows_lag, lags, promoted;                /* §6.27: lagging rows rebuilt, swaps, jobs made fast */
 } gfx_prep_stats_t;
 void gfx_prep_stats(gfx_prep_stats_t *o);
 #endif

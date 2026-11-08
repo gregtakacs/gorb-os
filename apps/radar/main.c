@@ -409,9 +409,11 @@ static int frame_wanted(void)
     return i >= 0 && i < s_npast + s_nnow ? i : idx_newest();
 }
 
+static bool s_back_open;
 static void layers_open(void)
 {
     if (!s_themed) return;
+    s_back_open = false;               /* a merge reallocates the layers and drops their backs */
     const int32_t a = orb_stage_live(0, V.map_order, 0), b = orb_stage_live(1, V.rain_order, 0);
     s_layers = a == ORB_OK && b == ORB_OK;
     if (!s_layers) orb_logf("radar: the live layers refused (%d, %d)", (int)a, (int)b);
@@ -500,23 +502,39 @@ static void pal_build(void)
     }
 }
 
+/* radar-plan §6.27 (OS v1.2.38): the next rain picture is drawn into the layer's back copy
+ * by the OS's worker, off the frame, and presented whole when it is done, so the sweep keeps
+ * its pace (Bronze: a decode in the call held the tick ~117 ms, the sweep fell to 9 fps). */
+/* s_back_open: a back picture is being drawn (declared by layers_open) */
+static void back_step(void)
+{
+    if (!s_back_open) return;
+    const int32_t r = orb_stage_live_present(1);
+    if (r == 0) return;                                  /* still being drawn */
+    s_back_open = false;
+    if (r < 0) { orb_logf("radar: the rain's back picture did not present (%d)", (int)r); s_shown = -2; s_rain_dirty = true; }
+}
+
 static void draw_rain(void)
 {
     if (s_view_next > 0) return;       /* a new view is rendering: the old map and rain stay up */
+    if (s_back_open) return;           /* the last picture is still being drawn: this one waits */
     s_rain_dirty = false;
     if (!s_layers) return;
     const int i = frame_wanted();
     const frame_t *f = i >= 0 ? &F[i] : NULL;
     if (s_shown == i && f && f->slot >= 0) return;
-    if (s_merged) orb_stage_live_copy(1, 0);             /* the map, then the rain over it */
-    else orb_stage_live(1, V.rain_order, 0);
+    /* the map, then the rain over it (merged), or a clear layer: begun in the back copy */
+    if (orb_stage_live_back(1, s_merged ? 0 : -1, 0) != ORB_OK) { s_rain_dirty = true; return; }
+    s_back_open = true;
+    s_tgt = ORB_CV_BACK1;
     s_shown = -1;
     if (!f || f->slot < 0 || !orb_blob_len((uint32_t)f->slot)) { draw_scale(); return; }
     const int k = rd_img_k(s_zoom);
     orb_png_draw_t d = { .slot = (uint32_t)f->slot, .sx = s_sx, .sy = s_sy, .dx = s_dx, .dy = s_dy,
                          .w = RD_GLASS, .h = RD_GLASS, .scale = k > 1 ? (k | ORB_PNG_SMOOTH) : 1, .pal = f->now ? s_pal_fc : s_pal };
     if (f->now && V.forecast == RD_FC_HATCH) d.scale |= ORB_PNG_HATCH;   /* a forecast never looks observed */
-    const int32_t rc = orb_cv_png8(ORB_CV_LIVE1, &d);
+    const int32_t rc = orb_cv_png8(ORB_CV_BACK1, &d);
     draw_scale();
     if (rc == ORB_OK) s_shown = i;
     else orb_logf("radar: frame %d (slot %d, %u B) did not draw: %d", i, (int)f->slot, (unsigned)orb_blob_len((uint32_t)f->slot), (int)rc);
@@ -774,6 +792,7 @@ static void redraw(void)
         return;
     }
     if (!s_layers) layers_open();
+    back_step();
     if (s_map_dirty) draw_map();
     if (s_rain_dirty) draw_rain();
     if (s_ui_dirty) draw_ui();
@@ -837,7 +856,7 @@ static void read_values(void)
  * for it: a widget on the page, hidden or not, took the dial off its fast path for good
  * (orb_stage.c's veto), and the hub installs the shelf's theme with the app. */
 static int64_t s_stage_retry_ms;
-static void stage_read(void)
+static void stage_read(bool may_bare)
 {
     const bool was = s_themed;
     s_themed = orb_stage_open(&s_stage) == ORB_OK && !s_stage.base;
@@ -845,8 +864,11 @@ static void stage_read(void)
     if (s_themed && R_time < 0) s_themed = false;      /* not this app's layout */
     read_values();
     /* no theme: the bare form, for good (a theme's store reboots the orb, which starts the
-     * app again on it); its loop steps every 250 ms */
-    if (!s_themed && !s_cv) {
+     * app again on it); its loop steps every 250 ms. Never at orb_init or an arrival: the OS
+     * binds the stage after them, and the canvas, a widget, keeps the stage off for good
+     * (Bronze, 2026-11-08: after a reboot the radar stood bare over its Scope theme). The
+     * service's next ask decides. */
+    if (!s_themed && !s_cv && may_bare) {
         s_cv = orb_cv_create(0, CX * 2, CY * 2);
         orb_logf("radar: no theme: the bare form%s", s_cv ? "" : ", but its canvas was refused");
     }
@@ -856,14 +878,14 @@ static void stage_read(void)
     const uint32_t beat = s_themed ? 0 : s_cv ? 1000 : 2000;
     if (orb_set_beat(beat) != ORB_OK) orb_logf("radar: the OS refused a %u ms beat", (unsigned)beat);
     if (was != s_themed) orb_logf("radar: %s", s_themed ? "on its theme" : "no theme bound yet: asking again");
-    s_stage_retry_ms = up_ms() + 2000;
+    s_stage_retry_ms = up_ms() + (may_bare ? 2000 : 300);
 }
 
 ORB_EXPORT("orb_init") int32_t orb_init(void)
 {
     orb_knob_dial();
     for (int i = 0; i < RD_FRAMES; i++) F[i].slot = -1;
-    stage_read();
+    stage_read(false);
     load_settings();
     load_places();
     orb_units(&s_units);
@@ -877,7 +899,8 @@ static void on_glass(void)
 {
     s_visible = true;
     s_layers = false;                  /* the stage frees the layers when another app binds */
-    if (!s_cv) stage_read();           /* the bare form stays bare */
+    s_back_open = false;               /* and their back copies with them */
+    if (!s_cv) stage_read(false);      /* the bare form stays bare */
     s_map_dirty = s_rain_dirty = s_ui_dirty = true;
     /* the OS closed the map's views when the app left (no display buffers off the glass,
      * OS v1.2.27): a new one, the frames kept unless nothing has been shown yet */
@@ -895,7 +918,7 @@ static void on_glass(void)
 ORB_EXPORT("orb_activate") void orb_activate(void) { orb_dial_home(&s_dial); s_play = true; on_glass(); }
 ORB_EXPORT("orb_resume") void orb_resume(void) { on_glass(); }
 ORB_EXPORT("orb_show") void orb_show(void) { on_glass(); }
-ORB_EXPORT("orb_suspend") void orb_suspend(void) { s_visible = false; s_layers = false; }
+ORB_EXPORT("orb_suspend") void orb_suspend(void) { s_visible = false; s_layers = false; s_back_open = false; }
 
 ORB_EXPORT("orb_tick") void orb_tick(uint32_t now)
 {
@@ -951,7 +974,7 @@ ORB_EXPORT("orb_service") void orb_service(void)
     }
     zoom_step();
     if (s_visible && s_cv) loop_step();                  /* bare: the loop's clock is the service */
-    if (s_visible && !s_themed && !s_cv && up_ms() >= s_stage_retry_ms) { stage_read(); s_layers = false; s_map_dirty = s_rain_dirty = s_ui_dirty = true; }
+    if (s_visible && !s_themed && !s_cv && up_ms() >= s_stage_retry_ms) { stage_read(true); s_layers = false; s_map_dirty = s_rain_dirty = s_ui_dirty = true; }
     if (s_map_retry_ms && up_ms() >= s_map_retry_ms) { s_map_retry_ms = 0; view_open(); }
     view_step();
     /* The zoom's pill goes 2 s after it lands. Playing, the loop's next frame redrew it away;

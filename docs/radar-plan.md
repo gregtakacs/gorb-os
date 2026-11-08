@@ -813,12 +813,15 @@ canvas. **The stage gains a live layer:** a full-glass plane stacked among the t
 whose pixels are the app's, held by the OS in PSRAM (RGB565 plus an alpha plane, always,
 so a later Flights can lay a map over its plate).
 - *As built (R3c):* its depth is a number on the rows' scale (0-63) that the theme carries
-  in its values (§2.11) and the app passes to `orb_stage_live(order, argb)`; the theme
-  format gains no element for it, so no reader, writer or bake changed. The editor's row
-  for it is the radar editor's (R7), writing that number.
-- `orb_map_draw` and `orb_cv_png8` take the layer (`ORB_CV_LIVE`) as their target as well
-  as a canvas, and each draw repaints the box it covered; there is no separate damage call
-  (the earlier `orb_stage_layer_damage` was never built).
+  in its values (§2.11) and the app passes to `orb_stage_live(layer, order, argb)`; the
+  theme format gains no element for it, so no reader, writer or bake changed. The editor's
+  row for it is the radar editor's (R7), writing that number.
+- **Two layers an app** (owner, 2026-11-07, §6.5): the radar keeps its map in one, drawn
+  once a view, and redraws only the rain in the other. Each has its own depth, so a theme
+  can put rows (range rings, the place marker) between map and rain. Flights needs one.
+- `orb_map_draw` and `orb_cv_png8` take a layer (`ORB_CV_LIVE0`, `ORB_CV_LIVE1`) as their
+  target as well as a canvas, and each draw repaints the box it covered; there is no
+  separate damage call (the earlier `orb_stage_layer_damage` was never built).
 - The theme's own rows sit below it (the plate) and above it (the rim's time track, the
   rings, the place marker, the labels in the theme's fonts), all still on the fast path.
 - To the compositor it is a sprite whose pixels live outside the theme bank; the editor
@@ -1123,10 +1126,38 @@ follow rules that keep everyone moving:
     and 63-66 ms with Seattle's. At order 10 the map covers Weather's rows; at 0 they
     stand on it; the classic path stacks the same at both.
   - The clock (8 rows + 1): a commit's paint 25.0 ms without the layer, 29.6 ms with it.
-  - A redraw of map and rain is ~125 ms on the LVGL task, and the loop pays it every
-    step: the layer holds the two composited, so a new frame needs the map under it
-    again. R5's to plan around: a second layer for the rain, or a slower loop (at 4 fps
-    half of each 250 ms step would be drawing).
+  - A redraw of map and rain is ~125 ms on the LVGL task, and with one layer the loop
+    pays it every step: the layer holds the two composited, so a new frame needs the map
+    under it again. *Answered by §6.5: two layers, a rain step ~65 ms.*
 - **Not built here:** the editor's row (R7: it writes the order into the values).
   Classic-path rounding is owed (13).
+
+### 6.5 R3c, a second layer (2026-11-07, Bronze, OS v1.2.23, uncommitted)
+
+The owner's call after §6.4: keep the map parked and redraw only the rain.
+
+- **Two layers an app** (`STAGE_LIVE_N`). `orb_stage_live(layer, order, argb)` takes the
+  layer first (the import was `i(ii)` in v1.2.22, never pushed and never used by an app;
+  it is now `i(iii)`); the canvas handles are `ORB_CV_LIVE0` (-1) and `ORB_CV_LIVE1` (-2).
+  Each layer has its own depth and plane. In the L4 table both are picked into the depth
+  sort, layer 0 first, so at one depth layer 0 is under layer 1. On the classic path
+  `live_restack` places both at once: it lifts them to the end of the page, finds each
+  one's place among the stage's own widgets, and puts the lower in first. Re-stacking one
+  at a time read the other's old place (the host test's same-depth case caught it).
+- **A clear is cheap:** a fill with alpha 0 writes only the alpha plane (a draw over a
+  clear pixel takes its own colour whole): 6 ms a step. (The 11 ms of a first open is
+  the allocation and the table rebuild; a coloured fill was not timed.)
+- **On Bronze, Weather on the glass:** map into layer 0 once (open 11 ms, blend 64 ms);
+  each rain step on layer 1 is a clear (6 ms) and a frame (58-60 ms), **~65 ms against
+  ~125 ms** with one layer, and the map is left alone. The frames swap cleanly with the old
+  rain gone. Under the clock with pre-paint, a layer-1 redraw shows (the stale path holds
+  for either layer); on the classic path, map at 40 over rain at 0 stacks as the depths
+  say. Twelve rain steps under the clock, with status (1.6 KB) and config (4.5 KB) read
+  after each, all whole (§6.4's Wi-Fi finding holds).
+- **The memory:** the second layer is 651 KB more PSRAM. Under the clock with both layers,
+  the map's level files and pre-paint's planes, 1.18 MB of PSRAM was left; closing both
+  gave back 1.3 MB. The radar's own low point on the glass is R6's to measure.
+- **Tests.** `host_live_test.py` adds the two-layer stacks: each order pair both ways, both
+  at one depth (layer 0 under 1), both under the glass; 9/9 mutants (a third equivalent
+  edit, the explicit stop at the lifted layers, left out and said why).
 

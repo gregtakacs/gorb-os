@@ -329,8 +329,28 @@ static inline uint16_t blend565(uint16_t dst, uint16_t src, uint8_t a)
     return (uint16_t)(r << 11 | g << 5 | b);
 }
 
+/* src over a target pixel: a canvas is opaque; the live layer keeps an alpha plane, and
+ * src over a pixel it only partly covers weights the colours by what each contributes. */
+static inline void over(const orb_ui_tgt_t *t, int32_t i, uint16_t c, uint8_t a)
+{
+    if (!t->a) { t->px[i] = blend565(t->px[i], c, a); return; }
+    const uint8_t da = t->a[i];
+    if (a == 255 || !da) { t->px[i] = c; t->a[i] = a; return; }
+    const uint32_t ao = a + (uint32_t)da * (255u - a) / 255u;
+    t->px[i] = blend565(t->px[i], c, (uint8_t)(a * 255u / ao));
+    t->a[i] = (uint8_t)ao;
+}
+
+static bool tgt_of_cv(int slot, int32_t h, orb_ui_tgt_t *t)
+{
+    cv_t *c = cv_of(slot_get(slot, false), h);
+    if (!c) return false;
+    *t = (orb_ui_tgt_t){ c->px, NULL, c->w, c->h, c->stride };
+    return true;
+}
+
 typedef struct {
-    cv_t *c;
+    const orb_ui_tgt_t *t;
     const pal565_t *pal;
     int32_t sx, sy, dx, dy, w, h, scale;
 } png_ctx_t;
@@ -349,51 +369,67 @@ static int png_row(void *ctx, int y, const uint8_t *idx, int w)
         for (int32_t ky = 0; ky < p->scale && oy + ky < p->h; ky++)
             for (int32_t kx = 0; kx < p->scale && x * p->scale + kx < p->w; kx++) {
                 const int32_t X = p->dx + x * p->scale + kx, Y = p->dy + oy + ky;
-                if ((uint32_t)X < (uint32_t)p->c->w && (uint32_t)Y < (uint32_t)p->c->h) {
-                    uint16_t *d = &p->c->px[Y * p->c->stride + X];
-                    *d = blend565(*d, e.c, e.a);
-                }
+                if ((uint32_t)X < (uint32_t)p->t->w && (uint32_t)Y < (uint32_t)p->t->h)
+                    over(p->t, Y * p->t->stride + X, e.c, e.a);
             }
     }
     return 0;
 }
 
-int32_t orb_ui_cv_png8(int slot, int32_t h, const uint8_t *png, uint32_t len, int32_t sx, int32_t sy,
-                       int32_t dx, int32_t dy, int32_t w, int32_t hh, int32_t scale, const uint32_t *argb)
+int32_t orb_ui_tgt_png8(const orb_ui_tgt_t *t, const uint8_t *png, uint32_t len, int32_t sx, int32_t sy,
+                        int32_t dx, int32_t dy, int32_t w, int32_t hh, int32_t scale, const uint32_t *argb)
 {
-    cv_t *c = cv_of(slot_get(slot, false), h);
-    if (!c || !png || !argb || scale < 1 || scale > 4) return ORB_PNG8_E_FORMAT;
+    if (!t || !png || !argb || scale < 1 || scale > 4) return ORB_PNG8_E_FORMAT;
     /* One scratch for every draw: they all run on the LVGL task, one at a time. */
     static void *scratch;
     if (!scratch) scratch = heap_caps_malloc(orb_png8_scratch_size(), MALLOC_CAP_SPIRAM);
     if (!scratch) return ORB_PNG8_E_SCRATCH;
-    pal565_t *pal = heap_caps_malloc(256 * sizeof *pal, MALLOC_CAP_SPIRAM);
+    /* The app colours values, not indices: a grey PNG's index is its encoder's choice
+     * (LibreWXR's raw frames number their greys afresh in every frame), so each index
+     * takes the colour of its palette entry's grey. A file without a palette is its own. */
+    pal565_t *pal = heap_caps_malloc(512 * sizeof *pal, MALLOC_CAP_SPIRAM);
     if (!pal) return ORB_PNG8_E_SCRATCH;
-    pal_prep(pal, argb, 256);
-    png_ctx_t ctx = { c, pal, sx, sy, dx, dy, w, hh, scale };
+    pal_prep(pal + 256, argb, 256);
+    uint8_t value[256];
+    const int np = orb_png8_plte(png, len, value);
+    if (np < 0) { heap_caps_free(pal); return np; }
+    for (int i = 0; i < 256; i++) pal[i] = pal[256 + (np ? value[i] : i)];
+    png_ctx_t ctx = { t, pal, sx, sy, dx, dy, w, hh, scale };
     int r = orb_png8_decode(png, len, scratch, orb_png8_scratch_size(), png_row, &ctx);
     if (r == ORB_PNG8_E_STOP) r = ORB_PNG8_OK;        /* the window ended before the image */
     heap_caps_free(pal);
     return r;
 }
 
-void orb_ui_cv_roles(int slot, int32_t h, const uint8_t *raster, const uint32_t *argb16, int32_t dx, int32_t dy)
+int32_t orb_ui_cv_png8(int slot, int32_t h, const uint8_t *png, uint32_t len, int32_t sx, int32_t sy,
+                       int32_t dx, int32_t dy, int32_t w, int32_t hh, int32_t scale, const uint32_t *argb)
 {
-    cv_t *c = cv_of(slot_get(slot, false), h);
-    if (!c || !raster || !argb16) return;
+    orb_ui_tgt_t t;
+    if (!tgt_of_cv(slot, h, &t)) return ORB_PNG8_E_FORMAT;
+    return orb_ui_tgt_png8(&t, png, len, sx, sy, dx, dy, w, hh, scale, argb);
+}
+
+void orb_ui_tgt_roles(const orb_ui_tgt_t *t, const uint8_t *raster, const uint32_t *argb16, int32_t dx, int32_t dy)
+{
+    if (!t || !raster || !argb16) return;
     pal565_t pal[16];
     pal_prep(pal, argb16, 16);
     for (int y = 0; y < ORB_MAP_W; y++) {
         const int32_t Y = dy + y;
-        if ((uint32_t)Y >= (uint32_t)c->h) continue;
-        uint16_t *row = &c->px[Y * c->stride];
+        if ((uint32_t)Y >= (uint32_t)t->h) continue;
         for (int x = 0; x < ORB_MAP_W; x++) {
             const int32_t X = dx + x;
-            if ((uint32_t)X >= (uint32_t)c->w) continue;
+            if ((uint32_t)X >= (uint32_t)t->w) continue;
             const pal565_t e = pal[orb_map_role_at(raster, x, y)];
-            if (e.a) row[X] = blend565(row[X], e.c, e.a);
+            if (e.a) over(t, Y * t->stride + X, e.c, e.a);
         }
     }
+}
+
+void orb_ui_cv_roles(int slot, int32_t h, const uint8_t *raster, const uint32_t *argb16, int32_t dx, int32_t dy)
+{
+    orb_ui_tgt_t t;
+    if (tgt_of_cv(slot, h, &t)) orb_ui_tgt_roles(&t, raster, argb16, dx, dy);
 }
 
 void orb_ui_cv_flush(int slot, int32_t h)

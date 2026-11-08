@@ -1061,6 +1061,11 @@ void gfx_prep_mode(int mode)
     }
 }
 int gfx_prep_on(void) { return s_pp_mode; }
+void gfx_prep_stale(int32_t y0, int32_t y1, int32_t x0, int32_t x1)
+{
+    if (!s_pp_mode || !s_pp_valid) return;
+    for (int32_t y = y0; y <= y1; y++) pp_stale_add(y, x0, x1);
+}
 void gfx_prep_stats(gfx_prep_stats_t *o) { *o = s_pps; }
 
 static void pp_key_of(const gfx_paint_ctx_t *pc, ppkey_t *k)

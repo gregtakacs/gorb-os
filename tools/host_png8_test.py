@@ -66,13 +66,21 @@ static int row(void *ctx, int y, const uint8_t *idx, int w) { (void)ctx; memcpy(
 static int stop_at_3(void *ctx, int y, const uint8_t *idx, int w) { (void)ctx; (void)idx; (void)w; return y == 3; }
 int main(int argc, char **argv)
 {
-    /* argv: file, mode ("decode" | "stop" | "small") */
+    /* argv: file, mode ("decode" | "stop" | "small" | "plte") */
     FILE *f = fopen(argv[1], "rb"); fseek(f, 0, SEEK_END); long n = ftell(f); fseek(f, 0, SEEK_SET);
     unsigned char *buf = malloc((size_t)n); if (fread(buf, 1, (size_t)n, f) != (size_t)n) return 9; fclose(f);
     size_t ss = orb_png8_scratch_size(); void *s = malloc(ss);
     memset(s, 0xA5, ss);   /* never zeroed for it: the reader must clear what it relies on */
     int w = 0, h = 0, rc;
     g_out = calloc(8192 * 1024, 1);
+    if (argc > 2 && !strcmp(argv[2], "plte")) {
+        uint8_t v[256];
+        memset(v, 0xA5, sizeof v);       /* the reader clears what the palette leaves */
+        rc = orb_png8_plte(buf, (size_t)n, v);
+        printf("%d 0 0 0\n", rc);
+        fwrite(v, 1, 256, stdout);
+        return 0;
+    }
     if (argc > 2 && !strcmp(argv[2], "stop")) rc = orb_png8_decode(buf, (size_t)n, s, ss, stop_at_3, NULL);
     else if (argc > 2 && !strcmp(argv[2], "small")) rc = orb_png8_decode(buf, (size_t)n, s, ss - 1, row, NULL);
     else rc = orb_png8_decode(buf, (size_t)n, s, ss, row, NULL);
@@ -111,7 +119,7 @@ def filt(raw, prev, f):
     return bytes(out)
 
 
-def png(rows, w, depth, filters=None, split=None, ctype=3, lace=0, palette=True):
+def png(rows, w, depth, filters=None, split=None, ctype=3, lace=0, palette=True, plte=None):
     raw = b""; prev = bytes((w * depth + 7) // 8)
     for y, r in enumerate(rows):
         pr = pack_row(r, depth); f = (filters or [0])[y % len(filters or [0])]
@@ -120,7 +128,7 @@ def png(rows, w, depth, filters=None, split=None, ctype=3, lace=0, palette=True)
     ihdr = struct.pack(">IIBBBBB", w, len(rows), depth, ctype, 0, 0, lace)
     out = b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", ihdr)
     if palette:
-        out += chunk(b"PLTE", bytes(range(48)))
+        out += chunk(b"PLTE", plte if plte is not None else bytes(range(48)))
     parts = [z] if not split else [z[i:i + split] for i in range(0, len(z), split)]
     for p in parts:
         out += chunk(b"IDAT", p)
@@ -197,6 +205,25 @@ def suite(src, quiet=False):
         ck(decode(exe, d, good, "stop")[0] == -8, "the row callback can stop the decode")
         ck(decode(exe, d, good, "small")[0] == -7, "scratch one byte short is refused")
         ck(cut == good, "the fixtures are what they claim")
+
+        # orb_png8_plte: LibreWXR numbers its greys afresh every frame (Seattle: index 1 is
+        # grey 89, New York's index 1 was 84), so the draw colours the palette's value
+        grey = [0, 89, 95, 101, 255]
+        pl = b"".join(bytes([g, 255 - g, 7]) for g in grey)     # not grey: the red channel is read
+        rc, *_, body = decode(exe, d, png([[1, 2, 3]] * 2, 3, 8, plte=pl), "plte")
+        ck(rc == 5 and list(body[:5]) == grey and body[5:] == bytes(251),
+           "the palette reads as its entries' first channel, and indices past it as 0")
+        rc, *_, body = decode(exe, d, png([[1, 2, 3]] * 2, 3, 8, palette=False), "plte")
+        ck(rc == 0 and body == bytes(256), "no palette: 0 entries, the caller's indices stand")
+        full = bytes(sum(([i, 0, 0] for i in range(256)), []))
+        rc, *_, body = decode(exe, d, png([[1]], 1, 8, plte=full), "plte")
+        ck(rc == 256 and body == bytes(range(256)), "a full 256-entry palette")
+        bad = bytearray(png([[1]], 1, 8, plte=pl)); i = bad.index(b"PLTE") + 5; bad[i] ^= 1
+        ck(decode(exe, d, bytes(bad), "plte")[0] == -3, "a flipped palette byte fails its CRC")
+        ck(decode(exe, d, png([[1]], 1, 8, plte=pl + b"\x01"), "plte")[0] == -2,
+           "a palette that is not whole entries is refused")
+        ck(decode(exe, d, png([[1]], 1, 8, plte=full + b"\x00\x00\x00"), "plte")[0] == -2,
+           "a palette of 257 entries is refused")
     return fails
 
 
@@ -205,13 +232,19 @@ MUTATIONS = [
     ("(((i ? x[i - 1] : 0) + u[i]) >> 1)", "((i ? x[i - 1] : 0) + u[i])"),
     ("(pb <= pc ? b : c)", "(pb < pc ? b : c)"),
     ("const int sh = 8 - depth * (x % per + 1);", "const int sh = depth * (x % per);"),
-    ("if (!chunk_ok(type, dlen)) return ORB_PNG8_E_CRC;", ";"),
+    ("if (!chunk_ok(type, dlen)) return ORB_PNG8_E_CRC;\n        if (!memcmp(type, \"IEND\"", "if (!memcmp(type, \"IEND\""),
     ("if (type != 3 || comp || filt || lace) return ORB_PNG8_E_FORMAT;", "if (type != 3 || comp || filt) return ORB_PNG8_E_FORMAT;"),
     ("return y == hd.h ? ORB_PNG8_OK : ORB_PNG8_E_TRUNC;", "return ORB_PNG8_OK;"),
     ("wpos = (wpos + out_n) & (WIN - 1);", "wpos = 0;"),
     ("memset(s->rows[1], 0, (size_t)hd.rowbytes + 1);", ";"),
     ("default: return ORB_PNG8_E_FILTER;", "default: break;"),
     ("if (!scratch || scratch_len < sizeof(scratch_t))", "if (!scratch)"),
+    ("value[i] = type[4 + 3 * i];", "value[i] = type[5 + 3 * i];"),
+    ("    memset(value, 0, 256);\n", ""),
+    ("if (!chunk_ok(type, dlen)) return ORB_PNG8_E_CRC;\n            if (!dlen", "if (!dlen"),
+    ("if (!dlen || dlen % 3 || dlen > 768)", "if (!dlen || dlen > 768)"),
+    ("if (!dlen || dlen % 3 || dlen > 768)", "if (!dlen || dlen % 3)"),
+    ("return (int)(dlen / 3);", "return 256;"),
 ]
 
 

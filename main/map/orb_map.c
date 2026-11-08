@@ -269,7 +269,17 @@ static bool ensure_started(void)
     s_busy = xSemaphoreCreateMutexStatic(&s_busy_buf);
     s_q = xQueueCreate(8, sizeof(job_t));
     if (!s_q) return false;
-    if (xTaskCreatePinnedToCore(map_task, "map", TASK_STACK, NULL, TASK_PRIO, NULL, tskNO_AFFINITY) != pdPASS) {
+    /* The stack in PSRAM, as appnet's: the task reads the card and renders, and never
+     * touches flash. In internal RAM its 6 KB took the block the Wi-Fi driver's
+     * transmit buffers come from (Bronze under the clock, 2026-11-07: 23 KB free, the
+     * largest block 7.4 KB), and once it stood, any reply longer than a segment
+     * stopped after its first send. */
+    StackType_t *stk = heap_caps_malloc(TASK_STACK, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    StaticTask_t *tcb = heap_caps_calloc(1, sizeof *tcb, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    if (!stk || !tcb ||
+        !xTaskCreateStaticPinnedToCore(map_task, "map", TASK_STACK, NULL, TASK_PRIO, stk, tcb, tskNO_AFFINITY)) {
+        heap_caps_free(stk);
+        heap_caps_free(tcb);
         vQueueDelete(s_q);
         s_q = NULL;
         return false;

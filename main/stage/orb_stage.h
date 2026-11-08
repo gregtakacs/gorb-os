@@ -73,6 +73,38 @@ const clk_sound_t *stage_sounds(uint32_t *n, uint8_t *pattern);
 /* radar-plan §2.11: copy the theme's values (up to cap bytes) into buf; answers their
  * full length (0 = the theme carries none) and the app's layout version. */
 uint32_t stage_values(void *buf, uint32_t cap, uint16_t *ver);
+/* radar-plan §2.9 (R3c): the live layer, a full-glass RGB565A8 plane the app draws into
+ * (orb_cv_png8 and orb_map_draw with ORB_CV_LIVE) at a depth on its theme rows' scale.
+ * open places it at `order` (0..63, as a row's) and fills it with argb; again at the same
+ * order it only fills; another order re-stacks it; order -1 frees it. Release frees it
+ * too. Answers ESP_OK, ESP_ERR_INVALID_ARG, ESP_ERR_INVALID_STATE (no theme bound) or
+ * ESP_ERR_NO_MEM. */
+esp_err_t stage_live_open(int32_t order, uint32_t argb);
+/* The planes: colour (RGB565, stride CLK_SCR_W) then alpha; false when no layer is open. */
+bool stage_live_target(uint16_t **px, uint8_t **a);
+/* The box the app's draw changed: the stage repaints it on the next flush. */
+void stage_live_damage(int32_t x, int32_t y, int32_t w, int32_t h);
+#if CONFIG_ORB_DEBUG_HTTP
+/* radar-plan R3c's bench: what an app does with the live layer, done on the stage's next
+ * frame — open at order with argb, the raster through pal (when ras), the PNG window from
+ * (png_sx, png_sy) through png_pal (when png) — timed. False when no frame came. */
+typedef struct {
+    int32_t order;
+    uint32_t argb;
+    int8_t veto;            /* 1/0: force the classic path or give L4 back first; -1 leave */
+    const uint8_t *ras;
+    uint32_t pal[16];
+    const uint8_t *png;
+    uint32_t png_len;
+    int32_t png_sx, png_sy;
+    const uint32_t *png_pal;
+    int32_t rc, png_rc;
+    uint32_t open_us, roles_us, png_us;
+    bool l4;
+    int rows;
+} stage_live_bench_t;
+bool stage_bench_live(stage_live_bench_t *io, int timeout_ms);
+#endif
 void stage_now(time_t *t, double *frac, double *wall);
 void stage_pose(int i, int32_t ang_10, int32_t ox, int32_t oy);
 int  stage_frame(int i, int32_t f);

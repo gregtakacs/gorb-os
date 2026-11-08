@@ -248,6 +248,9 @@ void gfx_bench_totals(gfx_bench_totals_t *o);
 typedef struct { int16_t x, y, w, h; const uint16_t *src; } gfx_prep_rect_t;   /* src: LE, stride w */
 void gfx_prep_mode(int mode);                     /* 0 off, 1 on, 2 on + exactness check */
 int  gfx_prep_on(void);
+/* radar-plan §2.9: a slow job's pixels changed under a pose that did not (the live layer):
+ * rebuild the box from them and repaint it this tick. A no-op while pre-paint is off. */
+void gfx_prep_stale(int32_t y0, int32_t y1, int32_t x0, int32_t x1);
 /* The canvas just took frame `frame`'s rects; `next` are the rects of the frame after. */
 void gfx_prep_landed(int frame, const gfx_prep_rect_t *cur, int ncur,
                      int next, const gfx_prep_rect_t *nxt, int nnext);

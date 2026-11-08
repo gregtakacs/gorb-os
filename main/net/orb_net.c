@@ -5307,6 +5307,91 @@ static esp_err_t h_debug_map_view(httpd_req_t *req)
     return e;
 }
 
+/* GET /api/v1/debug/live?order=N[&argb=HEX][&place=0&radius_m=M][&png=REL][&sx=23&sy=23][&wait_ms=3000][&veto=1]
+ * radar-plan R3c: the stage's live layer under whatever app is on the glass. Opens it at
+ * order N filled with argb (default 0: clear), draws the place's map into it through a
+ * half-clear scope palette when radius_m is given, then a LibreWXR frame from the card
+ * through a rain ramp when png is, each timed on the stage's own frame. order=-1 frees it. */
+static esp_err_t h_debug_live(httpd_req_t *req)
+{
+    char v[96];
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    httpd_resp_set_type(req, "application/json");
+    static stage_live_bench_t io;
+    memset(&io, 0, sizeof io);
+    io.order = q_param(req, "order", v, sizeof v) ? atoi(v) : 10;
+    io.argb = q_param(req, "argb", v, sizeof v) ? (uint32_t)strtoul(v, NULL, 16) : 0;
+    io.veto = q_param(req, "veto", v, sizeof v) ? (int8_t)(v[0] == '1') : -1;
+    const int slot = 7;
+    int32_t h = 0, st = 0;
+    int64_t map_ms = 0;
+    if (q_param(req, "radius_m", v, sizeof v)) {
+        orb_map_req_t r = { .radius_m = atoi(v), .role_on = 0xFFFF, .mark_on = 0x0B };
+        static const uint8_t WID[][2] = { { 4, 1 }, { 5, 1 }, { 6, 2 }, { 7, 1 }, { 8, 2 }, { 9, 1 }, { 12, 2 } };
+        for (size_t i = 0; i < sizeof WID / sizeof WID[0]; i++) r.width[WID[i][0]] = WID[i][1];
+        r.dash[7] = 2;
+        const int place = q_param(req, "place", v, sizeof v) ? atoi(v) : 0;
+        const int64_t t0 = esp_timer_get_time();
+        h = orb_map_open(slot, place, &r);
+        st = h > 0 ? ORB_MAP_RENDERING : h;
+        while (h > 0 && (st = orb_map_ready(slot, h)) == ORB_MAP_RENDERING && esp_timer_get_time() - t0 < 15000000)
+            vTaskDelay(pdMS_TO_TICKS(10));
+        map_ms = (esp_timer_get_time() - t0) / 1000;
+        if (st == ORB_MAP_READY) {
+            io.ras = orb_map_raster_of(slot, h);
+            static const uint32_t PAL[16] = {
+                0x00000000, 0xA0102030, 0xA0283848, 0xC0204870, 0xC0306090, 0xD0606870,
+                0xF0A0A8B0, 0xE0708090, 0xF0C0C8D0, 0xF0507090, 0xFFFFFFFF, 0xFFFFC040,
+                0xFFE0E0E0, 0, 0, 0 };
+            memcpy(io.pal, PAL, sizeof PAL);
+            io.pal[0] = 0x80081828;              /* water */
+        }
+    }
+    uint8_t *png = NULL;
+    uint32_t *ramp = NULL;
+    if (q_param(req, "png", v, sizeof v) && !strstr(v, "..")) {
+        char full[128];
+        snprintf(full, sizeof full, ORB_SD_BASE "/%s", v);
+        struct stat sb;
+        orb_sd_lock();
+        if (stat(full, &sb) == 0 && sb.st_size > 0 && sb.st_size < 512 * 1024 &&
+            (png = heap_caps_malloc((size_t)sb.st_size, MALLOC_CAP_SPIRAM))) {
+            FILE *f = fopen(full, "rb");
+            if (!f || fread(png, 1, (size_t)sb.st_size, f) != (size_t)sb.st_size) { heap_caps_free(png); png = NULL; }
+            if (f) fclose(f);
+        }
+        orb_sd_unlock();
+        ramp = heap_caps_calloc(256, 4, MALLOC_CAP_SPIRAM);
+        if (png && ramp) {
+            /* raw dBZ = v/2 - 32 from 10 dBZ (v 84): green, yellow, red, magenta */
+            for (int i = 84; i < 256; i++) {
+                const int dbz = i / 2 - 32;
+                ramp[i] = dbz < 25 ? 0xC000B040 : dbz < 35 ? 0xD020E020 : dbz < 45 ? 0xE0F0E000
+                        : dbz < 55 ? 0xF0F03010 : 0xFFE020E0;
+            }
+            io.png = png;
+            io.png_len = (uint32_t)sb.st_size;
+            io.png_pal = ramp;
+            io.png_sx = q_param(req, "sx", v, sizeof v) ? atoi(v) : 23;
+            io.png_sy = q_param(req, "sy", v, sizeof v) ? atoi(v) : 23;
+        }
+    }
+    const bool ran = stage_bench_live(&io, q_param(req, "wait_ms", v, sizeof v) ? atoi(v) : 3000);
+    if (h > 0) orb_map_close(slot, h);
+    heap_caps_free(png);
+    heap_caps_free(ramp);
+    char b[400];
+    snprintf(b, sizeof b, "{\"ran\":%s,\"rc\":%ld,\"order\":%ld,\"map_state\":%ld,\"map_ms\":%lld,"
+             "\"open_ms\":%.1f,\"roles_ms\":%.1f,\"png_rc\":%ld,\"png_ms\":%.1f,\"l4\":%s,\"rows\":%d,"
+             "\"psram_free\":%u,\"int_free\":%u}",
+             ran ? "true" : "false", (long)io.rc, (long)io.order, (long)st, (long long)map_ms,
+             io.open_us / 1000.0, io.roles_us / 1000.0, (long)io.png_rc, io.png_us / 1000.0,
+             io.l4 ? "true" : "false", io.rows,
+             (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM),
+             (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
+    return httpd_resp_sendstr(req, b);
+}
+
 static int png_bench_row(void *ctx, int y, const uint8_t *idx, int w)
 {
     uint32_t *nz = ctx;
@@ -8411,7 +8496,7 @@ static esp_err_t net_start_httpd(void)
      * from the ceiling, so the next door raises it. radar-plan R0's /api/v1/debug/map_bench
      * makes 56, and the ceiling moves to 64 for the places and maps doors that follow.
      * radar-plan R1's /api/v1/places GET and POST make 58; R3's /api/v1/places/maps 59, and
-     * its bench doors map_view and png_bench 61. */
+     * its bench doors map_view and png_bench 61; R3c's /api/v1/debug/live 62. */
     cfg.max_uri_handlers  = 64;
     /* 8192, not the 4096 HTTPD_DEFAULT_CONFIG() ships (esp_http_server.h:57). The
      * theme routes put a FATFS file operation on this task: f_open/f_write walk the
@@ -8575,6 +8660,7 @@ static esp_err_t net_start_httpd(void)
         { .uri = "/api/v1/debug/dial", .method = HTTP_GET,  .handler = h_debug_dial },
         { .uri = "/api/v1/debug/map_bench", .method = HTTP_GET, .handler = h_debug_map_bench },
         { .uri = "/api/v1/debug/map_view", .method = HTTP_GET, .handler = h_debug_map_view },
+        { .uri = "/api/v1/debug/live", .method = HTTP_GET, .handler = h_debug_live },
         { .uri = "/api/v1/debug/png_bench", .method = HTTP_GET, .handler = h_debug_png_bench },
 #endif
         /* microSD + themes. /themes is the page; the routes under /api/v1/sd are its

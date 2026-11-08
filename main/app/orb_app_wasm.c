@@ -54,6 +54,7 @@
 #include "orb_places.h"         /* orb_places_gen, behind orb.places_gen */
 #include "orb_app_blob.h"       /* radar-plan §2.3: kept bodies */
 #include "orb_map.h"            /* radar-plan §2.4: the OS maps */
+#include "orb_map_raster.h"     /* ORB_MAP_W: a view's raster, drawn onto the live layer */
 #include "esp_timer.h"
 #include <setjmp.h>
 #include "esp_expression_with_stack.h"   /* the guest's own native stack, below */
@@ -1143,6 +1144,19 @@ m3ApiRawFunction(imp_blob_free)               /* void blob_free(u32 slot) */
     m3ApiSuccess();
 }
 
+/* radar-plan §2.9: the canvas handle that names the stage's live layer, for the app the
+ * stage is bound to (STAGE_ON, below); anyone else's draw onto it is refused. */
+#define ORB_CV_LIVE (-1)
+static bool stage_on(const wasm_slot_t *s);
+static bool live_tgt(const wasm_slot_t *s, orb_ui_tgt_t *t)
+{
+    uint16_t *px;
+    uint8_t *a;
+    if (!stage_on(s) || !stage_live_target(&px, &a)) return false;
+    *t = (orb_ui_tgt_t){ px, a, CLK_SCR_W, CLK_SCR_H, CLK_SCR_W };
+    return true;
+}
+
 /* i32 cv_png8(i32 cv, const orb_png_draw_t *d): d is slot, sx, sy, dx, dy, w, h, scale,
  * then a pointer to 256 ARGB words in the app's memory (36 B). */
 m3ApiRawFunction(imp_cv_png8)
@@ -1160,6 +1174,14 @@ m3ApiRawFunction(imp_cv_png8)
     uint32_t len = 0;
     const uint8_t *png = orb_blob_get(slot_index(s), (int)v[0], &len);
     if (!png) m3ApiReturn(ESP_ERR_NOT_FOUND);
+    if (h == ORB_CV_LIVE) {
+        orb_ui_tgt_t t;
+        if (!live_tgt(s, &t)) m3ApiReturn(ESP_ERR_INVALID_STATE);
+        const int32_t r = orb_ui_tgt_png8(&t, png, len, (int32_t)v[1], (int32_t)v[2], (int32_t)v[3],
+                                          (int32_t)v[4], (int32_t)v[5], (int32_t)v[6], (int32_t)v[7], pal);
+        stage_live_damage((int32_t)v[3], (int32_t)v[4], (int32_t)v[5], (int32_t)v[6]);
+        m3ApiReturn(r);
+    }
     m3ApiReturn(orb_ui_cv_png8(slot_index(s), h, png, len, (int32_t)v[1], (int32_t)v[2], (int32_t)v[3],
                                (int32_t)v[4], (int32_t)v[5], (int32_t)v[6], (int32_t)v[7], pal));
 }
@@ -1205,6 +1227,13 @@ m3ApiRawFunction(imp_map_draw)                /* i32 map_draw(i32 cv, i32 h, con
     if (!ras) m3ApiReturn(orb_map_ready(slot_index(s), h));
     uint32_t p[16];
     memcpy(p, pal, sizeof p);
+    if (cv == ORB_CV_LIVE) {
+        orb_ui_tgt_t t;
+        if (!live_tgt(s, &t)) m3ApiReturn(ORB_MAP_ABSENT);
+        orb_ui_tgt_roles(&t, ras, p, dx, dy);
+        stage_live_damage(dx, dy, ORB_MAP_W, ORB_MAP_W);
+        m3ApiReturn(ORB_MAP_READY);
+    }
     orb_ui_cv_roles(slot_index(s), cv, ras, p, dx, dy);
     m3ApiReturn(ORB_MAP_READY);
 }
@@ -1285,6 +1314,19 @@ m3ApiRawFunction(imp_net_cred)       /* i32 net_cred(const char *id): 1 when tha
  * nor pose another app's rows. */
 #define STAGE_ON(s) ((s)->stage && stage_bound((s)->app))
 #define STAGE_GATE(fail) if (!STAGE_ON(s)) m3ApiReturn(fail)
+static bool stage_on(const wasm_slot_t *s) { return STAGE_ON(s); }
+
+/* radar-plan §2.9: i32 stage_live(i32 order, u32 argb) — the live layer at a row's depth,
+ * filled; again at its depth, filled; order -1 frees it. */
+m3ApiRawFunction(imp_stage_live)
+{
+    m3ApiReturnType(int32_t);
+    CALLER();
+    m3ApiGetArg(int32_t, order);
+    m3ApiGetArg(uint32_t, argb);
+    STAGE_GATE(ESP_ERR_INVALID_STATE);
+    m3ApiReturn(stage_live_open(order, argb));
+}
 
 /* radar-plan §2.11: u32 stage_values(void *buf, u32 cap, u32 *ver) — the theme's values,
  * their layout the app's own. Answers the full length (0 = none or no theme bound). */
@@ -1601,6 +1643,7 @@ static const wasm_bind_t s_binds[] = {
     { "orb", "net_cred",      "i(i)",      imp_net_cred },
     { "orb", "stage_open",     "i(i)",      imp_stage_open },
     { "orb", "stage_values",   "i(iii)",    imp_stage_values },
+    { "orb", "stage_live",     "i(ii)",     imp_stage_live },
     { "orb", "stage_row",      "i(ii)",     imp_stage_row },
     { "orb", "stage_comp",     "i(ii)",     imp_stage_comp },
     { "orb", "stage_sound",    "i(ii)",     imp_stage_sound },

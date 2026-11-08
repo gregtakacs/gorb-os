@@ -61,6 +61,28 @@ int orb_png8_info(const uint8_t *png, size_t len, int *w, int *h)
     return ORB_PNG8_OK;
 }
 
+int orb_png8_plte(const uint8_t *png, size_t len, uint8_t value[256])
+{
+    hdr_t hd;
+    const int e = read_ihdr(png, len, &hd);
+    if (e) return e;
+    memset(value, 0, 256);
+    for (size_t off = 8; off + 12 <= len;) {
+        const uint32_t dlen = be32(png + off);
+        const uint8_t *type = png + off + 4;
+        if (dlen > len - off - 12) return ORB_PNG8_E_TRUNC;
+        if (!memcmp(type, "IDAT", 4) || !memcmp(type, "IEND", 4)) break;   /* PLTE comes first */
+        if (!memcmp(type, "PLTE", 4)) {
+            if (!chunk_ok(type, dlen)) return ORB_PNG8_E_CRC;
+            if (!dlen || dlen % 3 || dlen > 768) return ORB_PNG8_E_FORMAT;
+            for (uint32_t i = 0; i < dlen / 3; i++) value[i] = type[4 + 3 * i];
+            return (int)(dlen / 3);
+        }
+        off += 12 + (size_t)dlen;
+    }
+    return 0;
+}
+
 #define WIN TINFL_LZ_DICT_SIZE
 
 typedef struct {

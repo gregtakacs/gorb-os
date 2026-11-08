@@ -66,6 +66,15 @@ ORB_IMPORT("stage_open")     int32_t orb_stage_open(orb_stage_info_t *out);
  *  version (1-255). Copies up to cap bytes and answers the full length; 0 when the theme
  *  carries none, or no theme is bound (the app's own defaults then stand). */
 ORB_IMPORT("stage_values")   uint32_t orb_stage_values(void *buf, uint32_t cap, uint32_t *ver);
+/** The live layer (radar-plan §2.9, OS v1.2.22): one full-glass plane whose pixels are the
+ *  app's, stacked among the theme's rows at `order` (0-63, a row's depth; it goes above the
+ *  rows at that depth and under the glass). Draw into it with orb_cv_png8 and orb_map_draw
+ *  passing ORB_CV_LIVE; each draw repaints the box it covered. This call fills it with
+ *  argb (0xAARRGGBB; alpha 0 lets the rows under it show); called again at the same order it
+ *  only fills, at another it re-stacks; order -1 frees it. The order is a theme fact, so an
+ *  app reads it from its theme's values. Answers 0, or an error when no theme is bound. */
+ORB_IMPORT("stage_live")     int32_t orb_stage_live(int32_t order, uint32_t argb);
+#define ORB_CV_LIVE (-1)
 ORB_IMPORT("stage_row")      int32_t orb_stage_row(int32_t i, clk_row_t *out);
 ORB_IMPORT("stage_comp")     int32_t orb_stage_comp(int32_t i, clk_comp_t *out);
 ORB_IMPORT("stage_sound")    int32_t orb_stage_sound(int32_t i, clk_sound_t *out);

@@ -1,8 +1,8 @@
 /* An indexed-PNG reader (radar-plan.md §2.3): colour type 3 at bit depths 1, 2, 4 and 8,
  * non-interlaced, streamed through the S3 ROM's tinfl into a 32 KB window and handed out a
  * row at a time as 8-bit indices. No whole-image buffer: the radar's 512x512 frame costs
- * the scratch below, not 256 KB. The palette in the file is ignored; the caller colours
- * the indices with its own.
+ * the scratch below, not 256 KB. The caller colours the pixels with its own palette,
+ * through the file's (orb_png8_plte) when the indices are an encoder's choice.
  *
  * Plain C over miniz's tinfl API, so the host suite (tools/host_png8_test.py) compiles this
  * same file against a zlib stand-in. */
@@ -33,6 +33,13 @@ typedef int (*orb_png8_row_fn)(void *ctx, int y, const uint8_t *idx, int w);
 
 /* Read the header only: width and height of an indexed PNG the reader accepts. */
 int orb_png8_info(const uint8_t *png, size_t len, int *w, int *h);
+
+/* The file's palette as one value an index: each entry's first channel, which in a grey
+ * palette is the grey (LibreWXR's raw frames: index -> the pixel value, dBZ = value/2 - 32;
+ * the indices are the encoder's, not the values, and change from frame to frame).
+ * Indices past the palette read 0. Answers the entries (1-256), 0 when the file carries
+ * no PLTE, or an error. */
+int orb_png8_plte(const uint8_t *png, size_t len, uint8_t value[256]);
 
 /* Decode, calling row() for each row. Every chunk's CRC is checked before its data is used. */
 int orb_png8_decode(const uint8_t *png, size_t len, void *scratch, size_t scratch_len,

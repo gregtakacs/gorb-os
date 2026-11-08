@@ -1602,3 +1602,21 @@ Bronze, DFW at City, the loop playing, before → after: a full glass's live lay
 px in 125 ms → 220,800 px in 19 ms; the flush 160-220 ms → 87-99 ms a frame; the glass 3-8
 → 13-22 fps. What is left: the smoothed rain draw itself (55-95 ms at City) and the rest of
 the commit (the restore and the theme's rows, about 30 ms a full glass).
+
+### 6.20 A level file that will not fit is read as it is drawn (2026-11-08, Gold read-only, Bronze, OS v1.2.34)
+
+The owner: Gold, on the released v1.2.32, held "Loading map" at City for home. Gold's log:
+`0-328890_-971620-z10-f2.orbmap (-4)` every 3 s. The level file is 312 KB, read whole into
+one PSRAM block, and Gold had 919 KB free in pieces (six apps, flights among them): no block
+that size, even after the map service let the app's other files go. The renderer reads a
+file once, front to back, a byte at a time, so it need not hold it: `orb_map_render_src`
+reads through a 16 KB window from a source, refilled as the reader runs out, the CRC taken
+over each piece as it comes and checked at the end (a mismatch is BAD, the raster not
+shown). The map service keeps the whole-file cache when the block is there, and renders
+from the card in 32 KB-locked pieces when it is not. `host_map_raster_test.py`: windows of
+512 B to 64 KB draw the same raster, landmark names come whole across refills, a flipped
+byte and a short file are refused; 13 mutants.
+
+Bronze, a bench build that streamed every map: DFW's z10, the file Gold refused, drew in
+1,857 ms streamed against about 1,000 ms cached, pixel for pixel the same picture. Gold
+was only read from this clone; it needs v1.2.34 to take the fix.

@@ -66,6 +66,22 @@ int orb_map_check(const uint8_t *buf, size_t len, int *zoom);
 int orb_map_render(const uint8_t *buf, size_t len, const orb_map_style_t *st,
                    uint8_t *raster, void *scratch, size_t scratch_len, orb_map_stats_t *stats);
 
+/** A file read in pieces: read(ctx, off, dst, n) answers the bytes read (n, or the call
+ *  failed). len is the file's length. */
+typedef struct {
+    int (*read)(void *ctx, uint32_t off, uint8_t *dst, uint32_t n);
+    void *ctx;
+    uint32_t len;
+} orb_map_src_t;
+
+/** The same draw from a source, through a window of win_len bytes (>= 512), with no file in
+ *  memory (radar-plan §6.20: a level file larger than PSRAM's largest block). hdr (36 B)
+ *  gets the header, for the caller's centre. The CRC is checked over the body as it streams:
+ *  ORB_MAP_E_CRC means the raster drawn is not to be shown. */
+int orb_map_render_src(const orb_map_src_t *src, uint8_t *hdr, uint8_t *win, size_t win_len,
+                       const orb_map_style_t *st, uint8_t *raster, void *scratch, size_t scratch_len,
+                       orb_map_stats_t *stats);
+
 /** One raster pixel's role. */
 static inline uint32_t orb_map_nib(int x, int y)   /* the pixel's nibble index */
 {

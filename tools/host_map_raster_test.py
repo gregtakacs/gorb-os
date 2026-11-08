@@ -45,7 +45,27 @@ def build_lib(mutation=None):
     lib.orb_map_check.argtypes = [ctypes.c_char_p, ctypes.c_size_t, ctypes.POINTER(ctypes.c_int)]
     lib.orb_map_render.argtypes = [ctypes.c_char_p, ctypes.c_size_t, ctypes.POINTER(Style), ctypes.c_char_p,
                                    ctypes.c_void_p, ctypes.c_size_t, ctypes.POINTER(Stats)]
+    lib.orb_map_render_src.argtypes = [ctypes.POINTER(Src), ctypes.c_char_p, ctypes.c_char_p, ctypes.c_size_t,
+                                       ctypes.POINTER(Style), ctypes.c_char_p, ctypes.c_void_p, ctypes.c_size_t,
+                                       ctypes.POINTER(Stats)]
     return lib
+
+# radar-plan §6.20: a file read in pieces (orb_map_src_t)
+READ = ctypes.CFUNCTYPE(ctypes.c_int, ctypes.c_void_p, ctypes.c_uint32, ctypes.c_void_p, ctypes.c_uint32)
+class Src(ctypes.Structure):
+    _fields_ = [("read", READ), ("ctx", ctypes.c_void_p), ("len", ctypes.c_uint32)]
+
+def render_src(lib, buf, st, win):
+    def rd(_ctx, off, dst, n):
+        if off + n > len(buf): return -1
+        ctypes.memmove(dst, buf[off:off + n], n)
+        return n
+    cb = READ(rd)
+    src = Src(cb, None, len(buf))
+    ras = ctypes.create_string_buffer(RASTER_B); stats = Stats()
+    hdr = ctypes.create_string_buffer(36); w = ctypes.create_string_buffer(win)
+    rc = lib.orb_map_render_src(ctypes.byref(src), hdr, w, win, ctypes.byref(st), ras, SCRATCH, len(SCRATCH), ctypes.byref(stats))
+    return rc, ras.raw, stats
 
 def style(scale=1.0, rot=0.0, dashes=None):
     s = Style(); s.scale = scale; s.rot_rad = rot; s.role_on = 0xFFFF; s.mark_on = 0x0B   # city, town, airport
@@ -74,6 +94,9 @@ def check(ok, what):
     if not ok: failures.append(what)
 
 MUTATIONS = [
+    ("if (keep) memmove(s->win, r->p, keep);", ";"),
+    ("    return ~s.crc == rd32(hdr + 32) ? ORB_MAP_OK : ORB_MAP_E_CRC;", "    return ORB_MAP_OK;"),
+    ("    while (refill(&tail)) tail.p = tail.end;", ""),
     ("if (crc32_z(buf + hl, blen) != rd32(buf + 32)) return ORB_MAP_E_CRC;", ";"),
     ("if (hl < HDR || hl > len || len - hl < blen) return ORB_MAP_E_TRUNC;\n    if (crc32_z", "if (crc32_z"),
     ("return (int32_t)(v >> 1) ^ -(int32_t)(v & 1);", "return (int32_t)(v >> 1);"),
@@ -122,6 +145,29 @@ def synthetic_checks(lib):
     check(role_at(rras, c, c - 101) == orbmap.LAND and role_at(rras, c, c - 100) == orbmap.LAKE and
           role_at(rras, c, c + 99) == orbmap.LAKE and role_at(rras, c, c + 100) == orbmap.LAND,
           "a fill's edge between pixel centres takes the rows whose centres it covers")
+    # §6.20: streamed through a small window, the same raster, and the CRC still bites
+    big_feats = [(orbmap.LAKE, orbmap.FILL, [sq(100), sq(40)])] + [
+        (orbmap.ROAD1 if i % 2 else orbmap.STATE, orbmap.LINE,
+         [[((-220 + j * 9) * U, (-200 + i * 13 + (j * j) % 7) * U) for j in range(48)]]) for i in range(30)]
+    marks = [(orbmap.MARK_CITY, 1, (-150 + 30 * i) * U, (120 - 20 * i) * U, "Place number %d with a long name" % i) for i in range(10)]
+    bbuf = orbmap.encode(0.0, 0.0, 8, big_feats, marks)
+    want = render(lib, bbuf, style(dashes={orbmap.STATE: 1}))[1]
+    same = all(render_src(lib, bbuf, style(dashes={orbmap.STATE: 1}), w)[:2] == (0, want) for w in (512, 700, 4096, 65536))
+    check(len(bbuf) > 2000 and same, "streamed through a 512 B to 64 KB window, a %d B file draws the same raster" % len(bbuf))
+    MARK = ctypes.CFUNCTYPE(None, ctypes.c_void_p, ctypes.c_uint8, ctypes.c_uint8, ctypes.c_float, ctypes.c_float,
+                            ctypes.c_void_p, ctypes.c_uint8)
+    def names_of(fn):
+        got = []
+        cb = MARK(lambda _c, k, r, x, y, nm, n: got.append(ctypes.string_at(nm, n).decode("utf-8", "replace")))
+        st = style(); st.mark = ctypes.cast(cb, ctypes.c_void_p)
+        fn(st)
+        return got
+    mem = names_of(lambda st: render(lib, bbuf, st))
+    streamed = names_of(lambda st: render_src(lib, bbuf, st, 512))
+    check(len(mem) == 10 and streamed == mem, "and its landmarks' names come whole across the window's refills")
+    bad = bytearray(bbuf); bad[len(bad) // 2] ^= 0x40
+    check(render_src(lib, bytes(bad), style(), 512)[0] == -3, "a streamed file with a flipped body byte answers the CRC's error")
+    check(render_src(lib, bbuf[:-30], style(), 512)[0] == -2, "a streamed file cut short is truncated")
     rc, ras, st, _ = render(lib, buf, style(rot=math.radians(45)))
     # Rotated 45 degrees the corners lie on the axis: the island's reaches 40*sqrt2 = 57 px,
     # the lake's 100*sqrt2 = 141 px (unrotated, both stop at 40 and 100).

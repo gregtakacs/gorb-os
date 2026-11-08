@@ -12,20 +12,20 @@
 static uint32_t rd32(const uint8_t *p) { return p[0] | p[1] << 8 | p[2] << 16 | (uint32_t)p[3] << 24; }
 
 /* zlib's CRC-32 a nibble at a time: a 64 B table in flash rather than 1 KB in RAM. */
-static uint32_t crc32_z(const uint8_t *p, size_t n)
+static uint32_t crc32_more(uint32_t c, const uint8_t *p, size_t n)   /* c: ~crc so far */
 {
     static const uint32_t T[16] = {
         0x00000000, 0x1DB71064, 0x3B6E20C8, 0x26D930AC, 0x76DC4190, 0x6B6B51F4, 0x4DB26158, 0x5005713C,
         0xEDB88320, 0xF00F9344, 0xD6D6A3E8, 0xCB61B38C, 0x9B64C2B0, 0x86D3D2D4, 0xA00AE278, 0xBDBDF21C,
     };
-    uint32_t c = 0xFFFFFFFFu;
     while (n--) {
         c ^= *p++;
         c = (c >> 4) ^ T[c & 15];
         c = (c >> 4) ^ T[c & 15];
     }
-    return ~c;
+    return c;
 }
+static uint32_t crc32_z(const uint8_t *p, size_t n) { return ~crc32_more(0xFFFFFFFFu, p, n); }
 
 int orb_map_check(const uint8_t *buf, size_t len, int *zoom)
 {
@@ -37,13 +37,38 @@ int orb_map_check(const uint8_t *buf, size_t len, int *zoom)
     return ORB_MAP_OK;
 }
 
-typedef struct { const uint8_t *p, *end; int bad; } rd_t;
+/* The body's reader: a buffer, or a window refilled from a source (orb_map_render_src),
+ * the CRC taken over each byte as it comes. */
+typedef struct {
+    const orb_map_src_t *src;
+    uint8_t *win;
+    size_t win_len;
+    uint32_t off, end, crc;       /* the next file offset to read, the body's end */
+} stream_t;
+typedef struct { const uint8_t *p, *end; int bad; stream_t *s; } rd_t;
+
+/* Keep what is left, read on behind it. 0 when the body is spent or the read failed. */
+static int refill(rd_t *r)
+{
+    stream_t *s = r->s;
+    if (!s || s->off >= s->end) return 0;
+    const size_t keep = (size_t)(r->end - r->p);
+    if (keep) memmove(s->win, r->p, keep);
+    uint32_t want = (uint32_t)(s->win_len - keep);
+    if (want > s->end - s->off) want = s->end - s->off;
+    if (!want || s->src->read(s->src->ctx, s->off, s->win + keep, want) != (int)want) return 0;
+    s->crc = crc32_more(s->crc, s->win + keep, want);
+    s->off += want;
+    r->p = s->win;
+    r->end = s->win + keep + want;
+    return 1;
+}
 
 static uint32_t rv(rd_t *r)
 {
     uint32_t v = 0;
     for (int s = 0; s < 35; s += 7) {
-        if (r->p >= r->end) { r->bad = 1; return 0; }
+        if (r->p >= r->end && !refill(r)) { r->bad = 1; return 0; }
         const uint8_t b = *r->p++;
         v |= (uint32_t)(b & 0x7F) << s;
         if (b < 0x80) return v;
@@ -52,7 +77,7 @@ static uint32_t rv(rd_t *r)
     return 0;
 }
 static int32_t rz(rd_t *r) { const uint32_t v = rv(r); return (int32_t)(v >> 1) ^ -(int32_t)(v & 1); }
-static uint8_t rb(rd_t *r) { if (r->p >= r->end) { r->bad = 1; return 0; } return *r->p++; }
+static uint8_t rb(rd_t *r) { if (r->p >= r->end && !refill(r)) { r->bad = 1; return 0; } return *r->p++; }
 
 /* ---- the raster ------------------------------------------------------------------ */
 
@@ -252,15 +277,43 @@ static void segment(pen_t *p, float fx0, float fy0, float fx1, float fy1)
 
 /* ---- the walk ---------------------------------------------------------------------- */
 
+static int render_body(rd_t r, uint32_t nf, uint32_t nm, const orb_map_style_t *st,
+                       uint8_t *raster, void *scratch, size_t scratch_len, orb_map_stats_t *stats);
+
 int orb_map_render(const uint8_t *buf, size_t len, const orb_map_style_t *st,
                    uint8_t *raster, void *scratch, size_t scratch_len, orb_map_stats_t *stats)
 {
-    orb_map_stats_t s;
-    memset(&s, 0, sizeof s);
     if (len < HDR || memcmp(buf, "ORBM", 4) || (buf[4] | buf[5] << 8) != ORB_MAP_FORMAT) return ORB_MAP_E_FORMAT;
     const uint32_t hl = buf[6] | buf[7] << 8, nf = rd32(buf + 20), nm = rd32(buf + 24), blen = rd32(buf + 28);
     if (hl < HDR || hl > len || len - hl < blen) return ORB_MAP_E_TRUNC;
-    rd_t r = { buf + hl, buf + hl + blen, 0 };
+    const rd_t r = { buf + hl, buf + hl + blen, 0, NULL };
+    return render_body(r, nf, nm, st, raster, scratch, scratch_len, stats);
+}
+
+int orb_map_render_src(const orb_map_src_t *src, uint8_t *hdr, uint8_t *win, size_t win_len,
+                       const orb_map_style_t *st, uint8_t *raster, void *scratch, size_t scratch_len,
+                       orb_map_stats_t *stats)
+{
+    if (!src || src->len < HDR || win_len < 512 || src->read(src->ctx, 0, hdr, HDR) != HDR) return ORB_MAP_E_TRUNC;
+    if (memcmp(hdr, "ORBM", 4) || (hdr[4] | hdr[5] << 8) != ORB_MAP_FORMAT) return ORB_MAP_E_FORMAT;
+    const uint32_t hl = hdr[6] | hdr[7] << 8, nf = rd32(hdr + 20), nm = rd32(hdr + 24), blen = rd32(hdr + 28);
+    if (hl < HDR || hl > src->len || src->len - hl < blen) return ORB_MAP_E_TRUNC;
+    stream_t s = { src, win, win_len, hl, hl + blen, 0xFFFFFFFFu };
+    rd_t r = { win, win, 0, &s };
+    const int rc = render_body(r, nf, nm, st, raster, scratch, scratch_len, stats);
+    if (rc != ORB_MAP_OK) return rc;
+    /* the CRC is over the whole body: what the records did not read is read for it */
+    rd_t tail = { win, win, 0, &s };
+    while (refill(&tail)) tail.p = tail.end;
+    if (s.off != s.end) return ORB_MAP_E_TRUNC;
+    return ~s.crc == rd32(hdr + 32) ? ORB_MAP_OK : ORB_MAP_E_CRC;
+}
+
+static int render_body(rd_t r, uint32_t nf, uint32_t nm, const orb_map_style_t *st,
+                       uint8_t *raster, void *scratch, size_t scratch_len, orb_map_stats_t *stats)
+{
+    orb_map_stats_t s;
+    memset(&s, 0, sizeof s);
 
     memset(raster, ORB_MAP_LAND | ORB_MAP_LAND << 4, ORB_MAP_RASTER_B);
     const float k = st->scale / (float)ORB_MAP_UNIT, cs = cosf(st->rot_rad), sn = sinf(st->rot_rad);
@@ -337,6 +390,7 @@ int orb_map_render(const uint8_t *buf, size_t len, const orb_map_style_t *st,
         const uint8_t rank = rb(&r);
         const int32_t x = rz(&r), y = rz(&r);
         const uint8_t n = rb(&r);
+        while ((size_t)(r.end - r.p) < n && refill(&r)) {}
         if ((size_t)(r.end - r.p) < n) { r.bad = 1; break; }
         const char *name = (const char *)r.p;
         r.p += n;

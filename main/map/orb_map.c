@@ -145,6 +145,22 @@ static int read_file(const char *full, uint8_t **buf_out, uint32_t *len_out)
     return ORB_MAP_OK;
 }
 
+/* A level file read in pieces from the card (§6.20), for orb_map_render_src: no PSRAM
+ * block as big as the file. Each piece takes the card lock alone, as read_file's do. */
+typedef struct { char full[112]; } cardsrc_t;
+static int card_read(void *ctx, uint32_t off, uint8_t *dst, uint32_t n)
+{
+    const cardsrc_t *c = ctx;
+    while (orb_sd_write_idle_ms() < WRITE_QUIET_MS) vTaskDelay(pdMS_TO_TICKS(50));
+    orb_sd_lock();
+    FILE *f = fopen(c->full, "rb");
+    const bool got = f && fseek(f, (long)off, SEEK_SET) == 0 && fread(dst, 1, n, f) == n;
+    if (f) fclose(f);
+    orb_sd_unlock();
+    return got ? (int)n : -1;
+}
+#define STREAM_WIN (16 * 1024)
+
 /* The app's least recently used level file, freed before a new one is read: three
  * levels are never wanted at once by one render, and PSRAM is too short to hold a
  * fourth beside them on a stormy day. */
@@ -235,13 +251,36 @@ static void render(int app_slot, int vi, uint32_t seq, void *scratch)
     uint32_t len;
     const int64_t t0 = esp_timer_get_time();
     const int r = file_for(app_slot, name, &buf, &len);
-    if (r != ORB_MAP_READY) {
+    /* No block as big as the file (Gold, 2026-11-08: 919 KB free, a 312 KB z10 refused at
+     * every try, "Loading map" for good): the render reads it from the card as it goes. */
+    const bool stream = r == ORB_MAP_NOMEM;
+    if (r != ORB_MAP_READY && !stream) {
         if (v->seq == seq) v->state = r;
         ESP_LOGW(TAG, "slot %d view %d: %s (%d)", app_slot, vi + 1, name, r);
         return;
     }
     if (!v->raster) v->raster = heap_caps_malloc(ORB_MAP_RASTER_B, MALLOC_CAP_SPIRAM);
     if (!v->raster) { v->state = ORB_MAP_NOMEM; return; }
+    uint8_t hdr[36];
+    cardsrc_t cs;
+    orb_map_src_t src = { card_read, &cs, 0 };
+    uint8_t *win = NULL;
+    if (stream) {
+        snprintf(cs.full, sizeof cs.full, ORB_SD_BASE ORB_MAP_DIR "/%s", name);
+        struct stat stt;
+        orb_sd_lock();
+        const bool there = stat(cs.full, &stt) == 0;
+        orb_sd_unlock();
+        win = there ? heap_caps_malloc(STREAM_WIN, MALLOC_CAP_SPIRAM) : NULL;
+        if (!win) { if (v->seq == seq) v->state = there ? ORB_MAP_NOMEM : ORB_MAP_ABSENT; return; }
+        src.len = (uint32_t)stt.st_size;
+        if (card_read(&cs, 0, hdr, sizeof hdr) != (int)sizeof hdr) {
+            heap_caps_free(win);
+            if (v->seq == seq) v->state = ORB_MAP_ABSENT;
+            return;
+        }
+        buf = hdr;
+    }
     v->c_lat_e6 = (int32_t)(buf[8] | buf[9] << 8 | buf[10] << 16 | (uint32_t)buf[11] << 24);
     v->c_lon_e6 = (int32_t)(buf[12] | buf[13] << 8 | buf[14] << 16 | (uint32_t)buf[15] << 24);
     v->rot = v->req.rot_cdeg / 100.0f * (float)M_PI / 180.0f;
@@ -252,13 +291,16 @@ static void render(int app_slot, int vi, uint32_t seq, void *scratch)
     memcpy(st.width, v->req.width, 16);
     memcpy(st.dash, v->req.dash, 16);
     orb_map_stats_t stats;
-    const int rr = orb_map_render(buf, len, &st, v->raster, scratch, SCRATCH_B, &stats);
+    const int rr = stream ? orb_map_render_src(&src, hdr, win, STREAM_WIN, &st, v->raster, scratch, SCRATCH_B, &stats)
+                          : orb_map_render(buf, len, &st, v->raster, scratch, SCRATCH_B, &stats);
+    heap_caps_free(win);
     s_last_ms = (uint32_t)((esp_timer_get_time() - t0) / 1000);
     s_renders++;
     if (v->seq != seq) return;                          /* re-opened meanwhile: that render wins */
     v->state = rr == ORB_MAP_OK ? ORB_MAP_READY : ORB_MAP_BAD;
-    ESP_LOGI(TAG, "slot %d view %d: %s at %.2fx, %lu ms, %lu marks%s", app_slot, vi + 1, name, v->scale,
-             (unsigned long)s_last_ms, (unsigned long)v->n_marks, stats.skipped ? ", a fill skipped" : "");
+    ESP_LOGI(TAG, "slot %d view %d: %s at %.2fx, %lu ms, %lu marks%s%s", app_slot, vi + 1, name, v->scale,
+             (unsigned long)s_last_ms, (unsigned long)v->n_marks, stats.skipped ? ", a fill skipped" : "",
+             stream ? ", streamed from the card" : "");
 }
 
 static void map_task(void *arg)

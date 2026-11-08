@@ -9,8 +9,8 @@
  *   - slot 0: the place's dot; slot 1: the time cursor, a dot on the rim the app turns
  *     (1.5 degrees a minute from Now at the top);
  *   - fonts 0 (ink), 1 (forecast: the ink's glyphs in the forecast colour), 2 (quiet),
- *     3 (the zoom's word, large);
- *   - the labels: 8 the time, 9 the place, 10 the range, 11 the status (on a backing),
+ *     3 (the zoom's word, large), 4 (the scale bar's length: words.scale);
+ *   - the labels: 8 the time, 9 the place, 10 the scale bar's length, 11 the status (on a backing),
  *     12..17 the landmarks' names, 18 the zoom while it changes (large, on a backing);
  *   - the values (layout 2, apps/radar/radar.h rd_values_t): the map's role palette,
  *     widths, dashes and what it draws, the names shown, the two live layers' depths, the
@@ -26,7 +26,7 @@
   var CHARSET = (function () { var c = []; for (var i = 0x20; i < 0x7F; i++) c.push(String.fromCharCode(i)); return c; })();
   var SLOT = { dot: 0, hand: 1, time: 8, place: 9, range: 10, status: 11, name0: 12, zoom: 18 };
   var N_NAMES = 6;
-  var VALUES_VER = 2;
+  var VALUES_VER = 3;
   // the map's roles by index (OS v1.2.26's FORMAT 2): road1 motorway and trunk, road2 primary,
   // road3 secondary, road4 tertiary
   var ROLES = ['water', 'land', 'urban', 'lake', 'river', 'road2', 'road1', 'state', 'border', 'coast', 'city', 'airport', 'runway',
@@ -42,7 +42,10 @@
       // 26 px: capitals 18 px tall, the floor for a 1.75 in glass read from 2 ft (weather-plan
       // §2.8; owner, 2026-11-08: the 18 and 14 px words were far too small)
       words: { face: 'IBM Plex Mono', px: 26, ink: '#d8f4ee', forecast: '#e0b040', quiet: '#9cc2bc', namePx: 26, nameFace: 'IBM Plex Sans',
-               zoomPx: 40, backing: 'rgba(4,10,14,0.78)' },   // the zoom's word while it changes, on a backing
+               zoomPx: 40, backing: 'rgba(4,10,14,0.78)',     // the zoom's word while it changes, on a backing
+               scale: { face: 'IBM Plex Sans', px: 26, colour: '#d8f4ee' } },   // the scale bar's length
+      // the scale bar (layout 3): ink and a dark edge, its thickness, end ticks, longest bar
+      scale: { ink: '#d8f4ee', edge: '#05090d', width: 2, tick: 9, max: 150 },
       dot: { colour: '#ffffff', ring: '#e0b040', r: 4.5 },   // white: the airports are amber
       map: {
         water: '#0a2233', land: '#101a22', urban: '#18242e', lake: '#0e2c40', river: '#1f5a80', road2: '#4a5966',
@@ -141,7 +144,7 @@
 
   /* ---- the values: rd_values_t, little-endian ---- */
   function valuesBytes(d) {
-    var b = new Uint8Array(64 + 16 + 16 + 4 + 4 + 1024 + 16), dv = new DataView(b.buffer), M = d.map, i;
+    var b = new Uint8Array(64 + 16 + 16 + 4 + 4 + 1024 + 16 + 16), dv = new DataView(b.buffer), M = d.map, i;
     ROLES.forEach(function (r, k) { dv.setUint32(4 * k, argb(M[r], 1), true); });
     ROLES.forEach(function (r, k) {
       b[64 + k] = Math.max(0, Math.min(4, (M.width && M.width[r]) | 0));
@@ -165,6 +168,12 @@
       dv.setUint32(104 + 4 * i, w, true);
     }
     ROLES.forEach(function (r, k) { b[1128 + k] = Math.max(0, Math.min(5, (M.from && M.from[r]) | 0)); });
+    var S = d.scale || {};                                 // layout 3: the scale bar
+    dv.setUint32(1144, argb(S.ink || '#d8f4ee', 1), true);
+    dv.setUint32(1148, S.edge ? argb(S.edge, 1) : 0, true);
+    b[1152] = Math.max(2, Math.min(8, S.width == null ? 2 : S.width | 0));
+    b[1153] = Math.max(0, Math.min(24, S.tick == null ? 9 : S.tick | 0));
+    b[1154] = Math.max(60, Math.min(200, S.max == null ? 150 : S.max | 0));
     return b;
   }
 
@@ -199,16 +208,17 @@
       plane(dotCanvas(d)), true, false);
     St.row({ n: St.id(), class: AUX, slot: SLOT.hand, x: CX - HAND_W / 2, y: 0, w: HAND_W, h: HAND_H, pivot_x: HAND_W / 2, pivot_y: CX,
       order: rowsOrder, alpha: 255, n_frames: 1 }, plane(handCanvas(d)), true, false);
+    var SW = W_scale(d.words);
     var W = d.words, F = [await font(W.face, W.px, W.ink), await font(W.face, W.px, W.forecast), await font(W.nameFace, W.namePx, W.quiet),
-      await font(W.face, W.zoomPx || 34, W.ink)];
-    var colours = [W.ink, W.forecast, W.quiet, W.ink];
+      await font(W.face, W.zoomPx || 34, W.ink), await font(SW.face, SW.px, SW.colour)];
+    var colours = [W.ink, W.forecast, W.quiet, W.ink, SW.colour];
     F.forEach(function (fo, fi) {
       St.font({ n: St.id(), class: TEXT, slot: fi, x: 0, y: 0, w: fo.w, h: fo.h, order: 0, pivot_x: Math.min(fo.space, fo.w), pivot_y: fo.track },
         fo.glyphs.map(plane), colours[fi]);
     });
     var tones = function (t) { return t.reduce(function (s, fn, k) { return s + (fn << (4 * k)); }, 0); };
     var L = [{ slot: SLOT.time, t: [0, 1, NONE, NONE], w: 200, f: 0 }, { slot: SLOT.place, t: [0, NONE, NONE, NONE], w: 320, f: 0 },
-             { slot: SLOT.range, t: [2, NONE, NONE, NONE], w: 200, f: 2 },
+             { slot: SLOT.range, t: [4, NONE, NONE, NONE], w: 200, f: 4 },
              { slot: SLOT.status, t: [2, NONE, NONE, NONE], w: 300, f: 2, backing: true, grow: 10 },
              { slot: SLOT.zoom, t: [3, NONE, NONE, NONE], w: 380, f: 3, backing: true, grow: 16 }];
     for (var k = 0; k < N_NAMES; k++) L.push({ slot: SLOT.name0 + k, t: [2, NONE, NONE, NONE], w: 240, f: 2 });
@@ -229,6 +239,9 @@
                           bakedS: o.bakedS != null ? o.bakedS : Math.floor(Date.now() / 1000) });
     return { bytes: out.bytes, meter: out.meter, est: out.est, rows: St.elements.length };
   }
+
+  // the scale's words: their own font (face, size, colour), the names' when a design has none
+  function W_scale(W) { return W.scale || { face: W.nameFace, px: W.namePx, colour: W.quiet }; }
 
   // the bake's serial is its content (weather-bake.js serialOf): FNV-1a, never 0 or 1
   function serialOf(d, doc) {

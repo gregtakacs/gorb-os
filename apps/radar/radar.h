@@ -95,8 +95,9 @@ void rd_range_text(char *buf, size_t cap, int32_t radius_m, int unit);
  * glass's 233 px. Answers its length in units; *px its width on the glass. */
 int rd_scale(int32_t radius_m, int unit, int max_px, int *px);
 
-/* ---- the theme's values (§2.11), layout version 2 ------------------------------------ */
-#define RD_VALUES_VER 2
+/* ---- the theme's values (§2.11), layout version 3 ------------------------------------ */
+#define RD_VALUES_VER 3
+#define RD_VALUES_V2_B 1144           /* a layout-2 theme: the scale keeps its defaults */
 typedef struct {
     uint32_t map_pal[16];         /* ARGB per map role (orb_map_view's roles) */
     uint8_t  width[16];           /* line width per role, 0-4 */
@@ -109,8 +110,19 @@ typedef struct {
     uint32_t rain[256];           /* ARGB per raw value; dBZ = value / 2 - 32 */
     uint8_t  step_from[16];       /* layout 2: the first zoom step a role is drawn at (0 = all):
                                    * the roads thin out as the view widens */
+    /* layout 3: the scale bar (owner, 2026-11-08: its words, colour and bar the theme's) */
+    uint32_t scale_ink;           /* ARGB: the bar and its end ticks */
+    uint32_t scale_edge;          /* ARGB: the dark edge around them; alpha 0 draws none */
+    uint8_t  scale_w;             /* the bar's thickness, 2-8 px */
+    uint8_t  scale_tick;          /* the end ticks' height above the bar, 0-24 px */
+    uint8_t  scale_max;           /* the longest bar, 60-200 px */
+    uint8_t  scale_pad[5];
 } rd_values_t;
-_Static_assert(sizeof(rd_values_t) == 64 + 16 + 16 + 4 + 4 + 1024 + 16, "the editor writes this layout");
+_Static_assert(sizeof(rd_values_t) == 64 + 16 + 16 + 4 + 4 + 1024 + 16 + 16, "the editor writes this layout");
+/* The lowest dBZ the owner's "Lightest rain shown" setting keeps (choice 0-3), and the
+ * value under which a frame's pixels are not drawn: value = (dBZ + 32) * 2. */
+static inline int rd_floor_dbz(int choice) { return choice <= 0 ? 10 : choice == 1 ? 15 : choice == 2 ? 20 : 25; }
+static inline int rd_floor_value(int choice) { return (rd_floor_dbz(choice) + 32) * 2; }
 /* The roles a view at `step` draws: the theme's, less those not yet shown at that step. */
 uint16_t rd_roles_at(const rd_values_t *v, int step);
 /* The defaults a theme without values (or of another layout) draws with. */

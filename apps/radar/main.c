@@ -69,10 +69,12 @@ static void load_places(void)
     s_places_gen = orb_places_gen();
 }
 
+static int s_floor;                /* "Lightest rain shown", 0-3 (rd_floor_dbz) */
 static void load_settings(void)
 {
-    int32_t z = 1;
+    int32_t z = 1, f = 0;
     if (orb_cfg_get("zoom", &z) == ORB_OK && z >= 0 && z < RD_ZOOMS) s_zoom = (int)z;
+    s_floor = orb_cfg_get("floor", &f) == ORB_OK && f >= 0 && f <= 3 ? (int)f : 0;
     char src[96] = "";
     if (orb_cfg_get_str("source", src, sizeof src) >= 0 && src[0]) {
         size_t n = strlen(src);
@@ -425,23 +427,38 @@ static void draw_map(void)
 
 /* The scale bar under its length (owner, 2026-11-08), on the rain's layer so no rain
  * covers it: ink on a dark edge, end ticks up. */
-#define SCALE_Y   440
-#define SCALE_MAX 150
+#define SCALE_Y   440               /* the bar's top */
+static void band(int x0, int x1, int y0, int y1, uint32_t argb)   /* rows y0..y1, the 2 px pen */
+{
+    if (!(argb >> 24)) return;
+    for (int y = y0; y <= y1; y += 2) orb_cv_line(ORB_CV_LIVE1, x0, y > y1 - 1 ? y1 - 1 : y, x1, y > y1 - 1 ? y1 - 1 : y, argb & 0xFFFFFF);
+}
 static void draw_scale(void)
 {
     const where_t *w = here();
     if (!w) return;
     int px;
-    (void)rd_scale(rd_radius_m(s_zoom, w->lat_e6), s_units.dist, SCALE_MAX, &px);
-    const int x0 = CX - px / 2, x1 = x0 + px;
-    for (int d = -2; d <= 3; d += 5) {                      /* the dark edge, above and below */
-        orb_cv_line(ORB_CV_LIVE1, x0 - 1, SCALE_Y + d, x1 + 1, SCALE_Y + d, 0x05090d);
+    (void)rd_scale(rd_radius_m(s_zoom, w->lat_e6), s_units.dist, V.scale_max, &px);
+    const int x0 = CX - px / 2, x1 = x0 + px, t = V.scale_tick, h = V.scale_w;
+    /* the edge a pixel round the bar and the ticks, then the ink over it */
+    band(x0 - 2, x1 + 1, SCALE_Y - 1, SCALE_Y + h, V.scale_edge);
+    if (t) {
+        band(x0 - 2, x0 + 1, SCALE_Y - t - 1, SCALE_Y, V.scale_edge);
+        band(x1 - 2, x1 + 1, SCALE_Y - t - 1, SCALE_Y, V.scale_edge);
     }
-    orb_cv_line(ORB_CV_LIVE1, x0 - 2, SCALE_Y - 10, x0 - 2, SCALE_Y + 3, 0x05090d);
-    orb_cv_line(ORB_CV_LIVE1, x1 + 1, SCALE_Y - 10, x1 + 1, SCALE_Y + 3, 0x05090d);
-    orb_cv_line(ORB_CV_LIVE1, x0, SCALE_Y, x1, SCALE_Y, 0xd8f4ee);
-    orb_cv_line(ORB_CV_LIVE1, x0, SCALE_Y - 9, x0, SCALE_Y, 0xd8f4ee);
-    orb_cv_line(ORB_CV_LIVE1, x1 - 1, SCALE_Y - 9, x1 - 1, SCALE_Y, 0xd8f4ee);
+    band(x0, x1 - 1, SCALE_Y, SCALE_Y + h - 1, V.scale_ink);
+    if (t) {
+        orb_cv_line(ORB_CV_LIVE1, x0, SCALE_Y - t, x0, SCALE_Y, V.scale_ink & 0xFFFFFF);
+        orb_cv_line(ORB_CV_LIVE1, x1 - 2, SCALE_Y - t, x1 - 2, SCALE_Y, V.scale_ink & 0xFFFFFF);
+    }
+}
+
+/* The theme's rain colours with the owner's floor: values under it draw nothing. */
+static uint32_t s_pal[256];
+static void pal_build(void)
+{
+    const int v0 = rd_floor_value(s_floor);
+    for (int i = 0; i < 256; i++) s_pal[i] = i < v0 ? 0 : V.rain[i];
 }
 
 static void draw_rain(void)
@@ -457,7 +474,7 @@ static void draw_rain(void)
     if (!f || f->slot < 0 || !orb_blob_len((uint32_t)f->slot)) { draw_scale(); return; }
     const int k = rd_img_k(s_zoom);
     orb_png_draw_t d = { .slot = (uint32_t)f->slot, .sx = s_sx, .sy = s_sy, .dx = s_dx, .dy = s_dy,
-                         .w = RD_GLASS, .h = RD_GLASS, .scale = k > 1 ? (k | ORB_PNG_SMOOTH) : 1, .pal = V.rain };
+                         .w = RD_GLASS, .h = RD_GLASS, .scale = k > 1 ? (k | ORB_PNG_SMOOTH) : 1, .pal = s_pal };
     const int32_t rc = orb_cv_png8(ORB_CV_LIVE1, &d);
     draw_scale();
     if (rc == ORB_OK) s_shown = i;
@@ -499,7 +516,7 @@ static void draw_ui(void)
     say(R_place, CX, 58, w ? w->name : "", 0);
     if (w) {                                              /* the scale bar's length */
         int px;
-        const int len = rd_scale(rd_radius_m(s_zoom, w->lat_e6), s_units.dist, SCALE_MAX, &px);
+        const int len = rd_scale(rd_radius_m(s_zoom, w->lat_e6), s_units.dist, V.scale_max, &px);
         snprintf(b, sizeof b, "%d %s", len, s_units.dist == 1 ? "mi" : s_units.dist == 2 ? "nm" : "km");
     } else b[0] = 0;
     say(R_range, CX, 414, b, 0);
@@ -523,8 +540,9 @@ static void draw_ui(void)
         say(R_zoom, CX, CY + 62, w->name, 0);
     } else if (R_zoom >= 0 && zooming && w) {
         char zb[40];
-        rd_range_text(b, sizeof b, rd_radius_m(zs, w->lat_e6), s_units.dist);
-        snprintf(zb, sizeof zb, "%s  %s", ZOOM[zs], b);
+        int px;                                         /* the scale bar's round length there */
+        const int len = rd_scale(rd_radius_m(zs, w->lat_e6), s_units.dist, V.scale_max, &px);
+        snprintf(zb, sizeof zb, "%s  %d %s", ZOOM[zs], len, s_units.dist == 1 ? "mi" : s_units.dist == 2 ? "nm" : "km");
         say(R_zoom, CX, CY + 62, zb, 0);
     } else {
         hide(R_zoom);
@@ -633,8 +651,15 @@ static void read_values(void)
     rd_values_t got;
     const uint32_t n = s_themed ? orb_stage_values(&got, sizeof got, &ver) : 0;
     if (n == sizeof got && ver == RD_VALUES_VER) memcpy(&V, &got, sizeof V);
+    else if (n == RD_VALUES_V2_B && ver == 2) memcpy(&V, &got, RD_VALUES_V2_B);   /* the scale's defaults stay */
     else if (n) orb_logf("radar: the theme's values are layout %u, %u B: the defaults draw", (unsigned)ver, (unsigned)n);
     if (V.names > N_NAMES) V.names = N_NAMES;
+    if (V.scale_w < 2) V.scale_w = 2;
+    if (V.scale_w > 8) V.scale_w = 8;
+    if (V.scale_tick > 24) V.scale_tick = 24;
+    if (V.scale_max < 60) V.scale_max = 60;
+    if (V.scale_max > 200) V.scale_max = 200;
+    pal_build();
 }
 
 /* The stage, read afresh: at a boot the theme may not be bound while the app builds, and
@@ -707,7 +732,9 @@ ORB_EXPORT("orb_service") void orb_service(void)
         const int z = s_zoom;
         char src[96];
         memcpy(src, s_source, sizeof src);
+        const int fl = s_floor;
         load_settings();
+        if (fl != s_floor) { pal_build(); s_rain_dirty = true; s_shown = -2; }
         if (strcmp(src, s_source)) { s_next_list_ms = 0; moved = true; }
         if (z != s_zoom && !s_visible) moved = true;   /* on the glass the push owns the zoom */
         else s_zoom = z;
@@ -726,10 +753,13 @@ ORB_EXPORT("orb_service") void orb_service(void)
     if (moved) place_changed();
     /* The scrub reaches back only as far as frames the loop can show: past ones given up
      * for room are no stop on the dial (owner: blank frames behind the loop's start). */
+    /* Held, not merely asked for: a zoom out drops the frames, and a reach kept from the
+     * zoom before let the dial back to -110 min before they came, or where they never
+     * would (owner, 2026-11-08). The reach grows as frames land. */
     int oldest = idx_newest();
-    while (oldest > 0 && !F[oldest - 1].failed) oldest--;
+    if (s_npast && F[oldest].slot >= 0) while (oldest > 0 && F[oldest - 1].slot >= 0) oldest--;
     int ahead = 0;
-    while (ahead < s_nnow && !F[s_npast + ahead].failed) ahead++;
+    while (ahead < s_nnow && F[s_npast + ahead].slot >= 0) ahead++;
     orb_dial_range(&s_dial, -(s_npast > 0 ? idx_newest() - oldest : 0), ahead);
     if (orb_dial_idle(&s_dial, up_ms()) || (!s_play && !s_dial.pos && up_ms() - s_dial.last_ms > ORB_DIAL_IDLE_MS)) {
         s_play = true;                                   /* §51: a glance plays the loop */

@@ -1540,3 +1540,22 @@ stops there (-70 min) on a frame with rain in it, not on a blank.
   reported "Cloudy", no rain in the hour, while over half of the DFW frame held 10-25 dBZ:
   light echoes (drizzle, virga, rain aloft) that do not reach a ground gauge. The theme's
   ramp starts at 10 dBZ; starting it at 15-20 dBZ, as many apps do, would hide them.
+
+### 6.17 The rain floor, a round pill, the scrub's reach, a themed scale (2026-11-08, Bronze, radar v1.2.0)
+
+- **"Lightest rain"** (owner: the low cutoff the owner's own choice): an app setting, All
+  echoes (10 dBZ, the default), Drizzle and up (15), Light rain and up (20), Steady rain only
+  (25). The theme's colours stand; the app draws through a copy with the values under the
+  floor cleared (`rd_floor_value`: (dBZ + 32) x 2). Bronze, DFW at City, -10 min: the light
+  echo over the whole glass at 10 dBZ, none at 20.
+- **The pill's number is round** (owner: "11 km ... useless"): it is the scale bar's length
+  at the zoom being chosen, so the pill and the bar agree ("City 10 mi").
+- **The scrub reaches only frames held** (owner: zoomed in with -110 min held, zoomed out,
+  and the dial went back to -110 where the new frames never came). The reach was frames not
+  given up, so frames merely asked for counted; it is now the frames held, contiguous back
+  from the newest, and it grows as they land.
+- **The scale is the theme's** (owner): values layout 3 adds its ink, edge (alpha 0 for
+  none), thickness 2-8 px, tick height 0-24 px and longest bar 60-200 px (16 B after layout
+  2's 1,144; a layout-2 theme keeps the defaults), and its words have their own font slot
+  4 (`words.scale`: face, size, colour). Radarscope bakes the look §6.16 shipped. The
+  editor's controls for them are R7's, with the rest of the radar's editor.

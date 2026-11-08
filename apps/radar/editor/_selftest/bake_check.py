@@ -34,7 +34,7 @@ STAGE = "/mnt/c/Temp/radar-bake-check"
 RUNTIME = os.path.join(ROOT, "tools", "orb-manager", "web", "runtime")
 EDITOR = os.path.dirname(HERE)
 APPV = open(os.path.join(EDITOR, "..", "version.txt")).read().strip()
-VALUES_B = 64 + 16 + 16 + 4 + 4 + 1024 + 16     # radar.h rd_values_t, layout 2
+VALUES_B = 64 + 16 + 16 + 4 + 4 + 1024 + 16 + 16    # radar.h rd_values_t, layout 3
 # The pool's room beside the shelf's other defaults (8 MB less those, the two table
 # sectors and 512 KB of slack), read off the shelf so it follows them.
 SHELF = os.path.join(ROOT, "tools", "orb-manager", "themes")
@@ -84,14 +84,14 @@ def check(name, raw, exe):
     if not h or int(h["x"]) + int(h["pivot_x"]) != 233 or int(h["y"]) + int(h["pivot_y"]) != 233:
         bad.append("the time cursor at 1 does not turn about the glass's centre")
     fonts = sorted(int(e["slot"]) for e in els if int(e["class"]) == ts.CLASS_TEXT)
-    if fonts != [0, 1, 2, 3]:
+    if fonts != [0, 1, 2, 3, 4]:                   # 4: the scale bar's length (layout 3)
         bad.append("fonts: %s" % fonts)
     labs = [s for s in range(8, 19) if s in aux and int(aux[s]["kind"]) == ts.SHAPE_TEXT]
     if labs != list(range(8, 19)):
         bad.append("labels at %s, not 8..18" % labs)
     vals = [e for e in els if int(e["class"]) == ts.CLASS_VALUES]
-    if len(vals) != 1 or int(vals[0]["src"]) != 2:
-        bad.append("no values of layout 2")
+    if len(vals) != 1 or int(vals[0]["src"]) != 3:
+        bad.append("no values of layout 3")
     else:
         b = sec["blob"]["sprites"][int(vals[0]["frame0"])]
         w = int(b["w"]) if b else None

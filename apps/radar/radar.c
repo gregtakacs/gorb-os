@@ -243,6 +243,11 @@ void rd_values_default(rd_values_t *v)
         while (k < n - 1 && dbz >= RAMP[k + 1].dbz) k++;
         v->rain[i] = RAMP[k].argb;
     }
+    v->scale_ink = 0xFFD8F4EE;
+    v->scale_edge = 0xFF05090D;
+    v->scale_w = 2;
+    v->scale_tick = 9;
+    v->scale_max = 150;
 }
 
 int rd_scale(int32_t radius_m, int unit, int max_px, int *px)

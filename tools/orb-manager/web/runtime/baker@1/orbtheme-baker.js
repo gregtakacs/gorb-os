@@ -2253,7 +2253,8 @@
   var ORB_LAYER_MAX3 = 32;                 // main/gfx/orb_layers.h ORB_LAYER_MAX: drawn rows per app (theme-text T3)
   // theme-text-plan §2.1-2.2 (theme_schema.FONT_* / check_label / check_fonts): a font is a
   // TEXT row of glyph frames; a label an AUX text row naming its fonts a nibble a tone.
-  var FONT_ASCII_N = 95, FONT_GLYPHS = 100, FONT_SLOTS = 15, FONT_NONE = 0xF, LABEL_PAD_MAX = 32;
+  // 129: ASCII, five symbols, §6.22's dotless i and 28 accent marks
+  var FONT_ASCII_N = 95, FONT_GLYPHS = 129, FONT_SLOTS = 15, FONT_NONE = 0xF, LABEL_PAD_MAX = 32;
   var TONES = ['normal', 'accent', 'warning', 'quiet'], ALIGNS = ['start', 'centre', 'end'];
   var LABEL_STILL_COLUMNS = ['span', 'zero', 'vmin', 'vmax', 'dx', 'dy', 'cadence', 'cad_arg', 'ease'];
   function labelFonts(str) { return [0, 1, 2, 3].map(function (k) { return ((str | 0) >> (4 * k)) & 0xF; }); }
@@ -5345,7 +5346,29 @@
     return { rows: rows, refuses: refuses };
   }
 
+
+  /* ---- radar-plan §6.22: the accented Latin letters, as a base and a mark --------------
+   * A font's charset goes on past the ASCII and the five symbols with a dotless i and the
+   * marks of tools/latin_marks.py (theme_schema.FONT_MARKS): each mark's cell is its carrier
+   * letter accented, less the carrier, drawn where the accented carrier's ink would be. The
+   * OS lays a mark over another base by their advances (main/stage/orb_latin.h). */
+  var FONT_MORE = ['\u0131', { acc: 'ó', car: 'o' }, { acc: 'ò', car: 'o' }, { acc: 'ô', car: 'o' }, { acc: 'õ', car: 'o' }, { acc: 'ö', car: 'o' }, { acc: 'å', car: 'a' }, { acc: 'č', car: 'c' }, { acc: 'ă', car: 'a' }, { acc: 'ō', car: 'o' }, { acc: 'ő', car: 'o' }, { acc: 'ż', car: 'z' }, { acc: 'ç', car: 'c' }, { acc: 'ą', car: 'a' }, { acc: 'ș', car: 's' }, { acc: 'Ó', car: 'O' }, { acc: 'Ò', car: 'O' }, { acc: 'Ô', car: 'O' }, { acc: 'Õ', car: 'O' }, { acc: 'Ö', car: 'O' }, { acc: 'Å', car: 'A' }, { acc: 'Č', car: 'C' }, { acc: 'Ă', car: 'A' }, { acc: 'Ō', car: 'O' }, { acc: 'Ő', car: 'O' }, { acc: 'Ż', car: 'Z' }, { acc: 'Ç', car: 'C' }, { acc: 'Ą', car: 'A' }, { acc: 'Ș', car: 'S' }];
+  // the text a charset entry measures by: a mark measures as its carrier, so its cell sits
+  // where the carrier's ink does
+  function glyphText(e) { return typeof e === 'string' ? e : e.car; }
+  // one charset entry onto x (font, fill and baseline set) at (x0, y0): a mark is its accented
+  // carrier with the carrier taken out
+  function drawGlyph(x, e, x0, y0) {
+    if (typeof e === 'string') { x.fillText(e, x0, y0); return; }
+    x.fillText(e.acc, x0, y0);
+    var op = x.globalCompositeOperation;
+    x.globalCompositeOperation = 'destination-out';
+    x.fillText(e.car, x0, y0);
+    x.globalCompositeOperation = op;
+  }
+
   root.GorbBake = {
+    FONT_MORE: FONT_MORE, glyphText: glyphText, drawGlyph: drawGlyph,
     SCREEN: SCREEN_W, KINDS: KINDS, SOURCES: SOURCES, COMP_KINDS: COMP_KINDS,
     THEME_FIELDS: THEME_FIELDS, SPRITE_FIELDS: SPRITE_FIELDS, GEOM_COUNTS: GEOM_COUNTS,
     HDR_WORDS: HDR_WORDS, NAME_MAX: NAME_MAX, SLOT_CAP: SLOT_CAP,

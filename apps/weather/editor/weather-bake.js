@@ -608,20 +608,31 @@
   // baseline (flights-bake.js font's rule). `caps` draws the lower case as capitals (the
   // title's small-caps look); `digits` sizes the cell to the figures, the minus and the
   // degree sign alone, which is all the large font is ever asked for, and clips the rest
+  // radar-plan §6.22: the charset a font bakes, the dotless i and the accent marks after
+  // the ASCII and the symbols (GorbBake.FONT_MORE: a mark measures as its carrier letter,
+  // its height the accented letter's, and is drawn by GorbBake.drawGlyph)
+  function fontSet() { return CHARSET.concat(root.GorbBake.FONT_MORE); }
+  function fontText(set) { return set.map(function (e) { return typeof e === 'string' ? e : e.acc + e.car; }).join(''); }
+  function boxOf(m, e) {
+    var t = m.measureText(typeof e === 'string' ? e : e.car), v = typeof e === 'string' ? t : m.measureText(e.acc);
+    return { l: Math.floor(-t.actualBoundingBoxLeft), r: Math.ceil(t.actualBoundingBoxRight),
+      t: Math.ceil(v.actualBoundingBoxAscent), b: Math.ceil(v.actualBoundingBoxDescent),
+      asc: t.fontBoundingBoxAscent, desc: t.fontBoundingBoxDescent };
+  }
   async function font(face, px, colour, o) {
     o = o || {};
-    var spec = px + 'px "' + face + '"';
-    await loadFace(face, px, CHARSET.join(''));
+    var spec = px + 'px "' + face + '"', CS = fontSet();
+    await loadFace(face, px, fontText(CS));
     var m = canvas(4, 4).getContext('2d');
     m.font = spec;
-    var drawn = function (ch) { return o.caps ? ch.toUpperCase() : ch; };
-    var top = 0, bottom = 0, w = 1, boxes = CHARSET.map(function (ch) {
-      var t = m.measureText(drawn(ch));
-      return { l: Math.floor(-t.actualBoundingBoxLeft), r: Math.ceil(t.actualBoundingBoxRight), t: Math.ceil(t.actualBoundingBoxAscent), b: Math.ceil(t.actualBoundingBoxDescent) };
-    });
+    var drawn = function (ch) {
+      if (!o.caps) return ch;
+      return typeof ch === 'string' ? ch.toUpperCase() : { acc: ch.acc.toUpperCase(), car: ch.car.toUpperCase() };
+    };
+    var top = 0, bottom = 0, w = 1, boxes = CS.map(function (ch) { return boxOf(m, drawn(ch)); });
     var sizer = o.digits ? function (ch) { return /[0-9\-°%: ]/.test(ch); } : function () { return true; };
     boxes.forEach(function (b, i) {
-      if (!sizer(CHARSET[i])) return;
+      if (typeof CS[i] !== 'string' || !sizer(CS[i])) return;
       if (b.r > b.l) { top = Math.max(top, b.t); bottom = Math.max(bottom, b.b); w = Math.max(w, b.r - b.l); }
     });
     if (!o.digits) { var fm = m.measureText('Hg'); top = Math.max(top, Math.ceil(fm.fontBoundingBoxAscent || 0)); bottom = Math.max(bottom, Math.ceil(fm.fontBoundingBoxDescent || 0)); }
@@ -630,10 +641,10 @@
     if (o.cell) { var spare = o.cell - (top + bottom); top += Math.floor(spare / 2); bottom = o.cell - top; }
     var h = top + bottom, glyphs = boxes.map(function (b, i) {
       // OS v1.2.17: a font keeps only the glyphs `o.keep` names (all when it names none)
-      if (o.keep && o.keep.indexOf(CHARSET[i]) < 0) return null;
+      if (o.keep && o.keep.indexOf(CS[i]) < 0) return null;
       var c = canvas(w, h), x = c.getContext('2d');
       x.font = spec; x.textBaseline = 'alphabetic'; x.fillStyle = colour;
-      if (b.r > b.l) x.fillText(drawn(CHARSET[i]), -b.l, top);
+      if (b.r > b.l) root.GorbBake.drawGlyph(x, drawn(CS[i]), -b.l, top);
       return c;
     });
     return { w: w, h: h, glyphs: glyphs, space: Math.max(1, Math.round(m.measureText(' ').width)), track: Math.max(0, o.track | 0) };

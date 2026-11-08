@@ -885,7 +885,12 @@ SHAPE_ARM, SHAPE_RING, SHAPE_TEXT, SHAPE_DRUM = 0, 1, 2, 3   # D43: drum, a barr
 # ink, measured by the OS. Fonts sit at slots 0..FONT_SLOTS-1.
 FONT_ASCII = tuple(chr(c) for c in range(0x20, 0x7F))
 FONT_EXTRAS = ("\u2191", "\u2193", "\u2192", "\u2190", "\u00b0")
-FONT_CHARSET = FONT_ASCII + FONT_EXTRAS
+# radar-plan §6.22 (OS v1.2.37): then a dotless i and the accent marks (tools/latin_marks.py),
+# each mark's cell its carrier letter accented, less the carrier; the OS draws an accented
+# letter as its base and its mark
+import latin_marks as _latin
+FONT_MARKS = (_latin.DOTLESS,) + _latin.GLYPHS
+FONT_CHARSET = FONT_ASCII + FONT_EXTRAS + FONT_MARKS
 FONT_SLOTS = 15
 # §2.2: a LABEL is an AUX row of shape text and source text. Its one frame is its panel;
 # `str` names its fonts by tone, a nibble each, tone 0 lowest, FONT_NONE for a tone the

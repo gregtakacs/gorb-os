@@ -46,6 +46,16 @@ void orb_font_measure(orb_font_t *f);
  *  the font does not carry is '?'. Advances *p past the character. */
 int orb_glyph_next(const char **p, uint16_t n);
 
+/** The next letter of a UTF-8 string between r->p and stop (radar-plan §6.22): its glyph in
+ *  f (as orb_font_glyph answers: '?', or -1 to advance a space) and its accent mark's glyph,
+ *  or -1 for none or a font without it. An accented Latin letter is its base and its mark;
+ *  a letter with no mark of these (ß, ø, ł) its nearest plain letters. False at the stop. */
+typedef struct { const char *p; uint8_t pend; } orb_glyph_rd_t;
+bool orb_glyph_read(orb_glyph_rd_t *r, const char *stop, const orb_font_t *f, int *gi, int *mark);
+
+/** Where a mark glyph sits over base glyph gi: its x from the base's pen. */
+int orb_mark_dx(const orb_font_t *f, int gi, int mark);
+
 /** Draw `text` into `plane` (w x h, RGB565A8): `panel` first (the same shape; NULL for a
  *  clear plane), then the string in `f`, lines split at '\n', each glyph over what is
  *  there in straight alpha, clipped to the box inset by `pad`. `halign` places each line

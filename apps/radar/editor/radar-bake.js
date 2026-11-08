@@ -23,7 +23,7 @@
   'use strict';
 
   var SCHEMA = 1, G = 466, CX = 233, NONE = 0xF;
-  var CHARSET = (function () { var c = []; for (var i = 0x20; i < 0x7F; i++) c.push(String.fromCharCode(i)); return c; })();
+  var CHARSET = (function () { var c = []; for (var i = 0x20; i < 0x7F; i++) c.push(String.fromCharCode(i)); return c.concat(['↑', '↓', '→', '←', '°']); })();
   var SLOT = { dot: 0, hand: 1, time: 8, place: 9, range: 10, status: 11, name0: 12, zoom: 18 };
   var N_NAMES = 6;
   var VALUES_VER = 4;
@@ -77,8 +77,8 @@
   function hex(c) { return [parseInt(c.slice(1, 3), 16), parseInt(c.slice(3, 5), 16), parseInt(c.slice(5, 7), 16)]; }
   function argb(c, a) { var h = hex(c); return ((Math.round((a === undefined ? 1 : a) * 255) << 24) | (h[0] << 16) | (h[1] << 8) | h[2]) >>> 0; }
   function rgba(c, a) { var h = hex(c); return 'rgba(' + h[0] + ',' + h[1] + ',' + h[2] + ',' + a + ')'; }
-  async function loadFace(face, px) {
-    try { await document.fonts.load(px + 'px "' + face + '"', 'N0123456789'); } catch (e) { /* the fallback face draws */ }
+  async function loadFace(face, px, text) {
+    try { await document.fonts.load(px + 'px "' + face + '"', text || 'N0123456789'); } catch (e) { /* the fallback face draws */ }
   }
 
   function plateCanvas(d) {
@@ -122,15 +122,26 @@
 
   // one font: every printable ASCII glyph in one cell, its ink from the cell's left edge on
   // a shared baseline (the weather and flights bakes' rule)
-  async function font(face, px, colour) {
-    var spec = px + 'px "' + face + '"';
-    await loadFace(face, px);
+  // radar-plan §6.22: the charset a font bakes, the dotless i and the accent marks after
+  // the ASCII and the symbols (GorbBake.FONT_MORE: a mark measures as its carrier letter,
+  // its height the accented letter's, and is drawn by GorbBake.drawGlyph)
+  function fontSet() { return CHARSET.concat(root.GorbBake.FONT_MORE); }
+  function fontText(set) { return set.map(function (e) { return typeof e === 'string' ? e : e.acc + e.car; }).join(''); }
+  function boxOf(m, e) {
+    var t = m.measureText(typeof e === 'string' ? e : e.car), v = typeof e === 'string' ? t : m.measureText(e.acc);
+    return { l: Math.floor(-t.actualBoundingBoxLeft), r: Math.ceil(t.actualBoundingBoxRight),
+      t: Math.ceil(v.actualBoundingBoxAscent), b: Math.ceil(v.actualBoundingBoxDescent),
+      asc: t.fontBoundingBoxAscent, desc: t.fontBoundingBoxDescent };
+  }
+  // `plain`: a font that never draws a name (the time, the zoom's word, the scale's length)
+  // keeps to the ASCII and the symbols: the marks' cells, and the taller cell the accented
+  // capitals want, go where names are drawn
+  async function font(face, px, colour, plain) {
+    var spec = px + 'px "' + face + '"', CS = plain ? CHARSET : fontSet();
+    await loadFace(face, px, fontText(CS));
     var m = canvas(4, 4).getContext('2d');
     m.font = spec;
-    var top = 0, bottom = 0, w = 1, boxes = CHARSET.map(function (ch) {
-      var t = m.measureText(ch);
-      return { l: Math.floor(-t.actualBoundingBoxLeft), r: Math.ceil(t.actualBoundingBoxRight), t: Math.ceil(t.actualBoundingBoxAscent), b: Math.ceil(t.actualBoundingBoxDescent) };
-    });
+    var top = 0, bottom = 0, w = 1, boxes = CS.map(function (ch) { return boxOf(m, ch); });
     boxes.forEach(function (b) { if (b.r > b.l) { top = Math.max(top, b.t); bottom = Math.max(bottom, b.b); w = Math.max(w, b.r - b.l); } });
     var fm = m.measureText('Hg');
     top = Math.max(top, Math.ceil(fm.fontBoundingBoxAscent || 0)) + 1;
@@ -138,7 +149,7 @@
     var h = top + bottom, glyphs = boxes.map(function (b, i) {
       var c = canvas(w, h), x = c.getContext('2d');
       x.font = spec; x.textBaseline = 'alphabetic'; x.fillStyle = colour;
-      if (b.r > b.l) x.fillText(CHARSET[i], -b.l, top);
+      if (b.r > b.l) root.GorbBake.drawGlyph(x, CS[i], -b.l, top);
       return c;
     });
     return { w: w, h: h, glyphs: glyphs, space: Math.max(1, Math.round(m.measureText(' ').width)), track: 1 };
@@ -216,8 +227,8 @@
     St.row({ n: St.id(), class: AUX, slot: SLOT.hand, x: CX - HAND_W / 2, y: 0, w: HAND_W, h: HAND_H, pivot_x: HAND_W / 2, pivot_y: CX,
       order: rowsOrder, alpha: 255, n_frames: 1 }, plane(handCanvas(d)), true, false);
     var SW = W_scale(d.words);
-    var W = d.words, F = [await font(W.face, W.px, W.ink), await font(W.face, W.px, W.forecast), await font(W.nameFace, W.namePx, W.quiet),
-      await font(W.face, W.zoomPx || 34, W.ink), await font(SW.face, SW.px, SW.colour)];
+    var W = d.words, F = [await font(W.face, W.px, W.ink), await font(W.face, W.px, W.forecast, true), await font(W.nameFace, W.namePx, W.quiet),
+      await font(W.face, W.zoomPx || 34, W.ink, true), await font(SW.face, SW.px, SW.colour, true)];
     var colours = [W.ink, W.forecast, W.quiet, W.ink, SW.colour];
     F.forEach(function (fo, fi) {
       St.font({ n: St.id(), class: TEXT, slot: fi, x: 0, y: 0, w: fo.w, h: fo.h, order: 0, pivot_x: Math.min(fo.space, fo.w), pivot_y: fo.track },

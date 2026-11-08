@@ -1651,3 +1651,37 @@ megabytes with the screen.
 
 Gold (read only): v1.2.32's radar refused its rain layer at 733 KB free, so it drew names
 and no map. Its v1.2.36 status will say what its six apps hold.
+
+### 6.22 Names in their own letters (2026-11-08, Bronze, OS v1.2.37; weather v1.5.1, flights v1.4.2, radar v1.2.1)
+
+The owner: Győr and Tatabánya could not be drawn; the fonts carried printable ASCII and five
+symbols. Baking every accented Latin letter would cost ~220 glyphs a font. Instead a font
+now carries a dotless i and fourteen accent marks, each in a lower and an upper case form
+(129 glyphs, `CLK_FONT_GLYPHS`), and the OS draws an accented letter as its base and its
+mark:
+
+- **The list** is `tools/latin_marks.py`: the marks (acute, grave, circumflex, tilde,
+  diaeresis, ring, caron, breve, macron, double acute, dot above, cedilla, ogonek, comma
+  below), each with its carrier letter, and the letters with no such mark spelled plain
+  (ß is "ss", ø "o", ł "l"). `tools/make_latin_table.py` writes `main/stage/orb_latin.h`
+  (193 letters of Latin-1, Latin Extended-A and the Romanian comma letters);
+  `theme_schema.FONT_CHARSET` and the bakers' `GorbBake.FONT_MORE` take it too, and
+  `host_label_test.py` fails when the three part.
+- **A mark's cell** is its carrier accented, less the carrier (`GorbBake.drawGlyph`:
+  `destination-out`), at the carrier's ink; its height the accented letter's, so a capital's
+  accent has room. The OS lays it over another base by their advances' difference, centred,
+  flush right for the ogonek; an i under a mark above is the dotless i. A font from before
+  draws the plain letter, not '?'.
+- **Fonts that show names carry them**: the weather's and flights' fonts, the radar's place
+  and landmark fonts; the radar's time, zoom and scale fonts stay plain. Radarscope grew
+  1.66 → 1.91 MB, Scope 1.28 → 1.31 MB. The themes' fonts are 129 glyphs, which an earlier
+  reader refuses, so the three apps need v1.2.37.
+- **Place and home names may be UTF-8** (`orb_places.c`, `orb_home.c`: well-formed UTF-8,
+  still no control character, quote or backslash), and the hub trims names to the orb's
+  bytes, not characters (`fitUtf8`). Landmark names already came as OSM's `name:latin`.
+
+`host_label_test.py`: ő and ű take the double acute, ű centred by the advances, ą's ogonek
+flush right, í the dotless i, an older font the plain i, ß "ss", the mark drawn; 24 mutants.
+`host_places_test.py`: Győr, Tatabánya and Zürich accepted, broken UTF-8 refused; 9 mutants.
+Bronze: a place named "Zürich Győr" drew whole on the radar; the owner saw München right on
+the map.

@@ -290,8 +290,10 @@ func TestThemeStepIsPerApp(t *testing.T) {
 // reader accepts, and the OS renders their settings from it. The clock needs v1.2.20: it plays
 // its ticks and chimes at the owner's two levels through stage_snd_play_v (§59). The weather
 // needs v1.2.30: it reads the orb's places (orb_place, radar-plan §2.1), merged in that release.
+// Weather and flights need v1.2.37: their themes' fonts carry the accent marks (radar-plan
+// §6.22), 129 glyphs, which an earlier reader refuses.
 func TestShelfAppsCarryTheirOSFloor(t *testing.T) {
-	for slug, want := range map[string]string{"flights": "v1.2.20", "weather": "v1.2.30", "clock": "v1.2.20"} {
+	for slug, want := range map[string]string{"flights": "v1.2.37", "weather": "v1.2.37", "clock": "v1.2.20"} {
 		body, err := os.ReadFile(filepath.Join("apps", slug+".orbapp"))
 		if err != nil {
 			t.Fatalf("%s: %v", slug, err)

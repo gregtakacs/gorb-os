@@ -15,6 +15,6 @@
      "help": "Radar: LibreWXR (CC BY 4.0) from national radar services, NOAA and ECMWF via Open-Meteo. Empty uses the public server, https://api.librewxr.net; a server you run yourself takes its address here."}
   ],
   "shelf": true,
-  "os_min": "v1.2.33",
+  "os_min": "v1.2.37",
   "editor": "editor"
 }

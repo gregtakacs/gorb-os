@@ -8,6 +8,6 @@
     {"id": "force", "type": "int", "label": "Forced weather", "min": -1, "max": 9, "default": -1, "show": "none"}
   ],
   "shelf": true,
-  "os_min": "v1.2.30",
+  "os_min": "v1.2.37",
   "editor": "editor"
 }

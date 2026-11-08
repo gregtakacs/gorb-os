@@ -23,6 +23,7 @@ HARNESS = r"""
 #include <stdlib.h>
 #include <string.h>
 #include "orb_label.h"
+#include "orb_latin.h"
 
 #define CW 6
 #define CH 8
@@ -195,6 +196,41 @@ int main(void)
         CK(alp(keep[2] % 5, 1) == 255 && alp(keep[2] % 5 + 1, 1) == 0, "sparse: the '?' from its third cell");
     }
 
+    { /* radar-plan §6.22: an accented letter is its base and its mark */
+      orb_font_t a; font(&a, CLK_FONT_GLYPHS); orb_font_measure(&a);
+      int g, m; orb_glyph_rd_t r;
+      const char *t = "\xc5\x91";                                     /* o double acute */
+      r = (orb_glyph_rd_t){ t, 0 };
+      CK(orb_glyph_read(&r, t + 2, &a, &g, &m) && g == 'o' - 0x20 && m == ORB_MARK0 + 9 && !orb_glyph_read(&r, t + 2, &a, &g, &m),
+         "an o with a double acute is o and the double acute's mark, one letter");
+      t = "\xc5\xb1";                                                 /* u double acute */
+      r = (orb_glyph_rd_t){ t, 0 };
+      CK(orb_glyph_read(&r, t + 2, &a, &g, &m) && g == 'u' - 0x20 && m == ORB_MARK0 + 9 &&
+         orb_mark_dx(&a, g, m) == (a.adv['u' - 0x20] - a.adv['o' - 0x20]) / 2,
+         "over a u the mark is centred by the advances' difference from its carrier o");
+      t = "\xc4\x85";                                                 /* a ogonek */
+      r = (orb_glyph_rd_t){ t, 0 };
+      CK(orb_glyph_read(&r, t + 2, &a, &g, &m) && m == ORB_MARK0 + 12 && orb_mark_dx(&a, 'e' - 0x20, m) == a.adv['e' - 0x20] - a.adv['a' - 0x20],
+         "an ogonek hangs flush right: over e by the whole difference");
+      t = "\xc3\xad";                                                 /* i acute */
+      r = (orb_glyph_rd_t){ t, 0 };
+      CK(orb_glyph_read(&r, t + 2, &a, &g, &m) && g == ORB_DOTLESS_I && m == ORB_MARK0,
+         "an i with an acute is the dotless i: the accent takes the dot's place");
+      orb_font_t old; font(&old, 100); orb_font_measure(&old);
+      r = (orb_glyph_rd_t){ t, 0 };
+      CK(orb_glyph_read(&r, t + 2, &old, &g, &m) && g == 'i' - 0x20 && m == -1,
+         "a font from before the marks draws the plain i, not '?'");
+      t = "Stra\xc3\x9f" "e";                                         /* Strasse */
+      r = (orb_glyph_rd_t){ t, 0 };
+      int got[8], ng = 0;
+      while (ng < 8 && orb_glyph_read(&r, t + strlen(t), &a, &g, &m)) got[ng++] = g;
+      CK(ng == 7 && got[4] == 's' - 0x20 && got[5] == 's' - 0x20 && got[6] == 'e' - 0x20, "a sharp s is s s, and the word goes on");
+      orb_label_compose(plane, PW, PH, NULL, &a, "\xc5\x91", 0, 0, 0);
+      int markink = 0;
+      for (int y = 0; y < PH; y++) for (int x = 0; x < PW; x++) markink += alp(x, y) && col(x, y) == 0x0800 + ORB_MARK0 + 9;
+      CK(markink > 0, "and the label draws the mark over its base");
+    }
+
     printf("%d checks, %d failures\n", checks, fails);
     return fails ? 1 : 0;
 }
@@ -203,7 +239,12 @@ int main(void)
 MUTANTS = (
     ("a sparse font's rank", "const uint32_t cell = f->sparse ? f->rank[gi] : (uint32_t)gi;", "const uint32_t cell = (uint32_t)gi;"),
     ("a lacking glyph's '?'", "return carries(f, '?' - 0x20) ? '?' - 0x20 : -1;", "return -1;"),
-    ("a lacking glyph's space", "if (gi < 0) { x += f->space; continue; }", "if (gi < 0) { continue; }"),
+    ("a lacking glyph's space", "if (g < 0) { x += f->space; continue; }", "if (g < 0) { continue; }"),
+    ("an accent's centring", "return ORB_MARK_RIGHT[mark - ORB_MARK0] ? d : d / 2;", "return ORB_MARK_RIGHT[mark - ORB_MARK0] ? d : 0;"),
+    ("the ogonek's right", "return ORB_MARK_RIGHT[mark - ORB_MARK0] ? d : d / 2;", "return d / 2;"),
+    ("ß's second s", "if (l->more != 255) r->pend = (uint8_t)(l->more + 1);", ";"),
+    ("the mark drawn", "if (m >= 0) blit(plane, w, h, f, m,", "if (0) blit(plane, w, h, f, m,"),
+    ("the dotless i's fallback", "if (b == ORB_DOTLESS_I && !carries(f, b)) b = 'i' - 0x20;", ";"),
     ("the advance's +1", "right + 1 + f->track", "right + f->track"),
     ("the space's advance", "right < 0 ? f->space :", "right < 0 ? 0 :"),
     ("the up arrow", "case 0x2191: gi = CLK_FONT_ASCII + 0;", "case 0x2191: gi = CLK_FONT_ASCII + 1;"),
@@ -241,7 +282,33 @@ def build_and_run(src_text):
     return r.returncode, r.stdout
 
 
+def one_list():
+    """§6.22: the C table, the schema and the bakers' GorbBake.FONT_MORE are one list."""
+    import re
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    import latin_marks, theme_schema, make_latin_table
+    ok = True
+    if open(make_latin_table.OUT).read() != make_latin_table.text():
+        print("FAIL orb_latin.h trails tools/latin_marks.py: run tools/make_latin_table.py"); ok = False
+    js = open(os.path.join(ROOT, "tools/orb-manager/web/runtime/baker@1/orbtheme-baker.js"), encoding="utf-8").read()
+    m = re.search(r"var FONT_MORE = \[(.*?)\];", js)
+    got = re.findall(r"'(\\u0131|[^']+)'(?=[,\]])|acc: '([^']+)', car: '([^']+)'", m.group(1)) if m else []
+    seq = []
+    for a, acc, car in got:
+        seq.append("\u0131" if a == "\\u0131" else a) if a else seq.append((acc, car))
+    want = [latin_marks.DOTLESS] + [(g, c) for g, c in zip(latin_marks.GLYPHS,
+            [x[1] for x in latin_marks.MARKS] + [x[2] for x in latin_marks.MARKS])]
+    if seq != want:
+        print("FAIL GorbBake.FONT_MORE is not tools/latin_marks.py's list"); ok = False
+    if tuple(theme_schema.FONT_CHARSET[100:]) != (latin_marks.DOTLESS,) + latin_marks.GLYPHS:
+        print("FAIL theme_schema.FONT_CHARSET's marks are not tools/latin_marks.py's"); ok = False
+    if ok: print("ok    the C table, the schema and the bakers' marks are one list")
+    return ok
+
+
 def main():
+    if not one_list():
+        return 1
     text = open(SRC).read()
     rc, out = build_and_run(text)
     if rc is None:

@@ -27,8 +27,10 @@ MUTATIONS = [
     ("if (i < 0 || i >= ORB_PLACES_N)", "if (i >= ORB_PLACES_N)"),
     ("if (!orb_geo_valid(lat_e6, lon_e6))", "if (0)"),
     ("strlen(name) >= ORB_GEO_PLACE_MAX", "strlen(name) > ORB_GEO_PLACE_MAX"),
-    ("*s == '\"' || *s == '\\\\'", "*s == '\"'"),
-    ("*s < 0x20 || *s > 0x7e ||", "*s < 0x20 ||"),
+    ("*u == '\"' || *u == '\\\\'", "*u == '\"'"),
+    ("if (*u < 0x20 || *u == 0x7f ||", "if (*u < 0x20 ||"),
+    ("for (int k = 1; k <= n; k++) if ((u[k] & 0xC0) != 0x80) return false;", ";"),
+    ("if (n < 0 || *u < 0xC2) return false;", "if (n < 0) return false;"),
     ("if (name && (!places_safe_text(name)", "if ((!places_safe_text(name)"),
 ]
 
@@ -69,10 +71,13 @@ int main(void)
     CK(!orb_places_check(0, 0, 0, n39) && orb_places_check(0, 0, 0, n40),
        "a 39-character name fits the 40-byte record, a 40-character one does not");
     CK(orb_places_check(0, 0, 0, "Say \"hi\"") && orb_places_check(0, 0, 0, "a\\b") &&
-       orb_places_check(0, 0, 0, "tab\there") && orb_places_check(0, 0, 0, "caf\xc3\xa9") &&
+       orb_places_check(0, 0, 0, "tab\there") && orb_places_check(0, 0, 0, "bad\xc3") &&
+       orb_places_check(0, 0, 0, "lone\xa9") && orb_places_check(0, 0, 0, "x\xc3" "Ay") && orb_places_check(0, 0, 0, "over\xc0\xaf") &&
        orb_places_check(0, 0, 0, "del\x7f"),
-       "a quote, a backslash, a control character, DEL or a non-ASCII byte would break the JSON echo");
+       "a quote, a backslash, a control character, DEL or broken UTF-8 would break the JSON echo");
     CK(!orb_places_check(0, 0, 0, "Fort Worth, TX (home-ish) 76102"), "ordinary punctuation is fine");
+    CK(!orb_places_check(0, 0, 0, "Gy\xc5\x91r") && !orb_places_check(0, 0, 0, "Tatab\xc3\xa1nya") &&
+       !orb_places_check(0, 0, 0, "Z\xc3\xbcrich"), "a name in its own letters is fine (radar-plan 6.22)");
     return fails ? 1 : 0;
 }
 """

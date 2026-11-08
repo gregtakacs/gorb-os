@@ -713,17 +713,23 @@
   }
   // one font: every CHARSET glyph in one cell, its ink from the cell's left edge on a shared
   // baseline (bake_theme.font's rule), in a colour or a top-to-bottom gradient
+  // radar-plan §6.22: the charset a font bakes, the dotless i and the accent marks after
+  // the ASCII and the symbols (GorbBake.FONT_MORE: a mark measures as its carrier letter,
+  // its height the accented letter's, and is drawn by GorbBake.drawGlyph)
+  function fontSet() { return CHARSET.concat(root.GorbBake.FONT_MORE); }
+  function fontText(set) { return set.map(function (e) { return typeof e === 'string' ? e : e.acc + e.car; }).join(''); }
+  function boxOf(m, e) {
+    var t = m.measureText(typeof e === 'string' ? e : e.car), v = typeof e === 'string' ? t : m.measureText(e.acc);
+    return { l: Math.floor(-t.actualBoundingBoxLeft), r: Math.ceil(t.actualBoundingBoxRight),
+      t: Math.ceil(v.actualBoundingBoxAscent), b: Math.ceil(v.actualBoundingBoxDescent),
+      asc: t.fontBoundingBoxAscent, desc: t.fontBoundingBoxDescent };
+  }
   async function font(face, px, colour, colour2) {
-    var spec = px + 'px "' + face + '"';
-    await loadFace(face, px, CHARSET.join(''));
+    var spec = px + 'px "' + face + '"', CS = fontSet();
+    await loadFace(face, px, fontText(CS));
     var m = canvas(4, 4).getContext('2d');
     m.font = spec;
-    var top = 0, bottom = 0, w = 1, boxes = CHARSET.map(function (ch) {
-      var t = m.measureText(ch);
-      return { l: Math.floor(-t.actualBoundingBoxLeft), r: Math.ceil(t.actualBoundingBoxRight),
-        t: Math.ceil(t.actualBoundingBoxAscent), b: Math.ceil(t.actualBoundingBoxDescent),
-        asc: t.fontBoundingBoxAscent, desc: t.fontBoundingBoxDescent };
-    });
+    var top = 0, bottom = 0, w = 1, boxes = CS.map(function (ch) { return boxOf(m, ch); });
     boxes.forEach(function (b) {
       if (b.r > b.l) { top = Math.max(top, b.t); bottom = Math.max(bottom, b.b); w = Math.max(w, b.r - b.l); }
       top = Math.max(top, Math.ceil(b.asc || 0)); bottom = Math.max(bottom, Math.ceil(b.desc || 0));
@@ -733,7 +739,7 @@
       x.font = spec; x.textBaseline = 'alphabetic';
       if (colour2) { var g = x.createLinearGradient(0, 0, 0, h); g.addColorStop(0, colour); g.addColorStop(1, colour2); x.fillStyle = g; }
       else x.fillStyle = colour;
-      if (b.r > b.l) x.fillText(CHARSET[i], -b.l, top);
+      if (b.r > b.l) root.GorbBake.drawGlyph(x, CS[i], -b.l, top);
       return c;
     });
     return { w: w, h: h, glyphs: glyphs, space: Math.max(1, Math.round(m.measureText(' ').width)), track: 1 };

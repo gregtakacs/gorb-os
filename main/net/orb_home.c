@@ -41,12 +41,22 @@ static StaticSemaphore_t s_mx_buf;
 static void lock(void)   { xSemaphoreTake(s_mx, portMAX_DELAY); }
 static void unlock(void) { xSemaphoreGive(s_mx); }
 
-/* Printable ASCII without the two characters that would end a JSON string:
- * every field is echoed by /api/v1/home with %s, the way the tz guard reasons. */
+/* UTF-8 whole, without control characters or the two that would end a JSON string (the
+ * text is echoed with %s); radar-plan §6.22: a place is named in its own letters. */
 static bool safe_text(const char *s)
 {
-    for (; *s; s++)
-        if (*s < 0x20 || *s > 0x7e || *s == '"' || *s == '\\') return false;
+    const unsigned char *u = (const unsigned char *)s;
+    while (*u) {
+        if (*u < 0x80) {
+            if (*u < 0x20 || *u == 0x7f || *u == '"' || *u == '\\') return false;
+            u++;
+            continue;
+        }
+        const int n = (*u & 0xE0) == 0xC0 ? 1 : (*u & 0xF0) == 0xE0 ? 2 : (*u & 0xF8) == 0xF0 ? 3 : -1;
+        if (n < 0 || *u < 0xC2) return false;           /* a stray continuation, an overlong lead */
+        for (int k = 1; k <= n; k++) if ((u[k] & 0xC0) != 0x80) return false;
+        u += n + 1;
+    }
     return true;
 }
 

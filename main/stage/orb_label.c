@@ -3,6 +3,8 @@
 
 #include <string.h>
 
+#include "orb_latin.h"
+
 static const uint8_t *glyph(const orb_font_t *f, int gi)
 {
     const uint32_t cell = f->sparse ? f->rank[gi] : (uint32_t)gi;
@@ -75,6 +77,52 @@ int orb_glyph_next(const char **p, uint16_t n)
     return gi < n ? gi : '?' - 0x20;
 }
 
+static const orb_latin_t *latin(uint32_t cp)
+{
+    int lo = 0, hi = (int)ORB_LATIN_N - 1;
+    while (lo <= hi) {
+        const int mid = (lo + hi) / 2;
+        if (ORB_LATIN[mid].cp == cp) return &ORB_LATIN[mid];
+        if (ORB_LATIN[mid].cp < cp) lo = mid + 1; else hi = mid - 1;
+    }
+    return NULL;
+}
+
+bool orb_glyph_read(orb_glyph_rd_t *r, const char *stop, const orb_font_t *f, int *gi, int *mark)
+{
+    *mark = -1;
+    if (r->pend) {                           /* the second plain letter of one (ß: s s) */
+        *gi = orb_font_glyph(f, r->pend - 1);
+        r->pend = 0;
+        return true;
+    }
+    if (r->p >= stop || !*r->p) return false;
+    const uint8_t *s = (const uint8_t *)r->p;
+    uint32_t cp = *s;
+    if (cp >= 0xC0 && cp < 0xE0 && s + 1 < (const uint8_t *)stop && (s[1] & 0xC0) == 0x80) {
+        const orb_latin_t *l = latin(((cp & 0x1Fu) << 6) | (s[1] & 0x3Fu));
+        if (l) {
+            r->p += 2;
+            int b = l->base;
+            if (b == ORB_DOTLESS_I && !carries(f, b)) b = 'i' - 0x20;   /* an older font */
+            *gi = orb_font_glyph(f, b);
+            if (l->mark >= 0 && carries(f, l->mark)) *mark = l->mark;
+            if (l->more != 255) r->pend = (uint8_t)(l->more + 1);
+            return true;
+        }
+    }
+    *gi = orb_font_glyph(f, orb_glyph_next(&r->p, f->n));
+    return true;
+}
+
+int orb_mark_dx(const orb_font_t *f, int gi, int mark)
+{
+    if (gi < 0 || mark < ORB_MARK0 || mark >= ORB_MARK0 + ORB_MARKS) return 0;
+    const int car = ORB_MARK_CARRIER[mark - ORB_MARK0];
+    const int d = (int)f->adv[gi] - (int)f->adv[car];
+    return ORB_MARK_RIGHT[mark - ORB_MARK0] ? d : d / 2;
+}
+
 /* One glyph cell over the plane at (gx, gy), clipped to [x0..x1] x [y0..y1]. Straight
  * alpha, the glyph over what is there: oa = a + da(1 - a), each colour weighted by its
  * share of oa. */
@@ -128,18 +176,16 @@ void orb_label_compose(uint8_t *plane, uint32_t w, uint32_t h, const uint8_t *pa
     for (const char *line = text; line; ) {
         const char *nl = strchr(line, '\n');
         const char *stop = nl ? nl : line + strlen(line);
-        int lw = 0;
-        for (const char *p = line; p < stop; ) {
-            const int g = orb_font_glyph(f, orb_glyph_next(&p, f->n));
+        int lw = 0, g, m;
+        for (orb_glyph_rd_t r = { line, 0 }; orb_glyph_read(&r, stop, f, &g, &m); )
             lw += g < 0 ? f->space : f->adv[g];
-        }
         int x = halign == 1 ? x0 + ((x1 - x0 + 1) - lw) / 2
               : halign == 2 ? x1 + 1 - lw : x0;
-        for (const char *p = line; p < stop && x <= x1; ) {
-            const int gi = orb_font_glyph(f, orb_glyph_next(&p, f->n));
-            if (gi < 0) { x += f->space; continue; }
-            blit(plane, w, h, f, gi, x, y, x0, y0, x1, y1);
-            x += f->adv[gi];
+        for (orb_glyph_rd_t r = { line, 0 }; x <= x1 && orb_glyph_read(&r, stop, f, &g, &m); ) {
+            if (g < 0) { x += f->space; continue; }
+            blit(plane, w, h, f, g, x, y, x0, y0, x1, y1);
+            if (m >= 0) blit(plane, w, h, f, m, x + orb_mark_dx(f, g, m), y, x0, y0, x1, y1);
+            x += f->adv[g];
         }
         y += f->h;
         line = nl ? nl + 1 : NULL;

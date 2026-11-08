@@ -102,7 +102,8 @@ enum {
  * AUX row of shape and source text, its fonts a nibble a tone in its `str`. */
 #define CLK_FONT_SLOTS    15   /* theme_schema.FONT_SLOTS */
 #define CLK_FONT_ASCII    95   /* len(theme_schema.FONT_ASCII): every font carries it */
-#define CLK_FONT_GLYPHS  100   /* len(theme_schema.FONT_CHARSET) */
+#define CLK_FONT_GLYPHS  129   /* len(theme_schema.FONT_CHARSET): ASCII, 5 symbols, a dotless i
+                                * and 28 accent marks (radar-plan §6.22, OS v1.2.37) */
 #define CLK_FONT_NONE    0xF   /* theme_schema.FONT_NONE: a tone that falls to tone 0 */
 #define CLK_LABEL_PAD_MAX 32   /* theme_schema.LABEL_PAD_MAX */
 

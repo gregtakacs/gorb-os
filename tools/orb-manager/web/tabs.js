@@ -506,7 +506,7 @@ async function homePropose(query, what, recentre, name) {
     if (ask !== homeAsk) return;   // a newer proposal won
     const p = d && d.proposal;
     if (!p) throw new Error("the orb sent no preview");
-    if (name) { p.place = name; p.named = true; }
+    if (name) { p.place = fitUtf8(String(name).replace(/["\\]/g, ""), 39); p.named = true; }
     homePend = p;
     await homePin(p.lat, p.lon, recentre);
     $("#home-pend").textContent = p.place + " · " + homeAt(p.lat, p.lon) + " · zone " +
@@ -660,12 +660,23 @@ function secretRow(app, id, help) {
     .catch((e) => { cur.textContent = "unreadable: " + e.message; });
   return box;
 }
+// A name cut to fit `max` bytes of UTF-8 without splitting a letter: the orb keeps bytes,
+// and Győr's ő is two of them (radar-plan §6.22: names in their own letters, OS v1.2.37)
+function fitUtf8(s, max) {
+  const enc = new TextEncoder();
+  let out = "";
+  for (const ch of String(s)) {
+    if (enc.encode(out + ch).length > max) break;
+    out += ch;
+  }
+  return out;
+}
 // a place setting's stored form: "Name|lat,lon", the name giving way to the coordinates
 const PLACE_MAX = 31;
 function placeValue(name, lat, lon) {
   const c = "|" + (+lat).toFixed(2) + "," + (+lon).toFixed(2);
   const nm = String(name || "").replace(/[|"\\]/g, "").trim() || "Place";
-  return nm.slice(0, Math.max(1, PLACE_MAX - c.length)) + c;
+  return fitUtf8(nm, Math.max(1, PLACE_MAX - c.length)) + c;
 }
 function placeParse(v) {
   const m = /^([^|]+)\|(-?\d+(?:\.\d+)?),(-?\d+(?:\.\d+)?)$/.exec(v || "");
@@ -832,7 +843,7 @@ function placeSearch(app, id, help, write, msg, encode) {
   return side;
 }
 // The OS's three places beside home (radar-plan §2.1): POST /api/v1/places with
-// {"i", "lat", "lon", "name"} or {"i", "clear": 1}. The orb keeps 39 characters of name
+// {"i", "lat", "lon", "name"} or {"i", "clear": 1}. The orb keeps 39 bytes of name (UTF-8)
 // on its own, so the row passes the searcher an encoder that keeps the name whole.
 const placesURL = () => "/orb/" + encodeURIComponent(current.ip) + "/api/v1/places";
 function placesLine(p) {
@@ -868,7 +879,7 @@ async function loadPlaces() {
         return false;
       }
     };
-    const encode = (nm, lat, lon) => ({ name: String(nm).replace(/["\\]/g, "").trim().slice(0, 39) || "Place",
+    const encode = (nm, lat, lon) => ({ name: fitUtf8(String(nm).replace(/["\\]/g, "").trim(), 39) || "Place",
                                         lat: +(+lat).toFixed(4), lon: +(+lon).toFixed(4) });
     row.appendChild(placeSearch({ title: "Place " + (p.i + 1), slug: "orb" }, "place" + p.i, { label: "Place " + (p.i + 1) },
                                 write, msg, encode));

@@ -377,3 +377,16 @@ button.upd:hover{border-color:#fff}
 button.small{padding:2px 8px;font-size:.85em}
 label.check.inline{display:inline-flex;gap:6px;align-items:center}
 .placesgrid{display:grid;gap:14px}
+/* radar-plan §2.4: the Maps rows on the Places card, one a place, the status in a fixed column */
+h4.sub{margin:16px 0 6px;font-size:.95em;color:var(--mut)}
+.mapsrows{display:flex;flex-direction:column;gap:4px}
+.maprow{display:grid;grid-template-columns:9em minmax(0,1fr) 10em;gap:10px;align-items:center;
+  border:1px solid var(--line);border-radius:6px;padding:6px 10px}
+.maprow .tag{justify-self:end;font-size:11px;padding:2px 7px;border-radius:5px;border:1px solid var(--line)}
+.maprow .tag.on{border-color:#6fbf73;color:#9adc9e}
+.mapsbar{display:flex;gap:10px;align-items:center;margin:8px 0}
+.mapsprev{display:flex;gap:14px;align-items:flex-start;flex-wrap:wrap;margin:8px 0}
+.mapsprev canvas{width:233px;height:233px;border-radius:50%;background:#000}
+.mapsprevctl{display:flex;flex-direction:column;gap:8px;max-width:22em}
+.mapsrc{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.mapsrc input{flex:1;min-width:16em}

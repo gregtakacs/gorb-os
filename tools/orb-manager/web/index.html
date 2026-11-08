@@ -267,6 +267,40 @@
          code or this browser's location proposes a point, its name stays editable, and
          Save stores it on the orb. A slot keeps its number when another is cleared. -->
     <div id="places" class="placesgrid"><div class="hint">the places load with this tab</div></div>
+    <!-- radar-plan §2.4 (R4): the OS maps. Home and each place get six levels of map on
+         the orb's card (/System/Maps), made here from OpenMapTiles vector tiles the hub
+         fetches as gorb-os (the Map tiles row). No map data ships with anything: this is
+         the tool, and it runs in this page. Apps draw the maps on the orb (the radar now,
+         flights later). Out of date — a place with no maps, or moved since — is amber,
+         with a badge on this tab. -->
+    <h4 class="sub">Maps</h4>
+    <div class="mapsrows" id="maps-rows"><div class="hint">the maps load with this tab</div></div>
+    <div class="mapsbar">
+      <button id="maps-make" type="button">Make maps</button>
+      <span class="hint" id="maps-msg"></span>
+    </div>
+    <div class="mapsprev">
+      <canvas id="maps-canvas" width="466" height="466" aria-label="map preview"></canvas>
+      <div class="mapsprevctl">
+        <label>Place <select id="maps-place"></select></label>
+        <label>Radius <select id="maps-radius">
+          <option value="15000">15 km</option><option value="30000">30 km</option>
+          <option value="60000" selected>60 km</option><option value="120000">120 km</option>
+          <option value="240000">240 km</option><option value="480000">480 km</option></select></label>
+        <button id="maps-preview" type="button">Preview</button>
+        <p class="hint" id="maps-prevmsg">What the orb draws at that radius, in a plain palette: the
+          app's theme picks the real colours.</p>
+      </div>
+    </div>
+    <div class="row mapsrc">
+      <label for="maps-src">Map tiles</label>
+      <input id="maps-src" type="url" spellcheck="false" autocomplete="off">
+      <button id="maps-src-save" type="button">Save</button>
+      <span class="hint" id="maps-srcmsg"></span>
+    </div>
+    <p class="hint">Map data &copy; OpenStreetMap contributors, through OpenMapTiles. The Map tiles
+      row takes any OpenMapTiles TileJSON; OpenFreeMap's planet is the default, and a planet you
+      host yourself works the same way. The hub fetches as gorb-os, at most four tiles at a time.</p>
   </article>
 
   <article class="card tabpane" data-tab="orb">

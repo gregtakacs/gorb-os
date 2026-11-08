@@ -1,6 +1,7 @@
 """The .orbmap container (radar-plan.md §2.4), FORMAT 1: one place's map at one whole
 Mercator zoom, as vectors in role order plus its landmarks. This is the reference
-writer and reader; the hub's JS writer (R4) must produce the same bytes, and the C
+writer and reader; the hub's JS writer (web/runtime/maps@1/orbmap.js) produces the same
+bytes (tools/host_orbmap_js_test.py), and the C
 reader (main/map/orb_map_raster.c) is held to it by tools/host_map_raster_test.py.
 
 R0 prototype: it builds a place's six files from OpenMapTiles vector tiles already on
@@ -157,10 +158,15 @@ def simplify(pts, tol, closed):
             keep[bi] = True; spans += [(i, bi), (bi, j)]
     return [p for p, k in zip(pts, keep) if k]
 
+def rnd(v):
+    """The one rounding rule both writers use, half up: Python's round() goes to even, the
+    hub's JS port cannot, and the bytes must agree (tools/host_orbmap_js_test.py)."""
+    return math.floor(v + 0.5)
+
 def quantise(pts):
     out = []
     for x, y in pts:
-        q = (int(round(x)), int(round(y)))
+        q = (rnd(x), rnd(y))
         if not out or out[-1] != q: out.append(q)
     return out
 
@@ -189,8 +195,8 @@ def encode(lat, lon, zoom, features, marks):
         nb = name.encode("utf-8")[:23]
         body += bytes((kind, min(rank, 255))); varint(zz(x), body); varint(zz(y), body)
         body.append(len(nb)); body += nb
-    head = struct.pack("<4sHHiiB3xIIII", MAGIC, FORMAT, HEADER, int(round(lat * 1e6)),
-                       int(round(lon * 1e6)), zoom, len(feats), len(marks), len(body),
+    head = struct.pack("<4sHHiiB3xIIII", MAGIC, FORMAT, HEADER, rnd(lat * 1e6),
+                       rnd(lon * 1e6), zoom, len(feats), len(marks), len(body),
                        zlib.crc32(bytes(body)) & 0xFFFFFFFF)
     assert len(head) == HEADER
     return head + bytes(body)
@@ -231,8 +237,9 @@ def build(tiles, lat, lon, zoom):
     import mvt
     cx, cy = world(lat, lon, zoom)
     feats, marks, seen, raw = [], [], set(), 0
-    for p in sorted(glob.glob(os.path.join(tiles, "%d_*.pbf" % zoom))):
-        _, tx, ty = map(int, os.path.basename(p)[:-4].split("_"))
+    found = [tuple(map(int, os.path.basename(p)[:-4].split("_"))) + (p,)
+             for p in glob.glob(os.path.join(tiles, "%d_*.pbf" % zoom))]
+    for _, tx, ty, p in sorted(found, key=lambda f: (f[1], f[2])):    # by column, then row
         for layer, (ext, fs) in mvt.read(p).items():
             for gtype, props, rings in fs:
                 to = lambda g: ((tx * 256 + g[0] * 256 / ext - cx) * UNIT, (ty * 256 + g[1] * 256 / ext - cy) * UNIT)
@@ -246,7 +253,7 @@ def build(tiles, lat, lon, zoom):
                     else:
                         kind, name, rank = MARK_AIRPORT, props.get("iata") or props.get("icao"), (1 if props.get("iata") else 8)
                     if kind is None or not name or (kind, name) in seen: continue
-                    seen.add((kind, name)); marks.append((kind, rank, int(round(x)), int(round(y)), name))
+                    seen.add((kind, name)); marks.append((kind, rank, rnd(x), rnd(y), name))
                     continue
                 c = classify(layer, props, gtype)
                 if not c: continue
@@ -272,7 +279,7 @@ def main(argv):
         os.makedirs(out, exist_ok=True)
         for z in range(6, 12):
             buf, raw = build(tiles, lat, lon, z)
-            fn = (map_name(place, int(round(lat * 1e6)), int(round(lon * 1e6)), z) if place is not None
+            fn = (map_name(place, rnd(lat * 1e6), rnd(lon * 1e6), z) if place is not None
                   else "%s-z%d.orbmap" % (name, z))
             path = os.path.join(out, fn)
             open(path, "wb").write(buf)

@@ -52,6 +52,8 @@ check-editor:
 	$(PYTHON) tools/host_disc_test.py
 	@# the weather editor's particles against fx.c, to the bit
 	$(PYTHON) tools/host_weather_fx_test.py
+	@# the hub's map tool (maps@1) against tools/orbmap.py's bytes and orb_map_raster.c's pixels
+	$(PYTHON) tools/host_orbmap_js_test.py
 
 firmware:
 	idf.py build

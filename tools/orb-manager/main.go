@@ -148,6 +148,8 @@ type Server struct {
 	// held is the state file's share that belongs to other orbs while onlyOrb is set:
 	// set aside at load, written back unchanged at save. See holdOthers in onlyorb.go.
 	held heldState
+	// maps is the map tool's tile forwarder and its source (maps.go, radar-plan §2.4).
+	maps mapsFwd
 	// fetchEditor is D37's seam onto one app's editor region. nil means "dial the
 	// device", which is what every hub built by main does; a test sets it to stand a
 	// board in for the network. See fetchEditor and editorFetchFn in editor.go.
@@ -1208,6 +1210,8 @@ func (s *Server) routes(mux *http.ServeMux) {
 	s.routesEditor(mux)
 	s.routesDesigns(mux)
 	s.routesLibraryEntries(mux)
+	// radar-plan §2.4: the map tool's tile forwarder and its source.
+	s.routesMaps(mux)
 }
 
 // indexMarker is the QUOTED placeholder in web/index.html that receives the launch

@@ -62,6 +62,9 @@ type hubState struct {
 	// let the next sweep rebuild from the MAC the lonely board still enumerates,
 	// and the row the operator ended would rise quietly on the first frame.
 	Lonely []string `json:"lonely,omitempty"`
+	// MapTiles is the map tool's TileJSON (maps.go), absent for OpenFreeMap's default. A
+	// hub that never set one writes nothing, and an older hub drops it harmlessly.
+	MapTiles string `json:"mapTiles,omitempty"`
 }
 
 // statePath is where the remembered addresses live. It follows the same convention as
@@ -102,6 +105,7 @@ func (s *Server) saveState() {
 		st.Lonely = s.lonely.list()
 	}
 	st.LastIP = s.currentOrbIP()
+	st.MapTiles = s.maps.stored()
 	b, err := json.MarshalIndent(st, "", "  ")
 	if err != nil {
 		return
@@ -159,6 +163,9 @@ func (s *Server) loadState() int {
 	}
 	if len(st.Lonely) > 0 {
 		s.lonely.restore(st.Lonely)
+	}
+	if _, err := mapsURL(st.MapTiles); err == nil {
+		s.maps.set(st.MapTiles)
 	}
 	if isV4Literal(strings.TrimSpace(st.LastIP)) {
 		s.setOrbIP(strings.TrimSpace(st.LastIP))

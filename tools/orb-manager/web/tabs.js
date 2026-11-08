@@ -65,6 +65,7 @@ function showTab(name) {
     loadSound().catch(() => {});
     loadUnits().catch(() => {});
     loadPlaces().catch(() => {});
+    loadMaps().catch(() => {});
     return loadHome();
   });
 }
@@ -859,6 +860,7 @@ async function loadPlaces() {
           method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }));
         cur.textContent = placesLine((r.places || [])[p.i]);
         msg.textContent = v ? "saved; every app reads it at once" : "cleared";
+        loadMaps().catch(() => {});                 /* a moved place needs new maps */
         return true;
       } catch (e) {
         msg.textContent = "the orb refused it: " + e.message;
@@ -872,6 +874,242 @@ async function loadPlaces() {
     box.appendChild(row);
   }
 }
+// ---- radar-plan §2.4 (R4): the OS maps -------------------------------------------------
+//
+// Home (place 0) and each place (1-3) get six levels, z6-z11, as /System/Maps/<place>-
+// <lat_e4>_<lon_e4>-z<z>.orbmap on the orb's card. They are made here: vector tiles from
+// the Map tiles source, fetched by the hub as gorb-os (/api/maps/fetch), decoded, clipped,
+// simplified and written by maps@1 (the same bytes tools/orbmap.py writes), then sent with
+// the card's own write door. A moved place has new names, so its old maps are never drawn
+// for it; the files no place names are removed. The OS hears POST /api/v1/places/maps.
+const MAPS_DIR = "System/Maps";
+const MAPS_CACHE = "gorb-maps-tiles-v1";
+let mapsKit = null;
+let mapsBusy = false;
+let mapsState = null;
+function loadMapsKit() {
+  if (mapsKit) return mapsKit;
+  mapsKit = new Promise((ok, no) => {
+    if (window.GorbMaps) return ok(window.GorbMaps);
+    const el = document.createElement("script");
+    el.src = "/runtime/maps@1/orbmap.js";
+    el.onload = () => (window.GorbMaps ? ok(window.GorbMaps) : no(new Error("the map kit did not load")));
+    el.onerror = () => { mapsKit = null; no(new Error("the hub did not serve the map kit")); };
+    document.head.appendChild(el);
+  });
+  return mapsKit;
+}
+const orbURL = (path) => "/orb/" + encodeURIComponent(current.ip) + path;
+async function hubData(url, opts) {
+  const r = await hubFetch(url, opts);
+  const j = await r.json();
+  if (!j.ok) throw new Error(j.error || ("the hub refused " + url));
+  return j.data;
+}
+// Home and the places as the OS names their maps: [{place, label, latE6, lonE6}] (set ones).
+async function mapsPlaces() {
+  const [h, p] = await Promise.all([readDeviceJSON(await hubFetch(homeURL())),
+                                    readDeviceJSON(await hubFetch(placesURL()))]);
+  const out = [];
+  const e6 = (v) => Math.round(+v * 1e6);
+  if (h.home && h.home.set) out.push({ place: 0, label: "Home", latE6: e6(h.home.lat), lonE6: e6(h.home.lon) });
+  for (const q of p.places || [])
+    if (q.set) out.push({ place: q.i + 1, label: q.name || "Place " + (q.i + 1), latE6: e6(q.lat), lonE6: e6(q.lon) });
+  return out;
+}
+async function mapsListing() {
+  const r = await hubFetch(orbURL("/api/v1/sd/ls?path=" + encodeURIComponent(MAPS_DIR)));
+  const d = await r.json().catch(() => ({}));
+  if (!r.ok) {
+    if (/no such directory/.test(d.error || "")) return {};
+    throw new Error(d.error || ("the orb's card answered " + r.status));
+  }
+  const files = {};
+  for (const e of d.entries || []) if (!e.dir) files[e.name] = e.size;
+  return files;
+}
+// What the card holds against what home and the places need.
+async function mapsCompute() {
+  const G = await loadMapsKit();
+  const [places, files] = await Promise.all([mapsPlaces(), mapsListing()]);
+  const want = {};
+  for (const pl of places) {
+    pl.names = G.ZOOMS.map((z) => G.mapName(pl.place, pl.latE6, pl.lonE6, z));
+    pl.have = pl.names.filter((n) => files[n]).length;
+    pl.bytes = pl.names.reduce((a, n) => a + (files[n] || 0), 0);
+    pl.names.forEach((n) => { want[n] = 1; });
+  }
+  const stale = Object.keys(files).filter((n) => /\.orbmap$/.test(n) && !want[n]);
+  return { places, stale, need: places.filter((pl) => pl.have < pl.names.length) };
+}
+async function loadMaps() {
+  if (!current.ip) return;
+  const rows = $("#maps-rows"), msg = $("#maps-msg"), make = $("#maps-make");
+  try {
+    mapsState = await mapsCompute();
+  } catch (e) {
+    rows.innerHTML = "";
+    msg.textContent = "the maps could not be read: " + e.message;
+    return;
+  }
+  const st = mapsState;
+  rows.innerHTML = "";
+  for (const pl of st.places) {
+    const row = document.createElement("div");
+    const name = document.createElement("strong");
+    const where = document.createElement("span");
+    const tag = document.createElement("span");
+    row.className = "maprow";
+    where.className = "hint";
+    name.textContent = pl.label;
+    where.textContent = (pl.latE6 / 1e6).toFixed(4) + ", " + (pl.lonE6 / 1e6).toFixed(4) +
+      (pl.have ? " · " + Math.round(pl.bytes / 1024) + " KB on the card" : "");
+    const done = pl.have === pl.names.length;
+    tag.className = "tag " + (done ? "on" : "upd");
+    tag.textContent = done ? "maps made" : pl.have ? "maps out of date" : "no maps yet";
+    row.append(name, where, tag);
+    rows.appendChild(row);
+  }
+  if (!st.places.length) rows.innerHTML = '<div class="hint">set home on the Location card to make maps</div>';
+  const out = st.need.length > 0;
+  make.className = out ? "upd" : "";
+  make.textContent = out ? "Maps out of date — Make maps" : "Make maps again";
+  make.disabled = mapsBusy || !st.places.length;
+  tabBadge("orb", st.need.length, st.need.length + " place" + (st.need.length === 1 ? "" : "s") + " without maps");
+  if (!mapsBusy) msg.textContent = st.need.length ? "" : (st.stale.length ? st.stale.length + " old map file" +
+    (st.stale.length === 1 ? "" : "s") + " no place uses: Make maps removes them" : "every place has its maps");
+  const sel = $("#maps-place"), keep = sel.value;
+  sel.innerHTML = "";
+  for (const pl of st.places) {
+    const o = document.createElement("option");
+    o.value = String(pl.place); o.textContent = pl.label;
+    sel.appendChild(o);
+  }
+  if (keep && st.places.some((pl) => String(pl.place) === keep)) sel.value = keep;
+  try {
+    const src = await hubData("/api/maps/source");
+    if (document.activeElement !== $("#maps-src")) $("#maps-src").value = src.tilejson;
+    $("#maps-src").placeholder = src.default;
+  } catch (e) { $("#maps-srcmsg").textContent = e.message; }
+}
+// A tile, from this browser's cache or through the hub; null for a tile the host has not
+// got (open ocean at some sources is a 204 or 404). Gzipped bodies are unwrapped.
+async function mapsTile(url) {
+  const cache = window.caches ? await caches.open(MAPS_CACHE).catch(() => null) : null;
+  let r = cache ? await cache.match(url) : null;
+  if (!r) {
+    r = await hubFetch("/api/maps/fetch?u=" + encodeURIComponent(url));
+    if (r.status === 204 || r.status === 404) return null;
+    if (!r.ok) throw new Error((await r.text()).trim() || "the tile host answered " + r.status);
+    if (cache) await cache.put(url, r.clone()).catch(() => {});
+  }
+  let b = new Uint8Array(await r.arrayBuffer());
+  if (b.length > 1 && b[0] === 0x1f && b[1] === 0x8b)
+    b = new Uint8Array(await new Response(new Blob([b]).stream().pipeThrough(new DecompressionStream("gzip"))).arrayBuffer());
+  return b;
+}
+async function mapsTemplate() {
+  const src = (await hubData("/api/maps/source")).tilejson;
+  const r = await hubFetch("/api/maps/fetch?u=" + encodeURIComponent(src));
+  if (!r.ok) throw new Error((await r.text()).trim() || "the Map tiles source answered " + r.status);
+  const tj = await r.json();
+  if (!tj.tiles || !tj.tiles.length) throw new Error("the Map tiles source names no tiles (is it a TileJSON?)");
+  return { url: tj.tiles[0], maxzoom: tj.maxzoom === undefined ? 14 : +tj.maxzoom };
+}
+// One level of one place: its tiles, four at a time, then the builder.
+async function mapsLevel(G, tmpl, pl, z, onTile) {
+  const lat = pl.latE6 / 1e6, lon = pl.lonE6 / 1e6;
+  if (z > tmpl.maxzoom) throw new Error("the Map tiles source stops at z" + tmpl.maxzoom + "; the maps need z11");
+  const want = G.tilesFor(lat, lon, z), tiles = [];
+  let next = 0;
+  const worker = async () => {
+    while (next < want.length) {
+      const t = want[next++];
+      const url = tmpl.url.replace("{z}", t.z).replace("{x}", t.x).replace("{y}", t.y);
+      const b = await mapsTile(url);
+      if (b) tiles.push({ x: t.ox, y: t.y, layers: G.readTile(b) });
+      onTile();
+    }
+  };
+  await Promise.all([worker(), worker(), worker(), worker()]);
+  return G.build(tiles, lat, lon, z).bytes;
+}
+async function makeMaps() {
+  if (mapsBusy || !mapsState) return;
+  const msg = $("#maps-msg"), make = $("#maps-make");
+  mapsBusy = true; make.disabled = true;
+  try {
+    const G = await loadMapsKit();
+    const st = await mapsCompute();
+    const todo = st.need.length ? st.need : st.places;          /* nothing missing: remake all */
+    const n = todo.length * G.ZOOMS.length;
+    let step = 0, tiles = 0;
+    msg.textContent = "reading the Map tiles source…";
+    const tmpl = await mapsTemplate();
+    await readDeviceJSON(await hubFetch(orbURL("/api/v1/sd/mkdir?path=" + encodeURIComponent(MAPS_DIR)), { method: "POST" }));
+    for (const pl of todo) {
+      for (const z of G.ZOOMS) {
+        step++;
+        const say = () => { msg.textContent = "Step " + step + " of " + n + ": " + pl.label + ", level z" + z +
+                                              " (" + tiles + " tiles fetched)"; };
+        say();
+        const bytes = await mapsLevel(G, tmpl, pl, z, () => { tiles++; say(); });
+        const name = G.mapName(pl.place, pl.latE6, pl.lonE6, z);
+        msg.textContent = "Step " + step + " of " + n + ": writing " + name + " (" + Math.round(bytes.length / 1024) + " KB)";
+        await readDeviceJSON(await hubFetch(orbURL("/api/v1/sd/write?overwrite=1&path=" +
+          encodeURIComponent(MAPS_DIR + "/" + name)), { method: "POST", body: bytes }));
+      }
+    }
+    for (const name of st.stale)
+      await readDeviceJSON(await hubFetch(orbURL("/api/v1/sd/rm?path=" + encodeURIComponent(MAPS_DIR + "/" + name)), { method: "POST" }));
+    await readDeviceJSON(await hubFetch(orbURL("/api/v1/places/maps"), { method: "POST" }));
+    msg.textContent = "DONE: " + todo.length + " place" + (todo.length === 1 ? "" : "s") + ", " + n + " levels, " + tiles +
+      " tiles" + (st.stale.length ? "; " + st.stale.length + " old file" + (st.stale.length === 1 ? "" : "s") + " removed" : "") +
+      ". Apps redraw their maps now.";
+  } catch (e) {
+    msg.textContent = "the maps were not made: " + e.message;
+  } finally {
+    mapsBusy = false;
+    await loadMaps().catch(() => {});
+  }
+}
+// The preview draws the level the orb would use at the chosen radius, built from the
+// tiles (this browser's cache first), so it never reads the card.
+const MAPS_PREVIEW_PAL = [0xff0b2a3c, 0xff1b2228, 0xff2c3138, 0xff123a52, 0xff2f6f99, 0xff6b7480, 0xffc9ced6,
+  0xff8a7fb0, 0xffd0d0d0, 0xff3d7fa8, 0xffffffff, 0xffffc040, 0xffe0e0e0, 0, 0, 0];
+async function mapsPreview() {
+  const pm = $("#maps-prevmsg");
+  const pl = mapsState && mapsState.places.find((q) => String(q.place) === $("#maps-place").value);
+  if (!pl) { pm.textContent = "set home or a place first"; return; }
+  try {
+    const G = await loadMapsKit();
+    const radius = +$("#maps-radius").value, lv = G.pickLevel(pl.latE6, radius);
+    pm.textContent = "fetching level z" + lv.z + "…";
+    const tmpl = await mapsTemplate();
+    const bytes = await mapsLevel(G, tmpl, pl, lv.z, () => {});
+    const st = { scale: lv.scale, rot_rad: 0, role_on: 0xffff, mark_on: 0x0b,
+                 width: [0, 0, 0, 0, 1, 1, 2, 1, 2, 1, 0, 0, 2, 0, 0, 0], dash: new Array(16).fill(0) };
+    const r = G.render(bytes, st);
+    const cv = $("#maps-canvas"), ctx = cv.getContext("2d"), img = ctx.createImageData(G.W, G.W);
+    G.paint(r.raster, MAPS_PREVIEW_PAL, img.data);
+    ctx.putImageData(img, 0, 0);
+    pm.textContent = pl.label + " at " + radius / 1000 + " km: level z" + lv.z + " drawn at " + lv.scale.toFixed(2) +
+      "x, " + Math.round(bytes.length / 1024) + " KB, " + r.marks.length + " landmarks";
+  } catch (e) {
+    pm.textContent = "no preview: " + e.message;
+  }
+}
+$("#maps-make").onclick = () => { makeMaps(); };
+$("#maps-preview").onclick = () => { mapsPreview(); };
+$("#maps-src-save").onclick = async () => {
+  const m = $("#maps-srcmsg");
+  try {
+    const d = await hubData("/api/maps/source", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ tilejson: $("#maps-src").value.trim() }) });
+    $("#maps-src").value = d.tilejson;
+    m.textContent = d.tilejson === d.default ? "OpenFreeMap's planet (the default)" : "saved; Make maps uses it";
+  } catch (e) { m.textContent = e.message; }
+};
 async function apsHelpOf(slug) {
   if (apsHelp[slug]) return apsHelp[slug];
   let h = {};

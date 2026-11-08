@@ -34,7 +34,10 @@ owed a measurement before the slice that depends on it (§4).
    fetches what a place needs when the owner saves it; no map data is in a release.
 8. **The public LibreWXR instance, for now.** The owner is ready to run their own if it
    is ever needed.
-9. **The map credit goes on gorb-os's ABOUT page**, not on the map.
+9. **The map credit goes on gorb-os's ABOUT page**, not on the map. *Revised 2026-11-07*
+   after OSMF's guidelines (§4 item 11): **and, once a boot, on the glass for five
+   seconds** the first time an app draws a map, then gone (owner's choice of the three
+   offered).
 10. **The hub's Go side forwards the tile requests** and sets the User-Agent
     OpenFreeMap's offline-download terms ask for: `gorb-os/<version>
     (+https://github.com/gregtakacs/gorb-os)`. It only forwards (D33).
@@ -650,9 +653,11 @@ FORMAT). It deletes the files no place uses. No app's settings page is involved.
   at 2.5 B a vertex (§1.8). The 400–600 KB estimate after it was low: *measured (R4,
   §6.6)* 0.84 MB for Austin, 1.19 MB for DFW and 1.92 MB for London, six levels each.
   Still nothing on a 29 GB card (owner, 2026-11-07).
-- **Attribution** (§0 ruling 9): "© OpenStreetMap contributors · OpenMapTiles ·
-  OpenFreeMap" on gorb-os's ABOUT page, beside the other credits, never on the map. The
-  Places card names the source in its Map tiles row.
+- **Attribution** (§0 ruling 9, revised): the first map an app draws after a boot puts
+  "Map data: OpenStreetMap" on the glass for five seconds (the OS does it, so every map app
+  gets it); ABOUT carries "OpenStreetMap contributors", openstreetmap.org/copyright,
+  "OpenMapTiles, OpenFreeMap", LibreWXR and Open-Meteo. The Places card credits
+  OpenStreetMap and names the source in its Map tiles row.
 
 ### 2.5 The app (`apps/radar`)
 
@@ -956,8 +961,14 @@ follow rules that keep everyone moving:
     2026-11-07) ask an offline download for "a unique User-Agent identifying your app".
     Chrome does not let a page set one, and the hub page's Referer is a LAN address, so
     the Go side forwards with its own.
-11. **OpenStreetMap's attribution guidelines** against §0 ruling 9 (credit on ABOUT, not on
-    the map): confirm before R4 ships in a public release.
+11. ~~OpenStreetMap's attribution guidelines~~ **Read 2026-11-07** (OSMF, adopted
+    2021-06-25, page as edited 2026-09-10): attribution "must be placed in the vicinity of
+    the produced work" and must not need an interaction to be seen; on an interactive map
+    it may fade "automatically after five seconds", after which an "About" option is
+    where it lives; a splash need not repeat every time; the licence link must be "in an
+    easily locatable part" of the application; "Map data from OpenStreetMap" is a named
+    form. ABOUT alone fell short, so ruling 9 was revised (once a boot, five seconds on the
+    glass); built in §6.7.
 12. ~~The priority shrink's weight~~ **Gone with §0 ruling 11:** vectors are drawn at the
     view's scale, so nothing is shrunk, and line weight is the theme's choice per role.
 13. **The classic path rounds the live layer differently** (R3c, §6.4): over a pixel the
@@ -1210,8 +1221,30 @@ The owner's call after §6.4: keep the map parked and redraw only the rain.
   planted, Austin's row read "no maps yet" in amber with a badge of 1; Make maps made only
   Austin (six steps, 74 tiles, 9.5 s), removed the stray, and the rows went green and the
   badge went away; Preview drew London at 30 km (z10 at 0.74x, 305 landmarks).
-- **Not built:** recognising an older FORMAT on the card (the names say place and
-  position only; a FORMAT 2 would bring its own name rule). The map credits on gorb-os's
-  ABOUT page are still owed (§0 ruling 9), as is OpenStreetMap's attribution check
-  (§4 item 11) before a public release.
+- **Not built here, closed in §6.7:** an older FORMAT on the card (by a naming rule) and
+  the credits (ABOUT and the glass, after §4 item 11).
+
+### 6.7 The credits and the format rule (2026-11-07, Bronze, OS v1.2.24, uncommitted)
+
+- **On the glass** (`main/app/orb_map_credit.c`): the first `orb_map_draw` after a boot by
+  the app on the glass raises "Map data: OpenStreetMap" (Montserrat 14, white on a black
+  pill, 200x24 at the foot of the glass, inside the circle and clear of the carousel
+  chip's band) on LVGL's top layer for five seconds; switching apps takes it down. On
+  Bronze over Weather's live map: up with the map, gone five seconds later with the map
+  whole beneath, and not again on the next draw.
+- **The keep-out became two slots** (`GFX_KO_CHIP`, `GFX_KO_CREDIT`), as its own comment
+  said a second chrome would need, and its cut was fixed: a row crossing the rect skipped
+  its whole segment (min and max swapped in the side runs), harmless while the chip
+  parked the beat, not under a map being redrawn. `tools/host_keepout_test.py` lifts the
+  slots and the cut: both sides of a rect painted, only its pixels kept, two chromes at
+  once, a clear re-marking its rect and leaving the other standing; 6/6 mutants.
+  `host_carousel_test.py` follows the slot argument.
+- **ABOUT** gains five rows after its five facts: "maps  OpenStreetMap contributors",
+  "openstreetmap.org/copyright", "tiles  OpenMapTiles, OpenFreeMap", "radar  LibreWXR (CC BY
+  4.0)", "weather  Open-Meteo (CC BY 4.0)" (the Open-Meteo credit weather-plan owed). Read
+  on Bronze through the screen door: every row fits.
+- **An older FORMAT on the card:** closed by a rule rather than a reader. A file's name
+  is its FORMAT's (`orb_map.h`, `orbmap.py`, `maps@1` say so): a later FORMAT names its
+  files apart, so the OS never opens an older one, and the Places card's sweep of names no
+  place uses removes them on the next Make maps.
 

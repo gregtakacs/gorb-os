@@ -1850,9 +1850,16 @@ esp_err_t display_dma_return(void)
  * is not acceptable. Caller holds s_ring_mux. */
 #define RING_NET_RESERVE   8192
 #define RING_NET_WINDOW_US 1500000
+/* §61: while a carousel that reads the card is up, the glass outranks the network's
+ * window: every hold is short, and each one would otherwise still the carousel up to
+ * RING_NET_WINDOW_US after the card was done. */
+static volatile bool s_ring_urgent;
+void display_ring_urgent(bool on) { s_ring_urgent = on; }
+
 static bool ring_refund_due(void)
 {
     if (s_ring_returned_us == 0) return true;   /* parked by something else: as before */
+    if (s_ring_urgent) return true;
     if (heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA) >=
         s_ring_bytes + RING_NET_RESERVE)
         return true;

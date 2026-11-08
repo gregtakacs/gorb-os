@@ -89,6 +89,9 @@ void orb_wasm_unload(int slot);
 /** True when slot `slot` currently holds a loaded runtime. */
 bool orb_wasm_loaded(int slot);
 
+/** §61: the icon `app` handed over with orb.icon (a deflated disc, `side` px), when it did. */
+bool orb_wasm_icon(const orb_app_t *app, const uint8_t **z, uint32_t *n, uint16_t *side);
+
 /* The compiled-in behaviour module's iface, registered under ORB_BEHAVIOUR_WASM in
  * orb_app.c's behaviour table (as a file-scope constant, so it is declared as data
  * here, not a function — a static initializer cannot call a getter). The registry

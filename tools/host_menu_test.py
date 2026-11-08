@@ -256,6 +256,10 @@ def lifts(src):
         'int themes_page_count_for(const char *s) { (void)s; return g_th_n; }',
         'const char *themes_page_active_for(const char *s) { (void)s; return g_th_active; }',
         'void themes_page_walk(void) { g_th_walks++; }',
+        # §61: the theme carousel, answered by a switch: off, the text list stands in.
+        '#include "theme_strip.h"',
+        'static bool g_ts_ok; static const orb_app_t *g_ts_app; static int g_ts_opens;',
+        'bool theme_strip_open(const orb_app_t *a) { g_ts_opens++; g_ts_app = a; return g_ts_ok; }',
         'static const char *orb_sd_card_id(void);',
         # Item 3: a fake NVS with a real round-trip, so the lifted pos_save/
         # pos_load store and reload through this harness rather than a restated
@@ -1041,6 +1045,13 @@ int main(void)
     menu_view_apply_input(0, true);
     ck("back from Permissions lands on the app's page at its Permissions row",
        s_pg == &s_pages[PG_APP] && s_app == FAKE_APP && s_cur == 3);
+    /* §61: the Themes row opens the carousel when it can, and the page stays under it. */
+    s_cur = 2; g_ts_ok = true; g_ts_opens = 0;
+    menu_view_apply_input(0, true);
+    ck("the Themes row opens the theme carousel on this app, the page left as it was",
+       g_ts_opens == 1 && g_ts_app == FAKE_APP &&
+       s_pg == &s_pages[PG_APP] && s_app == FAKE_APP && s_cur == 2);
+    g_ts_ok = false;
     /* The Themes sub-menu: the provider row's page, aimed at this app. */
     s_cur = 2; g_th_for[0] = '\0';
     menu_view_apply_input(0, true);
@@ -2413,6 +2424,9 @@ MUTATIONS = [
     ("a running app grows a door that is not a removal",
      "        if (a->failed) ids[n++] = ACT_INSTALL;",
      "        ids[n++] = ACT_INSTALL;"),
+    ("the Themes row skips the theme carousel (§61)",
+     "        if (theme_strip_open(a)) return;",
+     "        (void)theme_strip_open;"),
     ("the Themes row opens the provider for the wrong app",
      "        themes_page_for(a->slug);",
      "        themes_page_for(\"\");"),
@@ -2742,12 +2756,18 @@ def main():
     # menu exit is not a trip to the landing card. A slug is resolved (a card row
     # can uninstall from inside the menu, and a stale pointer lands on a recycled
     # slot), and an empty memory falls back to the home entry (a boot that landed
-    # on the menu has nowhere to walk back to).
-    check("the menu exit resolves the remembered slug, falling back to home (router)",
+    # on the menu has nowhere to walk back to). §61: an empty memory walks to the
+    # carousel's first app, and Settings' landing only when no app will start.
+    check("the menu exit resolves the remembered slug, then the first app, then home (router)",
           re.search(r"void input_router_menu_exit\(void\)[\s\S]*?"
                     r"back = s_before_shell\[0\] \? orb_app_find_slug\(s_before_shell\) : NULL;"
+                    r"\s*if \(!back\) back = first_app\(\);[^\n]*"
                     r"\s*set_screen\(back \? back : orb_app_home\(\), true\);",
                     router_src) is not None)
+    check("a boot lands on the carousel's first app that starts, not where the glass stood (router, §61)",
+          re.search(r"const esp_err_t err0 = boot_first\(home\);", router_src) is not None and
+          re.search(r"static esp_err_t boot_first\(const orb_app_t \*home\)[\s\S]*?"
+                    r"a->kind == ORB_APP_KIND_SHELL\) continue;[\s\S]*?set_screen\(home", router_src) is not None)
     # D12's one exception, in both halves: the entry gets first refusal, and the
     # home path survives underneath it. An entry with nothing open answers false and
     # the hold homes exactly as C8 rules, so a nesting feature that quietly swallowed

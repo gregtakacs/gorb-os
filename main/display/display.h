@@ -270,6 +270,9 @@ void display_bench_reset(void);
  * panel. Off: every row is re-sent on the next LVGL frame, which the call requests.
  * LVGL task only. */
 void display_glass_hold(bool on);
+/* §61: take the ring back from the card at once rather than after the network's window
+ * (RING_NET_WINDOW_US), while on. The theme carousel holds it on while it is up. */
+void display_ring_urgent(bool on);
 bool display_glass_held(void);
 /* LVGL frames that reached the mirror while the glass was held, counting up: the
  * carousel waits on it for the app it opened to draw before fading to it. */

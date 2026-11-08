@@ -22,6 +22,8 @@
 #include "orb_jobs.h"
 #include "orb_sd.h"
 #include "orb_theme.h"
+#include "orb_ui_icons.h"   /* §61: the drawn Settings card */
+#include "orb_app_wasm.h"   /* §61: an app's own icon */
 
 static const char *TAG = "strip";
 
@@ -112,8 +114,32 @@ static inline uint16_t wire(uint16_t c) { return (uint16_t)((c << 8) | (c >> 8))
 
 /* ---- the gear ------------------------------------------------------------------ */
 
+static void box_down(const uint16_t *src, int sw, uint16_t *dst, int dw);
+
+/* §61: a deflated disc (a drawn card, or an app's icon) as a PV square in wire order, or
+ * NULL. Inflated at its own side, then boxed down to the strip's. */
+static uint16_t *card_plane(const uint8_t *z, uint32_t n, uint16_t side)
+{
+    if (!z || !n || !side || side > W) return NULL;
+    uint16_t *full = (uint16_t *)orb_preview_inflate(z, n, side);
+    if (!full) return NULL;
+    uint16_t *out = full;
+    if (side != PV) {
+        out = heap_caps_malloc((size_t)PV * PV * 2, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        if (out) box_down(full, side, out, PV);
+        heap_caps_free(full);
+        if (!out) return NULL;
+    }
+    for (int k = 0; k < PV * PV; k++) out[k] = wire(out[k]);
+    return out;
+}
+
 static void make_gear(void)
 {
+    /* §61: the drawn Settings card the firmware carries; the gear below if it will not
+     * inflate. */
+    s_gear = card_plane(orb_ui_icon_settings_z, orb_ui_icon_settings_n, orb_ui_icon_settings_side);
+    if (s_gear) return;
     s_gear = heap_caps_malloc((size_t)PV * PV * 2, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (!s_gear) return;
     const uint16_t ground = wire(0x2104);     /* #202020 */
@@ -177,6 +203,25 @@ static uint16_t *pv_read(const char *stem, uint16_t *w_out, const char *slug)
     }
     *w_out = w;
     return buf;
+}
+
+/* §61: an app with no theme to show wears the icon it handed over (orb.icon), drawn
+ * once per boot on the first open that sees it. */
+static struct { const orb_app_t *app; uint16_t *px; } s_icon[MAX_ITEMS];
+static const uint16_t *icon_for(const orb_app_t *a)
+{
+    const uint8_t *z = NULL;
+    uint32_t n = 0;
+    uint16_t side = 0;
+    int free_i = -1;
+    for (int i = 0; i < MAX_ITEMS; i++) {
+        if (s_icon[i].app == a && s_icon[i].px) return s_icon[i].px;
+        if (!s_icon[i].px && free_i < 0) free_i = i;
+    }
+    if (free_i < 0 || !orb_wasm_icon(a, &z, &n, &side)) return NULL;
+    s_icon[free_i].px = card_plane(z, n, side);
+    s_icon[free_i].app = s_icon[free_i].px ? a : NULL;
+    return s_icon[free_i].px;
 }
 
 static const pv_t *pv_for(const orb_app_t *a)
@@ -511,7 +556,8 @@ bool orb_strip_open(const orb_app_t *from, int step)
         item_t *it = &s_it[s_n];
         it->app = a;
         const pv_t *pv = pv_for(a);
-        it->px = pv ? pv->px : s_gear;         /* an app with no preview: a plain disc */
+        const uint16_t *ic = pv ? NULL : icon_for(a);   /* §61: no theme: its own icon */
+        it->px = pv ? pv->px : (ic ? ic : s_gear);
         it->side = pv ? pv->side : PV;
         if (a == from) s_from_i = s_n;
         s_n++;
@@ -523,8 +569,13 @@ bool orb_strip_open(const orb_app_t *from, int step)
     /* The app the carousel opens on wears the glass itself until the strip moves off
      * it, so the zoom down starts from exactly what was showing. */
     memcpy(s_snap, mirror, (size_t)W * H * 2);
-    s_it[s_from_i].px = s_snap;
-    s_it[s_from_i].side = W;
+    /* §61: Settings wears its own card, never a picture of the menu it was opened over: a
+     * snapshot only comes off an app's card when the strip moves (start_turn), so the
+     * Settings card kept the black MENU landing for the whole visit (owner, 2026-11-08). */
+    if (s_it[s_from_i].app) {
+        s_it[s_from_i].px = s_snap;
+        s_it[s_from_i].side = W;
+    }
     make_names();
 
     display_glass_hold(true);
@@ -597,7 +648,8 @@ static void start_turn(int steps, int64_t now)
     item_t *f = &s_it[s_from_i];
     if (f->px == s_snap && f->app) {
         const pv_t *p = pv_for(f->app);
-        f->px = p ? p->px : s_gear;
+        const uint16_t *ic = p ? NULL : icon_for(f->app);
+        f->px = p ? p->px : (ic ? ic : s_gear);
         f->side = p ? p->side : PV;
     }
     s_st = ST_TURN;

@@ -107,8 +107,12 @@ hold to go back where you were. The last row, **settings**, opens the orb's own 
   which holds everything about it: its settings (press one to change it with the knob,
   press again to keep it; settings you type, such as places and API keys, are in Orb
   Manager, and pressing "More on Orb Manager" says which), then **Themes**, showing the
-  one on the dial (open it to see the app's themes on the card; rest on one to see it,
-  press to put it on the dial), **Permissions**, showing how many it may still use
+  one on the dial. Open it to turn through the app's themes as pictures, each with its
+  name; the one on the dial has its name in amber. Pictures fill in as you go, so you
+  can spin fast and stop where you like. Press to put the theme on the dial (the orb
+  restarts wearing it), or press the one already on the dial to go straight back to the
+  app; hold, or press the **Back** card at the top, to go back to the app's page.
+  **Permissions** follows, showing how many it may still use
   (open it to allow or revoke network, location, sound and so on, one press each),
   then retry (only when the orb stopped a failing app), uninstall and remove from card.
   A removal takes two presses. An app that was refused something leaves a `*` on APPS,
@@ -142,6 +146,7 @@ Click an orb in the **Orbs** list to open its card. The tabs are:
 | **Files** | the files on the orb's microSD card |
 | **Firmware** | the version the orb runs; **Update firmware** lights up when Orb Manager carries a newer one |
 
+After any restart the orb opens the first app in your carousel order (set on the Apps tab).
 Installing or removing an app reboots the orb, because apps load at startup. Uninstalling
 an app also erases its settings and keys, so installing it again starts it fresh.
 

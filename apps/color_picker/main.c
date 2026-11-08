@@ -178,6 +178,7 @@ static int32_t label(int32_t parent, int32_t font, uint32_t rgb, const char *tex
 
 ORB_EXPORT("orb_init") int32_t orb_init(void)
 {
+    (void)ORB_ICON();                    /* §61: the carousel's picture of this app */
     int32_t v;
     if (orb_cfg_get("hue", &v) == ORB_OK) s_hue = v;
     if (orb_cfg_get("sat", &v) == ORB_OK) s_sat = v;

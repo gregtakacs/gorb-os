@@ -59,6 +59,16 @@ ORB_IMPORT("localtime")  int32_t orb_localtime(int64_t t, orb_tm_t *out);
 /** The zone's UTC offset at `t`, in minutes. */
 ORB_IMPORT("tz_offset")  int32_t orb_tz_offset(int64_t t);
 
+/* ---- the app's icon (free, §61) ------------------------------------------------- *
+ * The picture the app carousel shows for an app with no theme: app.json's "icon" names a
+ * square PNG in the app's directory, and orbsdk compiles it in as a deflated disc (232 px).
+ * Hand it over from orb_init with ORB_ICON(); the OS keeps a copy. -1 means the OS would
+ * not take the bytes. An app that names no icon must not use ORB_ICON (it will not link). */
+ORB_IMPORT("icon")       int32_t orb_icon(const void *z, uint32_t n, uint32_t side);
+extern const unsigned char orb_app_icon[];
+extern const unsigned int  orb_app_icon_n, orb_app_icon_side;
+#define ORB_ICON() orb_icon(orb_app_icon, orb_app_icon_n, orb_app_icon_side)
+
 /* ---- logging (free) ----------------------------------------------------------- */
 
 /** One line on the console, prefixed with the app's slug. */

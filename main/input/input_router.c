@@ -17,6 +17,7 @@
 #include "orb_carousel.h"   /* cancel only: §51 retired the walk, so nothing puts a peek up */
 #include "orb_fx.h"         /* the transition bench's run, served from this poll */
 #include "orb_strip.h"      /* plan §54: the carousel owns the knob and the glass while up */
+#include "theme_strip.h"    /* §61: and the theme carousel */
 #include "nvs.h"            /* the boot-page memory: last shown page, one string key  */
 #include <stdio.h>
 #include <string.h>
@@ -443,6 +444,7 @@ static void poll_timer_cb(lv_timer_t *timer)
      * race every other rule in this file exists to avoid. */
     const orb_app_t *req = (const orb_app_t *)s_requested;
     if (req && orb_strip_active()) orb_strip_abort();   /* a named screen beats the carousel */
+    if (req && theme_strip_active()) theme_strip_abort();   /* §61: and the theme carousel */
     if (req) {
         s_requested = NULL;
         /* A requested screen beats a peek in flight: the user (or the bench)
@@ -461,7 +463,14 @@ static void poll_timer_cb(lv_timer_t *timer)
 
     /* §59: the owner's rotation, on a poll that carried no knob event and with the
      * carousel shut. */
-    if (!delta && !pressed && !lpress && !orb_strip_active()) rotation_poll(now);
+    theme_strip_service();
+    if (!delta && !pressed && !lpress && !orb_strip_active() && !theme_strip_active()) rotation_poll(now);
+
+    /* §61: the theme carousel, likewise: the knob is its own while it is up. */
+    if (theme_strip_active()) {
+        theme_strip_poll(delta, pressed, lpress, now);
+        return;
+    }
 
     /* §54: while the carousel is up, every knob event is its own, and its frames are
      * drawn from here. It hands the glass back itself. */
@@ -513,30 +522,26 @@ static void poll_timer_cb(lv_timer_t *timer)
     orb_app_input(delta, pressed);
 }
 
-/* D36: boot where the glass last stood. Read the remembered slug, resolve it
- * through the registry, and try the switch the way a flick tries it — an entry
- * that refuses its own activate falls the orb back to home, the same face an
- * unremembering boot has always shown. The home entry itself needs no trip
- * through NVS: it is the default this function carries. */
-static esp_err_t resume_last(const orb_app_t *home)
+/* §61 (owner, 2026-11-08): a boot lands on the first app of the carousel, in the owner's
+ * order (orb_app_walk_gather), and never on Settings unless the orb has no app that will
+ * start. This replaces D36's "boot where the glass last stood". */
+static const orb_app_t *first_app(void)
 {
-    char slug[32] = { 0 };
-    size_t sz = sizeof slug;
-    nvs_handle_t h;
-    if (nvs_open(PAGE_NS, NVS_READONLY, &h) == ESP_OK) {
-        if (nvs_get_str(h, PAGE_KEY, slug, &sz) != ESP_OK) slug[0] = '\0';
-        nvs_close(h);
+    for (size_t i = 0; i < orb_app_count(); i++) {
+        const orb_app_t *a = orb_app_at(i);
+        if (a && a->kind != ORB_APP_KIND_SHELL) return a;
     }
-    if (slug[0] && home && strcmp(slug, home->slug) != 0) {
-        const orb_app_t *w = orb_app_find_slug(slug);
-        if (w) {
-            snprintf(s_last_slug, sizeof s_last_slug, "%s", slug);
-            const esp_err_t werr = set_screen(w, /*load=*/true);
-            if (werr == ESP_OK) {
-                ESP_LOGI(TAG, "resume: glass returns to %s", slug);
-                return ESP_OK;
-            }
-            s_last_slug[0] = '\0';   /* the resume was refused — home re-remembers */
+    return NULL;
+}
+
+static esp_err_t boot_first(const orb_app_t *home)
+{
+    for (size_t i = 0; i < orb_app_count(); i++) {
+        const orb_app_t *a = orb_app_at(i);
+        if (!a || a->kind == ORB_APP_KIND_SHELL) continue;
+        if (set_screen(a, /*load=*/true) == ESP_OK) {
+            ESP_LOGI(TAG, "boot: the carousel's first app, %s", a->slug ? a->slug : "?");
+            return ESP_OK;
         }
     }
     return set_screen(home, /*load=*/true);
@@ -562,7 +567,7 @@ esp_err_t input_router_init(void)
         if (!home) return ESP_ERR_NOT_FOUND;
         ESP_LOGE(TAG, "no home entry in the app table — booting on %s", home->slug);
     }
-    const esp_err_t err0 = resume_last(home);
+    const esp_err_t err0 = boot_first(home);
     if (err0 != ESP_OK) return err0;
 
     s_poll_timer = lv_timer_create(poll_timer_cb, POLL_PERIOD_MS, NULL);
@@ -610,6 +615,7 @@ void input_router_menu_exit(void)
     orb_carousel_cancel();
     disarm_all();
     const orb_app_t *back = s_before_shell[0] ? orb_app_find_slug(s_before_shell) : NULL;
+    if (!back) back = first_app();       /* §61: an app, never the Settings landing */
     set_screen(back ? back : orb_app_home(), true);
 }
 

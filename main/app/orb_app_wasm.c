@@ -48,6 +48,7 @@
 #include "orb_sound.h"          /* the owner's sound settings, the voices the stage leases */
 #include "orb_clock3.h"         /* clk_sound_t: the theme records the stage hands over */
 #include "orb_theme.h"          /* orb_theme_live_slug: whose theme the stage draws */
+#include "orb_inflate.h"        /* §61: an icon's bytes are checked before they are kept */
 #include "orb_sched.h"          /* orb_sched_burst, behind orb.burst */
 #include "knob_accel.h"         /* a dial app's turns, accelerated (plan §51) */
 #include "orb_units.h"     /* orb_units, behind orb.units (free) */
@@ -161,9 +162,14 @@ typedef struct {
     uint32_t       cfg_pending;  /* writes posted to the worker, not yet landed */
     bool           cfg_stale;    /* a posted write was refused: re-read at next call */
     bool           stage;        /* the live theme is this app's: it owns the stage */
+    uint8_t       *icon;         /* §61: the app's icon (orb.icon), deflated disc, PSRAM */
+    uint32_t       icon_n;
+    uint16_t       icon_side;
 } wasm_slot_t;
 
 static wasm_slot_t s_slot[WASM_N_SLOTS];
+
+static wasm_slot_t *slot_of_app(const orb_app_t *app);
 
 /* m3 hands a raw import the runtime, not the app. This finds the slot a runtime came
  * from so the import can forward to the broker with its real caller. Linear over 8 —
@@ -191,6 +197,7 @@ static void slot_release(wasm_slot_t *s)
     if (s->env) m3_FreeEnvironment(s->env);
     if (s->code) heap_caps_free(s->code);
     if (s->cfg) heap_caps_free(s->cfg);
+    if (s->icon) heap_caps_free(s->icon);
     memset(s, 0, sizeof *s);
 }
 
@@ -1242,6 +1249,39 @@ m3ApiRawFunction(imp_stage_snd_play_v)        /* i32 stage_snd_play_v(i, flags, 
     m3ApiReturn(STAGE_ON(s) ? stage_snd_play_v(i, flags, at, anchor, vol) : -1);
 }
 
+/* §61: the app's own picture for the carousel, for an app with no theme to show: its disc,
+ * deflated (orbsdk compiles app.json's "icon" in, and orb_init hands it over with ORB_ICON).
+ * Copied out of the module's memory, so the app may forget it. 0, or -1 for bytes that are
+ * not a disc the OS can draw. */
+#define ICON_MAX_BYTES (96u * 1024u)
+m3ApiRawFunction(imp_icon)                    /* i32 icon(const void *z, u32 n, u32 side) */
+{
+    m3ApiReturnType(int32_t);
+    CALLER();
+    m3ApiGetArgMem(const uint8_t *, z);
+    m3ApiGetArg(uint32_t, n);
+    m3ApiGetArg(uint32_t, side);
+    if (n < 6 || n > ICON_MAX_BYTES || side < 64 || side > 466) m3ApiReturn(-1);     /* the glass */
+    m3ApiCheckMem(z, n);
+    if (!orb_inflate_head_ok(z, n)) m3ApiReturn(-1);
+    uint8_t *copy = heap_caps_malloc(n, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!copy) m3ApiReturn(-1);
+    memcpy(copy, z, n);
+    if (s->icon) heap_caps_free(s->icon);
+    s->icon = copy;
+    s->icon_n = n;
+    s->icon_side = (uint16_t)side;
+    m3ApiReturn(0);
+}
+
+bool orb_wasm_icon(const orb_app_t *app, const uint8_t **z, uint32_t *n, uint16_t *side)
+{
+    const wasm_slot_t *s = slot_of_app(app);
+    if (!s || !s->icon) return false;
+    *z = s->icon; *n = s->icon_n; *side = s->icon_side;
+    return true;
+}
+
 m3ApiRawFunction(imp_stage_snd_stop)
 {
     CALLER();
@@ -1376,6 +1416,7 @@ static const wasm_bind_t s_binds[] = {
     { "orb", "stage_snd_play",     "i(iiII)",  imp_stage_snd_play },
     { "orb", "stage_snd_play_v",   "i(iiIIi)", imp_stage_snd_play_v },
     { "orb", "stage_snd_stop",     "v(i)",     imp_stage_snd_stop },
+    { "orb", "icon",               "i(iii)",   imp_icon },
     { "orb", "stage_snd_active",   "i(i)",     imp_stage_snd_active },
     { "orb", "stage_snd_reanchor", "v(iI)",    imp_stage_snd_reanchor },
     { "orb", "sin",           "F(F)",      imp_sin },

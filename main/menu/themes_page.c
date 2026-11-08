@@ -117,6 +117,21 @@ const char *themes_page_active_for(const char *slug)
             return s_ui.e[k].name[0] ? s_ui.e[k].name : s_ui.e[k].id;
     return NULL;
 }
+bool themes_page_item(const char *slug, int i, const char **id, const char **name,
+                      bool *active, bool *ok)
+{
+    for (int k = 0; slug && k < s_ui.n; k++) {
+        if (strcmp(s_ui.e[k].app, slug) != 0 || i-- != 0) continue;
+        const orb_theme_entry_t *e = &s_ui.e[k];
+        if (id) *id = e->id;
+        if (name) *name = e->name[0] ? e->name : e->id;
+        if (active) *active = e->active;
+        if (ok) *ok = e->err == ESP_OK;
+        return true;
+    }
+    return false;
+}
+
 /** The listing index of this app's i-th theme, or -1. */
 static int mine(int i)
 {
@@ -144,6 +159,7 @@ static int mine(int i)
  * (ORB_ASSET_NO_CONTENT), never an error: the row stays text-only.
  */
 #define PV_SETTLE_MS 120     /* the cursor rests this long before a read starts */
+#define PV_SETTLE_CACHED_MS 40   /* §60.3: or this long when the bytes are already in PSRAM */
 
 typedef struct {
     uint8_t  *px;                     /* RGB565 plane, w*h*2 bytes; NULL = none */
@@ -182,8 +198,8 @@ static void pv_publish(const pv_t *src)
  * the cache is bounded and evicts the entry farthest from the cursor. LVGL task only: the
  * worker gets a pointer at post time, and nothing is evicted while a job is outstanding. */
 #define ZC_MAX       8
-#define ZC_BUDGET    (900u * 1024u)
-#define ZC_REST_MS   350       /* the cursor rests this long before a fetch starts */
+#define ZC_BUDGET    (1100u * 1024u)
+#define ZC_REST_MS   250       /* the cursor rests this long before a fetch starts */
 typedef struct {
     char      id[ORB_THEME_HANDLE_MAX + 1];
     uint8_t  *z;
@@ -197,12 +213,26 @@ static bool     s_z_fly;               /* a fetch is posted and unreaped        
 static int64_t  s_moved_us;            /* the cursor's last move                 */
 static bool     s_zc_drop;             /* the page left: empty the cache once free */
 static int64_t  s_z_done_us;           /* when the last fetch was filed           */
-#define ZC_GAP_MS    300       /* the glass draws this long between two fetches */
+static bool     s_zc_full;             /* §60.3: nothing nearer fits; rest until a move */
+static int8_t   s_dir = -1;            /* §60.3: the way the last move went (+1 down the list) */
+#define ZC_GAP_MS    150       /* the glass draws this long between two fetches */
 
 static const zc_t *zc_find(const char *id)
 {
     for (int i = 0; i < ZC_MAX; i++) if (s_zc[i].z && !strcmp(s_zc[i].id, id)) return &s_zc[i];
     return NULL;
+}
+
+/* §60.3: how many of this app's themes lie between a cached id and the cursor (far, for an id
+ * the list no longer has). */
+static int zc_dist(const char *id, int cur)
+{
+    for (int k = 0, m = 0; k < s_ui.n; k++) {
+        if (strcmp(s_ui.e[k].app, s_for) != 0) continue;
+        if (!strcmp(s_ui.e[k].id, id)) return m > cur ? m - cur : cur - m;
+        m++;
+    }
+    return 1 << 20;
 }
 static uint32_t zc_bytes(void)
 {
@@ -272,18 +302,31 @@ typedef struct {
     const uint8_t  *z;
     uint32_t        n;
     uint16_t        side;
+    uint32_t        moves;            /* s_moves at the post: a move since abandons the read */
 } pv_ask_t;
+
+/* §60.3: every cursor move counts here (LVGL task, one writer). A card read in flight asks
+ * between segments whether the cursor is still where it was posted, and gives the card up
+ * when it is not, so the theme the owner turned to starts its read without waiting out the
+ * one they turned past. */
+static volatile uint32_t s_moves;
+static bool still_here(void *arg, uint32_t done, uint32_t total)
+{
+    (void)done; (void)total;
+    return ((const pv_ask_t *)arg)->moves == s_moves;
+}
 
 /* §60.2: a prefetch, on the worker: one theme's stored preview into PSRAM, published for the
  * service to file in the cache. The card read is the cost the cache exists to pay ahead. */
 static void zc_job_run(void *arg)
 {
-    const char *id = (const char *)arg;
+    pv_ask_t *ask = (pv_ask_t *)arg;
+    const char *id = ask->id;
     char why[72] = "";
     uint32_t n = 0;
     uint16_t side = 0;
     uint8_t *z = (orb_sd_mounted() && !orb_theme_upload_busy())
-               ? orb_theme_preview_zcopy(id, &n, &side, why, sizeof why) : NULL;
+               ? orb_theme_preview_zcopy_ex(id, &n, &side, why, sizeof why, still_here, ask) : NULL;
     xSemaphoreTake(s_mx, portMAX_DELAY);
     strlcpy(s_zx.id, id, sizeof s_zx.id);
     s_zx.z = z; s_zx.n = n; s_zx.side = side;
@@ -311,6 +354,39 @@ static void pv_job_run(void *arg)
     if (!orb_sd_mounted() || orb_theme_upload_busy()) {
         pv_publish(&out);                 /* empty, quiet: no card, no plane */
         return;
+    }
+
+    /* §60.3: a deflated preview is fetched as its stored bytes (one short card hold) and
+     * inflated here with the card free, and the bytes go to the cache as a prefetch's do,
+     * so coming back to this theme costs no card at all. Only a raw preview (a theme baked
+     * before v1.2.20) takes the plane read below, which inflates nothing. */
+    {
+        uint32_t zn = 0;
+        uint16_t side = 0;
+        char zwhy[72] = "";
+        uint8_t *z = orb_theme_preview_zcopy_ex(id, &zn, &side, zwhy, sizeof zwhy,
+                                                still_here, (void *)ask);
+        if (!z && !still_here((void *)ask, 0, 0)) {    /* abandoned: the cursor moved on */
+            pv_publish(&out);
+            return;
+        }
+        if (z) {
+            out.px = orb_preview_inflate(z, zn, side);
+            if (out.px) { out.w = out.h = side; }
+            else { out.e = ESP_FAIL; strlcpy(out.why, "the preview did not inflate", sizeof out.why); }
+            bool filed = false;
+            xSemaphoreTake(s_mx, portMAX_DELAY);
+            if (!s_zx.z) {                        /* else a fetch's answer is still unreaped */
+                strlcpy(s_zx.id, id, sizeof s_zx.id);
+                s_zx.z = z; s_zx.n = zn; s_zx.side = side;
+                filed = true;
+            }
+            xSemaphoreGive(s_mx);
+            if (filed) s_z_dirty = true;
+            else heap_caps_free(z);
+            pv_publish(&out);
+            return;
+        }
     }
 
     uint16_t w = 0, h = 0;
@@ -499,6 +575,10 @@ void themes_page_service(void)
         xSemaphoreGive(s_mx);
         if (got.z && !zc_find(got.id)) {
             const int cur = s_pv_row - ROW_ITEMS;
+            /* §60.3: only what is farther from the cursor than the newcomer makes room for it.
+             * Evicting a nearer one let the prefetch fetch it straight back, evict the
+             * newcomer, and loop, reading the card while the cursor rested (Gold). */
+            const int dnew = zc_dist(got.id, cur);
             for (;;) {
                 bool slot_free = false;
                 for (int i = 0; i < ZC_MAX; i++) if (!s_zc[i].z) slot_free = true;
@@ -506,22 +586,24 @@ void themes_page_service(void)
                 int far = -1, fd = -1;
                 for (int i = 0; i < ZC_MAX; i++) {
                     if (!s_zc[i].z) continue;
-                    int at = -1;
-                    for (int k = 0, m = 0; k < s_ui.n; k++)
-                        if (!strcmp(s_ui.e[k].app, s_for)) { if (!strcmp(s_ui.e[k].id, s_zc[i].id)) at = m; m++; }
-                    const int d = at < 0 ? 1 << 20 : (at > cur ? at - cur : cur - at);
+                    const int d = zc_dist(s_zc[i].id, cur);
                     if (d > fd) { fd = d; far = i; }
                 }
-                if (far < 0) break;
+                if (far < 0 || fd <= dnew) { s_zc_full = true; break; }
                 heap_caps_free(s_zc[far].z);
                 memset(&s_zc[far], 0, sizeof s_zc[far]);
             }
             int slot = -1;
             for (int i = 0; i < ZC_MAX && slot < 0; i++) if (!s_zc[i].z) slot = i;
             if (slot >= 0 && zc_bytes() + got.n <= ZC_BUDGET) s_zc[slot] = got;
-            else heap_caps_free(got.z);
+            else { heap_caps_free(got.z); s_zc_full = true; }
         } else if (got.z) {
             heap_caps_free(got.z);
+        } else {
+            /* §61: a fetch that came back empty (no memory, a moved cursor) rests the
+             * prefetch until the next move; retrying at once read the card in a loop with
+             * PSRAM gone (Gold, 2026-11-08). */
+            s_zc_full = true;
         }
     }
 
@@ -531,8 +613,11 @@ void themes_page_service(void)
      * ~108 KB of card work per stop and the knob never answers; a read after
      * the spin costs the one theme the owner stopped on. */
     const int pvi = mine(s_pv_row - ROW_ITEMS);
+    /* §60.3: a cached theme costs no card, so it waits only long enough to let a spin's
+     * next detent arrive; the card read keeps the longer rest. */
+    const int settle_ms = pvi >= 0 && zc_find(s_ui.e[pvi].id) ? PV_SETTLE_CACHED_MS : PV_SETTLE_MS;
     if (pvi >= 0 && s_pv_since && !orb_jobs_busy() && !s_pvt_busy &&
-        esp_timer_get_time() / 1000 - s_pv_since / 1000 >= PV_SETTLE_MS) {
+        esp_timer_get_time() / 1000 - s_pv_since / 1000 >= settle_ms) {
         const int i = pvi;
         if (!s_pvu.px || strcmp(s_pvu.id, s_ui.e[i].id) != 0) {
             pv_ask_t ask;
@@ -540,6 +625,7 @@ void themes_page_service(void)
             strlcpy(ask.id, s_ui.e[i].id, sizeof ask.id);
             const zc_t *c = zc_find(ask.id);   /* §60.2: cached = no card */
             if (c) { ask.z = c->z; ask.n = c->n; ask.side = c->side; }
+            ask.moves = s_moves;
             const esp_err_t e = pvt_post(pv_job_run, &ask, sizeof ask);
             if (e == ESP_OK) s_pv_since = 0;   /* one post per land, settled */
             if (e != ESP_OK && e != ESP_ERR_INVALID_STATE)
@@ -552,15 +638,24 @@ void themes_page_service(void)
     /* ... and never back to back: each fetch holds the card, and the card holds the display's
      * DMA ring, so five in a row kept the glass still for seconds and the owner's turns looked
      * ignored. The next waits for the ring to come home and the glass to draw a while. */
-    if (s_armed && !s_z_fly && !s_z_dirty && !orb_jobs_busy() && !s_pvt_busy && s_pv_since == 0 &&
-        !display_dma_parked() && esp_timer_get_time() - s_z_done_us >= (int64_t)ZC_GAP_MS * 1000 &&
+    /* §60.3: the ring is no longer waited home. It comes back on the next flush, and a page
+     * at rest draws nothing, so the wait spaced fetches ~1.5 s apart for no frame at all;
+     * each fetch now gives the card back between short segments, and the gap stands. The
+     * order runs ahead the way the owner is turning, then one behind. */
+    if (s_armed && !s_z_fly && !s_z_dirty && !s_zc_full && !orb_jobs_busy() && !s_pvt_busy &&
+        s_pv_since == 0 && esp_timer_get_time() - s_z_done_us >= (int64_t)ZC_GAP_MS * 1000 &&
         s_moved_us && esp_timer_get_time() - s_moved_us >= (int64_t)ZC_REST_MS * 1000) {
         const int cur = s_pv_row - ROW_ITEMS;
-        static const int8_t ORDER[] = { 0, 1, -1, 2, -2 };
+        const int8_t d = s_dir;
+        const int8_t ORDER[] = { 0, d, (int8_t)(2 * d), (int8_t)-d, (int8_t)(3 * d) };
         for (size_t o = 0; o < sizeof ORDER; o++) {
             const int k = mine(cur + ORDER[o]);
             if (k < 0 || zc_find(s_ui.e[k].id) || s_ui.e[k].err != ESP_OK) continue;
-            if (pvt_post(zc_job_run, s_ui.e[k].id, strlen(s_ui.e[k].id) + 1) == ESP_OK)
+            pv_ask_t zq;
+            memset(&zq, 0, sizeof zq);
+            strlcpy(zq.id, s_ui.e[k].id, sizeof zq.id);
+            zq.moves = s_moves;
+            if (pvt_post(zc_job_run, &zq, sizeof zq) == ESP_OK)
                 s_z_fly = true;
             break;
         }
@@ -576,29 +671,47 @@ void themes_page_service(void)
  * the container, copies it and reboots the dial, or it puts the reason on the row
  * and the device stays exactly as it was. The queue answer is reported, not
  * swallowed — a press the firmware dropped has to say so on the glass (C8). */
+static void pick_entry(const orb_theme_entry_t *e);
 void themes_page_pick(int idx)
 {
     const int k = mine(idx);              /* this app's idx-th theme */
     if (k < 0) return;
-    const orb_theme_entry_t *e = &s_ui.e[k];
     ESP_LOGI(TAG, "pick %d/%d: %s (%s)", idx, s_ui.n - 1,
-             e->name[0] ? e->name : e->id, e->id);
+             s_ui.e[k].name[0] ? s_ui.e[k].name : s_ui.e[k].id, s_ui.e[k].id);
+    pick_entry(&s_ui.e[k]);
+}
+
+const char *themes_page_pick_id(const char *id)
+{
+    for (int k = 0; id && k < s_ui.n; k++) {
+        if (strcmp(s_ui.e[k].id, id) != 0) continue;
+        ESP_LOGI(TAG, "pick %s (%s) from the carousel",
+                 s_ui.e[k].name[0] ? s_ui.e[k].name : id, id);
+        pick_entry(&s_ui.e[k]);
+        return s_ui.status;
+    }
+    strlcpy(s_ui.status, "that theme is no longer on the card", sizeof s_ui.status);
+    return s_ui.status;
+}
+
+static void pick_entry(const orb_theme_entry_t *e)
+{
     if (e->err != ESP_OK) {
         strlcpy(s_ui.status, e->why[0] ? e->why : "not loadable", sizeof s_ui.status);
         return;
     }
     if (e->active) {
-        snprintf(s_ui.status, sizeof s_ui.status, "\"%s\" is already on the dial", e->name);
+        snprintf(s_ui.status, sizeof s_ui.status, "\"%.40s\" is already on the dial", e->name);
         return;
     }
     const esp_err_t q = orb_theme_post_bundle(e->id);
     if (q == ESP_ERR_INVALID_STATE)
         strlcpy(s_ui.status, "one theme is already being installed", sizeof s_ui.status);
     else if (q != ESP_OK)
-        snprintf(s_ui.status, sizeof s_ui.status, "\"%s\" could not start: %s",
+        snprintf(s_ui.status, sizeof s_ui.status, "\"%.36s\" could not start: %s",
                  e->name, esp_err_to_name(q));
     else
-        snprintf(s_ui.status, sizeof s_ui.status, "storing \"%s\" …", e->name);
+        snprintf(s_ui.status, sizeof s_ui.status, "storing \"%.48s\" …", e->name);
 }
 
 
@@ -766,8 +879,11 @@ void themes_opt_focus(orb_app_t *app, int idx)
      * list on the glass. A land on the same row is not a new land: the settle
      * only re-arms when the row changes. */
     if (idx == s_pv_row) return;
+    if (s_pv_row >= 0) s_dir = idx > s_pv_row ? 1 : -1;   /* §60.3: the way it is turning */
     s_pv_row = idx;
     s_moved_us = esp_timer_get_time();   /* §60.2: a move restarts the prefetch's rest */
+    s_moves++;                           /* §60.3: and gives up a read for the row it left */
+    s_zc_full = false;
     s_pv_since = idx >= ROW_ITEMS ? esp_timer_get_time() : 0;
     if (mine(idx - ROW_ITEMS) < 0) {
         if (s_pvu.px) heap_caps_free(s_pvu.px);

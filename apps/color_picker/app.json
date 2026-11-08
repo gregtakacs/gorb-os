@@ -1,6 +1,7 @@
 {
   "slug": "color_picker",
   "title": "HSB",
+  "icon": "icon.png",
   "caps": [],
   "settings": [
     {"id": "hue", "type": "int", "label": "Hue", "min": 0, "max": 359, "default": 210, "step": 5, "unit": "°"},

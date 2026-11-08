@@ -7615,3 +7615,201 @@ through items without having to load each of them".
   the busy state its last paint drew (`s_painted_busy`) and repaints when `orb_jobs_busy()`
   disagrees. Gold: the page clears on its own after entry and after a pick's reboot. Previews land
   after erratic fast-scroll rounds (2-10 detents at 0-80 ms, three-detent bursts 400 ms apart).
+
+### 60.3 The Themes list reads in short holds and runs ahead — 2026-11-07
+
+Owner, after v1.2.20 was tagged: turning through Clock's Themes list still felt fragile. The
+cursor seemed stuck on a row, a move took a long time to show, and a preview sometimes never
+came when the knob turned while another was loading. Measured on Gold with a log of every
+card hold:
+
+- **One uncached preview cost ~540 ms of card time in five or six holds**, and the glass
+  draws nothing while the card holds the display's DMA ring. Two ~120 ms folder walks to
+  find a file whose path the stem already names, a probe and a read that each opened the
+  file and read its region, and the plane itself at ~600 KB/s: a read into PSRAM goes to
+  the card driver one 512 B sector per command, since it cannot DMA there.
+- **The prefetch ran ~1.5 s apart** because it waited for the ring to come home, and the
+  ring comes home on a flush that a still page never makes.
+- **The cache thrashed while the cursor rested.** Five neighbours (~1 MB) did not fit 900 KB,
+  so a fetch evicted a nearer theme, the prefetch fetched it straight back, and so on.
+
+Now (OS, `orb_theme.c` and `themes_page.c`):
+
+- Previews open their file by path (`card_open_preview3`, the same identity checks on the
+  opened header), and `orb_theme_preview_zcopy` finds and reads the plane in one open.
+- `rd_at` reads into memory the card cannot DMA through a 4–16 KB internal buffer taken
+  inside the call. That buffer is memory the ring's loan freed, so nothing outlives the
+  loan. Whole sectors from a sector boundary give FatFs multi-block reads: ~190 KB in
+  ~150 ms, against ~300 ms.
+- **Segmented reads:** `orb_theme_preview_zcopy_ex` reads 32 KB at a time and gives the card
+  (and the ring) back for 20 ms between segments. Every hold on the page is now 70 ms or
+  less, mostly 25–50 ms.
+- **Abandoned reads:** before each segment it asks whether the cursor is still where the read
+  was posted (`s_moves`), and drops the read if not. The theme turned to starts at once.
+- An uncached landing is fetched as stored bytes, inflated with the card free, and filed in
+  the cache. A cached landing settles in 40 ms rather than 120.
+- **Prefetch:** it no longer waits for the ring. It runs ahead in the direction of turning
+  (here, +1, +2, -1, +3) within 1.1 MB. It evicts only what is farther from the cursor than
+  the newcomer, and stops until the next move once nothing nearer fits.
+
+Gold, single steps 1 s apart through eight themes: every landing came from the cache. Down,
+down, up, two up, and fast bursts of six or seven detents all land with their preview; a
+burst that ends on an uncached theme loads it in one segmented read.
+
+## 61. The theme carousel — 2026-11-07
+
+Owner, after §60.3: much better, but a full-glass preview hides the list, so you cannot
+see the name of the theme you are turning onto; you want to spin through the whole list
+and stop where you like; and getting out of the list is hard (its back row sits after
+every theme). On the owner's prompt, the ruling is **a vertical carousel like the app
+carousel, in place of the text list: lazy load with names, populate as you go, nothing
+kept once it closes** (a pick reboots the orb anyway).
+
+As built (`main/menu/theme_strip.c`, OS):
+
+- **Opening:** an app page's **Themes** row opens it in place of the text sub-menu. The text
+  sub-menu remains the fallback when the carousel cannot run (no memory, no themes listed).
+  The page stays as it was under the held glass (`display_glass_hold`), and Back returns
+  there.
+- **Layout:** the theme under the cursor is a 300 px disc in the centre. The ones above and
+  below peek in at 150 px, 228 px away. A **Back** card is at the top. The centre theme's
+  name runs across the disc's foot on a darkened band, in amber for the theme the dial
+  wears. The name follows the cursor through a spin, so every theme turned past is named.
+- **Knob:** a turn moves one theme a detent (`knob_row_step`, so the list turns the way the
+  menu does) and clamps at the ends; a spin retargets mid-motion as the app carousel does.
+  A press installs the centre theme (`themes_page_pick_id`, the list's own door) and closes
+  with the "storing …" status, after which the store reboots the orb. A press on Back or
+  on the theme already worn goes back or stays. A hold goes back.
+- **Lazy load:** a disc is a plain card until its picture is read. The loader (task
+  `theme_ts`, one job at a time) reads only while the strip rests (150 ms after motion
+  stops), never while it moves. It reads the centre first, making its 300 px sharp plane
+  and its 160 px thumbnail. It then reads the nearest unread theme, ahead of the last turn
+  first, until every theme has a thumbnail. Each read is §60.3's segmented
+  `orb_theme_preview_zcopy_ex`, abandoned when the strip moves. Raw previews from before
+  v1.2.20 are read whole.
+- **The ring:** while the carousel is up, `display_ring_urgent` takes the display's DMA ring
+  back from the card at once, not after the network's 1.5 s window
+  (`RING_NET_WINDOW_US`); otherwise every short read would still the strip that long.
+- **Memory:** everything is freed on close. A late load is reaped and freed by
+  `theme_strip_service` (`s_session`). Gold, all 20 Clock themes filled: ~1.7 MB of PSRAM in
+  use at the peak, back on close. Three visits leave the same free figure, within 16 KB.
+
+Gold, 2026-11-07:
+- Clock opens on the theme worn, named in amber, with its neighbours' pictures in place.
+- An eight-detent burst lands on its theme with the picture.
+- Spinning to Back and pressing returns to the Clock page; a hold does the same.
+- A press on Skeleton stored it and rebooted onto it.
+- Weather's Themes row opens its themes the same way.
+
+`host_menu_test` checks the Themes row opens the carousel on its app and leaves the page,
+with a mutation.
+
+### 61.1 No grey cards, and drawn ones — 2026-11-08
+
+Owner, first use: some themes stayed a grey card, and the Back card, HSB's card and Settings
+were weak. They asked for real drawn buttons.
+
+**The grey cards were memory, then a loop.**
+- Inflating a full-glass preview took one contiguous 434 KB block of PSRAM. The clock face's
+  ~2 MB of art stays loaded behind the menu, and the thumbnails cut the rest up, so the
+  block stopped being there. The loader then called that theme pictureless for the visit.
+- A strip that could not open fell back to the text list, whose prefetch retried an empty
+  fetch at once and read the card in a loop with PSRAM gone.
+
+Now:
+- `orb_inflate_stream` inflates through a 32 KB window and hands over each run as it comes.
+  The carousel assembles disc rows and boxes each row straight into its 150 px thumbnail
+  and, for the centre, the 300 px sharp plane. No preview is ever inflated whole.
+- Thumbnails are kept 6 places either side of the cursor; farther ones go and come back on
+  the way past.
+- A load short of memory is retried, up to three times; only "no preview there" stays a
+  plain card.
+- The text list's prefetch rests after an empty fetch.
+
+Gold, with the clock face loaded: about 1.1 MB of PSRAM free when the carousel opens,
+about 0.5 MB with it filled. A slow walk through all 20 Clock themes, with spins mixed in,
+ends with no grey card.
+
+**Drawn cards** (`tools/ui_icons/draw.py`, regenerated by `tools/ui_icons/make.py`):
+- **Settings:** a machined steel gear with a ruby jewel.
+- **Back:** a raised return arrow with a cool halo.
+- **HSB:** a hue ring around a saturation wheel, with the picker's selector.
+
+Each is drawn 3× supersampled from height maps with a bevelled rim, deterministic (seeded).
+
+- **Settings and Back are in the firmware.** The owner lifted D22 for the OS's own controls
+  (2026-11-08). `main/assets/orb_ui_icons.c` holds them as deflated RGB565 discs: Settings
+  at 466 px (68 KB), since the app carousel zooms it to the full glass, and Back at 300 px
+  (26 KB). Back streams into its thumbnail at open, and into the centre's plane while it is
+  the centre.
+- **HSB's icon ships in its own module** (apps are atomic):
+  - app.json `"icon": "icon.png"` (232 px). orbsdk reads the PNG itself, without Pillow,
+    disc-packs and deflates it, and compiles it into the module.
+  - The app hands it over from `orb_init` with `ORB_ICON()`, i.e. `orb.icon(z, n, side)`,
+    `i(iii)`. The OS checks the bytes and keeps a copy in the app's wasm slot.
+  - The app carousel shows an app's icon when it has no theme preview.
+  - On older firmware HSB v1.3.1 is refused at load with "needs orb.icon, which this
+    firmware lacks: update the firmware". The container format is unchanged.
+
+### 61.2 Settings is Settings, and a boot opens an app — 2026-11-08
+
+Owner:
+- The carousel's Settings card showed the black MENU landing instead of the gear.
+- It should be called Settings.
+- The orb should never land there unless it has no app to load.
+- A reboot should always open the carousel's first app.
+
+- **The card:** the carousel's opening card wears a snapshot of the glass until the strip
+  moves. Settings has no app to swap its picture back from, so it kept the snapshot.
+  Settings now never takes the snapshot (`orb_strip_open`).
+- **The name:** the shell's landing card and its top list read SETTINGS.
+- **Boot (supersedes D36's "boot where the glass last stood"):** `boot_first` opens the
+  first app of the carousel, in the owner's order, that starts, and Settings only when none
+  will. The menu's exit with nothing remembered goes to that first app too (`first_app`).
+  The USB share card, the uninstall door and the theme store still use home, the shell,
+  which they need.
+
+`host_menu_test` pins both router rules.
+
+### 61.3 The clock gives its pre-paint planes back — 2026-11-08
+
+Owner: from the Clock's own page the theme carousel loaded five pictures and no more; from
+Weather it loaded them all. "The clock is holding onto its memory."
+- **Cause:** the clock's pre-paint (§49.15) keeps four full-glass planes (`s_pf`, `s_pb`,
+  `s_pfn`, `s_pbn`, ~1.74 MB of PSRAM). `orb_sched_pause` turned pre-paint off when the dial
+  left the glass, but `gfx_prep_mode(0)` left the planes allocated, for the rest of the boot.
+- **Fix:** `gfx_prep_mode(0)` frees them, and the dial's resume takes them again. A
+  half-taken set is released whole, not leaked.
+
+Gold:
+
+| Screen | PSRAM free |
+|---|---|
+| Clock face on the glass | 2.04 MB |
+| Settings | 3.81 MB |
+| Clock carousel open | 2.80 MB |
+| Clock carousel filled | 2.72 MB |
+| Back on the clock | still pre-painted, no refusal |
+
+Every theme near the cursor read; none came back grey.
+
+### 61.4 The progress ring — 2026-11-08
+
+Owner: could a card show a spinner while the card reads its preview? It can't animate
+during a card hold: the card has the display's DMA ring. It could step between the 32 KB
+segments, but every frame is a full composed glass and would slow the read. The owner
+chose a **progress ring** instead: it only draws when there is progress to show.
+
+- **Where:** a plain card being read wears a ring just inside its edge, a bright arc
+  (#66d9ff) over a dim track, clockwise from twelve.
+- **What it measures:** reading the card is the first 70%. `orb_theme_preview_zcopy_ex`'s
+  keep callback now takes `(arg, done, total)` between segments. Streaming the picture down
+  is the rest, counted by disc rows.
+- **Redraws:** the strip redraws only when the arc has grown by 2.5% or more, and only for a
+  card within two places of the centre. The ring goes the moment the load is reaped.
+
+Gold: the ring shows on a neighbour mid-read, then the card fills.
+
+**§61.5, 2026-11-08 (owner):** a press on the theme the app already wears goes back to the app
+itself (`input_router_show`), not to its page. A hold stays the way back to the page. Gold:
+pressing the worn Triple calendar closed the carousel onto the clock face.

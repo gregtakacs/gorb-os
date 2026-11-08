@@ -1051,13 +1051,29 @@ void gfx_prep_mode(int mode)
     memset(s_pz_r, 0, sizeof s_pz_r);
     memset(s_pz_full, 0, sizeof s_pz_full);
     pp_stale_clear_all();
+    /* §61: off frees the planes. They are four full glasses (~1.7 MB of PSRAM), and they
+     * outlived the dial: the clock's pause turns pre-paint off (orb_sched_pause), yet the
+     * planes stayed with Settings on the glass, and the theme carousel opened from the
+     * clock's own page found no room for more than five pictures (owner, 2026-11-08). The
+     * dial's resume turns it back on and takes them again. */
+    if (!s_pp_mode && s_pf) {
+        heap_caps_free(s_pf);  heap_caps_free(s_pb);
+        heap_caps_free(s_pfn); heap_caps_free(s_pbn);
+        s_pf = s_pb = s_pfn = s_pbn = NULL;
+    }
     if (s_pp_mode && !s_pf) {
         const size_t n = (size_t)CLK_SCR_W * CLK_SCR_H * 2;
         s_pf  = heap_caps_malloc(n, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
         s_pb  = heap_caps_malloc(n, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
         s_pfn = heap_caps_malloc(n, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
         s_pbn = heap_caps_malloc(n, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-        if (!s_pf || !s_pb || !s_pfn || !s_pbn) { s_pp_mode = 0; ESP_LOGE("gfx", "pre-paint: no PSRAM for the planes"); }
+        if (!s_pf || !s_pb || !s_pfn || !s_pbn) {
+            heap_caps_free(s_pf);  heap_caps_free(s_pb);
+            heap_caps_free(s_pfn); heap_caps_free(s_pbn);
+            s_pf = s_pb = s_pfn = s_pbn = NULL;
+            s_pp_mode = 0;
+            ESP_LOGE("gfx", "pre-paint: no PSRAM for the planes");
+        }
     }
 }
 int gfx_prep_on(void) { return s_pp_mode; }

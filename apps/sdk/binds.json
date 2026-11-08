@@ -23,6 +23,7 @@
   "fmod": "F(FF)",
   "home": "i(i)",
   "home_gen": "i()",
+  "icon": "i(iii)",
   "json_begin": "i(ii)",
   "json_next": "i(i)",
   "json_skip": "i()",

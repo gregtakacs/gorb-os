@@ -26,6 +26,7 @@
 
 #include "esp_err.h"
 #include "esp_heap_caps.h"
+#include "esp_memory_utils.h"     /* rd_at: is the destination one the card can DMA into */
 #include "esp_log.h"
 #include "esp_partition.h"
 #include "esp_random.h"           // the staged-commit token
@@ -653,8 +654,49 @@ static bool theme_file(const char *stem, char *out, size_t outsz)
 /* Read n bytes at *io_pos. pread, not read: verify_bundle3() and the installer walk
  * one fd at two cursors (header, region, banks), and a shared file offset across those
  * walks is a bug that shows up only on a card whose sector size makes the cursors meet. */
+/* §60.3: a read into PSRAM ran at ~600 KB/s. The card driver cannot DMA there, so it bounced
+ * every 512 B sector through its own buffer as a command of its own (Gold, 2026-11-07: a
+ * 160-190 KB preview held the card, and so the glass, for ~300 ms). A big read into memory
+ * the card cannot reach goes through an internal buffer instead, whole sectors from a sector
+ * boundary, so FatFs hands the driver multi-block reads. The buffer is taken and given back
+ * inside the one call: the caller holds the card, so the display's ring is lent and this is
+ * the memory the loan freed — nothing outlives the loan to leave the ring short. A refused
+ * buffer is the old way, slower and still correct. */
+#define RD_BOUNCE_MAX  16384u
+#define RD_BOUNCE_MIN  4096u
+static ssize_t rd_at_bounced(int fd, size_t *io_pos, uint8_t *dst, size_t n)
+{
+    uint8_t *b = NULL;
+    size_t bsz = RD_BOUNCE_MAX;
+    for (; bsz >= RD_BOUNCE_MIN && !b; bsz /= 2)
+        b = heap_caps_malloc(bsz, MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA | MALLOC_CAP_8BIT);
+    if (!b) return -2;                            /* the caller reads the plain way */
+    bsz *= 2;                                     /* undo the loop's last halving */
+    size_t done = 0;
+    while (done < n) {
+        const size_t at = *io_pos + done;
+        const size_t lead = at % 512u;            /* re-read the sector's head: aligned */
+        size_t ask = lead + (n - done);
+        if (ask > bsz) ask = bsz;
+        const ssize_t got = pread(fd, b, ask, (off_t)(at - lead));
+        if (got < 0) { heap_caps_free(b); return -1; }
+        if ((size_t)got <= lead) break;           /* short file */
+        const size_t use = (size_t)got - lead;
+        memcpy(dst + done, b + lead, use);
+        done += use;
+        if ((size_t)got < ask) break;
+    }
+    heap_caps_free(b);
+    *io_pos += done;
+    return (ssize_t)done;
+}
+
 static ssize_t rd_at(int fd, size_t *io_pos, uint8_t *dst, size_t n)
 {
+    if (n >= RD_BOUNCE_MIN && !esp_ptr_internal(dst)) {
+        const ssize_t r = rd_at_bounced(fd, io_pos, dst, n);
+        if (r != -2) return r;
+    }
     size_t done = 0;
     while (done < n) {
         const ssize_t got = pread(fd, dst + done, n - done, (off_t)(*io_pos + done));
@@ -1081,6 +1123,36 @@ static int card_open_verified_slug3(const char *app_slug, const char *stem,
     return fd;
 }
 
+/* §60.3: the preview readers' door. card_open_verified_slug3 walks the app's theme folder to
+ * find the file by name, and the walk cost ~120 ms of card time — twice per preview, the
+ * probe's and the read's (Gold, 2026-11-07). The path is the stem's (theme_file), so this
+ * opens it directly; the identity checks are the same ones, on the opened header. */
+static int card_open_preview3(const char *app_slug, const char *stem,
+                              orb_bundle3_hdr_t *o, uint32_t *file_size, const char **why)
+{
+    *why = NULL;
+    char slug[ORB_BUNDLE_SLUG_MAX + 1], id[THEME_ID_HEX + 1];
+    if (!theme_id_ok(stem) ||
+        !theme_stem_split(stem, slug, sizeof slug, id, sizeof id)) {
+        *why = "that theme id is not one this device issued";
+        return -1;
+    }
+    if (strcmp(slug, app_slug) != 0) { *why = "that theme belongs to a different app"; return -1; }
+    if (!orb_app_find_slug(app_slug)) { *why = "no installed app wears that theme"; return -1; }
+    if (orb_sd_ensure_mounted() != ESP_OK) { *why = orb_sd_why(); return -1; }
+    orb_sd_lock();
+    const int fd = card_open_locked3(stem, o, file_size, why);
+    if (fd < 0) { orb_sd_unlock(); return -1; }
+    char id2[THEME_ID_HEX + 1];
+    theme_id(slug, o->name, id2);
+    if (strcmp(id2, id) != 0) {
+        card_close(fd);
+        *why = "that file's name does not match its id — refused";
+        return -1;
+    }
+    return fd;
+}
+
 /* A store's and a delete's door: the app is the one the stem names (theme-pool-plan
  * P5; it was the clock alone while the device held one theme). */
 static int card_open_verified_id3(const char *stem, orb_bundle3_hdr_t *o, uint32_t *file_size,
@@ -1271,7 +1343,7 @@ orb_asset_ans_t orb_theme_preview_read(const char *handle,
     orb_bundle3_hdr_t h3;
     uint32_t fsz = 0;
     const char *card_why = NULL;
-    const int fd = card_open_verified_slug3(slug, handle, &h3, &fsz, &card_why);
+    const int fd = card_open_preview3(slug, handle, &h3, &fsz, &card_why);
     if (fd < 0) {
         if (why && whysz && card_why) strlcpy(why, card_why, whysz);
         return ORB_ASSET_NO_SLOT;
@@ -1322,7 +1394,7 @@ orb_asset_ans_t orb_theme_preview_z(const char *handle, uint8_t *buf, size_t cap
     orb_bundle3_hdr_t h3;
     uint32_t fsz = 0;
     const char *card_why = NULL;
-    const int fd = card_open_verified_slug3(slug, handle, &h3, &fsz, &card_why);
+    const int fd = card_open_preview3(slug, handle, &h3, &fsz, &card_why);
     if (fd < 0) {
         if (why && whysz && card_why) strlcpy(why, card_why, whysz);
         return ORB_ASSET_NO_SLOT;
@@ -1360,23 +1432,89 @@ orb_asset_ans_t orb_theme_preview_z(const char *handle, uint8_t *buf, size_t cap
 uint8_t *orb_theme_preview_zcopy(const char *handle, uint32_t *n, uint16_t *side,
                                  char *why, size_t whysz)
 {
+    return orb_theme_preview_zcopy_ex(handle, n, side, why, whysz, NULL, NULL);
+}
+
+/* §60.3: one segment's card hold. ~35 ms at what the card reads into the bounce, so a turn
+ * that lands mid-read waits at most that long for its frame (a whole 190 KB preview held
+ * the glass ~200 ms). */
+#define ZSEG_BYTES  (32u * 1024u)
+
+uint8_t *orb_theme_preview_zcopy_ex(const char *handle, uint32_t *n, uint16_t *side,
+                                    char *why, size_t whysz,
+                                    bool (*keep)(void *arg, uint32_t done, uint32_t total),
+                                    void *arg)
+{
+    /* §60.3: one open, one hold. The probe and the read used to be two calls, each its own
+     * open, region read and card loan; here the probe sizes the buffer on the same fd. */
     *n = 0;
     *side = 0;
-    uint16_t w = 0, h = 0;
-    if (orb_theme_preview_read(handle, NULL, 0, &w, &h, why, whysz) != ORB_ASSET_OK || !w || w != h)
-        return NULL;
-    const uint32_t cap = orb_disc_px(w) * 2u;
-    uint8_t *buf = heap_caps_malloc(cap, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    if (!buf) return NULL;
-    uint32_t zn = 0;
-    if (orb_theme_preview_z(handle, buf, cap, &w, &h, &zn, why, whysz) != ORB_ASSET_OK || !zn) {
-        heap_caps_free(buf);
+    if (why && whysz) why[0] = '\0';
+    char slug[ORB_BUNDLE_SLUG_MAX + 1], hex[THEME_ID_HEX + 1];
+    if (!theme_stem_split(handle, slug, sizeof slug, hex, sizeof hex)) {
+        if (why && whysz) strlcpy(why, "that theme id is not one this device issued", whysz);
         return NULL;
     }
-    uint8_t *fit = heap_caps_realloc(buf, zn, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    *n = zn;
-    *side = w;
-    return fit ? fit : buf;
+    orb_bundle3_hdr_t h3;
+    uint32_t fsz = 0;
+    const char *card_why = NULL;
+    const int fd = card_open_preview3(slug, handle, &h3, &fsz, &card_why);
+    if (fd < 0) {
+        if (why && whysz && card_why) strlcpy(why, card_why, whysz);
+        return NULL;
+    }
+    orb_bundle_t b;
+    uint8_t *region = NULL;
+    const char *rv = region_from_card3(fd, &h3, fsz, &b, &region);
+    if (rv) {
+        card_close(fd);
+        if (why && whysz) strlcpy(why, rv, whysz);
+        return NULL;
+    }
+    uint8_t *buf = NULL;
+    const orb_bundle_sec_t *sec = orb_bundle_find(&b, slug);
+    orb_elem_t e;
+    char seat_why[96];
+    /* The same seat read_one_plane_ex finds, and the same deflated-preview test: anything
+     * else (no preview, a raw disc from before v1.2.20) answers NULL for the plain read. */
+    if (sec && orb_elems_at(sec, (uint16_t)ORB_ASSET_PREVIEW, 0, 0, &e, seat_why, sizeof seat_why)
+                   == ORB_ELEMS_OK &&
+        !e.masked && e.plane_w && e.plane_w == e.plane_h &&
+        e.size >= 6u && e.size < orb_disc_px(e.plane_w) * 2u)
+        buf = heap_caps_malloc(e.size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    bool lost = false;                       /* the card was given back and not retaken */
+    if (buf) {
+        size_t pos = sec->art_off + e.off;
+        uint32_t done = 0;
+        while (done < e.size) {
+            /* No keep is the boot's carousel load: nothing is on the glass to wait for. */
+            const uint32_t most = keep ? ZSEG_BYTES : e.size;
+            const uint32_t seg = e.size - done < most ? e.size - done : most;
+            if (rd_at(fd, &pos, buf + done, seg) != (ssize_t)seg) break;
+            done += seg;
+            if (done == e.size) break;
+            /* Between segments the card goes back, and with it the ring: the glass gets a
+             * frame, and a knob turn its answer. The fd stays open; nothing else holds it. */
+            orb_sd_unlock();
+            vTaskDelay(pdMS_TO_TICKS(20));
+            /* The card was given back, so it may have gone: a pulled card ends the read. */
+            const bool go = (!keep || keep(arg, done, e.size)) && !orb_theme_upload_busy() &&
+                            orb_sd_ensure_mounted() == ESP_OK;
+            orb_sd_lock();
+            if (!go) { lost = true; break; }
+        }
+        if (done != e.size || !orb_inflate_head_ok(buf, e.size)) {
+            if (!lost && why && whysz) strlcpy(why, "the preview's compressed plane could not be read", whysz);
+            heap_caps_free(buf);
+            buf = NULL;
+        } else {
+            *n = e.size;
+            *side = e.plane_w;
+        }
+    }
+    heap_caps_free(region);
+    card_close(fd);
+    return buf;
 }
 
 uint8_t *orb_preview_inflate(const uint8_t *z, uint32_t n, uint16_t side)
@@ -1384,12 +1522,19 @@ uint8_t *orb_preview_inflate(const uint8_t *z, uint32_t n, uint16_t side)
     if (!z || !n || !side) return NULL;
     uint8_t *sq = heap_caps_malloc((size_t)side * side * 2u, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (!sq) return NULL;
-    if (!orb_inflate_head_ok(z, n) || !orb_inflate(z, n, sq, orb_disc_px(side) * 2u)) {
+    if (!orb_preview_inflate_into(z, n, side, sq, (size_t)side * side * 2u)) {
         heap_caps_free(sq);
         return NULL;
     }
-    orb_disc_expand_inplace(sq, side);
     return sq;
+}
+
+bool orb_preview_inflate_into(const uint8_t *z, uint32_t n, uint16_t side, uint8_t *sq, size_t cap)
+{
+    if (!z || !n || !side || !sq || cap < (size_t)side * side * 2u) return false;
+    if (!orb_inflate_head_ok(z, n) || !orb_inflate(z, n, sq, orb_disc_px(side) * 2u)) return false;
+    orb_disc_expand_inplace(sq, side);
+    return true;
 }
 
 /* D43 P7 (§8): a card theme's app design, streamed back for its editor. The OS never reads

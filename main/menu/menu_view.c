@@ -46,7 +46,8 @@
 #include "orb_net.h"
 #include "orb_sd.h"
 #include "orb_app.h"
-#include "themes_page.h"     /* §58: an app's Themes sub-menu */
+#include "themes_page.h"
+#include "theme_strip.h"   /* §61: the Themes row opens the theme carousel */     /* §58: an app's Themes sub-menu */
 #include "orb_rotation.h"     /* §59: the owner's rotation */
 #include "orb_app_install.h"   /* APPS: the uninstall and fault-clear doors (P5.3) */
 #include "orb_app_scan.h"      /* D38: the APPS catalog walks the card too */
@@ -794,7 +795,7 @@ static void label_display(int row, char *out, size_t outsz, bool *sel_hi)
  * page with that title qualified — a page about one app must never be read as
  * the list it came from. Static buffer, one writer, the LVGL task: same
  * reasoning as every painted string in this file. */
-static const char *title_top(void)  { return "MENU"; }
+static const char *title_top(void)  { return "SETTINGS"; }   /* §61: the carousel calls it Settings */
 static const char *title_app(void)
 {
     static char t[48];
@@ -1349,6 +1350,10 @@ static void act_own(int i)
     const int what = own_at(i);
     if (what == OWN_THEMES) {
         const orb_app_t *a = s_app;
+        /* §61: the themes as a carousel over the page, which stays as it is under the
+         * held glass and is where a Back or a hold returns. The text list stays the
+         * answer when the carousel cannot run. */
+        if (theme_strip_open(a)) return;
         go_to(PG_APP, 0);                       /* leaves this page: disarms it */
         themes_page_for(a->slug);
         s_theme_of = a;
@@ -2106,7 +2111,7 @@ static void repaint(void)
     if (!s_armed) {
         /* Rows are already blank: page_rows() returns 0 unarmed, so the loop
          * above never had a row index to paint. */
-        lv_label_set_text(s_title, "MENU");
+        lv_label_set_text(s_title, "SETTINGS");
         lv_obj_set_style_text_font(s_title, &lv_font_montserrat_48, 0);
         lv_label_set_text(s_hint, "push to open");
         s_painted_busy = orb_jobs_busy();   /* this hint never says "working..." */
@@ -2184,7 +2189,7 @@ esp_err_t menu_view_init(void)
     if (!s_title) goto nomem;
     lv_obj_set_style_text_color(s_title, lv_color_white(), 0);
     lv_obj_set_style_text_font(s_title, &lv_font_montserrat_48, 0);
-    lv_label_set_text(s_title, "MENU");
+    lv_label_set_text(s_title, "SETTINGS");
     lv_obj_align(s_title, LV_ALIGN_TOP_MID, 0, 60);
 
     /* The five row strips, centred as a column. Built once and re-labelled:
@@ -2794,7 +2799,7 @@ static void row_text(int row, char *out, size_t outsz, bool *sel_hi)
     if (s_pg->label) s_pg->label(row, out, outsz, sel_hi);
 }
 
-static const char *page_title(void) { return s_pg->title ? s_pg->title() : "MENU"; }
+static const char *page_title(void) { return s_pg->title ? s_pg->title() : "SETTINGS"; }
 
 /* The header as painted (§7 item 6). A page longer than the glass scrolls, and a
  * scrolled list with no position readout cannot answer "how far am I from the
@@ -2911,6 +2916,12 @@ void menu_view_apply_input(int32_t delta, bool pressed)
     bool hi;
     row_text(s_cur, row, sizeof row, &hi);
     ESP_LOGI(TAG, "cursor %s row %d/%d: %s", page_title(), s_cur, rows - 1, row);
+    repaint();
+}
+
+void menu_view_status(const char *msg)
+{
+    strlcpy(s_ui.status, msg ? msg : "", sizeof s_ui.status);
     repaint();
 }
 

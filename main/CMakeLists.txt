@@ -51,6 +51,7 @@ idf_component_register(
         "menu/knob_edit.c"
         # §43: the Themes page, an OS menu row (it was the clock app's options page).
         "menu/themes_page.c"
+        "menu/theme_strip.c"
         "input/input_router.c"
         "imu/imu.c"
         # D39: the sound engine (I2S + ES8311 + NS4150B and the mixer) and its codec.
@@ -85,6 +86,7 @@ idf_component_register(
         # purpose — tools/host_orbapp_reader_test.py links it straight into the
         # manifest reader's harness, which no other main/ TU makes possible.
         "assets/orb_assets.c"
+        "assets/orb_ui_icons.c"
         "net/orb_net.c"
         "net/orb_https.c"
         "net/orb_home.c"

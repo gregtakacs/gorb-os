@@ -44,6 +44,14 @@ void themes_page_for(const char *slug);
  *  dial (NULL when none of them is). Read on the LVGL task, from the reaped copy. */
 int themes_page_count_for(const char *slug);
 const char *themes_page_active_for(const char *slug);
+/** §61: one of `slug`'s themes from the last walk, for the theme carousel: its id, its
+ *  name (the id when it has none), whether the dial wears it and whether it installs.
+ *  False past the end. LVGL task, from the reaped copy. */
+bool themes_page_item(const char *slug, int i, const char **id, const char **name,
+                      bool *active, bool *ok);
+/** §61: install `id`, the press the carousel makes. Answers the sentence the status line
+ *  should carry ("storing …", or why not). LVGL task. */
+const char *themes_page_pick_id(const char *id);
 /** The walk itself, run synchronously on the caller — which must be the worker.
  *  The menu runs it beside its own app walk on entering APPS, so an app's page has
  *  its Themes row when it opens; the answer lands through themes_page_service(). */

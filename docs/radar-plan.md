@@ -502,10 +502,12 @@ also the drawing order and the priority:
 | 2 | urban area | fill | | 9 | coast | line |
 | 3 | lake | fill | | 10 | city dot | mark |
 | 4 | river | line | | 11 | airport mark | mark |
-| 5 | minor road | line | | 12 | runway | line |
-| 6 | major road | line | | | | |
+| 5 | minor road (FORMAT 2: primary) | line | | 12 | runway | line |
+| 6 | major road (FORMAT 2: motorway, trunk) | line | | 13 | secondary road (FORMAT 2) | line |
+| | | | | 14 | tertiary road (FORMAT 2) | line |
 
-Indices 13–15 are spare. A new role appends; a role's number never changes. Land is the
+*FORMAT 2 (§6.9)* split the roads into four roles and draws them minor under major; index
+15 is spare. A new role appends; a role's number never changes. Land is the
 ground every map starts from, so it has no features.
 
 **Levels of detail:** one file per whole zoom. For a radius r, the OS takes the zoom whose
@@ -693,7 +695,9 @@ The frames are blobs (§2.3); the map is the OS's (§2.4). *As built (§6.8):* a
 frames are 40–70 KB, so 18 can pass the OS's 768 KB; when a frame will not fit, the older
 past frames go unfetched for that list and the loop starts later.
 
-**Zoom:** three steps, the map's z6, z7 and z8: 479, 239 and 120 km from the centre to the
+**Zoom:** *(six steps since §6.9: Wide, Region, Local, Area, City, Close, the map's z6 to
+z11; frames stop at Local's z7 and the closer steps magnify them 2, 4 and 8 times, smoothed
+on the orb.)* Three steps, the map's z6, z7 and z8: 479, 239 and 120 km from the centre to the
 edge at DFW, and 366, 183 and 92 km at 50°N. **Each asks LibreWXR for its 512 px image one
 zoom lower** (z5, z6, z7), which is the same scale (§1.4). The app opens a map view at
 exactly that radius (`orb_map_open`) and shifts the frame by the server's rounding of its
@@ -1316,4 +1320,52 @@ The owner's call after §6.4: keep the map parked and redraw only the rain.
 - **For R6:** the internal RAM under the radar with both layers and the map (Bronze showed
   33 KB free, the largest block 13 KB, and the display's tile ring re-funded short once);
   an hour on the glass; a card pulled mid-read.
+
+### 6.9 After the owner's hand test (2026-11-07, Bronze, OS v1.2.26, radar v1.1.0, uncommitted)
+
+The owner's verdict on R5: the time dial and the press for the next place feel right; the
+press-and-turn felt wrong ("one zoom then it reverts to time scrub"), zooming was slow,
+three steps were not close enough, and the roads far too dense at DFW and London.
+
+- **The press-and-turn** (`main/knob/knob.c`): the switch ISR took a release at its first
+  edge, and a push switch held under a turning shaft opens for a moment; the gesture ended
+  after one click, the re-close fell inside the press debounce and was dropped, and every
+  later click was an ordinary turn. A release now counts once the switch has stayed open
+  60 ms (`kg_up`, `kg_down`, `kg_settle`, in the gesture's pure half); a close inside the
+  settle is the same press; a hold is not fired while a release settles. `host_knob_test.py`
+  adds the cases; 14/14 gesture mutants. Not provable from the bench door: the owner's hand
+  is the test.
+- **The zoom lands once a turn rests** (350 ms after the last click), however many clicks
+  it took; the status line and the range follow every click at once. The old map and rain
+  stay up until the new view is ready instead of going blank.
+- **Six steps**: Wide, Region, Local, Area, City, Close (479, 239, 120, 60, 30, 15 km at
+  DFW), the map's z6 to z11. **Frames stop at Local's z7** (~0.6 km a pixel, finer than the
+  ~1 km radar): Area, City and Close draw the same frames magnified 2, 4 and 8 times, so
+  zooming among the four fetches nothing, only the map view changes. LibreWXR's own
+  smoothing (`1_0` in the URL) was tried first: it is bilinear plus a blur and looks right,
+  but comes back as RGBA (colour type 6) at ~100 KB a frame, which the reader refuses and
+  the body budget could hold seven of.
+- **A smoothed, magnified draw** (`orb_cv_png8` with `scale | ORB_PNG_SMOOTH`, OS v1.2.26):
+  each glass pixel samples the source at its own centre and blends the four values around
+  it bilinearly before the palette colours them (values, not colours: green-to-red never
+  passes through orange that was not there), exact in 1/(2k) of a source pixel, row by row
+  as the decoder streams with one row kept. `rd_window_k` places the window so the place
+  lands on the glass's centre within half a glass pixel (0.496 at worst over 30 cases).
+  `host_live_test.py` holds it to a double-precision bilinear reference at 1, 2, 4 and 8
+  times, across the source's right edge and with negative positions; 15/15 mutants. A step
+  at 4 or 8 times costs 100–130 ms on Bronze; the source's 1 km cells still show as soft
+  steps at City and Close, which no interpolation removes.
+- **Roads: map FORMAT 2.** Major road is motorway and trunk; primary moved to role 5;
+  secondary and tertiary are roles 13 and 14; lines draw minor under major (a table, not the
+  role number). Each road class is written only from the level it can first be shown at
+  (OpenMapTiles itself leaves secondary and tertiary out of the wide tiles, so the files
+  barely shrink: what was dense at Region was trunks and primaries). The density is the
+  view's: the radar's values (layout 2) carry the first zoom step each role is drawn at,
+  and Scope draws motorways and trunks everywhere, primary from Local, secondary from Area,
+  tertiary from City. The files are named `-f2` (§2.4's rule), so the Places card showed
+  every place amber until Make maps; on Bronze it made all three (18 levels, 3.9 MB) and
+  swept the 18 FORMAT 1 files. JS and Python still write the same bytes (R0's DFW tiles and
+  the seeded suite, 14/14 mutants).
+- **Not yet:** the step cost at the close zooms (half the display task at four steps a
+  second) is R6's to measure over time; the editor's road presets are R7's.
 

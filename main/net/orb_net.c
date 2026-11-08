@@ -3100,18 +3100,22 @@ static esp_err_t h_home_post(httpd_req_t *req)
  * clears one: {"i":1,"lat":38.72,"lon":-9.14,"name":"Lisbon"} or {"i":1,"clear":1}. The
  * name is optional (the OS names the point from its city list, as home does). The hub
  * names a point first with GET /api/v1/home?lat=&lon=, which stores nothing.
+ * Each set place carries its zone (owner, 2026-11-08): "zone" in the body names one the
+ * zone table holds, else it is the nearest city's; GET answers it with its rule ("tz"),
+ * its offset now in minutes east of UTC ("tz_offset"), "dst", and "exact" (false where
+ * the table's rule only approximates the zone).
  * ------------------------------------------------------------------------- */
 
 #define NET_PLACES_BODY_MAX 256
 
 static esp_err_t places_reply(httpd_req_t *req, const char *state)
 {
-    char *json = heap_caps_malloc(640, MALLOC_CAP_SPIRAM);
+    char *json = heap_caps_malloc(1024, MALLOC_CAP_SPIRAM);
     if (!json) {
         httpd_resp_set_status(req, "503 Service Unavailable");
         return httpd_resp_sendstr(req, "{\"error\":\"no memory\"}");
     }
-    int n = snprintf(json, 640, "{%s%s%s\"gen\":%lu,\"places\":[", state ? "\"state\":\"" : "",
+    int n = snprintf(json, 1024, "{%s%s%s\"gen\":%lu,\"places\":[", state ? "\"state\":\"" : "",
                      state ? state : "", state ? "\"," : "", (unsigned long)orb_places_gen());
     for (int i = 0; i < ORB_PLACES_N; i++) {
         orb_place_rec_t p;
@@ -3119,13 +3123,24 @@ static esp_err_t places_reply(httpd_req_t *req, const char *state)
             char la[16], lo[16];
             orb_geo_fmt(p.lat_e6, la, sizeof la);
             orb_geo_fmt(p.lon_e6, lo, sizeof lo);
-            n += snprintf(json + n, 640 - (size_t)n, "%s{\"i\":%d,\"set\":true,\"lat\":%s,\"lon\":%s,\"name\":\"%s\"}",
+            /* the place's zone (owner, 2026-11-08): its name, its offset now, and whether the
+             * zone table's rule is exact for it */
+            int32_t off = 0;
+            bool dst = false, exact = false;
+            const char *iana = "";
+            const bool zoned = orb_places_zone(i, (int64_t)time(NULL), &off, &dst, &iana, &exact);
+            n += snprintf(json + n, 1024 - (size_t)n, "%s{\"i\":%d,\"set\":true,\"lat\":%s,\"lon\":%s,\"name\":\"%s\"",
                           i ? "," : "", i, la, lo, p.name);
+            if (zoned)
+                n += snprintf(json + n, 1024 - (size_t)n, ",\"zone\":\"%s\",\"zone_named\":%s,\"tz\":\"%s\",\"tz_offset\":%ld,\"dst\":%s,\"exact\":%s",
+                              iana, p.zone_named ? "true" : "false", orb_geo_zone_posix(p.zone), (long)off,
+                              dst ? "true" : "false", exact ? "true" : "false");
+            n += snprintf(json + n, 1024 - (size_t)n, "}");
         } else {
-            n += snprintf(json + n, 640 - (size_t)n, "%s{\"i\":%d,\"set\":false}", i ? "," : "", i);
+            n += snprintf(json + n, 1024 - (size_t)n, "%s{\"i\":%d,\"set\":false}", i ? "," : "", i);
         }
     }
-    snprintf(json + n, 640 - (size_t)n, "]}");
+    snprintf(json + n, 1024 - (size_t)n, "]}");
     const esp_err_t r = httpd_resp_sendstr(req, json);
     heap_caps_free(json);
     return r;
@@ -3185,7 +3200,7 @@ static esp_err_t h_places_post(httpd_req_t *req)
         why = orb_places_clear((int)idx);
     } else {
         int32_t la = 0, lo = 0;
-        char name[ORB_GEO_PLACE_MAX];
+        char name[ORB_GEO_PLACE_MAX], zone[ORB_HOME_ZONE_MAX] = "";
         bool has_name = false;
         if (!json_deg_e6(body, len, "lat", &la) || !json_deg_e6(body, len, "lon", &lo))
             why = "lat and lon required";
@@ -3195,7 +3210,9 @@ static esp_err_t h_places_post(httpd_req_t *req)
             has_name = json_str(body, len, "name", name, sizeof name);
             if (!has_name) why = "name not a string, or too long";
         }
-        if (!why) why = orb_places_set((int)idx, la, lo, has_name ? name : NULL);
+        if (!why && json_find(body, len, "zone") && !json_str(body, len, "zone", zone, sizeof zone))
+            why = "zone not a string, or too long";
+        if (!why) why = orb_places_set((int)idx, la, lo, has_name ? name : NULL, zone);
     }
     if (why) {
         ESP_LOGW(TAG, "places: refused (%s)", why);

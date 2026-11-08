@@ -768,6 +768,22 @@ static esp_err_t svc_place(orb_app_t *a, int i, orb_svc_home_t *out)
     return ESP_OK;
 }
 
+static esp_err_t svc_place_zone(orb_app_t *a, int i, int64_t when, orb_svc_zone_t *out)
+{
+    SVC(a, LOCATION);
+    if (!out) return ESP_ERR_INVALID_ARG;
+    memset(out, 0, sizeof *out);
+    if (i < 0 || i >= ORB_PLACES_N) return ESP_ERR_INVALID_ARG;
+    int32_t off = 0;
+    bool dst = false;
+    const char *iana = "";
+    if (!orb_places_zone(i, when, &off, &dst, &iana, NULL)) return ESP_ERR_NOT_FOUND;
+    out->offset_min = off;
+    out->dst = dst ? 1 : 0;
+    snprintf(out->zone, sizeof out->zone, "%s", iana);
+    return ESP_OK;
+}
+
 /* The frozen table. The order IS orb_svc_t's field order — the one place a
  * missing entry becomes a compile-visible shape rather than a NULL an app
  * discovers at runtime — and nothing below is reachable without going through
@@ -823,6 +839,7 @@ static const orb_svc_t S_TABLE = {
     .sound_active  = svc_sound_active,
     .home          = svc_home,
     .place         = svc_place,
+    .place_zone    = svc_place_zone,
 };
 
 const orb_svc_t *orb_svc_table(void) { return &S_TABLE; }

@@ -364,6 +364,18 @@ bool orb_places_get(int i, orb_place_rec_t *out)
     strcpy(out->name, "Lisbon");
     return true;
 }
+int g_zone_reads;
+bool orb_places_zone(int i, int64_t utc, int32_t *off_min, bool *dst, const char **iana, bool *exact)
+{
+    (void)utc;
+    g_zone_reads++;
+    if (i != 1) return false;                  /* only place 2 is set */
+    if (off_min) *off_min = 60;
+    if (dst) *dst = true;
+    if (iana) *iana = "Europe/Lisbon";
+    if (exact) *exact = true;
+    return true;
+}
 
 /* ---- the power leaves: what the broker's request path must call ----------- */
 int g_pwr_calls;                       /* app_request invocations */
@@ -527,6 +539,11 @@ int main(int argc, char **argv)
         CK("place: undeclared app refused, record never read",
            S->place(A, 1, &h) == ESP_ERR_NOT_ALLOWED && S->place(G, 1, &h) == ESP_ERR_NOT_ALLOWED &&
            g_place_reads == 0);
+        orb_svc_zone_t z;
+        g_zone_reads = 0;
+        CK("place_zone: undeclared app refused, zone never read",
+           S->place_zone(A, 1, 0, &z) == ESP_ERR_NOT_ALLOWED && S->place_zone(G, 1, 0, &z) == ESP_ERR_NOT_ALLOWED &&
+           g_zone_reads == 0);
     }
 
     /* ---- the wall clock: one scripted timeline, the compose_now rules ---- */

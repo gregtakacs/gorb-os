@@ -91,8 +91,10 @@ require(path.join(__dirname, '..', 'host@1', 'host.js'));
 const T = OrbTheme, HOST = OrbHost;
 const panels = []; T.panel = (x, layers, o) => { panels.push(o.mode); return true; };
 let orbAnswers = {
-  home: { home: { set: true, lat: 32.75, lon: -97.33, place: 'near Fort Worth' } },
-  places: { places: [{ i: 0, set: true, lat: 38.72, lon: -9.14, name: 'Lisbon' }, { i: 1, set: false }, { i: 2, set: true, lat: 51.5, lon: -0.12, name: 'London' }] },
+  home: { home: { set: true, lat: 32.75, lon: -97.33, place: 'near Fort Worth', zone: 'America/Chicago' }, tz_offset: -360 },
+  // Lisbon as OS v1.2.38 answers a place (its zone and offset); London as older firmware does (none)
+  places: { places: [{ i: 0, set: true, lat: 38.72, lon: -9.14, name: 'Lisbon', zone: 'Europe/Lisbon', tz_offset: 60, dst: true }, { i: 1, set: false },
+    { i: 2, set: true, lat: 51.5, lon: -0.12, name: 'London' }] },
   units: { dist: 'mi' },
 };
 const fh = require(path.join(__dirname, 'fake-hub.js'))({ rest: async (url) => {
@@ -124,11 +126,12 @@ const app = {
   ],
   ui: { picked: 'dot' },
   play: { fps: 100, on: (v) => v.size !== 's', what: 'the tint' },
+  paceBy: ['size'],
   layers: true,
   draw: (x, d, c) => {
     const p = c.part('swatch', d.color, () => { made.push(d.color); return d.color === 'blue' ? wait(30).then(() => 'slow ' + d.color) : 'fast ' + d.color; });
     const f = c.part('fresh', d.color, () => wait(30).then(() => 'fresh ' + d.color), { fresh: true });
-    draws.push({ layer: c.layer, dt: c.dt, t: c.t, view: Object.assign({}, c.view), place: c.place && c.place.key, home: c.home && c.home.name, unit: c.unit, ui: c.ui, color: d.color, p, f });
+    draws.push({ layer: c.layer, dt: c.dt, t: c.t, view: Object.assign({}, c.view), place: c.place && c.place.key, zone: c.place && [c.place.zone, c.place.offset_min], home: c.home && c.home.name, unit: c.unit, ui: c.ui, color: d.color, p, f });
   },
   pointer: {
     down: (pt, c) => { app.pointer.at = ['down', Math.round(pt[0]), Math.round(pt[1]), c.step]; c.setUi({ picked: 'grabbed' }); return true; },
@@ -191,8 +194,12 @@ const last = () => draws[draws.length - 1];
     const placeOpts = by(by(H2.tree, 'div', 'st-tool')[0], 'button').map(text).filter((t) => /Home|Lisbon|London/.test(t));
     ok(placeOpts.join() === 'Home,Lisbon,London', 'a place view lists home and the orb’s set places', placeOpts.join());
     ok(last().place === 'home' && last().home === 'Home' && last().unit === 'mi', 'the frame has home (named Home), the place and the orb’s unit', JSON.stringify([last().place, last().home, last().unit]));
+    ok(JSON.stringify(last().zone) === '["America/Chicago",-360]', 'home carries the orb’s zone and its offset now', JSON.stringify(last().zone));
+    await press(H2, 'Lisbon');
+    ok(JSON.stringify(last().zone) === '["Europe/Lisbon",60]', 'a place carries its own zone and offset, as the orb answers them', JSON.stringify(last().zone));
     await press(H2, 'London');
     ok(last().place === 'p3', 'picking a place reaches the frame', last().place);
+    ok(JSON.stringify(last().zone) === '["",null]', 'a place from firmware that answers no zone has none, not a guess', JSON.stringify(last().zone));
     H2.unmount();
   }
 
@@ -314,6 +321,13 @@ const last = () => draws[draws.length - 1];
     ok(bakes === 1, 'an edit inside the pause restarts it', bakes);
     await wait(400); await H.settle(10);
     ok(bakes === 2 && /^Size4 KB/.test(sizeLine()), 'and the pause after the last edit bakes once', bakes + ' ' + sizeLine());
+    // E6: the frame rate, once the size settles: each paceBy option measured, a view the app
+    // does not play in still, and the top bar's fit given the rate of the view on the glass
+    await wait(900); H.render(); await H.settle(20);
+    const rate = () => text(by(H.tree, 'div', 'hs-size')[1]);
+    ok(/Small still: nothing moves/.test(rate()) && /Medium ~20 of 20 fps/.test(rate()) && /Large ~20 of 20 fps/.test(rate()),
+       'Render lists each paceBy option’s rate; a view it does not play in is still', rate());
+    ok(/· 20 fps · /.test(fitText()), 'the top bar says the rate of the view on the glass', fitText());
     // an app's refusal is the readout's line, and Send's
     bakeWhy = 'pick a picture first';
     by(H.tree, 'input').filter((i) => /name/i.test(i.props.placeholder || ''))[0].props.onChange({ target: { value: 'Sun 4' } }); H.render();

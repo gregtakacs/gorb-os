@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"time"
 )
 
 // PlacesBodyMax is NET_PLACES_BODY_MAX in orb_net.c.
@@ -13,9 +14,23 @@ const PlacesBodyMax = 256
 
 // Place mirrors orb_place_rec_t: one of the three places beside home (radar-plan §2.1).
 type Place struct {
-	Set      bool
-	Lat, Lon float64
-	Name     string
+	Set       bool
+	Lat, Lon  float64
+	Name      string
+	Zone      string // IANA: the one named, else the fake's stand-in proposal's
+	ZoneNamed bool
+}
+
+// placeZoneJSON is h_places's zone fields: the zone, its offset now and its daylight flag,
+// from Go's own zone data standing in for the orb's zone table and rule (orb_tzrule.c).
+func placeZoneJSON(p Place, now time.Time) string {
+	loc, err := time.LoadLocation(p.Zone)
+	if p.Zone == "" || err != nil {
+		return ""
+	}
+	t := now.In(loc)
+	_, off := t.Zone()
+	return fmt.Sprintf(`,"zone":%q,"zone_named":%t,"tz":"","tz_offset":%d,"dst":%t,"exact":true`, p.Zone, p.ZoneNamed, off/60, t.IsDST())
 }
 
 func (o *Orb) placesJSON(state string) string {
@@ -33,7 +48,7 @@ func (o *Orb) placesJSON(state string) string {
 			b += ","
 		}
 		if p.Set {
-			b += fmt.Sprintf(`{"i":%d,"set":true,"lat":%.6f,"lon":%.6f,"name":%q}`, i, p.Lat, p.Lon, p.Name)
+			b += fmt.Sprintf(`{"i":%d,"set":true,"lat":%.6f,"lon":%.6f,"name":%q%s}`, i, p.Lat, p.Lon, p.Name, placeZoneJSON(p, time.Now()))
 		} else {
 			b += fmt.Sprintf(`{"i":%d,"set":false}`, i)
 		}
@@ -73,6 +88,7 @@ func (o *Orb) servePlacesPost(w http.ResponseWriter, r *http.Request) {
 		Lat   *float64 `json:"lat"`
 		Lon   *float64 `json:"lon"`
 		Name  *string  `json:"name"`
+		Zone  *string  `json:"zone"`
 	}
 	if json.Unmarshal(raw, &req) != nil || req.I == nil || *req.I < 0 || *req.I > 2 {
 		writeJSON(w, 400, `{"error":"i (0-2) required"}`)
@@ -108,12 +124,23 @@ func (o *Orb) servePlacesPost(w http.ResponseWriter, r *http.Request) {
 		}
 		name = *req.Name
 	}
+	// the zone: a named one the zone data holds, else the stand-in proposal's (the orb's is
+	// its nearest city's)
+	_, zone, _ := fakeProposal(*req.Lat, *req.Lon)
+	named := req.Zone != nil && *req.Zone != ""
+	if named {
+		if _, err := time.LoadLocation(*req.Zone); err != nil || !strings.Contains(*req.Zone, "/") {
+			writeJSON(w, 400, `{"error":"zone not in the zone table"}`)
+			return
+		}
+		zone = *req.Zone
+	}
 	if name == "" {
 		name, _, _ = fakeProposal(*req.Lat, *req.Lon)
 	}
 	o.mu.Lock()
 	d := o.deviceLocked()
-	d.Places[i] = Place{Set: true, Lat: *req.Lat, Lon: *req.Lon, Name: name}
+	d.Places[i] = Place{Set: true, Lat: *req.Lat, Lon: *req.Lon, Name: name, Zone: zone, ZoneNamed: named}
 	d.PlacesGen++
 	o.mu.Unlock()
 	writeJSON(w, 200, o.placesJSON("placed"))

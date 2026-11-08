@@ -952,6 +952,26 @@ m3ApiRawFunction(imp_place)                  /* i32 place(u32 i, orb_place_t *ou
     m3ApiReturn(e);
 }
 
+/* A place's zone at t (owner, 2026-11-08), in the SDK's 48 B orb_place_zone_t. */
+m3ApiRawFunction(imp_place_zone)             /* i32 place_zone(u32 i, i64 t, orb_place_zone_t *out) — 48 B */
+{
+    m3ApiReturnType(int32_t);
+    CALLER();
+    m3ApiGetArg(uint32_t, i);
+    m3ApiGetArg(int64_t, t);
+    m3ApiGetArgMem(uint8_t *, out);
+    m3ApiCheckMem(out, 48);
+    orb_svc_zone_t z;
+    const esp_err_t e = orb_svc_table()->place_zone(s->app, i > 2 ? -1 : (int)i, t, &z);
+    if (e == ESP_OK) {
+        m3ApiWriteMem32(out + 0, (uint32_t)z.offset_min);
+        m3ApiWriteMem32(out + 4, (uint32_t)z.dst);
+        memcpy(out + 8, z.zone, 40);
+        out[8 + 39] = 0;
+    }
+    m3ApiReturn(e);
+}
+
 m3ApiRawFunction(imp_places_gen)
 {
     m3ApiReturnType(uint32_t);
@@ -1700,6 +1720,7 @@ static const wasm_bind_t s_binds[] = {
     { "orb", "home",          "i(i)",      imp_home },
     { "orb", "home_gen",      "i()",       imp_home_gen },
     { "orb", "place",         "i(ii)",     imp_place },
+    { "orb", "place_zone",    "i(iIi)",    imp_place_zone },
     { "orb", "places_gen",    "i()",       imp_places_gen },
     { "orb", "net_keep",      "i(i)",      imp_net_keep },
     { "orb", "blob_len",      "i(i)",      imp_blob_len },

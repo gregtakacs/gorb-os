@@ -37,6 +37,8 @@ const char *orb_places_check(int i, int32_t lat_e6, int32_t lon_e6, const char *
 
 /* ---- end of the pure half --------------------------------------------------------- */
 
+#include "orb_tzrule.h"
+
 #include "esp_attr.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
@@ -50,13 +52,31 @@ static const char *TAG = "places";
  * is an erased key and a later field is an append. */
 #define PLACES_PART "storage"
 #define PLACES_NS   "orb.places"
-#define PLACES_VER  1
+#define PLACES_VER  2
 
+/* Version 2 appends the zone its writer named (-1: the nearest city's); a version 1 blob
+ * (no zone) still loads, its zone the nearest city's. */
 typedef struct {
     uint8_t ver;
     int32_t lat_e6, lon_e6;
     char    name[ORB_GEO_PLACE_MAX];
+} place_blob1_t;
+typedef struct {
+    uint8_t ver;
+    int32_t lat_e6, lon_e6;
+    char    name[ORB_GEO_PLACE_MAX];
+    int16_t zone;
 } place_blob_t;
+
+/* The zone a place stands in: the named one, else its nearest city's. */
+static void place_zone_fill(orb_place_rec_t *p, int named)
+{
+    p->zone_named = named >= 0 && named < ORB_GEO_N_ZONES;
+    if (p->zone_named) { p->zone = (int16_t)named; return; }
+    const int c = orb_geo_nearest(p->lat_e6, p->lon_e6, NULL);
+    const int z = c < 0 ? -1 : orb_geo_city_zone(c);
+    p->zone = (int16_t)(z >= 0 && z < ORB_GEO_N_ZONES ? z : -1);
+}
 
 /* PSRAM: ~150 B nobody reads on the frame path (orb_home.c's reasoning). */
 EXT_RAM_BSS_ATTR static orb_place_rec_t s_places[ORB_PLACES_N];
@@ -87,7 +107,9 @@ void orb_places_init(void)
         const esp_err_t e = nvs_get_blob(h, k, &b, &sz);
         if (e == ESP_ERR_NVS_NOT_FOUND) continue;
         b.name[sizeof b.name - 1] = 0;
-        if (e != ESP_OK || sz != sizeof b || b.ver != PLACES_VER ||
+        const bool v1 = e == ESP_OK && sz == sizeof(place_blob1_t) && b.ver == 1;
+        if (v1) b.zone = -1;
+        if (e != ESP_OK || !(v1 || (sz == sizeof b && b.ver == PLACES_VER)) ||
             orb_places_check(i, b.lat_e6, b.lon_e6, b.name)) {
             ESP_LOGW(TAG, "stored place %d rejected (%s, %u B)", i, esp_err_to_name(e), (unsigned)sz);
             continue;
@@ -96,6 +118,7 @@ void orb_places_init(void)
         s_places[i].lat_e6 = b.lat_e6;
         s_places[i].lon_e6 = b.lon_e6;
         memcpy(s_places[i].name, b.name, sizeof s_places[i].name);
+        place_zone_fill(&s_places[i], b.zone);
         n++;
     }
     nvs_close(h);
@@ -130,12 +153,14 @@ static const char *store(int i, const place_blob_t *b)
     return e == ESP_OK ? NULL : "place not stored (nvs)";
 }
 
-const char *orb_places_set(int i, int32_t lat_e6, int32_t lon_e6, const char *name)
+const char *orb_places_set(int i, int32_t lat_e6, int32_t lon_e6, const char *name, const char *zone)
 {
     if (!s_mx) return "places not ready";
     const char *why = orb_places_check(i, lat_e6, lon_e6, name);
     if (why) return why;
-    place_blob_t b = { .ver = PLACES_VER, .lat_e6 = lat_e6, .lon_e6 = lon_e6 };
+    const int named = zone && zone[0] ? orb_geo_zone_find(zone) : -1;
+    if (zone && zone[0] && named < 0) return "zone not in the zone table";
+    place_blob_t b = { .ver = PLACES_VER, .lat_e6 = lat_e6, .lon_e6 = lon_e6, .zone = (int16_t)named };
     if (name && name[0]) snprintf(b.name, sizeof b.name, "%s", name);
     else orb_geo_place(lat_e6, lon_e6, b.name, sizeof b.name);
     why = store(i, &b);
@@ -145,10 +170,25 @@ const char *orb_places_set(int i, int32_t lat_e6, int32_t lon_e6, const char *na
     s_places[i].lat_e6 = lat_e6;
     s_places[i].lon_e6 = lon_e6;
     memcpy(s_places[i].name, b.name, sizeof s_places[i].name);
+    place_zone_fill(&s_places[i], named);
     s_gen++;
     unlock();
-    ESP_LOGI(TAG, "place %d set: %s", i + 1, b.name);
+    ESP_LOGI(TAG, "place %d set: %s (%s)", i + 1, b.name, orb_geo_zone_iana(s_places[i].zone));
     return NULL;
+}
+
+bool orb_places_zone(int i, int64_t utc, int32_t *off_min, bool *dst, const char **iana, bool *exact)
+{
+    orb_place_rec_t p;
+    if (!orb_places_get(i, &p) || p.zone < 0) return false;
+    int32_t off = 0;
+    bool d = false;
+    if (!orb_tzrule_offset(orb_geo_zone_posix(p.zone), utc, &off, &d)) return false;
+    if (off_min) *off_min = off;
+    if (dst) *dst = d;
+    if (iana) *iana = orb_geo_zone_iana(p.zone);
+    if (exact) *exact = orb_geo_zone_exact(p.zone);
+    return true;
 }
 
 const char *orb_places_clear(int i)

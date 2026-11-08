@@ -31,8 +31,12 @@
  *                                    // acts (idle: its tip when not). ?<key>= in the address
  *                                    // leads, then init, then the first option
  *     ui,                            // optional: the app's own preview state (a selection), outside history
- *     play: {fps(d), on(view), what},   // optional: a frame clock, running while on(view); what:
- *                                    // 'the weather', for the button's tip
+ *     play: {fps(d), want(d), on(view), what},   // optional: a frame clock at fps, running while
+ *                                    // on(view); want: the rate the orb is asked for (else fps);
+ *                                    // what: 'the weather', for the button's tip
+ *     paceBy: [viewKey | {key, with, label}],   // optional: the views whose options change what
+ *                                    // moves; Render lists the estimated frame rate of each option,
+ *                                    // the other views as on the glass but for `with` ({show: 'now'})
  *     layers: true,                  // optional: draw splits into 'under' and 'live', so the host
  *                                    // offers Panel and Split (the orb's blend) beside Design
  *     setup(c),                      // optional, once: c {say, orb, env(patch)} loads what draw needs
@@ -45,8 +49,9 @@
  *   })
  *
  * The places are the OS's (home and three more, set on the Orb tab): the host reads them
- * from the orb once, for every app, as {key, name, lat, lon, os} with home named Home as the
- * apps name it; c.home is home's, c.place the place view's choice (else home), c.unit the
+ * from the orb once, for every app, as {key, name, lat, lon, os, zone, offset_min} with home
+ * named Home as the apps name it, offset_min its zone's offset now (null when the orb does
+ * not say); c.home is home's, c.place the place view's choice (else home), c.unit the
  * orb's distance unit. An app reads its maps for them with maps@1.
  *
  * A design is the app's object, and it carries its theme's `name`; the host stamps `base`,
@@ -73,6 +78,14 @@
   // a design's identity for the kept bake
   var keyOf = function (d) { try { return JSON.stringify(d); } catch (e) { return null; } };
   H.SIZE_PAUSE_MS = 1200;
+  H.PACE_BASE = 60; H.PACE_MS = 500; H.PACE_WARM_MS = 1000;
+  /* a view's measured rate, said: '~12 of 20 fps', 'still', 'measuring…' */
+  H.paceWords = function (p) {
+    if (!p || p.pending) return 'measuring…';
+    if (p.still) return 'still: nothing moves';
+    if (p.why) return 'not measured: ' + p.why;
+    return '~' + p.est + ' of ' + p.want + ' fps';
+  };
   /* the live size, said: a short form for the top bar and a line for Render */
   H.sizeWords = function (z, max) {
     var kb = function (n) { return Math.round(n / 1024).toLocaleString('en-US') + ' KB'; };
@@ -108,8 +121,17 @@
     var get = async function (path) { var r = await fetch('/orb/' + ip + '/api/v1/' + path); if (!r.ok) throw new Error(path + ' answered ' + r.status); return r.json(); };
     var out = { places: [], unit: 'km' };
     var hm = await get('home');
-    if (hm && hm.home && hm.home.set) out.places.push({ key: 'home', name: 'Home', lat: +hm.home.lat, lon: +hm.home.lon, os: 0, place: hm.home.place || '' });
-    try { var pl = await get('places'); list(pl && pl.places).forEach(function (p) { if (p && p.set) out.places.push({ key: 'p' + (p.i + 1), name: p.name || 'Place ' + (p.i + 1), lat: +p.lat, lon: +p.lon, os: p.i + 1 }); }); } catch (e) { /* home alone */ }
+    // each with its zone and its offset now (minutes east of UTC): home's the orb's own, a
+    // place's its own zone's (OS v1.2.38; older firmware answers none, and the offset is null)
+    var zoneOf = function (zone, off) { return { zone: zone || '', offset_min: typeof off === 'number' ? off : null }; };
+    if (hm && hm.home && hm.home.set) out.places.push(Object.assign({ key: 'home', name: 'Home', lat: +hm.home.lat, lon: +hm.home.lon, os: 0, place: hm.home.place || '' },
+      zoneOf(hm.home.zone || hm.zone_label, hm.tz_offset)));
+    try {
+      var pl = await get('places');
+      list(pl && pl.places).forEach(function (p) {
+        if (p && p.set) out.places.push(Object.assign({ key: 'p' + (p.i + 1), name: p.name || 'Place ' + (p.i + 1), lat: +p.lat, lon: +p.lon, os: p.i + 1 }, zoneOf(p.zone, p.tz_offset)));
+      });
+    } catch (e) { /* home alone */ }
     try { var un = await get('units'); if (un && /^(km|mi|nm)$/.test(un.dist)) out.unit = un.dist; } catch (e) { /* km */ }
     return out;
   };
@@ -161,6 +183,7 @@
     var askS = u(null), ask = askS[0], setAsk = askS[1];
     var tickS = u(0), setTick = tickS[1];
     var sizeS = u({ state: 'waiting' }), size = sizeS[0], setSize = sizeS[1];
+    var paceS = u(0), setPaceTick = paceS[1], paces = R.useRef({}).current, paceRun = R.useRef({ chain: Promise.resolve() }).current;
     var baked = R.useRef({ key: null, r: null, ms: 0, chain: Promise.resolve() }).current;
     var delS = u(null), mineDel = delS[0], setMineDel = delS[1];
     var drafts = R.useRef({}).current, memo = R.useRef({}).current, thumbs = R.useRef({}).current, parts = R.useRef({}).current;
@@ -323,6 +346,68 @@
       }, Math.min(6000, Math.max(H.SIZE_PAUSE_MS, 2 * baked.ms)));
       return function () { clearTimeout(id); };
     }, [d]);
+
+    /* ---- the frame rate (E6): what a view holds on the orb, from what its preview draws.
+     * Half a second of the view is drawn at 60 fps on a canvas of its own, from a fresh memo
+     * (the live preview's state is never touched) after a second's warm-up, and priced by
+     * OrbTheme.pace. A view where the app does not play is still. Measured once per design
+     * and view, after the size settles, one at a time. ---- */
+    var wantOf = function (dd) {
+      var w = A.play && A.play.want != null ? A.play.want : A.play && A.play.fps;
+      return +(typeof w === 'function' ? w(dd) : w) || 0;
+    };
+    async function sampleView(dd, v) {
+      var base = H.PACE_BASE, n = Math.round(base * H.PACE_MS / 1000) + 1, warm = Math.round(base * H.PACE_WARM_MS / 1000);
+      var oc = document.createElement('canvas'); oc.width = oc.height = G;
+      var ox = oc.getContext('2d', { willReadFrequently: true });
+      var m = {}, t = 0, dt = 1000 / base, frames = [], L = live.current, noop = function () {};
+      for (var k = 0; k < warm + n; k++) {
+        A.draw(ox, dd, Object.assign({ view: v, env: L.env, hidden: {}, ui: L.ui, step: 'render', memo: m, part: part, t: t, dt: k ? dt : 0,
+          layer: 'all', redraw: noop, say: noop, setUi: noop }, geoOf(L.geo, v)));
+        if (k >= warm) frames.push(ox.getImageData(0, 0, G, G).data);
+        t += dt;
+        if (k % 6 === 5) await new Promise(function (r) { setTimeout(r, 0); });
+      }
+      return frames;
+    }
+    var paceKey = function (k, v) { return k + '|' + JSON.stringify(v); };
+    // the Render table: each paceBy view's options, each a view to measure ([label, view])
+    var paceRows = function (dd) {
+      var by = list(A.paceBy).map(function (x) { return typeof x === 'string' ? { key: x } : x; });
+      if (!by.length) return [{ label: null, rows: [['This view', view]] }];
+      return by.map(function (b) {
+        var w = list(A.views).filter(function (x) { return x.key === b.key; })[0];
+        if (!w) return { label: b.key, rows: [] };
+        return { label: b.label || w.label || b.key, rows: optsOf(w, dd, env, geo).map(function (o) {
+          var v = Object.assign({}, view, b.with || {}); v[b.key] = o[0]; return [o[1], v]; }) };
+      });
+    };
+    function paceOf(dd, k, v) {
+      var pk = paceKey(k, v);
+      if (paces[pk]) return paces[pk];
+      var run = async function () {
+        if (paces[pk] && paces[pk].done) return paces[pk];
+        if (keyOf(stateRef.current.d) !== k) return null;          // overtaken by an edit
+        var r;
+        if (!A.play || (A.play.on && !A.play.on(v))) r = { still: true };
+        else { try { r = T.pace(await sampleView(dd, v), { base: H.PACE_BASE, want: wantOf(dd) }); } catch (e) { r = { why: err(e) }; } }
+        paces[pk] = Object.assign({ done: true }, r);
+        setPaceTick(function (n) { return n + 1; });
+        return paces[pk];
+      };
+      var p = paceRun.chain.then(run, run);
+      paceRun.chain = p.catch(function () {});
+      paces[pk] = { pending: true };
+      return paces[pk];
+    }
+    // the view on the glass, once the size settles; and on Render, every option of each paceBy view
+    R.useEffect(function () {
+      if (!ses.hubOrb() || size.state !== 'done' || size.key !== keyOf(d)) return;
+      var dd = stateRef.current.d, k = size.key;
+      paceOf(dd, k, view);
+      if (step !== 'render') return;
+      paceRows(dd).forEach(function (g) { g.rows.forEach(function (r) { paceOf(dd, k, r[1]); }); });
+    }, [size.state, size.key, JSON.stringify(view), step]);
     async function stemOf(nm) {
       try {
         var dg = new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(A.slug + '/' + nm)));
@@ -380,7 +465,8 @@
     if (!ses.hubOrb()) return h('div', { className: 'st-sheet' }, h('div', { className: 'st-sheet-in' },
       h('h2', null, A.title + ' theme editor'), h('div', { className: 'ui-mut' }, 'Open this editor from Orb Manager: its Themes tab has an Edit for each app.')));
 
-    var verdict = T.fit(A.fit(d, view));
+    var paceNow = size.state === 'done' && size.key === keyOf(d) ? paces[paceKey(size.key, view)] : null;
+    var verdict = T.fit(Object.assign({}, A.fit(d, view), paceNow && paceNow.done && paceNow.est ? { pace: paceNow.est, want: paceNow.want } : {}));
     var sz = H.sizeWords(size, root.GorbBake && root.GorbBake.THEME_UPLOAD_MAX), fit = S.fitProps(verdict, verdict.note + ' · ' + sz.line);
     fit = Object.assign({}, fit, { text: fit.text + ' · ' + sz.short }, sz.over ? { dot: '#f85149' } : {});
 
@@ -390,6 +476,15 @@
     if (step === 'render') right = h('div', { className: 'hs-list' },
       h('div', { className: 'hs-size' + (sz.over ? ' hs-over' : ''), title: 'The theme baked again a moment after your last edit: what Send to orb and Export send.' },
         h('b', null, 'Size'), h('span', null, sz.line)),
+      h('div', { className: 'hs-size', title: 'What each view holds on the orb, estimated from what its preview moves, priced as the orb’s compositor paints it.' },
+        h('b', null, 'Frame rate'),
+        paceRows(d).map(function (g, gi) {
+          return h('div', { key: gi, className: 'hs-pace' }, g.label ? h('span', { className: 'ui-mut' }, g.label) : null,
+            g.rows.map(function (r, i) {
+              var pz = size.state === 'done' && size.key === keyOf(d) ? paces[paceKey(size.key, r[1])] : null;
+              return h('span', { key: i }, h('i', null, r[0]), ' ', size.state === 'done' ? H.paceWords(pz) : 'when the size is measured');
+            }));
+        })),
       h(S.RenderPanel, {
         badge: S.badgeProps(verdict, verdict.note),
         save: { on: saveLib, note: 'keep “' + d.name + '” in the library', tip: 'Keep this design in the hub library under its name, without baking or sending it. Under a theme’s name it is that theme’s unsent changes until Send to orb bakes them in.' },

@@ -520,14 +520,15 @@
         } },
     ],
     play: { fps: function () { return B.SWEEP_FPS; }, what: 'the traffic' },
+    paceBy: ['mode'],
     layers: true,
     draw: draw,
     bake: function (d, o) {
       if (d.planes.family === 'custom' && !(d.planes.custom && d.planes.custom.image)) return Promise.reject(new Error('pick your plane picture on the Planes step first'));
       return B.bake(d, o);
     },
-    // rows only (owner, 2026-11-04): unlike the clock there is no designed rate to fall short
-    // of, and the estimate is not a live measure, so the verdict claims no fps at all
+    // the rows; the host adds the measured rate against the sweep's (theme-editor-kit-plan
+    // §8.1 ruling 9 took back the rows-only verdict of 2026-11-04)
     fit: function (d) { return { rows: liveRows(d), cap: ROW_CAP }; },
   };
 

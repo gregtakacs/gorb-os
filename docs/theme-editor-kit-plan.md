@@ -751,8 +751,10 @@ size and fps readouts) is the host's, done once.
   the fit, marked as updating while an edit is newer than the bake. (This sketch said "in a
   worker"; the apps' bakes draw on canvases with the page's loaded faces, so they run on the
   page, after a pause that grows with the bake: §8.8.)
-- **Frame rate per view:** `GorbBake.estimate3` on the bake, with `OrbTheme.motion` over
-  the frames the view moves. The clock keeps `_devPace` as its own model.
+- **Frame rate per view:** priced from the frames the view's preview moves, on
+  estimate4's compositor costs (§8.9; the sketch named `estimate3`, which prices a clock's
+  seconds and gears and calls an app's own rows still). The clock keeps `_devPace` as its
+  own model.
 
 ### 8.3 Slices
 
@@ -763,7 +765,7 @@ size and fps readouts) is the host's, done once.
 | **E3** | Weather and Flights on the host | each app's suites; no app code left that draws a start sheet, a Render step or a download — **built 2026-11-08**, benched on the bench fake at OS v1.2.38 (§8.6) |
 | **E4** | declared views in the centre pane, for all three | the same controls in every app; each view reaches the glass — **built 2026-11-08**, benched on the bench fake with home and two places (§8.7) |
 | **E5** | the live size readout; Check the bake goes | the clock's bake timed first; a readout that matches the bake's bytes — **built 2026-11-08** (§8.8) |
-| **E6** | frame rate per view, every app | an estimate shown for each view; checked against Gold for at least one view per app |
+| **E6** | frame rate per view, every app | an estimate shown for each view; checked against Gold for at least one view per app — **built 2026-11-08** (§8.9); checked on Gold for Flights and Weather (Radar has no moving view; the clock is E7's) |
 | **E7** | the clock on the host | the clock's headless suites (about 1,500 checks) green; nothing lost against the P5 checklist |
 
 The clock goes last. It is the largest editor and the one where the frame rate matters
@@ -908,8 +910,9 @@ most, so it moves after the contract has carried the other three.
   name). Its `setup` is gone.
 - **Weather's Places screen** shows the place control's choice from the orb's own places,
   with that place's map; with none set it still shows the made-up Lisbon. Its Place
-  control acts on Places only. Its `setup` is gone. The place's clock is still Lisbon's
-  UTC, as before: the orb's places carry no zone the editor can read.
+  control acts on Places only. Its `setup` is gone. The place's clock read Lisbon's UTC until the
+  places carried their zones (radar-plan §6.25, 2026-11-08); it now reads the place's own
+  local time.
 - **Flights** reads home and the unit from the host. Its levels are read per range on
   demand (a step back is at once), and its `setup` is gone. Its views read Shows and Range.
 - **Suites.** `headless-host.test.js` (48 checks) drives the real `host.js` with a made-up
@@ -953,4 +956,49 @@ most, so it moves after the contract has carried the other three.
 - **Benched 2026-11-08** in headless Chrome on the bench fake: Flights opened at
   "Fits · 1,062 KB" (it read MB until the top bar was put in KB, as Render is); renaming the
   theme put both back to measuring, and 1.2 s later they read 1,062 KB, baked in 0.2 s.
+
+### 8.9 As built: E6 (2026-11-08)
+
+- **Why not the baker's estimators.** `estimate3` and `estimate4` price a clock bake: its
+  seconds hands, cadences and gear banks. Flights' arm and traffic and Weather's particles
+  are rows the app poses itself, which both read as still. So the estimate comes from what
+  a view's preview moves, which every hosted app already draws.
+- **`OrbTheme.frameCost(a, b)`** prices one frame from the pixels that changed between two:
+  per screen row one restored span, first changed pixel to last, less the widest inkless gap
+  inside when it is 24 px or more (orb_gfx.c INK_GAP_MIN), and the changed pixels walked;
+  `frame_ms = 0.744 restored_kpx + 0.507 walk_kpx + 7.2` (estimate4's §49.15 fit, `GorbBake.EST4`).
+- **`OrbTheme.pace(frames, {base, want})`**: frames sampled at `base` fps; each rate on the
+  panel's grid (`GorbBake.GRID4`, now exported) at or under the wanted one (the grid's top,
+  20, caps it) is priced on frames base/H apart, its worst frame against `floor(60 / H)`
+  scans, as estimate4's judge does: it holds when `cost × 1.15 + 20 ms` fits. The estimate
+  is the fastest rate that holds. (estimate4's prose says 7.5 fps alternates 7 and 8 scans;
+  its code prices it on 8, and so does this.)
+- **The host samples a view** after the live size settles: a second's warm-up, then half a
+  second at 60 fps, drawn on a canvas of its own from a fresh memo, so the live preview is
+  untouched; one view at a time, kept per design and view. A view the app does not play in
+  is still. The top bar and the fit badge carry the rate of the view on the glass
+  ("Fits · 20 fps · 1,282 KB", "Fits, slower · 15 fps"); Render adds a Frame rate block
+  listing each option of the app's `paceBy` views (`{key, with, label}`: Weather's weather
+  rows are measured on Now whatever screen shows).
+- **The apps.** Weather: `play.want` 20 (Now bursts at the panel's ceiling, the grid's top;
+  its preview plays at 30), `paceBy` Screen and Weather on Now. Flights: `paceBy` Shows;
+  its verdict now carries a rate, which §8.1 ruling 9 asked for and which the rows-only
+  ruling of 2026-11-04 had left out. Radar has no moving view, and says still.
+- **Measured.** Flights' Modern: ~15 of 20 fps in every mode (its worst frame priced 33.9
+  ms: 24.9 kpx restored, 16.1 kpx walked). Weather's Scope: Now ~20 of 20 under every
+  condition; Places, Hourly and 5 days still.
+- **On Gold** (`/api/v1/debug/dial?ms=4000`, the app on the glass by `/api/v1/screen?to=`,
+  the clock put back after): Flights v1.4.2 presented 18.5 fps against its 20, every commit
+  under 20 ms, 12.8 kpx restored and 15.9 kpx walked a frame; Weather's Now 21.3 fps. The
+  walk matches the estimate's; the restore is about twice Gold's, but Gold flew whatever
+  traffic was live near home while the preview flies its twelve made-up aircraft, so this
+  one point is not a calibration and the model was left as it is. On these two the estimate
+  is right for Weather (20) and cautious for Flights (15 where Gold held 18.5 of 20).
+- **Suites.** `headless-measure` (30 checks) adds the frame cost (still, one mover, the gap
+  rule both ways) and the pace (a small mover holds 20, a whole-glass change does not, the
+  wanted rate and the grid's top cap it, 7.5 on 8 scans). `headless-host` (57) adds the
+  Render block and the top bar's rate. Mutants caught: a view played where the app does not
+  play, the top bar without the rate, the gap not left out, the slowest rate winning.
+  "7.5 priced on its mean period" is the same number for every grid rate, so no check can
+  catch it.
 

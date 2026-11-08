@@ -379,6 +379,29 @@ Home stays `orb_home()`. Where an API below takes a place, **0 is home and 1–3
 places**. An app checks `orb_places_gen()` on its beat and re-reads when it moves, as it
 does `orb_home_gen()`.
 
+**Each place carries its zone** (owner, 2026-11-08: "the place should carry the time zone
+as well so apps building on the location have the same information that we have in the
+OS"). The zone is the one its writer named, else its nearest city's from the zone table,
+as home's is found. A place stored before this (record version 1) gets its nearest
+city's when it loads. Its offset at any time comes from the zone's own rule
+(`main/net/orb_tzrule.c`), never from the orb's zone:
+
+```c
+typedef struct {
+    int32_t offset_min;      /* east of UTC at t */
+    int32_t dst;             /* 1 while daylight time is in force */
+    char    zone[40];        /* IANA, "Europe/Lisbon" */
+} orb_place_zone_t;
+
+int32_t orb_place_zone(uint32_t i, int64_t t, orb_place_zone_t *out);   /* i = 0..2; OS v1.2.38 */
+```
+
+The place's local time is `t + offset_min * 60`. `orb_place_t` keeps its 52 B: apps built
+against it read it unchanged. GET `/api/v1/places` answers each set place's `zone`,
+`zone_named`, its rule (`tz`), `tz_offset` now, `dst`, and `exact` (false where the
+table's rule only approximates the zone). POST takes an optional `"zone"` the table holds,
+and refuses any other. As built 2026-11-08 (§6.25).
+
 **Where they are set:** only from the hub (§1.1: the dial has no location UI, by ruling).
 `GET /api/v1/places` and `POST /api/v1/places` with
 `{"i":1,"lat":38.7223,"lon":-9.1393,"name":"Lisbon"}`, or `{"i":1,"clear":true}`, checked
@@ -1741,3 +1764,57 @@ built level by level through a state updater closed over a `var`, so every level
 under the last zoom (fixed: `const`); and the hub memoises an app's editor files by
 version, so a bench reinstall at the same version serves the old editor until the hub
 restarts.
+
+### 6.25 Places carry their zones (2026-11-08, Gold, OS v1.2.38)
+
+- **Firmware.** `orb_tzrule.c` evaluates a zone-table rule at any instant (the standard
+  and daylight offsets and the two `M` changeovers, a southern rule across the new year),
+  without the C library's one zone. `orb_places` resolves each slot's zone when it loads
+  or is set: one named and stored (record version 2 appends it; version 1 still loads),
+  else the nearest city's. `orb_places_zone()` gives the offset, the daylight flag, the
+  IANA name and whether the rule is exact. The broker's `place_zone` service, behind
+  `location`, is appended to `orb_svc_t`, and the wasm import `orb.place_zone` (48 B record)
+  is appended to the bind table: binds.json has 89 imports.
+- **The hub.** The Orb tab's places line shows each zone ("Budapest (47.50, 19.04) ·
+  Europe/Budapest"). The editor host (`OrbHost.places`) carries every place's zone and
+  offset now, and home's from `/api/v1/home`. Weather's Places screen shows the place's
+  local time (it showed Lisbon's UTC for any place). The bench fake carries a place's
+  zone, with Go's zone data standing in for the table.
+- **Suites.** `host_tzrule_test.py` holds every rule in the table to Python's zoneinfo,
+  every 3 hours from 2026-11-08 to the end of 2029 and either side of each changeover
+  (2.1 M zone-instants), plus two forms the table does not use (an unsaid daylight
+  offset; a `<+0330>` name with minutes); 8 of 8 mutants caught. `host_svc_test.py`: an
+  undeclared app is refused `place_zone` before any zone is read. The host suite (60
+  checks) holds home's and a place's zone and offset, and a place from older firmware
+  carrying none. The fake's `TestPlacesCarryTheirZone`.
+- **The zone table, fixed the same day** (owner: "can we fix the wrong time zones in the
+  OS's table?"). `tools/make_cities.py` checked its rules over 2026-2028 only, so three
+  wrong ones passed: **America/Santiago** stored "first Sunday" where Chile changes on the
+  Sunday on or after the 2nd (a week early when the 1st is a Sunday, as 2029-04-01),
+  **Africa/Cairo** "last Friday of October" where Egypt's is the day after the last
+  Thursday, and **Asia/Gaza** and **Asia/Hebron** a fixed rule for changes that follow
+  Ramadan, unflagged. **Asia/Jerusalem** shipped as standard time alone, an hour wrong
+  every summer. The tool now holds every rule a decade (to the end of 2036), falls back
+  to tzdata's own rule for the future when its derived one fails, and ships the best
+  candidate flagged when none holds. Santiago (`M9.1.6/24,M4.1.6/24`), Cairo
+  (`M10.5.4/24`) and Jerusalem (`M3.4.4/26,M10.5.0`) are exact; Gaza and Hebron carry
+  tzdata's own approximation, flagged. `orb_tzrule.c` reads changeover times to 167 h,
+  as POSIX's extension and newlib do. On Gold, newlib was asked directly: with the orb's
+  own zone set to `STD0DST-1,M11.1.6/50,M12.1.0` at 23:21 UTC on Sunday 8 November it read
+  +0 (the change was Monday 02:00), and with `/24` +60; the zone was put back to
+  US/Central. Then, with this table, a place set at Santiago read America/Santiago −180
+  daylight; Jerusalem, Gaza (approximate) and Cairo +120 standard. `host_tzrule_test.py`
+  holds every exact zone to zoneinfo across the decade (7.06 M zone-instants), with
+  tzdata's Santiago and Jerusalem rules and a negative change time among its extra
+  forms; `host_geo_test.py` holds Jerusalem and Santiago exact and Gaza flagged.
+- **Benched on Gold**, flashed with this tree (`v1.2.38+d954cb8-dirty`, serflash, MAC
+  audit passed). Its three places, stored at version 1, loaded with their nearest cities'
+  zones: East Lansing America/Detroit −300, Austin America/Chicago −360, Budapest
+  Europe/Budapest +60 (November, all standard). Austin set with `"zone":"America/Denver"`
+  read −420 and `zone_named`, survived a reboot, and was put back to its nearest city's;
+  `"Mars/Olympus"` was refused. In the editor on the bench fake, at 23:08 UTC, Weather's
+  Places screen read 23:08 for Lisbon and 17:08 for Houston (America/Chicago).
+- **Local build note.** This clone's untracked `sdkconfig` predated `45165cd`'s
+  `CONFIG_LV_FONT_MONTSERRAT_18=y` in `sdkconfig.defaults`, and the build stopped at
+  `orb_ui.c`; the local file was brought into line.
+

@@ -126,6 +126,11 @@ typedef struct {
     uint32_t gen;                 /* orb_home_gen() when read               */
     char     place[40];           /* "Phoenix", "near Phoenix", ...         */
 } orb_svc_home_t;
+typedef struct {
+    int32_t offset_min;           /* east of UTC at the asked time          */
+    int32_t dst;                  /* 1 while daylight time is in force      */
+    char    zone[40];             /* IANA, "Europe/Lisbon"                  */
+} orb_svc_zone_t;
 /* P5.5: the layer records are no longer a placeholder. The full types live in
  * main/gfx/orb_layers.h, which the CONSUMER includes when it builds a
  * descriptor; this header forward-declares them so the frozen table reaches an
@@ -195,6 +200,11 @@ typedef struct {
    * in home's record shape (`gen` is orb_places_gen()). i is 0..2; ESP_ERR_NOT_FOUND
    * for an empty slot, ESP_ERR_INVALID_ARG past the end. Appended. */
   esp_err_t (*place)(orb_app_t *, int i, orb_svc_home_t *out);
+  /* location: a place's zone at `when` (owner, 2026-11-08), cap LOCATION: its offset, its
+   * daylight flag and its IANA name, from the zone table's rule and never the orb's own
+   * zone. ESP_ERR_NOT_FOUND for an empty slot or one with no zone, ESP_ERR_INVALID_ARG
+   * past the end. Appended. */
+  esp_err_t (*place_zone)(orb_app_t *, int i, int64_t when, orb_svc_zone_t *out);
 } orb_svc_t;
 
 #define ORB_SVC_SOUND_LOOP   0x01u

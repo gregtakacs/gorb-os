@@ -102,6 +102,7 @@ idf_component_register(
         "net/orb_home.c"
         # radar-plan §2.1: the three places beside home, one OS setting.
         "net/orb_places.c"
+        "net/orb_tzrule.c"
         # weather-plan §2.1: the units every app reads (temperature, speed, distance)
         "net/orb_units.c"
         "net/orb_geo.c"

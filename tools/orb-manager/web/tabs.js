@@ -846,8 +846,12 @@ function placeSearch(app, id, help, write, msg, encode) {
 // {"i", "lat", "lon", "name"} or {"i", "clear": 1}. The orb keeps 39 bytes of name (UTF-8)
 // on its own, so the row passes the searcher an encoder that keeps the name whole.
 const placesURL = () => "/orb/" + encodeURIComponent(current.ip) + "/api/v1/places";
+// a set place, its position and its zone (OS v1.2.38 answers each place's zone: the one
+// named, else its nearest city's), the zone marked when the orb's rule only approximates it
 function placesLine(p) {
-  return p && p.set ? p.name + " (" + (+p.lat).toFixed(2) + ", " + (+p.lon).toFixed(2) + ")" : "not set";
+  if (!p || !p.set) return "not set";
+  const zone = p.zone ? " · " + p.zone + (p.exact === false ? " (approximate)" : "") : "";
+  return p.name + " (" + (+p.lat).toFixed(2) + ", " + (+p.lon).toFixed(2) + ")" + zone;
 }
 async function loadPlaces() {
   if (!current.ip) return;

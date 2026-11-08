@@ -90,8 +90,8 @@
   }
   /* The places Now's elements were hit at, for the Layout step's picking: [{k, x0, y0, x1, y1}]. */
   var HITS = [];
-  // pname: the place Places shows, else the made-up Lisbon
-  function drawView(x, d, P, view, L, sel, pname) {
+  // pname, poff: the place Places shows and its zone's offset now (minutes), else the made-up Lisbon
+  function drawView(x, d, P, view, L, sel, pname, poff) {
     x.clearRect(0, 0, G, G);
     if (P.plate) x.drawImage(P.plate, 0, 0); else { x.fillStyle = '#000'; x.fillRect(0, 0, G, G); }
     // the shown place's map (flights-map-plan §5): home's, or on Places the chosen place's
@@ -124,9 +124,13 @@
       text(caps('Feels ' + p.feels + '°  Wind ' + p.wind + ' km/h'), A.detail.y - lh, W.label, lb, W.quiet, 'center', A.detail.x, null, 'detail');
       text(caps('H ' + p.hi + '°  L ' + p.lo + '°  1016 hPa \u2193'), A.detail.y, W.label, lb, W.quiet, 'center', A.detail.x, null, 'detail');   /* and the pressure's way */
       text(caps('Sunset 17:03'), A.detail.y + lh, W.label, lb, W.quiet, 'center', A.detail.x, null, 'detail');   /* the next dawn or dusk */
-      // the clock: Home's is the orb's, a place's its own local time (Lisbon's, here)
-      var lis = function () { var n = new Date(); return String(n.getUTCHours()).padStart(2, '0') + ':' + String(n.getUTCMinutes()).padStart(2, '0'); };
-      text(view === 'now' ? (L ? L.clock : '10:42') : lis(), A.clock.y, W.text, tx, W.ink, 'center', A.clock.x, null, 'clock');
+      // the clock: Home's is the orb's, a place's its own local time from its zone's offset
+      // (the orb's places carry their zones from OS v1.2.38); the made-up Lisbon keeps UTC
+      var there = function () {
+        var off = poff == null ? 0 : poff, n = new Date(Date.now() + off * 60000);
+        return String(n.getUTCHours()).padStart(2, '0') + ':' + String(n.getUTCMinutes()).padStart(2, '0');
+      };
+      text(view === 'now' ? (L ? L.clock : '10:42') : there(), A.clock.y, W.text, tx, W.ink, 'center', A.clock.x, null, 'clock');
       // the Layout step's pick: a dashed frame round the element
       var on = HITS.filter(function (q) { return q.k === sel; });
       if (on.length) {
@@ -444,11 +448,13 @@
       { key: 'place', kind: 'place', home: false, label: 'Place', tip: 'The place Places shows, from the orb’s own; with none set it shows a made-up one', idle: 'Show Places to pick the place',
         active: function (v) { return v.show === 'places'; } },
     ],
-    play: { fps: 30, on: function (v) { return v.show === 'now'; }, what: 'the weather', idle: 'The weather plays on Now' },
+    // the preview plays at 30; on the orb Now bursts at the panel's ceiling, the grid's 20
+    play: { fps: 30, want: 20, on: function (v) { return v.show === 'now'; }, what: 'the weather', idle: 'The weather plays on Now' },
+    paceBy: [{ key: 'show', label: 'Screen' }, { key: 'weather', with: { show: 'now' }, label: 'Weather, on Now' }],
     draw: function (x, d, c) {
       var view = c.view.show, P = partsOf(d, c);
       var sp = view === 'places' ? shownPlace(c) : null;
-      drawView(x, d, P, view, view === 'now' ? lifeOf(d, c) : null, c.step === 'layout' ? c.ui.picked : null, sp ? sp.name : null);
+      drawView(x, d, P, view, view === 'now' ? lifeOf(d, c) : null, c.step === 'layout' ? c.ui.picked : null, sp ? sp.name : null, sp ? sp.offset_min : null);
     },
     pointer: pointer,
     bake: function (d, o) { return B.bake(d, o); },

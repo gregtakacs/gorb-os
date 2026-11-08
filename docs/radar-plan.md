@@ -1685,3 +1685,59 @@ flush right, í the dotless i, an older font the plain i, ß "ss", the mark draw
 `host_places_test.py`: Győr, Tatabánya and Zürich accepted, broken UTF-8 refused; 9 mutants.
 Bronze: a place named "Zürich Győr" drew whole on the radar; the owner saw München right on
 the map.
+
+### 6.23 R6: the bench run (2026-11-08, OS v1.2.37, radar v1.2.1/v1.2.2)
+
+Sampled `/status` and the log (`r6/sample.py`: every 1-30 s, CSV) on Bronze driving and Gold
+read only (Gold is gorb-os-2's orb: nothing was sent to it).
+
+- **Cold start, Bronze:** reboot straight into the radar, 4 minutes at 1 s. Internal RAM's
+  low point 25.7 KB free, largest block 8 KB, during the frame fetches (§4 item 6: above the
+  ~7.2 KB at which Wi-Fi transmits stopped in R3c); the general PSRAM heap never under 1.83
+  MB; the glass region never under 805 KB free; no fallback. One fetch took 6.9 s at
+  -70 dBm.
+- **An hour on the glass, Bronze:** the loop playing, a flip every 12 minutes (DFW with
+  rain, Austin, Zurich and London quiet), 236 samples, never unreachable. Internal 24.5-33.2
+  KB free, largest 7.2-13.3 KB; general PSRAM 1.86-1.88 MB free, flat (no leak), in 8-15
+  pieces, largest 1.79 MB throughout; glass region 606 KB-1.37 MB free, no fallback; kept
+  frames up to 750 KB; the glass 9-31 fps, median 20; the radar's slowest guest call 130 ms
+  (median of the per-second worst 67 ms).
+- **Gold, the same hour, read only:** never on the radar (its owner's screens), so its
+  radar memory is still owed: general PSRAM 1.10-1.51 MB free, largest 688 KB-1.28 MB; the
+  glass region 3,072 KB carved, 2.42-3.08 MB free, no fallback.
+- **Not run:** a card pulled mid-read (a hand on the board); a widespread-storm frame size
+  (§4 item 4, now moot at Area to Close, §6.14). The `httpd_sock_err ... 104` warnings in
+  both logs are the sampler's own connections closing.
+
+### 6.24 R7: the theme editor (2026-11-08, radar v1.2.2)
+
+`apps/radar/editor/radar-editor.js`, on the kit (studio@1, theme@1), Flights' editor its
+model: Start, Ground, Map, Rain, Overlay, Words, Render.
+
+- **Five starters and Blank** (`radar-bake.js`): Radarscope (unchanged: the C defaults are
+  its values byte for byte), Paper, Station, Vintage, Blueprint, each built from a palette
+  over Radarscope's shape; all six bake and pass `bake_check.py` (1.87-1.91 MB).
+- **Map:** the detail presets (Minimal, Standard, Detailed, or your own), the names presets
+  (Off, Few, Normal, Many), town dots and airport marks, a colour scheme from any starter,
+  then each feature's switch, colour, width, line style and, for roads, the zoom it starts
+  at. The preview is the owner's own home map at Region, Area and City, built in the page
+  from the Map tiles source through the hub (as the Orb tab's Maps preview builds it) and
+  drawn by maps@1's rasteriser in the design; home's name and the orb's unit come from the
+  orb.
+- **Rain:** the stops in dBZ, each a colour and an opacity, added and removed, with a
+  lightness check between neighbours (WCAG luminance, as Weather's Temperature step).
+  The preview's rain is made up, the same each time, at the app's default floor.
+- **Overlay:** the rings and cross over the rain (glass art), the rings and cross under
+  it (values layout 4), the time track, the place dot, the scale bar. **Words:** the faces
+  (the hub's, each with the accents), sizes from 26 px, colours, the backing.
+- **Not built:** §2.9's coverage dim (no coverage data reaches the app), the forecast
+  treatment beyond the time's colour, Life (no sweep; the loop's speed is not a theme's),
+  and the picture-plate ground.
+
+Benched through a bench hub on Bronze: the start sheet, every step, the Station starter on
+the DFW map at Region (towns, dots and roads in the design), then Send to orb: baked
+(1.9 MB), stored, and Bronze's radar wore it as the preview showed. Two findings: the map
+built level by level through a state updater closed over a `var`, so every level landed
+under the last zoom (fixed: `const`); and the hub memoises an app's editor files by
+version, so a bench reinstall at the same version serves the old editor until the hub
+restarts.

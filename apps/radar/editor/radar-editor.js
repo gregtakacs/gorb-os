@@ -138,7 +138,7 @@
     var dash = B.ROLES.map(function (r) { return B.DASH[(M.dash && M.dash[r]) || 'solid'] | 0; });
     var marks = { city: 1, town: 2, village: 4, airport: 8 }, mo = 0;
     (M.marks || []).forEach(function (k) { mo |= marks[k] | 0; });
-    var lv = GM.pickLevel(d.__lat || 0, radiusM(step, d.__lat || 0));
+    var lv = GM.pickLevel(Math.round((d.__lat || 0) * 1e6), radiusM(step, d.__lat || 0));   // millionths
     var r = GM.render(bytes, { scale: lv.scale, rot_rad: 0, role_on: rolesAt(d, step), mark_on: mo, width: width.concat([0]), dash: dash.concat([0]) });
     var pal = B.ROLES.map(function (k) { return B.argb(M[k], 1); }).concat([0]);
     var c = document.createElement('canvas'); c.width = c.height = GM.W;
@@ -255,10 +255,10 @@
           var hp = { lat: +hm.home.lat, lon: +hm.home.lon, name: hm.home.place || 'Home' };
           setHome(hp);
           try { var un = await (await fetch('/orb/' + o.ip + '/api/v1/units')).json(); if (un && un.dist) setUnit(un.dist); } catch (e) { /* km */ }
-          for (var i = 0; i < ZOOMS.length; i++) {
-            var st = ZOOMS[i][0];
-            say('Building your home map for the preview (' + ZOOMS[i][1] + ')…');
-            var b = await level(hp, 6 + st);
+          for (const zz of ZOOMS) {                     // const: each update keeps its own level
+            const st = zz[0];
+            say('Building your home map for the preview (' + zz[1] + ')…');
+            const b = await level(hp, 6 + st);
             setBytes(function (m) { var n = Object.assign({}, m); n[st] = b; return n; });
           }
           say('');

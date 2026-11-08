@@ -61,7 +61,10 @@ to check one.
 4. The orb joins the network and shows up in the **Orbs** list. From then on Orb
    Manager reaches it over Wi-Fi, and you can unplug the cable.
 
-A new orb comes with the Clock app and the default theme.
+A new orb comes with the Clock app and the default theme. Apps live on the orb's microSD
+card, so an orb set up without one finishes with a note instead: everything else is done.
+Put a card in (FAT32), then press **Install** on Clock on the **Apps** tab. The theme
+comes with it.
 
 An orb that already runs gorb-os shows up on its own once it is on the same network as
 your computer. If your network blocks the orb's announcements, use **Add an orb by

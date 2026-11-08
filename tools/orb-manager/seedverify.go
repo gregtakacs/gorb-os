@@ -116,7 +116,7 @@ func (s *Server) verifySeededGlass(ctx context.Context, ip string, send func(ins
 		return err
 	}
 	if !f.OnGlass {
-		why := "the clock is enabled, card-backed and themed, and the dial is not showing it — flick the knob onto the clock, or press Seed to make the hub park it again"
+		why := "the clock is enabled, card-backed and themed, and the dial is not showing it — flick the knob onto the clock"
 		send(installStep{Step: "verify", Action: "refused", Note: why})
 		return errSeed(why)
 	}

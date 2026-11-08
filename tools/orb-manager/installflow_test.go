@@ -74,12 +74,14 @@ func TestTheSeedingRefusalNamesTheLever(t *testing.T) {
 	if err == nil {
 		t.Fatal("a clock the dial is not showing verified green")
 	}
-	for _, want := range []string{"flick the knob", "Seed"} {
+	// "flick the knob" is the whole lever: the page has no Seed press any more, and a
+	// refusal naming one sent the owner looking for a button that is not there.
+	for _, want := range []string{"flick the knob"} {
 		if !strings.Contains(note, want) {
 			t.Errorf("the refusal never named %q, so the operator has nothing to do: %s", want, note)
 		}
 	}
-	for _, ban := range []string{"open the orb to retry", "try again"} {
+	for _, ban := range []string{"open the orb to retry", "try again", "Seed"} {
 		if strings.Contains(note, ban) {
 			t.Errorf("the refusal is back to %q, which is an alarm and not an instruction: %s", ban, note)
 		}

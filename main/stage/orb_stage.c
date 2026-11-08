@@ -176,16 +176,18 @@ static bool    s_opened;          /* built for s_lay_app (theme-pool-plan P4: on
 static lv_obj_t *s_plate_obj;     /* the plate widget, so a release can take it down */
 static uint32_t s_stage_objs;     /* how many of the page's children the stage built */
 
-/* radar-plan §2.9 (R3c): the live layer. One full-glass RGB565A8 plane the bound app
- * draws into, stacked at a depth on its rows' scale (depth_key(order, false)): a row in
- * the layer table like a label, whose plane the stage owns, and on the classic path an
- * image at the same place in the page's children. PSRAM, 651 KB, freed on release. */
+/* radar-plan §2.9 (R3c): the live layers. Up to two full-glass RGB565A8 planes the bound
+ * app draws into, each stacked at a depth on its rows' scale (depth_key(order, false)): a
+ * row in the layer table like a label, whose plane the stage owns, and on the classic path
+ * an image at the same place in the page's children. Two, so a radar keeps its map in one
+ * and redraws only the rain in the other. At one depth, layer 0 is under layer 1. PSRAM,
+ * 651 KB each, freed on release. */
 #define LIVE_OFF  16u
-#define LIVE_PICK 0xFFFFu          /* the layer's pick in clock_layers_build: no theme class */
-static uint8_t *s_live;
-static int32_t s_live_order = -1;
-static lv_obj_t *s_live_obj;
-static lv_image_dsc_t s_live_dsc;
+#define LIVE_PICK 0xFFFFu          /* a layer's pick in clock_layers_build: no theme class */
+static uint8_t *s_live[STAGE_LIVE_N];
+static int32_t s_live_order[STAGE_LIVE_N] = { -1, -1 };
+static lv_obj_t *s_live_obj[STAGE_LIVE_N];
+static lv_image_dsc_t s_live_dsc[STAGE_LIVE_N];
 
 /* CLK_BG_DIRECT_PUSH, the L3/L4 switch the block below and the scheduler's delta
  * push both key on, lives in orb_sched.h: one number, both TUs, so the push and
@@ -1628,11 +1630,11 @@ static void live_bench_step(void)
         lv_obj_invalidate(s_scr);
     }
     const int64_t t0 = esp_timer_get_time();
-    s_lb.rc = stage_live_open(s_lb.order, s_lb.argb);
+    s_lb.rc = stage_live_open(s_lb.layer, s_lb.order, s_lb.argb);
     const int64_t t1 = esp_timer_get_time();
     uint16_t *px;
     uint8_t *a;
-    if (s_lb.rc == ESP_OK && stage_live_target(&px, &a)) {
+    if (s_lb.rc == ESP_OK && stage_live_target(s_lb.layer, &px, &a)) {
         const orb_ui_tgt_t t = { px, a, CLK_SCR_W, CLK_SCR_H, CLK_SCR_W };
         if (s_lb.ras) {
             orb_ui_tgt_roles(&t, s_lb.ras, s_lb.pal, 0, 0);
@@ -1822,7 +1824,7 @@ static void live_tag_from(uint32_t *from, uint16_t key)
 
 /* The live layer as a table row: the full glass at 0,0, never turned, its pixels the
  * stage's plane (the glass overlay's recipe). */
-static void live_desc(orb_layer_desc_t *d)
+static void live_desc(orb_layer_desc_t *d, int l)
 {
     memset(d, 0, sizeof *d);
     d->art.cls   = ORB_ASSET_PLATE;
@@ -1835,7 +1837,7 @@ static void live_desc(orb_layer_desc_t *d)
     d->role      = CLK_ROLE_AUX;
     d->gen_prim  = 0xFFu;
     d->alpha     = 255;
-    d->plane     = s_live;
+    d->plane     = s_live[l];
 }
 
 /* One element's row. The descriptor's own placement, pivot and blend stay
@@ -1952,10 +1954,11 @@ static void clock_layers_build(orb_app_t *self)
                     : depth_key(e.order, e.cls == ORB_ASSET_AUX && (e.flags & CLK_EF_AUX_TWIN));
         n++;
     }
-    if (s_live && s_live_order >= 0 && n < CLK_LAYER_KEYS_MAX) {
-        /* radar-plan §2.9: the live layer, last among the rows at its depth */
-        pick_cls[n] = LIVE_PICK; pick_slot[n] = 0;
-        pick_ord[n] = depth_key((uint8_t)s_live_order, false);
+    for (int l = 0; l < STAGE_LIVE_N && n < CLK_LAYER_KEYS_MAX; l++) {
+        /* radar-plan §2.9: a live layer, last among the rows at its depth, layer 0 first */
+        if (!s_live[l] || s_live_order[l] < 0) continue;
+        pick_cls[n] = LIVE_PICK; pick_slot[n] = (uint16_t)l;
+        pick_ord[n] = depth_key((uint8_t)s_live_order[l], false);
         n++;
     }
     for (int a = 1; a < n; a++) {                 /* stable: equal depths keep table order */
@@ -1976,12 +1979,13 @@ static void clock_layers_build(orb_app_t *self)
     for (int k = 0; k < n; k++) {
         if (pick_cls[k] == LIVE_PICK) {
             orb_layer_desc_t d;
-            live_desc(&d);
+            live_desc(&d, pick_slot[k]);
             const int h = svc->layer_add(self, &d);
             if (h < 0) { refused++; continue; }
             clk_layer_key_t *r = &s_lay_key[s_lay_n];
             memset(r, 0, sizeof *r);
             r->cls = LIVE_PICK;
+            r->slot = pick_slot[k];
             r->gidx = 0xFFu;
             r->d = d;
             s_lay_handle[s_lay_n++] = h;
@@ -2084,7 +2088,8 @@ static void clock_layers_refresh(void)
             if (s_overlay) show = 1;  /* the glass: built and static */
             break;
         case LIVE_PICK:
-            show = s_live ? 1 : 0;    /* the live layer: its plane changes, its pose never */
+            show = r->slot < STAGE_LIVE_N && s_live[r->slot] ? 1 : 0;   /* its plane changes,
+                                                                        * its pose never */
             break;
         case ORB_ASSET_BANK: {
             /* FORMAT 3 admits no comp kind but the window, so one row is one
@@ -2623,10 +2628,12 @@ static void stage_release(void)
         if (s_plate_obj) { lv_obj_delete(s_plate_obj); s_plate_obj = NULL; }
         orb_bg_release();
     }
-    if (s_live_obj) { lv_obj_delete(s_live_obj); s_live_obj = NULL; }
-    heap_caps_free(s_live);
-    s_live = NULL;
-    s_live_order = -1;
+    for (int l = 0; l < STAGE_LIVE_N; l++) {
+        if (s_live_obj[l]) { lv_obj_delete(s_live_obj[l]); s_live_obj[l] = NULL; }
+        heap_caps_free(s_live[l]);
+        s_live[l] = NULL;
+        s_live_order[l] = -1;
+    }
     ESP_LOGI(TAG, "stage released %s", s_lay_app && s_lay_app->slug ? s_lay_app->slug : "?");
     s_opened = false;
     s_base = false;
@@ -2725,51 +2732,68 @@ uint32_t stage_values(void *buf, uint32_t cap, uint16_t *ver)
 
 /* ---- radar-plan §2.9 (R3c): the live layer --------------------------------------- */
 
-static void live_fill(uint32_t argb)
+static void live_fill(int l, uint32_t argb)
 {
-    uint16_t *px = (uint16_t *)(s_live + LIVE_OFF);
-    uint8_t *al = s_live + LIVE_OFF + (size_t)CLK_SCR_W * CLK_SCR_H * 2u;
+    uint16_t *px = (uint16_t *)(s_live[l] + LIVE_OFF);
+    uint8_t *al = s_live[l] + LIVE_OFF + (size_t)CLK_SCR_W * CLK_SCR_H * 2u;
+    const size_t n = (size_t)CLK_SCR_W * CLK_SCR_H;
+    memset(al, (int)(argb >> 24), n);
+    if (!(argb >> 24)) return;             /* clear: no colour shows, and a draw over a
+                                            * clear pixel takes its own whole (`over`) */
     const uint32_t rgb = argb & 0xFFFFFFu;
     const uint16_t c = (uint16_t)(((rgb >> 8) & 0xF800u) | ((rgb >> 5) & 0x07E0u) | ((rgb >> 3) & 0x001Fu));
-    const size_t n = (size_t)CLK_SCR_W * CLK_SCR_H;
     for (size_t i = 0; i < n; i++) px[i] = c;
-    memset(al, (int)(argb >> 24), n);
 }
 
-/* The classic path's z: the image goes in before the first widget the stage built that
- * stands deeper than it (live_tag_from), the glass and the app's own widgets above. */
+/* The classic path's z, for both layers at once. Each layer's place among the widgets the
+ * stage built is the count of those at or above its depth below it (live_tag_from): the
+ * glass and the app's own widgets stay above. The two are lifted out first, so neither
+ * reads the other's old place; the lower goes in first, and at one place the one deeper,
+ * or at one depth layer 1, goes over the other. */
 static void live_restack(void)
 {
-    const uint32_t key = depth_key((uint8_t)s_live_order, false);
-    const uint32_t n = lv_obj_get_child_count(s_scr);
-    int32_t pos = 0;
-    for (uint32_t i = 0; i < n; i++) {
-        lv_obj_t *c = lv_obj_get_child(s_scr, (int32_t)i);
-        if (c == s_live_obj) continue;
-        const uintptr_t tag = (uintptr_t)lv_obj_get_user_data(c);
-        if (!tag || tag - 1u > key) break;
-        pos++;
+    int32_t slot[STAGE_LIVE_N];
+    uint32_t key[STAGE_LIVE_N];
+    for (int l = 0; l < STAGE_LIVE_N; l++)
+        if (s_live_obj[l]) lv_obj_move_foreground(s_live_obj[l]);
+    for (int l = 0; l < STAGE_LIVE_N; l++) {
+        if (!s_live_obj[l]) continue;
+        key[l] = depth_key((uint8_t)s_live_order[l], false);
+        slot[l] = 0;
+        const uint32_t n = lv_obj_get_child_count(s_scr);
+        for (uint32_t i = 0; i < n; i++) {
+            lv_obj_t *c = lv_obj_get_child(s_scr, (int32_t)i);
+            if (c == s_live_obj[0] || c == s_live_obj[1]) break;   /* lifted to the end */
+            const uintptr_t tag = (uintptr_t)lv_obj_get_user_data(c);
+            if (!tag || tag - 1u > key[l]) break;
+            slot[l]++;
+        }
     }
-    lv_obj_move_to_index(s_live_obj, pos);
+    const bool both = s_live_obj[0] && s_live_obj[1];
+    const int lo = both && (slot[1] < slot[0] || (slot[1] == slot[0] && key[1] < key[0])) ? 1 : 0;
+    const int hi = 1 - lo;
+    if (s_live_obj[lo]) lv_obj_move_to_index(s_live_obj[lo], slot[lo]);
+    if (s_live_obj[hi]) lv_obj_move_to_index(s_live_obj[hi], slot[hi] + (both ? 1 : 0));
 }
 
-esp_err_t stage_live_open(int32_t order, uint32_t argb)
+esp_err_t stage_live_open(int32_t layer, int32_t order, uint32_t argb)
 {
     if (!s_opened || s_base || !s_scr) return ESP_ERR_INVALID_STATE;
-    if (order < -1 || order >= 64) return ESP_ERR_INVALID_ARG;
-    const bool rebuild = order != s_live_order;
+    if (layer < 0 || layer >= STAGE_LIVE_N || order < -1 || order >= 64) return ESP_ERR_INVALID_ARG;
+    const int l = (int)layer;
+    const bool rebuild = order != s_live_order[l];
     if (order < 0) {
-        if (s_live_obj) { lv_obj_delete(s_live_obj); s_live_obj = NULL; s_stage_objs--; }
-        heap_caps_free(s_live);
-        s_live = NULL;
-    } else if (!s_live) {
-        s_live = heap_caps_malloc(LIVE_OFF + (size_t)CLK_SCR_W * CLK_SCR_H * 3u,
-                                  MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-        if (!s_live) return ESP_ERR_NO_MEM;
+        if (s_live_obj[l]) { lv_obj_delete(s_live_obj[l]); s_live_obj[l] = NULL; s_stage_objs--; }
+        heap_caps_free(s_live[l]);
+        s_live[l] = NULL;
+    } else if (!s_live[l]) {
+        s_live[l] = heap_caps_malloc(LIVE_OFF + (size_t)CLK_SCR_W * CLK_SCR_H * 3u,
+                                     MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        if (!s_live[l]) return ESP_ERR_NO_MEM;
     }
-    s_live_order = order;
-    if (s_live) live_fill(argb);
-    if (s_live && !s_live_obj) {
+    s_live_order[l] = order;
+    if (s_live[l]) live_fill(l, argb);
+    if (s_live[l] && !s_live_obj[l]) {
         clk_sprite_t sp;
         memset(&sp, 0, sizeof sp);
         sp.w = CLK_SCR_W; sp.h = CLK_SCR_H;
@@ -2777,13 +2801,13 @@ esp_err_t stage_live_open(int32_t order, uint32_t argb)
         sp.pivoty = sp.centery = CLK_SCR_H / 2;
         sp.show = 1;
         sp.color_off = LIVE_OFF;
-        s_live_obj = make_layer_at(&sp, &s_live_dsc, false, s_live);
-        if (s_live_obj) s_stage_objs++;     /* the stage's, not the app's: L4 keeps the glass */
+        s_live_obj[l] = make_layer_at(&sp, &s_live_dsc[l], false, s_live[l]);
+        if (s_live_obj[l]) s_stage_objs++;  /* the stage's, not the app's: L4 keeps the glass */
     }
     if (rebuild) {
-        if (s_live_obj) live_restack();
+        live_restack();
         /* L4's z is table order: a moved layer is every row re-claimed. Behind the glass
-         * the table is wiped and the activation re-claims it, the layer with it. */
+         * the table is wiped and the activation re-claims it, the layers with it. */
         if (s_lay_app && (orb_svc_layers_live(s_lay_app) > 0 || stage_running())) {
             clock_layers_build(s_lay_app);
             clock_layers_refresh();
@@ -2793,17 +2817,17 @@ esp_err_t stage_live_open(int32_t order, uint32_t argb)
     return ESP_OK;
 }
 
-bool stage_live_target(uint16_t **px, uint8_t **a)
+bool stage_live_target(int layer, uint16_t **px, uint8_t **a)
 {
-    if (!s_live) return false;
-    *px = (uint16_t *)(s_live + LIVE_OFF);
-    *a = s_live + LIVE_OFF + (size_t)CLK_SCR_W * CLK_SCR_H * 2u;
+    if (layer < 0 || layer >= STAGE_LIVE_N || !s_live[layer]) return false;
+    *px = (uint16_t *)(s_live[layer] + LIVE_OFF);
+    *a = s_live[layer] + LIVE_OFF + (size_t)CLK_SCR_W * CLK_SCR_H * 2u;
     return true;
 }
 
 void stage_live_damage(int32_t x, int32_t y, int32_t w, int32_t h)
 {
-    if (!s_live || !s_scr || w < 1 || h < 1) return;
+    if ((!s_live[0] && !s_live[1]) || !s_scr || w < 1 || h < 1) return;
     int32_t x0 = x, y0 = y, x1 = x + w - 1, y1 = y + h - 1;
     if (x0 < 0) x0 = 0;
     if (y0 < 0) y0 = 0;

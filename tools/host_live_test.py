@@ -28,14 +28,17 @@ STAGE = os.path.join(ROOT, "main", "stage", "orb_stage.c")
 # Two edits are equivalent and left out: dropping `|| !da` (over a clear pixel the general
 # formula gives ao = a and a weight of 255, the same answer; the branch saves the divide)
 # and dropping `!tag ||` (an untagged child's tag - 1 wraps past every key and stops the
-# walk anyway; the test says so for readers).
+# walk anyway; the test says so for readers). The same goes for live_restack's explicit
+# stop at the two lifted layers: they carry no tag, so the tag test stops there too.
 MUTATIONS = [
     (UI, "a + (uint32_t)da * (255u - a) / 255u", "a + (uint32_t)da * 255u / 255u"),
     (UI, "(uint8_t)(a * 255u / ao)", "a"),
     (UI, "    t->a[i] = (uint8_t)ao;\n", ""),
     (UI, "{ t->px[i] = c; t->a[i] = a; return; }", "{ t->px[i] = c; return; }"),
-    (STAGE, "if (!tag || tag - 1u > key) break;", "if (!tag || tag - 1u >= key) break;"),
-    (STAGE, "        if (c == s_live_obj) continue;\n", ""),
+    (STAGE, "if (!tag || tag - 1u > key[l]) break;", "if (!tag || tag - 1u >= key[l]) break;"),
+    (STAGE, "(slot[1] == slot[0] && key[1] < key[0])", "(slot[1] == slot[0])"),
+    (STAGE, "slot[hi] + (both ? 1 : 0)", "slot[hi]"),
+    (STAGE, "        if (s_live_obj[l]) lv_obj_move_foreground(s_live_obj[l]);\n", ""),
     (STAGE, "(uint16_t)order * 2u + (twin ? 0u : 1u)", "(uint16_t)order * 2u"),
 ]
 
@@ -80,11 +83,14 @@ typedef struct { void *user_data; int id; } lv_obj_t;
 static lv_obj_t *kids[16];
 static uint32_t nkids;
 static lv_obj_t *s_scr = (lv_obj_t *)1;
-static lv_obj_t *s_live_obj;
-static int32_t s_live_order;
+#define STAGE_LIVE_N 2
+static lv_obj_t *s_live_obj[STAGE_LIVE_N];
+static int32_t s_live_order[STAGE_LIVE_N];
 static uint32_t lv_obj_get_child_count(lv_obj_t *p) { (void)p; return nkids; }
 static lv_obj_t *lv_obj_get_child(lv_obj_t *p, int32_t i) { (void)p; return kids[i]; }
 static void *lv_obj_get_user_data(lv_obj_t *o) { return o->user_data; }
+static void lv_obj_move_to_index(lv_obj_t *o, int32_t to);
+static void lv_obj_move_foreground(lv_obj_t *o) { lv_obj_move_to_index(o, (int32_t)nkids - 1); }
 static void lv_obj_move_to_index(lv_obj_t *o, int32_t to)
 {
     uint32_t at = 0;
@@ -101,18 +107,25 @@ static int fails;
 
 static lv_obj_t plate = { (void *)1, 1 }, row3 = { (void *)4, 2 }, row5 = { (void *)6, 3 },
                 comp21 = { (void *)22, 4 }, glass = { (void *)0x10000, 5 }, appw = { NULL, 6 },
-                live = { NULL, 9 };
+                live = { NULL, 9 }, rain = { NULL, 10 };
 
-static int page(lv_obj_t **list, int n)       /* a page with the layer appended last */
+static int page(lv_obj_t **list, int n)       /* a page with layer 0 appended last */
 {
     for (int i = 0; i < n; i++) kids[i] = list[i];
     kids[n] = &live;
     nkids = (uint32_t)n + 1;
-    s_live_obj = &live;
+    s_live_obj[0] = &live;
+    s_live_obj[1] = NULL;
     return n;
 }
-static int live_at(void) { for (uint32_t i = 0; i < nkids; i++) if (kids[i] == &live) return (int)i; return -1; }
-static int at_order(int32_t order) { s_live_order = order; live_restack(); return live_at(); }
+static int at(lv_obj_t *o) { for (uint32_t i = 0; i < nkids; i++) if (kids[i] == o) return (int)i; return -1; }
+static int live_at(void) { return at(&live); }
+static int at_order(int32_t order) { s_live_order[0] = order; live_restack(); return live_at(); }
+static void both(int32_t o0, int32_t o1)       /* re-stack both, as stage_live_open does */
+{
+    s_live_order[0] = o0; s_live_order[1] = o1;
+    live_restack();
+}
 
 static uint16_t c565(int r, int g, int b) { return (uint16_t)((r & 31) << 11 | (g & 63) << 5 | (b & 31)); }
 
@@ -172,6 +185,24 @@ int main(void)
     lv_obj_t *bare[] = { &plate, &row3, &appw };
     page(bare, 3);
     CK(at_order(63) == 2, "a theme with no glass: under the app's own widget, never over it");
+
+    /* ---- two layers: a map and the rain ---- */
+    page(dial, 6);
+    kids[nkids++] = &rain;
+    s_live_obj[1] = &rain;
+    both(0, 10);
+    CK(at(&live) == 1 && at(&rain) == 5, "map at 0 above the plate; rain at 10 above the comp at 10 (key 21)");
+    both(10, 0);
+    CK(at(&rain) == 1 && at(&live) == 5, "swapped orders swap them");
+    both(2, 9);
+    CK(at(&live) == 3 && at(&rain) == 4, "map at 2 above the row at 2, rain at 9 next above it, under the comp");
+    both(5, 5);
+    CK(at(&live) + 1 == at(&rain) && at(&live) == 3,
+       "at one depth layer 0 goes under layer 1, both above the rows at that depth");
+    both(9, 2);
+    CK(at(&rain) == 3 && at(&live) == 4, "and with the orders the other way round");
+    both(63, 63);
+    CK(at(&rain) == at(&glass) - 1 && at(&live) == at(&glass) - 2, "both at 63: under the glass, 0 below 1");
     return fails ? 1 : 0;
 }
 """

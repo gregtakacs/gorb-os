@@ -301,7 +301,7 @@ ORB_IMPORT("blob_len")  uint32_t orb_blob_len(uint32_t slot);   /* 0 = empty or 
 ORB_IMPORT("blob_free") void     orb_blob_free(uint32_t slot);
 
 /* An indexed PNG (colour type 3, 1-8 bits, not interlaced) from a kept body, drawn onto a
- * canvas (or ORB_CV_LIVE) through the app's 256 ARGB words: alpha blends, 0 leaves the
+ * canvas (or ORB_CV_LIVE0/1) through the app's 256 ARGB words: alpha blends, 0 leaves the
  * canvas. The words are indexed by each pixel's VALUE, the grey its index names in the
  * file's palette, never by the index, which is the encoder's (LibreWXR's raw frames number
  * their greys afresh every frame; pal[v] colours dBZ v/2 - 32). The source window [sx, sy]

@@ -5307,8 +5307,8 @@ static esp_err_t h_debug_map_view(httpd_req_t *req)
     return e;
 }
 
-/* GET /api/v1/debug/live?order=N[&argb=HEX][&place=0&radius_m=M][&png=REL][&sx=23&sy=23][&wait_ms=3000][&veto=1]
- * radar-plan R3c: the stage's live layer under whatever app is on the glass. Opens it at
+/* GET /api/v1/debug/live?order=N[&layer=0|1][&argb=HEX][&place=0&radius_m=M][&png=REL][&sx=23&sy=23][&wait_ms=3000][&veto=1]
+ * radar-plan R3c: a stage live layer under whatever app is on the glass. Opens it at
  * order N filled with argb (default 0: clear), draws the place's map into it through a
  * half-clear scope palette when radius_m is given, then a LibreWXR frame from the card
  * through a rain ramp when png is, each timed on the stage's own frame. order=-1 frees it. */
@@ -5319,6 +5319,7 @@ static esp_err_t h_debug_live(httpd_req_t *req)
     httpd_resp_set_type(req, "application/json");
     static stage_live_bench_t io;
     memset(&io, 0, sizeof io);
+    io.layer = q_param(req, "layer", v, sizeof v) ? atoi(v) : 0;
     io.order = q_param(req, "order", v, sizeof v) ? atoi(v) : 10;
     io.argb = q_param(req, "argb", v, sizeof v) ? (uint32_t)strtoul(v, NULL, 16) : 0;
     io.veto = q_param(req, "veto", v, sizeof v) ? (int8_t)(v[0] == '1') : -1;

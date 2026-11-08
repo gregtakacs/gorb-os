@@ -1144,15 +1144,17 @@ m3ApiRawFunction(imp_blob_free)               /* void blob_free(u32 slot) */
     m3ApiSuccess();
 }
 
-/* radar-plan §2.9: the canvas handle that names the stage's live layer, for the app the
- * stage is bound to (STAGE_ON, below); anyone else's draw onto it is refused. */
-#define ORB_CV_LIVE (-1)
+/* radar-plan §2.9: the canvas handles that name the stage's live layers, -1 for layer 0
+ * and -2 for layer 1, for the app the stage is bound to (STAGE_ON, below); anyone else's
+ * draw onto them is refused. */
+#define ORB_CV_LIVE0 (-1)
+#define CV_IS_LIVE(cv) ((cv) <= ORB_CV_LIVE0 && (cv) > ORB_CV_LIVE0 - STAGE_LIVE_N)
 static bool stage_on(const wasm_slot_t *s);
-static bool live_tgt(const wasm_slot_t *s, orb_ui_tgt_t *t)
+static bool live_tgt(const wasm_slot_t *s, int32_t cv, orb_ui_tgt_t *t)
 {
     uint16_t *px;
     uint8_t *a;
-    if (!stage_on(s) || !stage_live_target(&px, &a)) return false;
+    if (!stage_on(s) || !stage_live_target(ORB_CV_LIVE0 - cv, &px, &a)) return false;
     *t = (orb_ui_tgt_t){ px, a, CLK_SCR_W, CLK_SCR_H, CLK_SCR_W };
     return true;
 }
@@ -1174,9 +1176,9 @@ m3ApiRawFunction(imp_cv_png8)
     uint32_t len = 0;
     const uint8_t *png = orb_blob_get(slot_index(s), (int)v[0], &len);
     if (!png) m3ApiReturn(ESP_ERR_NOT_FOUND);
-    if (h == ORB_CV_LIVE) {
+    if (CV_IS_LIVE(h)) {
         orb_ui_tgt_t t;
-        if (!live_tgt(s, &t)) m3ApiReturn(ESP_ERR_INVALID_STATE);
+        if (!live_tgt(s, h, &t)) m3ApiReturn(ESP_ERR_INVALID_STATE);
         const int32_t r = orb_ui_tgt_png8(&t, png, len, (int32_t)v[1], (int32_t)v[2], (int32_t)v[3],
                                           (int32_t)v[4], (int32_t)v[5], (int32_t)v[6], (int32_t)v[7], pal);
         stage_live_damage((int32_t)v[3], (int32_t)v[4], (int32_t)v[5], (int32_t)v[6]);
@@ -1227,9 +1229,9 @@ m3ApiRawFunction(imp_map_draw)                /* i32 map_draw(i32 cv, i32 h, con
     if (!ras) m3ApiReturn(orb_map_ready(slot_index(s), h));
     uint32_t p[16];
     memcpy(p, pal, sizeof p);
-    if (cv == ORB_CV_LIVE) {
+    if (CV_IS_LIVE(cv)) {
         orb_ui_tgt_t t;
-        if (!live_tgt(s, &t)) m3ApiReturn(ORB_MAP_ABSENT);
+        if (!live_tgt(s, cv, &t)) m3ApiReturn(ORB_MAP_ABSENT);
         orb_ui_tgt_roles(&t, ras, p, dx, dy);
         stage_live_damage(dx, dy, ORB_MAP_W, ORB_MAP_W);
         m3ApiReturn(ORB_MAP_READY);
@@ -1316,16 +1318,17 @@ m3ApiRawFunction(imp_net_cred)       /* i32 net_cred(const char *id): 1 when tha
 #define STAGE_GATE(fail) if (!STAGE_ON(s)) m3ApiReturn(fail)
 static bool stage_on(const wasm_slot_t *s) { return STAGE_ON(s); }
 
-/* radar-plan §2.9: i32 stage_live(i32 order, u32 argb) — the live layer at a row's depth,
- * filled; again at its depth, filled; order -1 frees it. */
+/* radar-plan §2.9: i32 stage_live(i32 layer, i32 order, u32 argb) — a live layer at a
+ * row's depth, filled; again at its depth, filled; order -1 frees it. */
 m3ApiRawFunction(imp_stage_live)
 {
     m3ApiReturnType(int32_t);
     CALLER();
+    m3ApiGetArg(int32_t, layer);
     m3ApiGetArg(int32_t, order);
     m3ApiGetArg(uint32_t, argb);
     STAGE_GATE(ESP_ERR_INVALID_STATE);
-    m3ApiReturn(stage_live_open(order, argb));
+    m3ApiReturn(stage_live_open(layer, order, argb));
 }
 
 /* radar-plan §2.11: u32 stage_values(void *buf, u32 cap, u32 *ver) — the theme's values,
@@ -1643,7 +1646,7 @@ static const wasm_bind_t s_binds[] = {
     { "orb", "net_cred",      "i(i)",      imp_net_cred },
     { "orb", "stage_open",     "i(i)",      imp_stage_open },
     { "orb", "stage_values",   "i(iii)",    imp_stage_values },
-    { "orb", "stage_live",     "i(ii)",     imp_stage_live },
+    { "orb", "stage_live",     "i(iii)",    imp_stage_live },
     { "orb", "stage_row",      "i(ii)",     imp_stage_row },
     { "orb", "stage_comp",     "i(ii)",     imp_stage_comp },
     { "orb", "stage_sound",    "i(ii)",     imp_stage_sound },

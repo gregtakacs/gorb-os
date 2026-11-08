@@ -818,7 +818,11 @@ static void stage_read(void)
         s_cv = orb_cv_create(0, CX * 2, CY * 2);
         orb_logf("radar: no theme: the bare form%s", s_cv ? "" : ", but its canvas was refused");
     }
-    orb_set_beat(s_themed ? 0 : s_cv ? 250 : 2000);
+    /* Bare, the loop steps from orb_service, which runs many times a second: a beat is
+     * never under the manifest's 1000 ms floor (D16), and a 250 ms one, refused, left the
+     * loop standing on its first frame (owner, 2026-11-08). The beat keeps the age line. */
+    const uint32_t beat = s_themed ? 0 : s_cv ? 1000 : 2000;
+    if (orb_set_beat(beat) != ORB_OK) orb_logf("radar: the OS refused a %u ms beat", (unsigned)beat);
     if (was != s_themed) orb_logf("radar: %s", s_themed ? "on its theme" : "no theme bound yet: asking again");
     s_stage_retry_ms = up_ms() + 2000;
 }
@@ -910,6 +914,7 @@ ORB_EXPORT("orb_service") void orb_service(void)
         s_ui_dirty = s_rain_dirty = true;
     }
     zoom_step();
+    if (s_visible && s_cv) loop_step();                  /* bare: the loop's clock is the service */
     if (s_visible && !s_themed && !s_cv && up_ms() >= s_stage_retry_ms) { stage_read(); s_layers = false; s_map_dirty = s_rain_dirty = s_ui_dirty = true; }
     if (s_map_retry_ms && up_ms() >= s_map_retry_ms) { s_map_retry_ms = 0; view_open(); }
     view_step();

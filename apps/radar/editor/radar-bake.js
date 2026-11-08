@@ -39,8 +39,10 @@
       name: 'Radarscope',           // the shelf file is its name (radarscope.orbtheme): weather's is Scope
       ground: { top: '#0b1822', foot: '#05090d' },
       glass: { ring: '#5fd4c4', ringA: 0.30, rings: [0.5, 1.0], cross: true, track: '#5fd4c4', trackA: 0.55, forecast: '#e0b040' },
-      words: { face: 'IBM Plex Mono', px: 18, ink: '#d8f4ee', forecast: '#e0b040', quiet: '#7fa8a2', namePx: 14, nameFace: 'IBM Plex Sans',
-               zoomPx: 34, backing: 'rgba(4,10,14,0.78)' },   // the zoom's word while it changes, on a backing
+      // 26 px: capitals 18 px tall, the floor for a 1.75 in glass read from 2 ft (weather-plan
+      // §2.8; owner, 2026-11-08: the 18 and 14 px words were far too small)
+      words: { face: 'IBM Plex Mono', px: 26, ink: '#d8f4ee', forecast: '#e0b040', quiet: '#9cc2bc', namePx: 26, nameFace: 'IBM Plex Sans',
+               zoomPx: 40, backing: 'rgba(4,10,14,0.78)' },   // the zoom's word while it changes, on a backing
       dot: { colour: '#ffffff', ring: '#e0b040', r: 4.5 },   // white: the airports are amber
       map: {
         water: '#0a2233', land: '#101a22', urban: '#18242e', lake: '#0e2c40', river: '#1f5a80', road2: '#4a5966',
@@ -205,11 +207,11 @@
         fo.glyphs.map(plane), colours[fi]);
     });
     var tones = function (t) { return t.reduce(function (s, fn, k) { return s + (fn << (4 * k)); }, 0); };
-    var L = [{ slot: SLOT.time, t: [0, 1, NONE, NONE], w: 200, f: 0 }, { slot: SLOT.place, t: [0, NONE, NONE, NONE], w: 300, f: 0 },
-             { slot: SLOT.range, t: [2, NONE, NONE, NONE], w: 160, f: 2 },
-             { slot: SLOT.status, t: [2, NONE, NONE, NONE], w: 200, f: 2, backing: true, grow: 8 },
-             { slot: SLOT.zoom, t: [3, NONE, NONE, NONE], w: 340, f: 3, backing: true, grow: 16 }];
-    for (var k = 0; k < N_NAMES; k++) L.push({ slot: SLOT.name0 + k, t: [2, NONE, NONE, NONE], w: 180, f: 2 });
+    var L = [{ slot: SLOT.time, t: [0, 1, NONE, NONE], w: 200, f: 0 }, { slot: SLOT.place, t: [0, NONE, NONE, NONE], w: 320, f: 0 },
+             { slot: SLOT.range, t: [2, NONE, NONE, NONE], w: 200, f: 2 },
+             { slot: SLOT.status, t: [2, NONE, NONE, NONE], w: 300, f: 2, backing: true, grow: 10 },
+             { slot: SLOT.zoom, t: [3, NONE, NONE, NONE], w: 380, f: 3, backing: true, grow: 16 }];
+    for (var k = 0; k < N_NAMES; k++) L.push({ slot: SLOT.name0 + k, t: [2, NONE, NONE, NONE], w: 240, f: 2 });
     L.forEach(function (l) {
       var h = F[l.f].h + 2 + (l.grow || 0), panel = canvas(l.w, h);
       if (l.backing) {           // a rounded backing the words stand on, legible over map and rain

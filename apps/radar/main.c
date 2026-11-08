@@ -297,14 +297,16 @@ static bool    s_map_dirty, s_map_absent;
 static int64_t s_map_retry_ms;                  /* a map that failed for want of memory: again */
 static int     s_shown = -2;                   /* the frame on the glass, -1 none */
 
-/* No map on the card (or no card) is "No map yet" until the hub makes one; anything else
- * (memory, a read) is tried again in 3 s, the old view kept up meanwhile. */
+/* No map on the card (or no card) is "No map yet", asked again every 20 s (a card busy
+ * under a hub store reads as absent too); anything else (memory, a read) is tried again
+ * in 3 s, the old view kept up meanwhile. */
 static void map_failed(int32_t why)
 {
     s_view_next = 0;
-    if (why == ORB_MAP_ABSENT || why == ORB_MAP_NOCARD) { s_map_absent = true; s_map_dirty = true; }
-    else s_map_retry_ms = up_ms() + 3000;
-    orb_logf("radar: the map did not open (%d)%s", (int)why, s_map_absent ? "" : ", again in 3 s");
+    const bool absent = why == ORB_MAP_ABSENT || why == ORB_MAP_NOCARD;
+    if (absent) { s_map_absent = true; s_map_dirty = true; }
+    s_map_retry_ms = up_ms() + (absent ? 20000 : 3000);
+    orb_logf("radar: the map did not open (%d), again in %d s", (int)why, absent ? 20 : 3);
 }
 
 static void view_open(void)
@@ -433,14 +435,14 @@ static void draw_names(void)
         orb_map_mark_t m;
         if (orb_map_mark(s_view, k, &m) != 1) break;          /* 1: ready (orb_map_ready's word) */
         if (R_name[n] < 0) break;
-        const int w = 7 * (int)strlen(m.name) + 10, x = m.x, y = m.y + 14;
+        const int w = 13 * (int)strlen(m.name) + 12, x = m.x, y = m.y + 22;   /* 26 px words */
         const int dx = x - CX, dy = y - CY;
         if (dx * dx + dy * dy > 185 * 185) continue;               /* the rim's, not the map's */
         if (dx * dx + dy * dy < 40 * 40) continue;                 /* the place's dot */
-        if (y < 110 || y > 360) continue;                          /* the place, time, status and range */
+        if (y < 130 || y > 330) continue;                          /* the place, time, status and range */
         bool hit = false;
         for (int j = 0; j < n && !hit; j++)
-            hit = (x - bx[j] < (w + bw[j]) / 2 && bx[j] - x < (w + bw[j]) / 2) && (y - by[j] < 18 && by[j] - y < 18);
+            hit = (x - bx[j] < (w + bw[j]) / 2 && bx[j] - x < (w + bw[j]) / 2) && (y - by[j] < 32 && by[j] - y < 32);
         if (hit) continue;
         bx[n] = (int16_t)x; by[n] = (int16_t)y; bw[n] = (int16_t)w;
         say(R_name[n], x, y, m.name, 0);
@@ -455,15 +457,15 @@ static void draw_ui(void)
     const where_t *w = here();
     char b[48];
     pose(R_dot, CX, CY);
-    say(R_place, CX, 64, w ? w->name : "", 0);
+    say(R_place, CX, 58, w ? w->name : "", 0);
     if (w) rd_range_text(b, sizeof b, rd_radius_m(s_zoom_want >= 0 ? s_zoom_want : s_zoom, w->lat_e6), s_units.dist);
     else b[0] = 0;
-    say(R_range, CX, 404, b, 0);
+    say(R_range, CX, 412, b, 0);
     const int i = frame_wanted();
     if (i >= 0) {
         const int min = (int)((F[i].t - F[idx_newest()].t) / 60);
         rd_time_text(b, sizeof b, min);
-        say(R_time, CX, 92, b, F[i].now ? 1 : 0);                  /* a forecast reads as one */
+        say(R_time, CX, 98, b, F[i].now ? 1 : 0);                  /* a forecast reads as one */
         if (R_hand >= 0) orb_stage_pose(R_hand, min * 15, 0, 0);   /* 1.5 degrees a minute */
     } else {
         hide(R_time);
@@ -478,22 +480,22 @@ static void draw_ui(void)
         char zb[40];
         rd_range_text(b, sizeof b, rd_radius_m(zs, w->lat_e6), s_units.dist);
         snprintf(zb, sizeof zb, "%s  %s", ZOOM[zs], b);
-        say(R_zoom, CX, CY + 56, zb, 0);
+        say(R_zoom, CX, CY + 62, zb, 0);
     } else {
         hide(R_zoom);
     }
     const int want = frame_wanted();
     if (!w) st = "Set home on the hub";
     else if (zooming && R_zoom < 0) st = ZOOM[zs];
-    else if (s_view_next > 0 || s_map_retry_ms) st = "Loading map";
     else if (s_map_absent) st = "No map yet";
+    else if (s_view_next > 0 || s_map_retry_ms) st = "Loading map";
     else if (!s_npast) st = s_net != NET_IDLE ? "Loading radar" : "No radar yet";
     else if (want >= 0 && F[want].slot < 0 && !F[want].failed) st = "Loading radar";
     else if (s_list_at && now_s() - s_list_at > STALE_S) {
         snprintf(b, sizeof b, "updated %d min ago", (int)((now_s() - s_list_at) / 60));
         st = b;
     }
-    say(R_status, CX, 376, st, 0);
+    say(R_status, CX, 362, st, 0);
     draw_names();
 }
 
@@ -520,6 +522,7 @@ static void view_changed(bool frames)
     s_shown = -2;
     window_set();
     s_map_absent = false;
+    s_map_retry_ms = 0;
     view_open();
     s_rain_dirty = s_ui_dirty = true;
 }
@@ -685,9 +688,17 @@ ORB_EXPORT("orb_set_armed") int32_t orb_set_armed(int32_t armed)
     return armed;
 }
 
-/* Turn: through time, the loop stopped. Press: the next place, at the same step. */
+/* Turn: through time, the loop stopped. Press: the next place, at the same step. Either
+ * while a zoom is still being chosen means its end went missing: the zoom lands, and the
+ * press is that gesture's let-go, not the next place. */
 ORB_EXPORT("orb_input") void orb_input(int32_t delta, int32_t pressed)
 {
+    if (s_zoom_want >= 0) {
+        orb_logf("radar: %s while choosing: the zoom lands", pressed ? "a press" : "a turn");
+        s_zoom_click_ms = 0;
+        zoom_step();
+        pressed = 0;
+    }
     if (pressed && s_nwhere > 1) {
         s_sel = (s_sel + 1) % s_nwhere;
         place_changed();

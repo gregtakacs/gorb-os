@@ -1394,7 +1394,7 @@ zoom's word was lost in the map; still too many roads.
 - **Roads, further:** motorways and trunks to Local, primary from Area, secondary from
   City, tertiary at Close alone.
 
-### 6.11 Display buffers off the glass, and choosing a zoom (2026-11-07, Bronze, OS v1.2.27, uncommitted)
+### 6.11 Display buffers off the glass, and choosing a zoom (2026-11-07, Bronze, OS v1.2.27)
 
 The owner's rulings after the third hand test:
 
@@ -1422,3 +1422,29 @@ The owner's rulings after the third hand test:
   only when the grace has run out. `host_knob_test.py`: the continuation, the end once,
   a hold's release starting no grace; 18/18 gesture mutants. The owner's hand is the test.
 
+
+### 6.12 The fourth hand test (2026-11-08, Bronze, OS v1.2.28, radar v1.1.0)
+
+The owner's repro: at Close, press and turn on past Close, let go: the next place came up,
+its pill still reading "Close" and nothing loading; elsewhere "No map yet" came back; and
+the words were too small.
+
+- **A close while down began a new gesture.** Turning past an end, an opening edge read low
+  under bounce, so the release was never seen; the next close passed the debounce and
+  `kg_press` wiped the press-and-turn. Its let-go then read as a press (the next place) and
+  no end was ever told (the pill hung over a frozen radar). `kg_down` now answers "the same
+  press" for any close while down, and `knob_poll` reads the switch for an opening edge it
+  missed, so a press never sticks. A press that finds a run-out grace not yet told tells
+  the end first (`kg_press` answers it). The radar lands a zoom still being chosen on any
+  press or turn and swallows that press. `host_knob_test.py`: 20/20 gesture mutants.
+- **"No map yet" was memory.** A level file read whose `malloc` failed answered ABSENT. It
+  answers NOMEM now (tried again in 3 s); the app's oldest level file is freed before a new
+  one is read, and all of them on a NOMEM before the one retry. ABSENT is asked again every
+  20 s, as a card busy under a store reads as absent too.
+- **Nothing under 18 px tall** (weather-plan §2.8; owner: "a 1.75 inch display read from
+  2'"). Radarscope's words are 26 px (capitals 18 px), the landmarks' names too (were 14),
+  the zoom pill 40 px; place, time, status and range moved apart to fit.
+- **London's City is 11 km, Dallas's 15 km.** The ladder is map levels, and a Web Mercator
+  level's ground scale goes with cos(latitude): 51.5° N against 32.9° N is
+  cos 51.5 / cos 32.9 = 0.74. Fixed distances per step would mean resampling the map off
+  its levels (blurrier roads); not done unless the owner asks.

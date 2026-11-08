@@ -204,14 +204,18 @@ typedef struct {
 
 enum { KG_SPENT = 0, KG_PRESS = 1, KG_LONG = 2 };
 
-static inline __attribute__((always_inline)) void kg_press(volatile knob_gesture_t *g, int64_t now, int32_t raw)
+/* 1 when the new press found a press-and-turn's grace run out but its end not yet told:
+ * the caller tells it now, before the press, or the app's choice would hang open. */
+static inline __attribute__((always_inline)) int kg_press(volatile knob_gesture_t *g, int64_t now, int32_t raw)
 {
+    const int ended = !g->down && g->pt_end_at != 0;
     g->down = 1;
     g->up_at = 0;
     g->pt_end_at = 0;
     g->long_fired = g->push_turn = g->intent = 0;
     g->raw_at_press = raw;
     g->start_us = now;
+    return ended;
 }
 
 /* A committed click while this gesture stands: 0 an ordinary turn, 1 a press-and-turn
@@ -246,15 +250,18 @@ static inline __attribute__((always_inline)) int kg_release(volatile knob_gestur
 }
 
 /* The switch's edges. kg_up starts a release's settle; kg_down answers 1 when the close
- * is the same press coming back (the release is withdrawn), 0 when it is a new press to
- * debounce and begin; kg_settle answers KG_* once the switch has stayed open, -1 before. */
+ * is the same press coming back (the release is withdrawn, or its opening edge was never
+ * seen), 0 when it is a new press to debounce and begin; kg_settle answers KG_* once the
+ * switch has stayed open, -1 before. A close while down never begins a new gesture: one
+ * that did, its opening read low under bounce, wiped the press-and-turn, and the let-go
+ * at Close moved to the next place with the zoom left hanging (owner, Bronze, 2026-11-08). */
 static inline __attribute__((always_inline)) void kg_up(volatile knob_gesture_t *g, int64_t now)
 {
     if (g->down && !g->up_at) g->up_at = now ? now : 1;
 }
 static inline __attribute__((always_inline)) int kg_down(volatile knob_gesture_t *g, int64_t now)
 {
-    if (g->down && g->up_at) { g->up_at = 0; return 1; }
+    if (g->down) { g->up_at = 0; return 1; }
     if (!g->down && g->pt_end_at && now - g->pt_end_at < (int64_t)KG_GRACE_MS * 1000) {
         /* a press inside a press-and-turn's grace: the same press-and-turn, no debounce */
         g->down = 1;
@@ -451,7 +458,7 @@ static void IRAM_ATTR knob_sw_isr(void *arg)
         return;
     }
     s_swLastEdgeUs   = now;
-    kg_press(&s_g, now, s_rawPos);
+    if (kg_press(&s_g, now, s_rawPos)) s_pushEndPend = true;
 }
 
 /* ---- Public API ---- */
@@ -525,6 +532,8 @@ void knob_poll(void)
 {
     const int64_t now = esp_timer_get_time();
     /* A release that has settled ends the press here, a hold fires at its threshold. */
+    /* An opening edge lost (read low under bounce) is found here, so a press never sticks. */
+    if (s_g.down && !s_g.up_at && gpio_get_level(PIN_KNOB_SW)) kg_up(&s_g, now);
     const int rel = kg_settle(&s_g, now);
     if (rel == KG_PRESS) s_pressPend = true;
     else if (rel == KG_LONG) s_longPend = true;

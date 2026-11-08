@@ -579,6 +579,18 @@ int main(void)
     kg_up(&g, MS(41000));
     CK(kg_settle(&g, MS(41100)) == KG_SPENT && kg_down(&g, MS(41200)) == 0 && !kg_end(&g, MS(41500)),
        "a hold's spent release starts no grace: the next press is its own, and no end is told");
+    /* the repro at Close: an opening edge read low under bounce, then the close came. That
+     * close must not start a new gesture (it wiped push_turn: next place, the zoom hung) */
+    kg_press(&g, MS(50000), 0);
+    (void)kg_click(&g);
+    CK(kg_down(&g, MS(50300)) == 1 && g.down && g.push_turn, "a close while down, its opening unseen, is the same press-and-turn");
+    kg_up(&g, MS(50500));
+    CK(kg_settle(&g, MS(50560)) == KG_SPENT, "and its let-go is spent, not a press for the next place");
+    /* a new press after the grace ran out, its end not yet polled: the press tells it */
+    CK(kg_press(&g, MS(51000), 0) == 1, "a press finding a run-out grace untold tells the end");
+    CK(!kg_end(&g, MS(52000)), "which is then told only once");
+    (void)kg_release(&g, MS(51100));
+    CK(kg_press(&g, MS(53000), 0) == 0, "a press with no grace behind it tells nothing");
     return fails ? 1 : 0;
 }
 """
@@ -595,7 +607,9 @@ GESTURE_MUTATIONS = [
     ("g->long_fired = g->push_turn = g->intent = 0;", "g->long_fired = g->push_turn = 0;"),
     ("return first ? 2 : 1;", "return 1;"),
     ("if (!g->down || g->long_fired || g->up_at) return 0;", "if (!g->down || g->long_fired) return 0;"),
-    ("    if (g->down && g->up_at) { g->up_at = 0; return 1; }", ""),
+    ("    if (g->down) { g->up_at = 0; return 1; }", ""),
+    ("    if (g->down) { g->up_at = 0; return 1; }", "    if (g->down && g->up_at) { g->up_at = 0; return 1; }"),
+    ("const int ended = !g->down && g->pt_end_at != 0;", "const int ended = 0;"),
     ("now - g->up_at < (int64_t)KG_SETTLE_MS * 1000) return -1;", "now - g->up_at < 0) return -1;"),
     ("    const int r = kg_release(g, at);", "    const int r = kg_release(g, now);"),
     ("if (r == KG_SPENT && g->push_turn) g->pt_end_at = at ? at : 1;", "if (r == KG_SPENT) g->pt_end_at = at ? at : 1;"),

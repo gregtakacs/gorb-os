@@ -119,16 +119,16 @@ static void pick_level(int32_t lat_e6, int32_t radius_m, int *z, float *scale)
 
 /* Read a whole file in pieces, the lock held for each and standing aside while the card
  * is being written (§2.12). NULL when absent, unreadable or out of memory. */
-static uint8_t *read_file(const char *full, uint32_t *len_out)
+static int read_file(const char *full, uint8_t **buf_out, uint32_t *len_out)
 {
     struct stat st;
     orb_sd_lock();
     const bool ok = stat(full, &st) == 0 && st.st_size > 36 && st.st_size < 4 * 1024 * 1024;
     orb_sd_unlock();
-    if (!ok) return NULL;
+    if (!ok) return ORB_MAP_ABSENT;
     const uint32_t len = (uint32_t)st.st_size;
     uint8_t *buf = heap_caps_malloc(len, MALLOC_CAP_SPIRAM);
-    if (!buf) return NULL;
+    if (!buf) return ORB_MAP_NOMEM;     /* the file is there: the app asks again */
     for (uint32_t off = 0; off < len; off += PIECE) {
         while (orb_sd_write_idle_ms() < WRITE_QUIET_MS) vTaskDelay(pdMS_TO_TICKS(50));
         const uint32_t want = len - off < PIECE ? len - off : PIECE;
@@ -137,10 +137,27 @@ static uint8_t *read_file(const char *full, uint32_t *len_out)
         const bool got = f && fseek(f, (long)off, SEEK_SET) == 0 && fread(buf + off, 1, want, f) == want;
         if (f) fclose(f);
         orb_sd_unlock();
-        if (!got) { heap_caps_free(buf); return NULL; }
+        if (!got) { heap_caps_free(buf); return ORB_MAP_ABSENT; }
     }
+    *buf_out = buf;
     *len_out = len;
-    return buf;
+    return ORB_MAP_OK;
+}
+
+/* The app's least recently used level file, freed before a new one is read: three
+ * levels are never wanted at once by one render, and PSRAM is too short to hold a
+ * fourth beside them on a stormy day. */
+static void drop_oldest(app_maps_t *a, bool all)
+{
+    lock();
+    int slot = -1;
+    for (int i = 0; i < FILES_PER_APP; i++) {
+        if (!a->f[i].buf) { if (!all) { unlock(); return; } continue; }
+        if (all) { heap_caps_free(a->f[i].buf); a->f[i].buf = NULL; continue; }
+        if (slot < 0 || a->f[i].used_us < a->f[slot].used_us) slot = i;
+    }
+    if (slot >= 0) { heap_caps_free(a->f[slot].buf); a->f[slot].buf = NULL; }
+    unlock();
 }
 
 /* The level file, from the app's cache or the card. Called on the map task. */
@@ -161,9 +178,11 @@ static int file_for(int app_slot, const char *name, const uint8_t **buf, uint32_
     snprintf(full, sizeof full, ORB_SD_BASE ORB_MAP_DIR "/%s", name);
     uint32_t n = 0;
     uint8_t *b = NULL;
+    drop_oldest(a, false);
     for (int tries = 0; tries < 2 && !b; tries++) {     /* a file changed underneath is read again */
-        b = read_file(full, &n);
-        if (!b) return ORB_MAP_ABSENT;
+        int r = read_file(full, &b, &n);
+        if (r == ORB_MAP_NOMEM) { drop_oldest(a, true); r = read_file(full, &b, &n); }
+        if (r != ORB_MAP_OK) return r;
         if (orb_map_check(b, n, NULL) != ORB_MAP_OK) { heap_caps_free(b); b = NULL; }
     }
     if (!b) return ORB_MAP_BAD;

@@ -1040,6 +1040,19 @@
         { id: 'h2', type: 'hand', host: 'dial', shows: 'minute', motion: { cadence: 'jump', ease: 150 }, length: 205.44, width: 8.132, cap: 7.276 },
         { id: 'h3', type: 'hand', host: 'dial', shows: 'second', finish: 'red', motion: { cadence: 'stop-to-go' }, length: 209.72, width: 2.568, cap: 7.276 },
       ] } },
+    // flights-map-plan §4: the Sectional set's clock, a flight chart made up: chart paper, a
+    // blue railway rose, a magenta and a blue airport ring and a magenta reporting point
+    sectional: { name: 'Sectional', blurb: 'Chart paper · blue rose · magenta airport rings · magenta seconds', hands: 'pencil', handFinish: 'royal', caseMetal: 'steel', design: {
+      color: '#eef1e4', aging: 0, stains: 0, dust: 0, comps: [
+        { id: 'c1', type: 'flare', host: 'dial', angle: 0, dist: 64, rot: 0, size: 6, style: 'print', icon: 'text', text: 'SECTIONAL', font: 'barlow', weight: 'bold', spacing: 0.32, color: '#2a5db0' },
+        { id: 'c2', type: 'flare', host: 'dial', angle: 305, dist: 82, rot: 0, size: 15, style: 'print', icon: 'ring', color: '#c2187a' },
+        { id: 'c3', type: 'flare', host: 'dial', angle: 128, dist: 84, rot: 0, size: 13, style: 'print', icon: 'ring', color: '#2a5db0' },
+        { id: 'c4', type: 'flare', host: 'dial', angle: 228, dist: 74, rot: 0, size: 8, style: 'print', icon: 'triangle', color: '#c2187a' },
+        { id: 'c5', type: 'flare', host: 'dial', angle: 180, dist: 66, rot: 0, size: 5.5, style: 'print', icon: 'text', text: 'CLASS E 700', font: 'barlow', weight: 'bold', spacing: 0.2, color: '#c2187a' },
+        { id: 'h1', type: 'hand', host: 'dial', shows: 'hour', length: 133.32, width: 10.1, cap: 6.868, scale: { style: 'railway', color: '#2a5db0', font: 'barlow', gap: 82.68 } },
+        { id: 'h2', type: 'hand', host: 'dial', shows: 'minute', length: 193.92, width: 7.676, cap: 6.868 },
+        { id: 'h3', type: 'hand', host: 'dial', shows: 'second', finish: 'magenta', length: 197.96, width: 2.424, cap: 6.868 },
+      ] } },
     luna: { name: 'Luna', blurb: 'Midnight sunburst · big realistic moon at 6', hands: 'dauphine', handFinish: 'gilt', design: {
       surface: 'guilloche', color: 'navy', aging: 0, stains: 0, dust: 0.2, comps: [
         { id: 'c1', type: 'moon', host: 'dial', angle: 180, dist: 96, rot: 0, size: 92, style: 'sphere' },

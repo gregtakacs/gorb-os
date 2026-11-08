@@ -203,7 +203,7 @@
   function Editor() {
     var a = A();
     var u = function (v) { return R.useState(v); };
-    var dS = u(function () { return B.preset(q('preset', B.PRESETS.concat(['blank']), 'modern')); }), d = dS[0], setD = dS[1];
+    var dS = u(function () { return B.preset(q('preset', B.STARTS.concat(['blank']), 'modern')); }), d = dS[0], setD = dS[1];
     var stepS = u(q('step', col(STEPS), 'start')), step = stepS[0], setStep = stepS[1];
     var stS = u(''), status = stS[0], setStatus = stS[1];
     var rendS = u(q('render', ['design', 'panel', 'compare'], 'design')), rend = rendS[0], setRend = rendS[1];
@@ -282,7 +282,7 @@
     R.useEffect(function () { ses.boot().catch(function () {}).then(function () { return ses.openTheme(); }).catch(function () {}); }, []);
     var upd = function (path, v) { setD(function (old) { return setIn(old, path, v); }); };
     // what each colour row offers back as its preset: the start this design came from, the blank one included
-    var base = R.useMemo(function () { return B.preset(d.base === 'blank' || a.families[d.base] ? d.base : 'modern'); }, [d.base]);
+    var base = R.useMemo(function () { return B.preset(d.base === 'blank' || B.STARTS.indexOf(d.base) >= 0 ? d.base : 'modern'); }, [d.base]);
 
     /* the bake, the send, the download */
     async function bakeNow() {
@@ -369,7 +369,7 @@
     var pct = function (v) { return Math.round(v * 100) + '%'; };
     var fields = [], sc = d.scope;
     if (step === 'scope') {
-      var dLabel = { scope: 'Graticule', chart: 'Grid', brass: 'Bezel metal', blueprint: 'Grid', galaxy: 'Nebula' }[sc.ground];
+      var dLabel = { scope: 'Graticule', chart: 'Grid', sectional: 'Grid', brass: 'Bezel metal', blueprint: 'Grid', galaxy: 'Nebula' }[sc.ground];
       fields.push(K.H('Ground'));
       fields.push(K.Ch('Ground', sc.ground, opt(B.GROUNDS.map(function (k) { return [k, B.GROUND_TITLES[k]]; })), function (v) {
         setD(function (o) { var n = clone(o), g = B.SCOPES[v]; n.scope.ground = v; if (g) { n.scope.face = g.face; n.scope.detail = g.detail; n.scope.grid = g.grid; n.scope.gridWidth = g.gridWidth; } return n; });
@@ -381,10 +381,10 @@
         var f = e.target.files && e.target.files[0]; if (!f) return;
         readPicture(f, 932).then(function (v) { upd('scope.image', v); }, function (er) { say('Not read: ' + er.message); });
       }, sc.image ? 'cut to fill the glass' : 'none yet'));
-      if (sc.ground !== 'image') fields.push(C(sc.ground === 'brass' ? 'Enamel' : sc.ground === 'chart' ? 'Paper' : sc.ground === 'galaxy' ? 'Space' : 'Face', 'scope.face'));
+      if (sc.ground !== 'image') fields.push(C(sc.ground === 'brass' ? 'Enamel' : sc.ground === 'chart' || sc.ground === 'sectional' ? 'Paper' : sc.ground === 'galaxy' ? 'Space' : 'Face', 'scope.face'));
       if (dLabel) fields.push(C(dLabel, 'scope.detail'));
       if (sc.ground === 'galaxy') fields.push(onOff('Stars', 'scope.grid', 'Dense', 'Sparse'));
-      if (sc.ground === 'scope' || sc.ground === 'chart' || sc.ground === 'blueprint') {
+      if (sc.ground === 'scope' || sc.ground === 'chart' || sc.ground === 'sectional' || sc.ground === 'blueprint') {
         fields.push(onOff('Grid', 'scope.grid', 'Shown', 'Off'));
         if (sc.grid) fields.push(num('Grid weight', 'scope.gridWidth', 0.3, 4, 0.1, function (v) { return v.toFixed(1) + ' px'; }));
       }
@@ -490,6 +490,9 @@
           fields.push(K.H('Names'));
           fields.push(K.Sl('Typeface', mp.nameFace || d.words.face, B.FACES.map(function (k) { return { v: k, label: k }; }), function (v) { upd('map.nameFace', v); }));
           fields.push(num('Size', 'map.nameSize', 14, 22, 1, function (v) { return v + ' px'; }));
+          fields.push(K.Nt('', (mp.nameFace || d.words.face) === d.words.face && (mp.nameSize | 0) === (d.words.size | 0)
+            ? 'In the words’ own face and size, the names share their letters: they add nothing to the theme.'
+            : 'Another face or size carries a set of letters of its own: about 150 KB more on the orb.'));
         }
         fields.push(K.Nt('', home ? 'The preview is your own home map, ' + home.name + ', drawn the way the orb draws it.' : 'Open this editor from the hub, with home set on the Orb tab, to preview the map on your own home.'));
       }
@@ -672,14 +675,14 @@
         : h('div', { className: 'fl-list' }, h(S.Fields, { fields: fields }));
 
     /* ---- the start sheet ---- */
-    var famOf = function (dd) { return a.families[dd.base] ? dd.base : dd.planes && a.families[dd.planes.family] ? dd.planes.family : null; };
+    var famOf = function (dd) { return B.STARTS.indexOf(dd.base) >= 0 ? dd.base : dd.planes && a.families[dd.planes.family] ? dd.planes.family : null; };
     var sheet = step === 'start' ? h(S.StartSheet, {
       title: 'Start a flight tracker theme',
       scratch: { label: 'Blank', short: 'Plain greys, nothing preset', cls: d.base === 'blank' ? 'on' : '',
         tip: 'Every part present, in plain greys on a plain ground: a blank slate to build your own look on',
         on: function () { setD(B.preset('blank')); ses.restart(); say('Starting from a blank theme: Continue when you are ready'); } },
-      tiles: B.PRESETS.map(function (k) {
-        var f = a.families[k];
+      tiles: B.STARTS.map(function (k) {
+        var f = B.startInfo(k);
         var pd = B.preset(k);
         return { key: k, name: f.title, short: B.GROUND_TITLES[pd.scope.ground] + ' · ' + (B.ARMS.find(function (r) { return r[0] === pd.arm.kind; }) || [0, pd.arm.kind])[1],
           tip: 'Start from ' + f.title + ': ' + f.band, cls: d.base === k ? 'on' : '', draw: function (c) { drawThumb(k, c); },
@@ -688,7 +691,7 @@
       library: { accept: '.orbtheme,.orbdesign,.json',
         openFile: function (e) { var fl = e.target.files[0]; if (fl) ses.openFile(fl); },
         rows: S.libraryRows(ses.library(), { version: ses.version(), armed: mineDel, arm: setMineDel,
-          meta: function (m) { var f = m.design && famOf(m.design); return f ? a.families[f].title + ' · ' : ''; },
+          meta: function (m) { var f = m.design && famOf(m.design); return f ? B.startInfo(f).title + ' · ' : ''; },
           open: function (nm) { ses.openEntry(nm); }, forget: function (nm, what) { ses.forgetEntry(nm, what); } }),
         empty: ses.hubOrb() ? null : 'The library is on the hub: open this editor from the hub to save and open designs there.' },
       foot: [{ label: 'Continue with ' + d.name, primary: true, on: function () { setStep('scope'); } }],

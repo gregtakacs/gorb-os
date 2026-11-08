@@ -133,6 +133,21 @@
     rain: [[10, '#ffffff', 0.25], [20, '#e0f4ff', 0.40], [30, '#a0e0ff', 0.55], [40, '#60c8ff', 0.70],
            [50, '#20a8ff', 0.82], [60, '#ffe07a', 0.95], [70, '#ff8040', 1.0]]
   });
+  // flights-map-plan §4: a flight chart's look, made up: chart paper, blue water, yellow
+  // towns, magenta airports as a chart's ticked rings, the rain kept off yellow and blue
+  PRESETS.sectional = starter('Sectional', {
+    top: '#eef1e4', foot: '#dfe5cf', scaleEdge: '#eef1e4',
+    glass: { ring: '#2a5db0', ringA: 0.55, track: '#c2187a', trackA: 0.7, forecast: '#c2187a' },
+    words: { face: 'Barlow Condensed', nameFace: 'Barlow Condensed', ink: '#1f2a44', forecast: '#c2187a', quiet: '#3e5a80',
+             backing: 'rgba(238,241,228,0.9)' },
+    dot: { colour: '#c2187a', ring: '#1f2a44', r: 4.5 },
+    map: { water: '#9fcbe9', land: '#eef1e4', urban: '#f3dc7a', lake: '#9fcbe9', river: '#4f8fcb', road2: '#a8708c',
+           road1: '#8e4a6e', state: '#6c6c7a', border: '#4a4a5a', coast: '#4f8fcb', city: '#2b2b2b', airport: '#c2187a',
+           runway: '#c2187a', road3: '#c7a6b6', road4: '#d6c2cc', look: { airport: 'ticked', city: 'dot' } },
+    dash: { state: 'long', border: 'dashdot' },
+    rain: [[10, '#79c779', 0.55], [20, '#2f9a41', 0.72], [30, '#e07b00', 0.82], [40, '#d9480f', 0.88],
+           [50, '#b3122b', 0.92], [60, '#8e1a8a', 1.0], [70, '#3b0a57', 1.0]]
+  });
   PRESETS.blank = starter('Blank', {
     top: '#1c1c1c', foot: '#101010', scaleEdge: '#000000',
     glass: { ring: '#9a9a9a', ringA: 0.25, track: '#9a9a9a', trackA: 0.5, forecast: '#c8c8c8' },
@@ -143,10 +158,10 @@
            runway: '#6a6a6a', road3: '#484848', road4: '#3c3c3c' },
     rain: PRESETS.scope.rain
   });
-  var STARTERS = ['scope', 'paper', 'station', 'vintage', 'blueprint'];
-  var STARTER_TITLES = { scope: 'Radarscope', paper: 'Paper', station: 'Station', vintage: 'Vintage', blueprint: 'Blueprint', blank: 'Blank' };
+  var STARTERS = ['scope', 'paper', 'station', 'vintage', 'blueprint', 'sectional'];
+  var STARTER_TITLES = { scope: 'Radarscope', paper: 'Paper', station: 'Station', vintage: 'Vintage', blueprint: 'Blueprint', sectional: 'Sectional', blank: 'Blank' };
   var STARTER_NOTES = { scope: 'Phosphor green on black', paper: 'A printed road atlas', station: 'The TV weather map',
-    vintage: 'Brass and parchment, a sepia map', blueprint: 'Cyan lines on blueprint blue', blank: 'Plain greys' };
+    vintage: 'Brass and parchment, a sepia map', blueprint: 'Cyan lines on blueprint blue', sectional: 'A flight chart: magenta, blue and yellow', blank: 'Plain greys' };
 
   /* ---- the Map step's presets (§2.9): detail, names, a colour scheme ---- */
   var DETAILS = {
@@ -304,6 +319,10 @@
       b[64 + k] = Math.max(0, Math.min(4, (M.width && M.width[r]) | 0));
       b[80 + k] = DASH[(M.dash && M.dash[r]) || 'solid'] | 0;
     });
+    // OS v1.2.38: a mark's look in its width byte (an older OS draws the old dot and square)
+    var LOOK = { dot: 1, ring: 2, diamond: 3, diamondLine: 4, square: 5, squareLine: 6, ticked: 7 };
+    if (M.look && LOOK[M.look.airport]) b[64 + 11] = LOOK[M.look.airport] | 6 << 3;
+    if (M.look && LOOK[M.look.city]) b[64 + 10] = LOOK[M.look.city] | 3 << 3;
     var on = 0;
     ROLES.forEach(function (r, k) { if ((M.off || []).indexOf(r) < 0) on |= 1 << k; });
     dv.setUint16(96, on, true);

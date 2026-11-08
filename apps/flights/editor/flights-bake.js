@@ -45,8 +45,8 @@
   // the runtime's faces (fonts@1) the editor offers
   var FACES = ['IBM Plex Sans', 'IBM Plex Mono', 'Space Grotesk', 'Space Mono', 'Barlow Condensed', 'Jost',
     'Oswald', 'Michroma', 'Orbitron', 'Playfair Display', 'Cormorant Garamond', 'DM Serif Display', 'VT323'];
-  var GROUNDS = ['scope', 'chart', 'brass', 'blueprint', 'galaxy', 'colour', 'image'];
-  var GROUND_TITLES = { scope: 'Phosphor scope', chart: 'Aviation chart', brass: 'Brass instrument', blueprint: 'Blueprint', galaxy: 'Galaxy', colour: 'Flat colour', image: 'Picture' };
+  var GROUNDS = ['scope', 'chart', 'sectional', 'brass', 'blueprint', 'galaxy', 'colour', 'image'];
+  var GROUND_TITLES = { scope: 'Phosphor scope', chart: 'Aviation chart', sectional: 'Sectional chart', brass: 'Brass instrument', blueprint: 'Blueprint', galaxy: 'Galaxy', colour: 'Flat colour', image: 'Picture' };
   // the frames (§12.6): plain shapes, the families' own materials, and the author's picture
   var FRAME_STYLES = [['none', 'None'], ['square', 'Square'], ['rounded', 'Rounded'], ['pill', 'Pill'], ['double', 'Double line'],
     ['brass', 'Brass'], ['silver', 'Silver'], ['bronze', 'Bronze'], ['gold', 'Gold'], ['drafting', 'Drafting'], ['chart', 'Chart'], ['picture', 'Your picture']];
@@ -81,6 +81,13 @@
       ticks: { on: true, colour: '#DCE9F8', r: 197, len: 10, width: 1.6, minor: 5, major: 30, style: 'line', edge: false },
       labels: { kind: 'degrees', every: 30, face: 'IBM Plex Mono', size: 15, colour: '#F4F8FF', turn: 'upright', skip: true, r: 213 },
       lubber: { on: false, colour: '#F4F8FF' }, rings: { n: 2, colour: '#DCE9F8', opacity: 0.45, width: 1.5, dash: 'solid' }, home: { colour: '#FFFFFF', size: 3 } },
+    // flights-map-plan §4: a flight chart's look, made up: chart paper, a blue rose and blue
+    // rings, a magenta band inside the rim
+    sectional: { ground: 'sectional', face: '#EEF1E4', detail: '#2A5DB0', grid: true,
+      cross: { on: false, style: 'dashed', colour: '#C2187A', opacity: 0.5 },
+      ticks: { on: true, colour: '#2A5DB0', r: 197, len: 9, width: 1.4, minor: 5, major: 30, style: 'line', edge: true },
+      labels: { kind: 'degrees', every: 30, face: 'Barlow Condensed', size: 17, colour: '#2A5DB0', turn: 'radial', skip: true, r: 214 },
+      lubber: { on: true, colour: '#C2187A' }, rings: { n: 2, colour: '#2A5DB0', opacity: 0.85, width: 2, dash: 'solid' }, home: { colour: '#C2187A', size: 3.5 } },
     galaxy: { ground: 'galaxy', face: '#1A1240', detail: '#B04CFF', grid: true,
       cross: { on: false, style: 'dotted', colour: '#8C7BFF', opacity: 0.4 },
       ticks: { on: true, colour: '#B9B2FF', r: 197, len: 8, width: 1.4, minor: 5, major: 30, style: 'dot', edge: false },
@@ -88,7 +95,7 @@
       lubber: { on: true, colour: '#FFE9A8' }, rings: { n: 2, colour: '#8C7BFF', opacity: 0.35, width: 1, dash: 'dotted' }, home: { colour: '#FFE9A8', size: 3 } },
   };
   // the grid's weight by ground, px (§12.6)
-  var GRID_W = { scope: 0.8, chart: 0.8, blueprint: 0.6, galaxy: 1 };
+  var GRID_W = { scope: 0.8, chart: 0.8, sectional: 0.7, blueprint: 0.6, galaxy: 1 };
   Object.keys(SCOPES).forEach(function (k) { SCOPES[k].gridWidth = GRID_W[k] || 0.8; });
   var ARM_LOOKS = {
     wedge: { colour: '#3DFF8E', tailColour: '#3DFF8E', lead: '#D8FFE8', tail: 30, halo: 3 },
@@ -104,6 +111,7 @@
     brass: { face: 'Cormorant Garamond', size: 17, body: '#F2E6C8', accent: '#F8E7A8', accent2: '#B8892E', quiet: '#A8946A', warning: '#FF9A3C' },
     blueprint: { face: 'IBM Plex Mono', size: 15, body: '#FFFFFF', accent: '#9FE3FF', accent2: null, quiet: '#B8CCE6', warning: '#FFD27A' },
     galaxy: { face: 'Space Grotesk', size: 16, body: '#EDEBFF', accent: '#FFD27A', accent2: '#FF8A5C', quiet: '#9C95C9', warning: '#FF6B6B' },
+    sectional: { face: 'Barlow Condensed', size: 19, body: '#1F2A44', accent: '#C2187A', accent2: null, quiet: '#3E5A80', warning: '#C2410C' },
   };
   var FRAMES = {
     scope: { style: 'rounded', edge: 1.5, pad: 8, fill: '#101820', opacity: 0.82, line: '#2A6A44' },
@@ -111,12 +119,19 @@
     brass: { style: 'double', edge: 1.5, pad: 8, fill: '#161815', opacity: 0.88, line: '#C9A24E' },
     blueprint: { style: 'square', edge: 1.5, pad: 8, fill: '#1C4A84', opacity: 0.88, line: '#DCE9F8' },
     galaxy: { style: 'pill', edge: 1.25, pad: 8, fill: '#0B0820', opacity: 0.8, line: '#8C7BFF' },
+    sectional: { style: 'rounded', edge: 1.5, pad: 8, fill: '#FBFBF5', opacity: 0.94, line: '#2A5DB0' },
   };
   // what a family brings beyond its ground: its own frame, and the celestial arm
   var FAMILY = {
     silver: { frame: 'silver' }, brass: { frame: 'brass' }, blueprint: { frame: 'drafting' }, paper: { frame: 'chart' },
     celestial: { frame: 'pill', heading: 'trail', arm: { kind: 'line', colour: '#C9BEFF', tailColour: '#8C7BFF', tail: 28, halo: 4 } },
   };
+  // the starts beyond the plane families: Sectional (flights-map-plan §4) flies the Modern
+  // silhouettes in a flight chart's inks
+  var STARTS = PRESETS.concat(['sectional']);
+  var START_INFO = { sectional: { title: 'Sectional', band: 'Flat silhouettes in a flight chart’s inks on chart paper: magenta, blue and yellow.' } };
+  var SECTIONAL_BANDS = ['#8A8A8A', '#A0A4AA', '#C2187A', '#D9480F', '#2E7D32', '#2A5DB0', '#1F2A44'];
+  function startInfo(k) { return START_INFO[k] || A().families[k] || A().families.modern; }
   var clone = function (o) { return JSON.parse(JSON.stringify(o)); };
   function scopeOf(ground) { return clone(SCOPES[ground] || SCOPES.scope); }
   function armOf(kind, period) { return Object.assign({ kind: kind, period: period || 8, length: 1 }, clone(ARM_LOOKS[kind] || ARM_LOOKS.wedge)); }
@@ -138,11 +153,27 @@
     d.words = { face: 'IBM Plex Sans', size: 16, body: '#E6E6E6', accent: '#FFFFFF', accent2: null, quiet: '#8F8F8F', warning: '#E0A040' };
     d.frames = { style: 'rounded', edge: 1, pad: 8, fill: '#1A1A1A', opacity: 0.85, line: '#4A4A4A', image: null, corner: 10,
       card: { width: 240, place: 'auto' }, shadow: { on: false, blur: 4, opacity: 0.55, drop: 3 } };
-    d.map = M().preset('blank', d.words.face);
+    d.map = M().preset('blank', d.words.face, d.words.size);
+    return d;
+  }
+  function sectional() {
+    var d = preset('modern');
+    d.name = 'Sectional'; d.base = 'sectional';
+    d.scope = scopeOf('sectional'); d.scope.image = null;
+    d.arm = Object.assign(armOf('line', 8), { colour: '#C2187A', tailColour: '#C2187A', lead: '#C2187A', tail: 18, halo: 0,
+      shadow: { on: false, opacity: 0.6, blur: 2.5 }, layer: 'under', length: 1 });
+    Object.assign(d.planes, { family: 'modern', colour: true, bands: SECTIONAL_BANDS.slice(), ground: 0.7, groundGrey: false,
+      sel: '#1F2A44', em: '#E00000', selStyle: 'ring', emStyle: 'double', dots: { show: 'bands', colour: '#1F2A44', size: 6 },
+      shadow: { on: true, opacity: 0.35, blur: 1.5 } });
+    d.words = clone(WORDS.sectional);
+    d.frames = Object.assign(clone(FRAMES.sectional), { image: null, corner: 8, card: { width: 240, place: 'auto' },
+      shadow: { on: true, blur: 3, opacity: 0.3, drop: 2 } });
+    d.map = M().preset('sectional', d.words.face, d.words.size);
     return d;
   }
   function preset(fam) {
     if (fam === 'blank') return blank();
+    if (fam === 'sectional') return sectional();
     var a = A(), f = a.families[fam], bg = f.pair[0], look = a.backgrounds[bg].look, X = FAMILY[fam] || {};
     var d = {
       name: f.title, base: fam,
@@ -160,13 +191,13 @@
     d.arm.layer = 'under';   // §12.9: under the planes, or over them (still under the rings and words)
     if (X.arm) Object.assign(d.arm, X.arm);
     if (X.frame) d.frames.style = X.frame;
-    d.map = M().preset(fam, d.words.face);
+    d.map = M().preset(fam, d.words.face, d.words.size);
     return d;
   }
   // a design saved before a field existed takes that field from its preset (§12.6: added
   // fields, no new schema); what it has is kept
   function complete(x) {
-    var fam = x.base === 'blank' || A().families[x.base] ? x.base : A().families[x.planes && x.planes.family] ? x.planes.family : 'modern';
+    var fam = x.base === 'blank' || x.base === 'sectional' || A().families[x.base] ? x.base : A().families[x.planes && x.planes.family] ? x.planes.family : 'modern';
     var fill = function (o, dflt) {
       Object.keys(dflt).forEach(function (k) {
         if (o[k] === undefined) o[k] = clone(dflt[k]);
@@ -280,6 +311,38 @@
     }
   }
   var BLOBS = [[120, 140, 70, 3, 0.4], [345, 320, 95, 4, 1.7], [330, 110, 50, 5, 2.9]];
+  // flights-map-plan §4: chart paper with soft terrain tints, a graticule ticked like a
+  // chart's, a dashed magenta isogonic line, and the magenta band a chart shades inside an
+  // airspace's edge, here inside the rim
+  var TINTS = [[110, 120, 120, '#E4ECD2', 5, 0.3], [360, 330, 140, '#EFE6CB', 4, 1.9], [380, 90, 80, '#E6EDD8', 3, 2.6], [90, 380, 90, '#F1E9D2', 5, 0.9]];
+  function sectionalGround(x, sc, gw) {
+    var f = sc.face, dt = sc.detail;
+    x.fillStyle = f; x.fillRect(0, 0, G, G);
+    TINTS.forEach(function (b) {
+      x.beginPath();
+      for (var i = 0; i <= 64; i++) {
+        var t = 2 * Math.PI * i / 64, rr = b[2] * (1 + 0.16 * Math.sin(b[4] * t + b[5]) + 0.07 * Math.sin(2 * b[4] * t + b[5] * 2));
+        x[i ? 'lineTo' : 'moveTo'](b[0] + rr * Math.cos(t), b[1] + rr * Math.sin(t));
+      }
+      x.fillStyle = b[3]; x.fill();
+    });
+    if (sc.grid) {
+      x.strokeStyle = rgba(dt, 0.32); x.lineWidth = gw;
+      for (var k = 1; k < 8; k++) {
+        var o = k * 58 + 1;
+        line(x, o, 0, o, G); line(x, 0, o, G, o);
+        for (var m = 0; m < G; m += 11.6) {                // the minute ticks along each line
+          var tl = Math.round(m / 11.6) % 5 ? 3 : 6;
+          line(x, o - tl, m, o, m); line(x, m, o, m, o + tl);
+        }
+      }
+    }
+    x.save(); x.setLineDash([10, 6]); x.strokeStyle = 'rgba(194,24,122,0.45)'; x.lineWidth = 1.4;
+    line(x, 70, 430, 400, 30); x.restore();
+    var band = x.createRadialGradient(CX, CX, 196, CX, CX, 232);
+    band.addColorStop(0, 'rgba(194,24,122,0)'); band.addColorStop(0.55, 'rgba(194,24,122,0.10)'); band.addColorStop(1, 'rgba(194,24,122,0.32)');
+    circle(x, 232); x.fillStyle = band; x.fill();
+  }
   async function ground(x, sc) {
     var f = sc.face, dt = sc.detail, gw = Math.max(0.3, Math.min(4, +sc.gridWidth || 0.8));
     x.fillStyle = '#000'; x.fillRect(0, 0, G, G);
@@ -307,6 +370,7 @@
       line(x, 40, 380, 430, 60); line(x, 60, 90, 420, 410);
       return;
     }
+    if (sc.ground === 'sectional') { sectionalGround(x, sc, gw); return; }
     if (sc.ground === 'brass') {
       x.fillStyle = '#0B0A08'; x.fillRect(0, 0, G, G);
       var mg = x.createLinearGradient(0, 0, G, G);
@@ -861,6 +925,7 @@
 
   root.FlightsBake = {
     SCHEMA: SCHEMA, SHAPES: SHAPES, SHAPE_TITLES: SHAPE_TITLES, LABELS: LABELS, FACES: FACES, PRESETS: PRESETS, GROUNDS: GROUNDS,
+    STARTS: STARTS, startInfo: startInfo,
     GROUND_TITLES: GROUND_TITLES, ARMS: ARMS, SCOPES: SCOPES, ARM_LOOKS: ARM_LOOKS, PERIOD_MIN: PERIOD_MIN, PERIOD_MAX: PERIOD_MAX,
     PLANE_ROWS: PLANE_ROWS, SWEEP_FPS: SWEEP_FPS, CARD_SLOT: CARD_SLOT, CARD_CLEAR_SLOT: CARD_CLEAR_SLOT,
     DOT_SLOTS: DOT_SLOTS, DOTS: DOTS, dotFrames: dotFrames, dotBox: dotBox,

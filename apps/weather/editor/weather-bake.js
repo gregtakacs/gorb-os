@@ -129,7 +129,7 @@
     nebula: { title: 'Nebula', note: 'translucent glows; a cratered full moon, meteor rain, star snow', roles: [['gold', 'Sun'], ['core', 'Sun core'], ['orange', 'Lightning'], ['violet', 'Cloud'], ['lilac', 'Cloud light'], ['moon', 'Moon'], ['crater', 'Craters'], ['rain', 'Rain']] },
     pictogram: { title: 'Pictogram', note: 'solid railway pictograms with one accent: the sun and the bolt', roles: [['ink', 'Ink'], ['red', 'Accent']] },
   };
-  var GROUNDS = { scope: 'Phosphor scope', brass: 'Brass instrument', blueprint: 'Blueprint', paper: 'Chart paper', celestial: 'Galaxy', station: 'Station dial' };
+  var GROUNDS = { scope: 'Phosphor scope', brass: 'Brass instrument', blueprint: 'Blueprint', paper: 'Chart paper', celestial: 'Galaxy', station: 'Station dial', sectional: 'Sectional chart' };
   var MONO = 'IBM Plex Mono', PLEX = 'IBM Plex Sans', CORM = 'Cormorant Garamond', GROT = 'Space Grotesk', MICH = 'Michroma', JOST = 'Jost';
   var PRESETS_DEF = {
     scope: { name: 'Scope', match: 'Flights · Modern',
@@ -162,6 +162,13 @@
       words: { num: JOST, text: JOST, label: JOST, caps: true, track: 2, ink: '#111111', quiet: '#555555' },
       temps: { ramp: ['#111111', '#8A8A8A', '#E3000F'], rain: '#111111', track: '#DADAD6', cap: 'butt' },
       icons: { pack: 'pictogram', c: { ink: '#111111', red: '#E3000F' } , shade: '3d', shadow: 'strong' } },
+    // flights-map-plan §4: a flight chart's look, made up: chart paper, a blue rose, a magenta
+    // band inside the rim, the station's pictograms in chart navy and magenta
+    sectional: { name: 'Sectional', match: 'Flights · Sectional, Radar · Sectional, Clock · Sectional',
+      plate: { style: 'sectional', c0: '#F3F5EC', c1: '#EEF1E4', c2: '#E1E7D0', detail: '#2A5DB0', tick: '#2A5DB0' },
+      words: { num: 'Barlow Condensed', text: 'Barlow Condensed', label: 'Barlow Condensed', caps: true, track: 1, ink: '#1F2A44', quiet: '#3E5A80' },
+      temps: { ramp: ['#2A5DB0', '#2E7D32', '#C2187A'], rain: '#2A5DB0', track: '#D7DDC6', cap: 'round' },
+      icons: { pack: 'pictogram', c: { ink: '#1F2A44', red: '#C2187A' } , shade: '3d', shadow: 'strong' } },
   };
   var PRESETS = Object.keys(PRESETS_DEF);
   var clone = function (o) { return JSON.parse(JSON.stringify(o)); };
@@ -439,6 +446,17 @@
       o.push(S(b[0], { fill: '#FFFFFF', op: 0.3 }), S(b[1], { fill: '#FFFFFF', op: 0.55 }), S(b[2], { fill: '#FFFFFF', op: 0.85 }));
       var dd = ''; for (var k = 0; k < 360; k += 30) { var z = pt(216, k); dd += circ(z[0], z[1], k % 90 ? 1.4 : 2.4); }
       o.push(S(dd, { fill: tk, op: 0.85 }));
+    } else if (st === 'sectional') {
+      // a graticule with a chart's minute ticks, a dashed magenta isogonic line, the magenta
+      // band inside the rim, a blue rose
+      var mt = '';
+      for (var gx = 58; gx < G; gx += 58) for (var m = 0; m < G; m += 11.6) { var tl = Math.round(m / 11.6) % 5 ? 3 : 6; mt += ln(gx - tl, m, gx, m) + ln(m, gx, m, gx + tl); }
+      o.push(S(gridPath(58), { stroke: det, sw: 0.7, op: 0.3 }), S(mt, { stroke: det, sw: 0.7, op: 0.3, cap: 'butt' }));
+      o.push(S(ln(70, 430, 400, 30), { stroke: '#C2187A', sw: 1.4, op: 0.45, dash: '10 6' }));
+      for (var bi = 0; bi < 6; bi++) o.push(S(circ(CX, CX, 230 - bi * 5), { stroke: '#C2187A', sw: 5, op: 0.2 - bi * 0.032 }));
+      o.push(S(circ(CX, CX, 196), { stroke: tk, sw: 1.6, op: 0.85 }));
+      o.push(S(tickPath(196, 204, 5, function (a) { return a % 30; }), { stroke: tk, sw: 1, op: 0.8 }), S(tickPath(196, 210, 30), { stroke: tk, sw: 1.6 }));
+      o.push(S(poly([[CX, 34], [CX - 6, 22], [CX + 6, 22]]), { fill: '#C2187A' }));
     } else if (st === 'station') {
       o.push(S(tickPath(214, 225, 6, function (a) { return a % 30; }), { stroke: tk, sw: 2.6, cap: 'butt' }), S(tickPath(198, 225, 30), { stroke: tk, sw: 7, cap: 'butt' }));
     } else {

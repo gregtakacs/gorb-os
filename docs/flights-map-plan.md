@@ -91,12 +91,37 @@ Drafting, Paper on Chart; Blank with no map.
 - On the glass at 50 mi over DFW: motorways, lakes, Denton, Plano, Fort Worth, Dallas; the
   view 592 ms at z8 1.17×; 19-20 fps with the traffic (the scope's own 20); internal
   31 KB free (largest 11.8 KB), PSRAM 1.18 MB, the glass heap 2.38 MB free, no fallbacks.
-- A theme with the map is 165 KB larger (the names' font with its accents): Modern 1.16 MB.
+- The names first had a font of their own (+165 KB with its accents), which pushed the
+  shelf's four defaults past the art pool's ~8 MB (the radar's budget check failed). They now
+  default to the words' face and size, whose glyphs the bake shares: the map costs Modern
+  +94 KB (the six name rows' panels), 1.09 MB in all; another face or size says what it costs.
 - `apps/flights/editor/_selftest/bake_check.py`: 35 themes, five of them the map's variants
   (off, Chart with symbols, Drafting with towns and codes, nothing drawn, saved before).
 
 ## 3. Owed
 
 - The weather's map (§0's "maybe"): the shown place's own map, faint, under the reading.
-- The Sectional look for flights, radar, weather and the clock.
 - Gold has not run a map under the scope.
+- The shelf's art pool is nearly full (Skeleton 3.48 MB, Modern 1.09, Scope 1.31,
+  Radarscope 1.91): a fifth default, or a heavier one, needs room made first.
+
+## 4. Sectional (2026-11-08)
+
+A flight chart's look, made up (no chart data): chart paper with soft terrain tints, a
+graticule ticked in minutes, a dashed magenta isogonic line, the magenta band a chart shades
+inside an airspace's edge (here inside the rim), a blue rose, blue rings, magenta for
+airports and the arm, Barlow Condensed in chart navy.
+
+- **Flights** (start `sectional`): its own ground (`sectional`), the Modern silhouettes in
+  chart inks by altitude (magenta under 3,000 ft, orange, green, blue, navy over 30,000), the
+  Chart map on (blue water, yellow towns, magenta ticked rings at the airports). On Bronze over
+  DFW: 16-18 fps with 32 aircraft, internal 31 KB, PSRAM 0.99 MB, the glass heap untouched.
+- **Radar** (starter `sectional`): the same map colours on chart paper, airports as ticked
+  rings (`map.look`, the view's v1.2.38 mark bytes; an older OS draws the old square), the rain
+  ramp kept off yellow and blue (green, orange, red, magenta, purple).
+- **Weather** (preset `sectional`): the chart plate (graticule, isogonic line, the faded
+  magenta band, a blue rose), the Station pictograms in navy and magenta. Weather v1.5.2.
+- **Clock** (template `sectional`): a chart-paper dial, a blue railway track and figures,
+  a magenta and a blue airport ring, a magenta reporting point, SECTIONAL and CLASS E 700
+  printed, royal-blue pencil hands, a magenta seconds hand. Clock v1.2.30. Estimated 4 fps
+  still, the same as Phase, which shares its hands.

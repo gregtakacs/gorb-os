@@ -68,11 +68,14 @@
   };
   function paletteOf(base) { return (FAMILY[base] || FAMILY.modern).p; }
   // the map part a family starts with (off, for a design saved before the map: complete())
-  function preset(base, face) {
+  // the names default to the words' own face and size: the bake shares one set of glyphs
+  // between fonts of one face and size, so they cost the theme nothing (the shelf's art pool
+  // is ~8 MB for four themes; a font of their own was 165 KB)
+  function preset(base, face, size) {
     var F = FAMILY[base] || FAMILY.modern, L = look(F.look, F.p);
     return { on: F.on, look: F.look, strength: 0.5, water: 'all', lakes: 'medium', roads: 'main', airports: 'runways', symbol: L.symbol,
       fields: 'airline', dots: true, names: 'normal', which: 'cities', codes: false, urban: true, borders: true,
-      ink: L.ink, alpha: L.alpha, line: L.line, town: L.town, nameFace: face || 'IBM Plex Sans', nameSize: 18 };
+      ink: L.ink, alpha: L.alpha, line: L.line, town: L.town, nameFace: face || 'IBM Plex Sans', nameSize: size || 16 };
   }
   // a look over a design's map: its inks, opacities, lines and marks; what is drawn is kept
   function applyLook(m, kind, base) {

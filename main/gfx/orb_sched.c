@@ -718,9 +718,9 @@ static void sched_plan_from_theme(void)
         }
     } else if (s_plan_app && clk_theme.second_sweep && clk_theme.tick_rate) {
         /* radar-plan §6.27: an app's sweep (the radar's, the tracker's arm) paced to its own
-         * rate, every layer under and over it pre-painted, and the slack each frame leaves
-         * spent laying a live layer's new picture in, a slice a frame (gfx_prep_lag): the
-         * new rain no longer costs the sweep a frame's worth of the whole disc. */
+         * rate, every layer under and over it pre-painted: a live layer's new picture costs
+         * one blip over the rows it changed (gfx_prep_swap), paced by that cost, and every
+         * other frame costs the sweep alone. */
         const int tr = (int)clk_theme.tick_rate, h2 = tr == 8 ? 15 : tr * 2;
         if (h2 > 0 && 120 % h2 == 0) {
             s_plan_pace10 = 1200 / h2;

@@ -672,6 +672,9 @@ static void place_changed(void)
 static void loop_step(void)
 {
     if (!s_play || !s_npast || s_zoom_want >= 0) return;   /* choosing a zoom: it holds */
+    /* the last step's rain is not on the glass yet: the loop waits for it, so a storm's heavy
+     * frames step it more slowly rather than skip (the OS paces each swap by its blip) */
+    if (s_back_open) return;
     orb_burst(1000);               /* a theme with no moving rows ticks once a second: keep 4 */
     const int64_t t = up_ms();
     const int hold = s_loop == idx_newest() ? 2000 : 250;
@@ -795,7 +798,9 @@ static void redraw(void)
     back_step();
     if (s_map_dirty) draw_map();
     if (s_rain_dirty) draw_rain();
-    if (s_ui_dirty) draw_ui();
+    /* the words and the track's cursor change with the rain they name, in the swap's own
+     * frame, never ahead of it (owner, 2026-11-08: the time read half -40, half -50) */
+    if (s_ui_dirty && !s_back_open) draw_ui();
 }
 
 /* ---- entry points -------------------------------------------------------------------- */

@@ -161,6 +161,11 @@ int orb_live_work_diff(int l, const int16_t **x0, const int16_t **x1)
     return 1;
 }
 
+bool orb_live_work_diff_ready(int l)
+{
+    return l >= 0 && l < 4 && atomic_load(&s_diff_ready[l]);
+}
+
 int orb_live_work_pending(int l)
 {
     return l >= 0 && l < 4 ? atomic_load(&s_pending[l]) : 0;

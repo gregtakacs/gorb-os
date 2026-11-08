@@ -196,6 +196,10 @@ void gfx_set_band_hook(gfx_band_hook_fn fn);
  * plate's own pixels, byte-swapped into mirror order), paint the `nj` layers
  * over it in the order given, then write back and DMA only the rows that came
  * out different. Consumes the mark set. */
+/* radar-plan §6.27: the next commit carries a live layer's swap; its blip (the commit's
+ * time and its push, us) is what the last one cost, 0 before the first. */
+void gfx_swap_note(void);
+uint32_t gfx_swap_blip_us(void);
 void gfx_commit(int nj, const gfx_paint_ctx_t *jc, const uint16_t *canvas);
 
 #if CONFIG_ORB_DEBUG_HTTP
@@ -256,11 +260,11 @@ void gfx_prep_mode(int mode);                     /* 0 off, 1 on, 2 on + exactne
 int  gfx_prep_on(void);                           /* the mode, GFX_PREP_LEAN included */
 /* radar-plan §6.27: a slow job's pixels were replaced (a live layer's new picture, its
  * alpha now at `alp`) under the same pose, row y's changes in [x0[y], x1[y]] (none where
- * x0 > x1; the whole glass when x0 is NULL). Those rows LAG: shown from the planes, the old
- * picture, until the slack rebuilds them top down, a slice a frame, each row repainted as it
- * is rebuilt; no tick composites them the long way. False when pre-paint is not holding the
- * job's planes (the caller damages the rows as before). */
-bool gfx_prep_lag(const int16_t *x0, const int16_t *x1, const uint8_t *alp);
+ * x0 > x1; the whole glass when x0 is NULL). The rows go stale together: the next commit
+ * composes them all from the new picture, one blip, never a slice at a time; the slack
+ * rebuilds the planes after. False when pre-paint is not holding the job's planes (the
+ * caller damages the rows as before). */
+bool gfx_prep_swap(const int16_t *x0, const int16_t *x1, const uint8_t *alp);
 /* radar-plan §2.9: a slow job's pixels changed under a pose that did not (the live layer):
  * rebuild the box from them and repaint it this tick. A no-op while pre-paint is off. */
 void gfx_prep_stale(int32_t y0, int32_t y1, int32_t x0, int32_t x1);
@@ -272,7 +276,7 @@ bool gfx_prep_idle(int64_t deadline_us);
 typedef struct {
     uint64_t rows_ahead, rows_sync, swaps_ready, swaps_late, rebuilds, mismatch_px, checked_px;
     uint64_t live_px, copy_px;
-    uint64_t rows_lag, lags, promoted;                /* §6.27: lagging rows rebuilt, swaps, jobs made fast */
+    uint64_t swaps, promoted;                         /* §6.27: live swaps, jobs made fast */
 } gfx_prep_stats_t;
 void gfx_prep_stats(gfx_prep_stats_t *o);
 #endif

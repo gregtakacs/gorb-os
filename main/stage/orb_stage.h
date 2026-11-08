@@ -100,6 +100,8 @@ esp_err_t stage_live_back_ensure(int l);
 bool stage_live_back_lock(int l, uint16_t **px, uint8_t **a, uint16_t **src_px, uint8_t **src_a, int src);
 void stage_live_back_unlock(void);
 esp_err_t stage_live_present(int l, const int16_t *x0, const int16_t *x1);
+/* The last swap's blip has been paid for: the next may go (stage_live_present's pace). */
+bool stage_live_swap_due(void);
 #if CONFIG_ORB_DEBUG_HTTP
 /* radar-plan R3c's bench: what an app does with the live layer, done on the stage's next
  * frame — open at order with argb, the raster through pal (when ras), the PNG window from

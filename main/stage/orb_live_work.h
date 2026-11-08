@@ -34,3 +34,5 @@ int orb_live_work_pending(int l);
  * compares on its own core, so the compositor rebuilds only what the new picture changed
  * (radar-plan §6.27: a rain frame changes a fraction of the disc; the map under it, none). */
 int orb_live_work_diff(int l, const int16_t **x0, const int16_t **x1);
+/* The same answer, the diff left in place. */
+bool orb_live_work_diff_ready(int l);

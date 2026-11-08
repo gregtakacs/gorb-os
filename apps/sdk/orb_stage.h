@@ -89,9 +89,11 @@ ORB_IMPORT("stage_live_copy")  int32_t orb_stage_live_copy(int32_t dst, int32_t 
  * orb_stage_live_copy) or a fill of argb; draws to ORB_CV_BACK0 - layer (orb_cv_png8,
  * orb_cv_ring, orb_cv_line) follow, made in order on the OS's worker while the front keeps
  * drawing; stage_live_present then swaps the back in: 1 done, 0 still drawing or being
- * compared with the front (ask again next tick). Only the rows the new picture changed are
- * repainted, and under a sweep's pre-painted plan they come in a slice a frame, so the
- * sweep keeps its pace. Refused while a back picture is still being drawn. */
+ * compared with the front, or paced (ask again next tick). Only the rows the new picture
+ * changed are repainted, all in one frame, and the next swap waits on what that one cost,
+ * so a sweep keeps its pace and heavy pictures come more slowly, never in slices. Draw what
+ * names the picture (its time) when present answers 1, so both change in the same frame.
+ * Refused while a back picture is still being drawn. */
 #define ORB_CV_BACK0 (-17)
 #define ORB_CV_BACK1 (-18)
 ORB_IMPORT("stage_live_back")    int32_t orb_stage_live_back(int32_t layer, int32_t src, uint32_t argb);

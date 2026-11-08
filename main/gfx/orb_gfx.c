@@ -1016,13 +1016,14 @@ static int       s_st_rows;                           /* rows with a stale segme
  * stale rebuild or the next build-ahead may touch either plane. */
 static int16_t   s_bk0[CLK_SCR_H], s_bk1[CLK_SCR_H];
 static int       s_bk_rows;
-/* Lagging rows (radar-plan §6.27, gfx_prep_lag): the planes hold a job's old picture, which
- * is shown until the slack rebuilds the row from the new. s_lg_alp is the job's new alpha:
- * the commit takes its key's change as no move. s_lg_wait: the last commit's job list still
+/* A swap (radar-plan §6.27, gfx_prep_swap): a job's new pixels under the same pose, its
+ * changed rows stale, so the next commit composes them all at once from the new picture.
+ * s_lg_alp is the job's new alpha: the commit takes its key's change as no move (else the
+ * whole box would go stale, not the rows that changed). s_lg_wait: the last commit's job list still
  * reads the old pixels (which the app may now draw over), so the slack waits for a commit. */
-EXT_RAM_BSS_ATTR static int16_t s_lg0[CLK_SCR_H], s_lg1[CLK_SCR_H];
-static int       s_lg_rows;
 static const uint8_t *s_lg_alp;
+EXT_RAM_BSS_ATTR static int16_t s_sw0[CLK_SCR_H], s_sw1[CLK_SCR_H];   /* the swap's rows */
+static bool      s_sw_rows;
 static bool      s_lg_wait;
 static bool      s_pp_lean;                           /* GFX_PREP_LEAN: no back planes */
 /* Fast by motion (§6.27): a slow job that moved on PP_MOVE_RUN commits in a row is a
@@ -1037,11 +1038,12 @@ EXT_RAM_BSS_ATTR static uint8_t s_pp_run[PP_JOBS];
 static void pp_stale_clear_all(void)
 {
     for (int y = 0; y < CLK_SCR_H; y++) {
-        s_st0[y] = s_ps0[y] = s_bk0[y] = s_lg0[y] = INT16_MAX;
-        s_st1[y] = s_ps1[y] = s_bk1[y] = s_lg1[y] = -1;
+        s_st0[y] = s_ps0[y] = s_bk0[y] = INT16_MAX;
+        s_st1[y] = s_ps1[y] = s_bk1[y] = -1;
     }
-    s_st_rows = s_bk_rows = s_lg_rows = 0;
+    s_st_rows = s_bk_rows = 0;
     s_lg_alp = NULL;
+    s_sw_rows = false;
 }
 /* Settle one back-sourced row into the front planes. */
 static void pp_bk_settle(int32_t y)
@@ -1138,21 +1140,22 @@ void gfx_prep_mode(int mode)
     }
 }
 int gfx_prep_on(void) { return s_pp_mode ? s_pp_mode | (s_pp_lean ? GFX_PREP_LEAN : 0) : 0; }
-bool gfx_prep_lag(const int16_t *x0, const int16_t *x1, const uint8_t *alp)
+bool gfx_prep_swap(const int16_t *x0, const int16_t *x1, const uint8_t *alp)
 {
     if (!s_pp_mode || !s_pp_valid) return false;
     for (int32_t y = 0; y < CLK_SCR_H; y++) {
-        int32_t a = x0 && x1 ? x0[y] : 0, b = x0 && x1 ? x1[y] : CLK_SCR_W - 1;
-        if (a < 0) a = 0;
-        if (b > CLK_SCR_W - 1) b = CLK_SCR_W - 1;
+        const int32_t a = x0 && x1 ? x0[y] : 0, b = x0 && x1 ? x1[y] : CLK_SCR_W - 1;
+        if (!s_sw_rows) { s_sw0[y] = INT16_MAX; s_sw1[y] = -1; }
         if (a > b) continue;
-        if (s_lg0[y] > s_lg1[y]) s_lg_rows++;
-        if (a < s_lg0[y]) s_lg0[y] = (int16_t)a;
-        if (b > s_lg1[y]) s_lg1[y] = (int16_t)b;
+        if (a < s_sw0[y]) s_sw0[y] = (int16_t)a;
+        if (b > s_sw1[y]) s_sw1[y] = (int16_t)b;
+        row_add(y, a, b);                                 /* repainted by this commit */
+        display_mark_rows_clocked(y, y);
     }
+    s_sw_rows = true;
     s_lg_alp = alp;
     s_lg_wait = true;
-    s_pps.lags++;
+    s_pps.swaps++;
     return true;
 }
 void gfx_prep_stale(int32_t y0, int32_t y1, int32_t x0, int32_t x1)
@@ -1342,17 +1345,6 @@ bool gfx_prep_idle(int64_t deadline_us)
         s_st0[y] = INT16_MAX; s_st1[y] = -1; s_st_rows--;
         s_pps.rows_sync++;
     }
-    /* §6.27: the lagging rows, top down, each repainted by the next commit from the planes */
-    for (int32_t y = 0; y < CLK_SCR_H && s_lg_rows; y++) {
-        if (s_lg0[y] > s_lg1[y]) continue;
-        if (esp_timer_get_time() >= deadline_us) return true;
-        const int32_t a = s_lg0[y], b = s_lg1[y];
-        pp_build_row(y, a, b, s_pb, s_pf, NULL, 0);
-        s_lg0[y] = INT16_MAX; s_lg1[y] = -1; s_lg_rows--;
-        row_add(y, a, b);
-        display_mark_rows_clocked(y, y);
-        s_pps.rows_lag++;
-    }
     if (s_pp_nx_frame < 0 || s_pp_prep_done) return false;
     if (s_pp_prep_gen != s_pp_gen) { s_pp_prep_y = 0; s_pp_prep_gen = s_pp_gen; }
     while (s_pp_prep_y < CLK_SCR_H) {
@@ -1388,9 +1380,10 @@ static void pp_commit(int nj, const gfx_paint_ctx_t *jc, const uint16_t *canvas,
             s_said = now;
             int nf = 0;
             for (int i = 0; i < nj; i++) nf += s_pp_fast[i];
-            ESP_LOGI("gfx", "pre-paint%s: %d jobs, %d fast (%d by motion) | lag %llu rows in %llu swaps, %d behind | stale %llu rows | live %llu px, copied %llu px",
-                     s_pp_lean ? " (lean)" : "", nj, nf, s_pp_nmoved, (unsigned long long)s_pps.rows_lag,
-                     (unsigned long long)s_pps.lags, s_lg_rows, (unsigned long long)s_pps.rows_sync,
+            ESP_LOGI("gfx", "pre-paint%s: %d jobs, %d fast (%d by motion) | %llu swaps, the last a %u ms blip | stale %llu rows, %d behind | %llu slow moves | live %llu px, copied %llu px",
+                     s_pp_lean ? " (lean)" : "", nj, nf, s_pp_nmoved, (unsigned long long)s_pps.swaps,
+                     (unsigned)(gfx_swap_blip_us() / 1000), (unsigned long long)s_pps.rows_sync, s_st_rows,
+                     (unsigned long long)s_pps.rebuilds,
                      (unsigned long long)s_pps.live_px, (unsigned long long)s_pps.copy_px);
         }
     }
@@ -1403,7 +1396,7 @@ static void pp_commit(int nj, const gfx_paint_ctx_t *jc, const uint16_t *canvas,
             if (s_pp_fast[i]) continue;
             ppkey_t k; pp_key_of(&jc[i], &k);
             if (s_lg_alp && k.alp == s_lg_alp) {
-                /* §6.27: a lagging job's new pixels, the pose unchanged: the slack has its rows */
+                /* §6.27: a swapped job's new pixels, the pose unchanged: this commit builds its rows */
                 ppkey_t was = s_pp_key[i];
                 was.alp = k.alp;
                 if (pp_key_eq(&k, &was)) { s_pp_run[i] = 0; continue; }
@@ -1449,6 +1442,14 @@ static void pp_commit(int nj, const gfx_paint_ctx_t *jc, const uint16_t *canvas,
     s_pp_nj = nj;
     for (int i = 0; i < nj; i++) pp_key_of(&jc[i], &s_pp_key[i]);
     s_lg_alp = NULL;                                  /* the keys hold the new alpha now */
+    /* §6.27: the swap's rows built into the planes here, from the new picture: the blip is
+     * the whole of it, and no row is left stale for the frames after to compose the long way
+     * (a storm's ~300 stale rows held the sweep at 13 fps between steps, Bronze 2026-11-08) */
+    if (s_sw_rows) {
+        for (int32_t y = 0; y < CLK_SCR_H; y++)
+            if (s_sw0[y] <= s_sw1[y]) { pp_build_row(y, s_sw0[y], s_sw1[y], s_pb, s_pf, NULL, 0); s_pps.rows_sync++; }
+        s_sw_rows = false;
+    }
     /* The frame that landed on the canvas this tick: swap in its rows if they were built
      * ahead against these same slow poses, or build them now. */
     if (s_pp_land_pending) {
@@ -1490,6 +1491,15 @@ static void pp_commit(int nj, const gfx_paint_ctx_t *jc, const uint16_t *canvas,
         if (!rowstate.need[y]) continue;
         const int32_t xa = rowstate.x0[y], xb = rowstate.x1[y];
         uint16_t *band = s_band[0];
+        if (s_st0[y] <= s_st1[y]) {
+            /* §6.27: a stale row this commit repaints is rebuilt into the planes now, at the
+             * long way's own cost, rather than composed the long way every frame until the
+             * slack rebuilds it: a frame over budget leaves no slack, and the whole disc
+             * stale held a storm's sweep at 13 fps with all 466 rows behind (Bronze). */
+            pp_build_row(y, s_st0[y], s_st1[y], s_pb, s_pf, NULL, 0);
+            s_st0[y] = INT16_MAX; s_st1[y] = -1; s_st_rows--;
+            s_pps.rows_sync++;
+        }
         pp_row_src(band, s_pf, s_pfn, y, xa, xb);
         s_pps.copy_px += (uint64_t)(xb - xa + 1);
         /* The fast spans on this row, inside the restored extent: live from PB upward, each
@@ -1585,7 +1595,26 @@ static void pp_commit(int nj, const gfx_paint_ctx_t *jc, const uint16_t *canvas,
  * hands vanish over freshly pushed background and leave a ghost at the pose the
  * first LVGL render had drawn. Rows that never get a commit stay marked until one
  * does. */
+/* §6.27: a live layer's swap is one blip, its changed rows composed and sent in one commit.
+ * Its cost, the commit's own time and its pixels' push (~0.35 us a pixel on this panel,
+ * Bronze 2026-11-08), paces the next swap (stage_live_present). */
+static volatile bool s_blip_ask;
+static volatile uint32_t s_blip_us;
+void gfx_swap_note(void) { s_blip_ask = true; }
+uint32_t gfx_swap_blip_us(void) { return s_blip_us; }
+static void gfx_commit_rows(int nj, const gfx_paint_ctx_t *jc, const uint16_t *canvas);
 void gfx_commit(int nj, const gfx_paint_ctx_t *jc, const uint16_t *canvas)
+{
+    if (!s_blip_ask) { gfx_commit_rows(nj, jc, canvas); return; }
+    s_blip_ask = false;
+    uint64_t px = 0;
+    for (int32_t y = 0; y < CLK_SCR_H; y++)
+        if (rowstate.need[y] && rowstate.x1[y] >= rowstate.x0[y]) px += (uint64_t)(rowstate.x1[y] - rowstate.x0[y] + 1);
+    const int64_t t0 = esp_timer_get_time();
+    gfx_commit_rows(nj, jc, canvas);
+    s_blip_us = (uint32_t)(esp_timer_get_time() - t0) + (uint32_t)(px * 35 / 100);
+}
+static void gfx_commit_rows(int nj, const gfx_paint_ctx_t *jc, const uint16_t *canvas)
 {
     uint16_t *fb = display_fb_mirror();
     if (!fb) return;

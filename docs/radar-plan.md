@@ -1835,10 +1835,22 @@ Three costs fell on the frame a rain step took:
   theme sweeps (`second_sweep`, `tick_rate` on the 60 Hz grid) is paced to its rate and
   pre-painted with the two front planes only (`GFX_PREP_LEAN`: 868 KB, not the clock's
   1.7 MB, since nothing is built ahead).
-- **Lagging rows** (`gfx_prep_lag`): a present's changed rows are shown from the planes, the
-  old picture, until the present's slack rebuilds them top down, a slice a frame (~90 µs a
-  row), each repainted as it is rebuilt. No tick composes them the long way; the sweep keeps
-  its pace while the rain lays in over a few frames.
+- **One hard blip a step** (`gfx_prep_swap`): a present's changed rows are built into the
+  planes and sent in one commit, never a slice at a time. The first build laid them in a
+  slice a frame; on the glass the time read half -40, half -50, and the owner ruled "slower
+  hard blips may be better than faster partial mess". The OS times each blip (its commit
+  and its pixels' push), and a layer's next swap waits until the sweep has had four times
+  that to itself (`stage_live_swap_due`). The radar's loop waits for its rain, so a storm
+  steps more slowly instead of skipping, and its words and the track's cursor change in
+  the swap's own frame (`draw_ui` waits while a picture is in flight).
+- **A label's new string goes stale:** a theme label's glyphs are redrawn in the same plane
+  under the same pose, which pre-paint took for no change. Its planes kept the old string,
+  and only rows rebuilt for something else showed the new one. Its box is now composed
+  whole from the new string.
+- **A stale row a commit repaints is rebuilt then**, at the long way's own cost, rather than
+  composed the long way every frame until the slack catches up. A frame over budget leaves
+  no slack, so a whole disc gone stale (the map layer redrawn) had held a storm's sweep at
+  13 fps with all 466 rows behind, for good.
 - **Fast by motion:** a slow job that moves on four commits in a row joins the fast set, keyed
   by its art, so a sweep posed by an app needs no role. Scope's sweep is already a seconds row
   (role 2); nothing was promoted on Bronze.
@@ -1849,19 +1861,24 @@ widget, which keeps the stage off for good). `orb_init` and an arrival now only 
 service's next ask, 300 ms later, decides. The radar draws its rain through the back copy and
 presents it from `redraw`.
 
-**Measured after** (Bronze, the same theme and rain):
+**Measured after** (Bronze, Scope; DFW's light rain, ~17% of the glass changing a step,
+and a real storm: Brittany, 47.5 N 3.5 W, 61% of the glass wet and 65% changing a frame,
+found by scanning the source's frames for the wettest radar-sized window):
 
-| | before | after |
-|---|---|---|
-| loop playing | min 4, median 9 | min 15, median 17-18, max 20 |
-| loop held | 20 | 20 |
-| worst guest call | ~117 ms | ~12 ms |
-| the same pacing, pre-paint off | | median 15 (the planes earn ~3 fps) |
+| | before | DFW | storm |
+|---|---|---|---|
+| loop playing | min 4, median 9 | min 14, median 17 | min 12, median 16 (20 between steps) |
+| loop held | 20 | 20 | 20 |
+| a step's blip | | ~65 ms | ~140-165 ms, a step every ~1.3 s |
+| worst guest call | ~117 ms | ~12 ms | ~12 ms |
+
+With the slices (before the blips) DFW ran a median of 18 and pre-paint off a median of 15.
 
 Flights (Blueprint, its arm on the same plan): 20 fps (min 19); its aircraft step a pixel at a
 time, slow jobs with small stale boxes. With the radar up: the glass heap 34 KB free and one
 plane from the general PSRAM (800 KB left), internal 25 KB (largest 7 KB).
 
-**Owed:** a loop step's own tick (the time label and the track's cursor, ~10 ms) still costs
-a frame now and then; heavy rain over the whole disc lays in more slowly (the sweep keeps its
-pace, the rain trails); Gold has not run it; weather has no sweep and is untouched.
+**Owed:** the owner has not judged the blips on the glass yet; a loop step's own tick (~10 ms)
+still costs a frame now and then; a place with no map keeps the last place's map and names
+under its rain (seen benching Brittany; older than this work); Gold has not run it; weather
+has no sweep and is untouched.

@@ -1499,6 +1499,18 @@ static void rows_update(void)
         /* So does a new opacity, and a label's new string: the same box, other pixels. */
         const bool ochg = s_g_opa[i] != st->opa;
         const bool tchg = st->tplane && s_text && s_text->seq[i] != st->tseq;
+#if CLK_BG_DIRECT_PUSH && CONFIG_ORB_DEBUG_HTTP
+        /* A label's new string lands in the same plane under the same pose: pre-paint's
+         * planes still hold the old one, and only rows rebuilt for something else showed
+         * the new (the radar's time read half -40, half -50; 2026-11-08). Its box goes stale,
+         * composed whole this tick from the new string. */
+        if (tchg && orb_sched_l4_active() && st->ang_10 != ROW_HIDDEN) {
+            lv_area_t tb;
+            row_mark_box(i, st->ang_10, st->ox, st->oy, &tb);
+            gfx_prep_stale(tb.y1 < 0 ? 0 : tb.y1, tb.y2 > CLK_SCR_H - 1 ? CLK_SCR_H - 1 : tb.y2,
+                           tb.x1 < 0 ? 0 : tb.x1, tb.x2 > CLK_SCR_W - 1 ? CLK_SCR_W - 1 : tb.x2);
+        }
+#endif
         if (!fchg && !ochg && !tchg && a == prev && ox[i] == st->ox && oy[i] == st->oy) continue;
         if (!fchg && !ochg && !tchg && a != ROW_HIDDEN && prev != ROW_HIDDEN && ox[i] == st->ox && oy[i] == st->oy) {
             int32_t d = a - prev;
@@ -3007,6 +3019,17 @@ bool stage_live_back_lock(int l, uint16_t **px, uint8_t **a, uint16_t **src_px, 
 }
 void stage_live_back_unlock(void) { back_unlock(); }
 
+/* The owner (2026-11-08): "slower hard blips may be better than faster partial mess". A
+ * swap is one blip, and the next waits until the sweep has had SWAP_PACE times the last
+ * blip's cost to itself: a small change steps at the app's own pace, a storm over the
+ * whole disc more slowly, and never in slices. */
+#define SWAP_PACE 4
+static int64_t s_swap_at_us;
+bool stage_live_swap_due(void)
+{
+    return esp_timer_get_time() - s_swap_at_us >= (int64_t)SWAP_PACE * gfx_swap_blip_us();
+}
+
 esp_err_t stage_live_present(int l, const int16_t *x0, const int16_t *x1)
 {
     if (l < 0 || l >= STAGE_LIVE_N || !s_live[l] || !s_live_back[l]) return ESP_ERR_INVALID_STATE;
@@ -3024,13 +3047,18 @@ esp_err_t stage_live_present(int l, const int16_t *x0, const int16_t *x1)
      * adds every row of the theme. */
     if (s_lay_app && orb_svc_layers_live(s_lay_app) > 0) clock_layers_refresh();
 #if CLK_BG_DIRECT_PUSH && CONFIG_ORB_DEBUG_HTTP
-    /* Pre-painted (an app's sweep, §6.27): the new picture comes in through the slack, a
-     * slice a frame, and no tick composes the disc the long way (Bronze: ~120 ms, the
-     * sweep at 9 fps while the loop played). A merged layer 0 is no job of its own. */
+    /* Pre-painted (an app's sweep, §6.27): the changed rows composed at once from the new
+     * picture, one blip, and the planes rebuilt in the slack after. A merged layer 0 is no
+     * job of its own. */
+    s_swap_at_us = esp_timer_get_time();
+    gfx_swap_note();
     const size_t n = (size_t)CLK_SCR_W * CLK_SCR_H;
     if (orb_sched_l4_active() && !(s_live_merged && l == 0) &&
-        gfx_prep_lag(x0, x1, s_live[l] + LIVE_OFF + 2 * n))
+        gfx_prep_swap(x0, x1, s_live[l] + LIVE_OFF + 2 * n))
         return ESP_OK;
+#else
+    s_swap_at_us = esp_timer_get_time();
+    gfx_swap_note();
 #endif
     if (!x0 || !x1) { stage_live_damage(0, 0, CLK_SCR_W, CLK_SCR_H); return ESP_OK; }
 #if CLK_BG_DIRECT_PUSH

@@ -49,6 +49,7 @@ static int64_t            s_lock_taken_us;
  * a plain volatile int64 is the whole protocol. */
 static volatile int64_t   s_lock_last_release_us;
 static bool               s_mounted;
+static volatile uint32_t s_mount_gen;   /* counts mounts: a reader sees a card come (back) */
 static esp_err_t          s_last_err = ESP_FAIL;
 static int64_t            s_last_try_us;
 static char               s_card_id[48];
@@ -197,6 +198,7 @@ static esp_err_t mount_now(void)
 
     s_mounted  = true;
     s_last_err = ESP_OK;
+    s_mount_gen++;
     log_card(s_card, "mounted at /sd");
 
     /* The two directories the device owns, created at mount rather than at first
@@ -481,6 +483,8 @@ esp_err_t orb_sd_remount(void)
     orb_sd_unlock();
     return e;
 }
+
+uint32_t orb_sd_mount_gen(void) { return s_mount_gen; }
 
 bool orb_sd_mounted(void)        { return s_mounted; }
 const char *orb_sd_tried(void)   { return s_tried; }

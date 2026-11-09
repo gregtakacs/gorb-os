@@ -183,10 +183,23 @@ carries is read off the glass (its values blob draws; the preview is the card's)
 | **C2** | The table's format 2 (an entry's kind, voice or display; sixteen entries; the carry from format 1); voice banks packed first, never moved by an eviction | `host_pool_test.py`: the carry, evictions that never take or move a voice bank, a cut at every step of a voice bank's store — **built 2026-11-08** (§6) |
 | **C3** | Sound off the glass: a store writes the voice bank (≤ 1 MB), boot maps every voice bank, a bind no longer stops voices, one-shots unleased and loops leased to the glass, a sound import that needs no stage; the clock chimes from its service | bench: the clock chiming through a switch to weather, and on the hour with weather on the glass; the tick stopping when the clock leaves — **built and benched on Bronze 2026-11-08** (§6) |
 | **C4** | The choice record (NVS), the last-on-glass order, stores that make room instead of refusing, the shelf's budgets per theme | bench: a theme stored into a full pool evicts the least recent display entry — **built and benched on Bronze 2026-11-08** (§6) |
-| **C5** | The fill on arrival behind the preview and its slice (full speed, block by block, heavy I/O), the zoom into the app, the pause on leaving, the card-missing case | bench: four apps cycled through a pool that holds three; leaving mid-fill; a card pulled mid-fill — **C5a, the engine, and C5b, the face and the pause, built 2026-11-08** (§6); a changed file, reconciliation and a pulled card owed (C5c) |
+| **C5** | The fill on arrival behind the preview and its slice (full speed, block by block, heavy I/O), the zoom into the app, the pause on leaving, the card-missing case | bench: four apps cycled through a pool that holds three; leaving mid-fill; a card pulled mid-fill — **C5a, the engine, C5b, the face and the pause, C5c, the card file followed, built 2026-11-08** (§6); a card pulled mid-fill not benched (needs hands) |
 | **C6** | The hub: "in the pool / on the card only" on the Themes page | the hub's lists still parse |
 
 ## 5. Open
+
+- **An arrival is mostly moving, not copying** (C5c, §6): evicting an entry in the middle
+  of the packed pool moves every entry above it down before the copy starts, ~30 s of a
+  40-55 s arrival when Skeleton's 3.4 MB sits above the hole. A fill placed in the hole an
+  eviction leaves (first fit, the pool no longer packed) would cost the copy alone, ~10 s.
+  It changes the pool's invariant (`orb_pool_commit` wants a display entry at the used end)
+  and its cut-at-every-step tests, so it is a slice of its own: proposed as **C7**.
+- **A store whose voice bank changes size moves every display entry twice** (C5c's bench:
+  Skeleton stored over Neon Moon took ~3 min of "making room"): the display entry is placed
+  first, then the voice bank is placed at the front and lifts every display entry above it.
+  Writing the voice bank first would move them once. Same slice.
+- **A theme file's settings page line** for an app whose file is gone or whose card is out
+  (§2.4) is not written yet: such an app runs bare and only the log says why.
 
 - **A store still reboots** (it may move the bound entry). Ruling 1 names fills; whether a
   store goes reboot-free too (unbind, store, rebind) is the owner's call after C3.
@@ -228,6 +241,27 @@ held (20 fps), 1 s windows from the dial bench:
   of ~33, the paced fills at 5-9 fps (20 ms) and 3-6 fps (1 ms). Each cache miss suspends
   and resumes the operation, so the operation stretches and the frame waits on it.
   Reverted; Bronze is back on the build without it.
+
+### C5c — the card file followed, and four apps through a pool for three (2026-11-08, Bronze)
+
+- **Ruling 7, at every card mount** (`orb_sd_mount_gen` counts them; `orb_theme_service` on
+  the router's poll posts `reconcile_job` once per mount, after 20 s of uptime, with the
+  worker free): each choice's file is read against the CRC its copies were made from. A file
+  that changed is stored again (the store rebuilds both copies and reboots); a file gone from
+  a card that answers takes both copies and the choice (the removal's own ladder, which
+  reboots); one app a run, so the reboot brings the next. A card that did not answer, or a
+  header that would not read, changes nothing. A fill that finds its file changed hands it
+  to the same reconcile rather than refusing.
+- **Bronze:** a choice made stale (`GET /api/v1/debug/fill?stale=<slug>`, debug) was stored
+  again in 11 s and rebooted once, the next boot quiet; radar's file deleted behind the orb's
+  back (`/api/v1/sd/rm`) took its display entry and its choice with one reboot, and the file
+  written back and stored brought both back with the same CRC.
+- **Four apps through a pool for three:** with Skeleton (3.4 MB) the clock's, the pool held
+  three display entries. Weather, radar, flights and the clock opened in turn: each came back
+  from the card in 39-55 s, each evicting the least recently worn, no reboot, every layer
+  claimed. ~30 s of each was the eviction's room-making (§5); the face's ring now counts
+  those moves as well as the copy (it read 3 % → 96 % evenly over a 51 s arrival; it sat at
+  nought for the moves before). The fill's progress is in `GET /api/v1/theme_cache` (`fill`).
 
 ### C5b — the fill's face and its pause (2026-11-08, Bronze)
 

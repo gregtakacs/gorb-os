@@ -470,6 +470,7 @@ static void poll_timer_cb(lv_timer_t *timer)
     /* §59: the owner's rotation, on a poll that carried no knob event and with the
      * carousel shut. */
     theme_strip_service();
+    orb_theme_service();                 /* theme-cache-plan ruling 7: a card that came (back) */
     if (!delta && !pressed && !lpress && !orb_strip_active() && !theme_strip_active()) rotation_poll(now);
 
     /* §61: the theme carousel, likewise: the knob is its own while it is up. */

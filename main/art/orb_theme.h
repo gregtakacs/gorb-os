@@ -220,7 +220,9 @@ orb_asset_ans_t orb_theme_design_stream(const char *handle,
 esp_err_t orb_theme_bench_fill(const char *id, uint32_t chunk_kb, uint32_t pace_ms, bool urgent);
 const char *orb_theme_bench_fill_last(void);
 /* C5 bench: drop `slug`'s display entry as an eviction would, then reboot. */
-esp_err_t orb_theme_bench_evict(const char *slug);   /* the last run's line, "" before one */
+esp_err_t orb_theme_bench_evict(const char *slug);
+/* C5c bench: `slug`'s choice disagrees with its file; the reconcile looks again. */
+esp_err_t orb_theme_bench_stale(const char *slug);   /* the last run's line, "" before one */
 #endif
 
 /* theme-cache-plan §2.6: `slug`'s voice bank, mapped from boot whatever the stage is bound to,
@@ -234,6 +236,9 @@ size_t orb_theme_cache_json(char *b, size_t cap);
  * pool, or nothing is chosen) or a fill already runs. The app on the glass rebinds when it
  * lands (orb_wasm_theme_landed). */
 bool orb_theme_fill_post(const char *slug);
+/* Ruling 7, once per card mount: each choice's file against its copies' CRC (a changed file is
+ * stored again, a file gone takes both copies). LVGL task, every poll; it posts the work. */
+void orb_theme_service(void);
 /* True when opening `slug` would post a fill (its theme is chosen, on the card only, and no
  * fill runs): the carousel zooms it to the fill's face, not the glass. */
 bool orb_theme_fill_wanted(const char *slug);

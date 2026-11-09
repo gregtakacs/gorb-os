@@ -75,6 +75,10 @@ void orb_sd_ensure_store_dirs(void);
 /** Boot-time convenience: ensure_mounted(), logging the card identity once. */
 esp_err_t orb_sd_init(void);
 
+/** How many times a card has mounted since boot: a reader that kept the last value sees a
+ *  card come, or come back (theme-cache-plan ruling 7 reconciles the pool against it). */
+uint32_t orb_sd_mount_gen(void);
+
 /** True while the FATFS volume is mounted and /sd resolves. */
 bool orb_sd_mounted(void);
 

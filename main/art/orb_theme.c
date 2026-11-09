@@ -888,6 +888,15 @@ static uint32_t order_list(const char *out[CACHE_APPS])
     return s_cache.n_order;
 }
 
+/* theme-cache-plan §2.4: a fill is the store's own body, copying an evicted app's display
+ * entry back from the card, without the park, the unmap's silence or the reboot. */
+static volatile bool s_install_fill;          /* the install running is a fill            */
+static volatile bool s_fill_changed;          /* a fill found its file changed: reconcile  */
+static uint32_t s_reconciled_gen;             /* the card mount the reconcile last ran on  */
+static volatile bool s_pool_busy;             /* a fill is moving entries: binds wait     */
+static volatile uint32_t s_fill_done, s_fill_total;   /* the fill's progress, for its face */
+static char s_fill_slug[ORB_POOL_SLUG_MAX];   /* the app being filled, "" for none        */
+
 /* The cache as the hub reads it (GET /api/v1/theme_cache): each app's choice, the order of
  * the glass, and the pool's entries. Answers the bytes written. */
 size_t orb_theme_cache_json(char *b, size_t cap)
@@ -905,7 +914,11 @@ size_t orb_theme_cache_json(char *b, size_t cap)
         PUT("%s{\"app\":\"%s\",\"name\":\"%s\",\"kind\":\"%s\",\"off\":%lu,\"size\":%lu,\"file_crc\":%lu}", k ? "," : "",
             s_pool->e[k].slug, s_pool->e[k].name, s_pool->e[k].kind == ORB_POOL_VOICE ? "voice" : "display",
             (unsigned long)s_pool->e[k].off, (unsigned long)s_pool->e[k].size, (unsigned long)s_pool->e[k].file_crc);
-    PUT("],\"capacity\":%lu}", (unsigned long)(ORB_POOL_END - ORB_POOL_FIRST));
+    PUT("],\"capacity\":%lu", (unsigned long)(ORB_POOL_END - ORB_POOL_FIRST));
+    if (s_fill_slug[0])                        /* §2.4: the fill running, as its face shows it */
+        PUT(",\"fill\":{\"app\":\"%s\",\"done\":%lu,\"total\":%lu}", s_fill_slug,
+            (unsigned long)s_fill_done, (unsigned long)s_fill_total);
+    PUT("}");
 #undef PUT
     return o < cap ? o : cap;
 }
@@ -1036,12 +1049,6 @@ static const orb_bundle_sec_t *sole_sec(const orb_bundle_t *b)
     return (b && b->n_sections >= 1) ? &b->sec[0] : NULL;
 }
 
-/* theme-cache-plan §2.4: a fill is the store's own body, copying an evicted app's display
- * entry back from the card, without the park, the unmap's silence or the reboot. */
-static volatile bool s_install_fill;          /* the install running is a fill            */
-static volatile bool s_pool_busy;             /* a fill is moving entries: binds wait     */
-static volatile uint32_t s_fill_done, s_fill_total;   /* the fill's progress, for its face */
-static char s_fill_slug[ORB_POOL_SLUG_MAX];   /* the app being filled, "" for none        */
 
 /* theme-cache-plan §2.6: the store's sounds, taken from its verdict's projection. */
 typedef struct { clk_sound_t s[CLK_SND_SLOTS]; uint32_t n; uint8_t pattern; } store_snd_t;
@@ -2096,6 +2103,19 @@ static void bench_evict_job(void *arg)
     (void)orb_jobs_reboot_soon("bench: an eviction");
 }
 
+/* C5c bench: make `slug`'s choice disagree with its file, as an edit on the card behind the
+ * orb's back would, and have the reconcile look again. */
+esp_err_t orb_theme_bench_stale(const char *slug)
+{
+    for (uint32_t c = 0; slug && c < s_cache.n_choice; c++)
+        if (!strcmp(s_cache.c[c].slug, slug)) {
+            s_cache.c[c].file_crc ^= 1u;
+            s_reconciled_gen--;
+            return ESP_OK;
+        }
+    return ESP_ERR_NOT_FOUND;
+}
+
 esp_err_t orb_theme_bench_evict(const char *slug)
 {
     char a[ORB_POOL_SLUG_MAX];
@@ -2350,9 +2370,29 @@ static esp_err_t store_voice(const esp_partition_t *p, const char *slug, const c
 static volatile bool s_glass_up, s_glass_owed;
 void orb_theme_fill_glass(bool up, bool owed) { s_glass_up = up; s_glass_owed = owed; }
 
+/* The face's ring counts the room a fill makes as well as its copy: the entries an eviction
+ * moves down come first (Bronze 2026-11-08: ~30 s of a 40 s arrival moving Skeleton's 3.4 MB,
+ * the ring at nought throughout), the copy after, offset by them. */
+static uint32_t s_fill_base;                   /* the copy's offset: the bytes the room moved */
+static uint32_t s_room_acc, s_room_last, s_room_last_n, s_room_total;
+
+static void fill_show(uint32_t done, uint32_t total);
 static void fill_progress(void *arg, uint32_t done, uint32_t total)
 {
     (void)arg;
+    fill_show(s_fill_base + done, s_fill_base + total);
+}
+
+static void fill_room_progress(void *ctx, uint32_t done, uint32_t total)
+{
+    (void)ctx;
+    if (done < s_room_last) s_room_acc += s_room_last_n;     /* the next entry's move */
+    s_room_last = done; s_room_last_n = total;
+    fill_show(s_room_acc + done, s_room_total);
+}
+
+static void fill_show(uint32_t done, uint32_t total)
+{
     s_fill_done = done;
     s_fill_total = total;
     /* the file stays open; a card pulled meanwhile fails the next read, and the fill with it */
@@ -2413,8 +2453,9 @@ esp_err_t orb_theme_install_bundle(const char *id, char *why, size_t whysz)
         while (c < s_cache.n_choice && strcmp(s_cache.c[c].stem, id)) c++;
         if (c == s_cache.n_choice || s_cache.c[c].file_crc != file_geom_crc) {
             heap_caps_free(region); card_close(fd);
+            s_fill_changed = true;             /* the reconcile stores it again (ruling 7) */
             return install_failed(ESP_ERR_INVALID_STATE, "the theme changed on the card since it "
-                                  "was chosen: send it again", why, whysz);
+                                  "was chosen: it is stored again", why, whysz);
         }
     }
 
@@ -2575,7 +2616,23 @@ esp_err_t orb_theme_install_bundle(const char *id, char *why, size_t whysz)
      * where the packed run ends. Every SLOT_* offset below is relative to it. */
     if (!s_install_fill) staged_mark(id);
     uint32_t tgt = 0;
-    s_pool_io.progress = s_install_fill ? NULL : room_progress;
+    s_pool_io.progress = s_install_fill ? fill_room_progress : room_progress;
+    if (s_install_fill) {
+        /* what the eviction will move: every kept entry above the lowest one it drops */
+        const char *o2[CACHE_APPS];
+        const uint32_t n2 = order_list(o2);
+        uint32_t m = 0, moves = 0, low = UINT32_MAX;
+        if (orb_pool_evictions_kind(s_pool, slug, ORB_POOL_DISPLAY, entry_size, o2, n2, NULL, &m) == 0) {
+            for (uint32_t k = 0; k < s_pool->n; k++)
+                if ((m >> k) & 1u && s_pool->e[k].off < low) low = s_pool->e[k].off;
+            for (uint32_t k = 0; k < s_pool->n; k++)
+                if (!((m >> k) & 1u) && s_pool->e[k].off > low) moves += s_pool->e[k].size;
+        }
+        s_room_acc = s_room_last = s_room_last_n = 0;
+        s_room_total = moves + entry_size;
+        s_fill_base = 0;
+        fill_show(0, s_room_total);
+    }
     const char *ord[CACHE_APPS];
     const uint32_t nord = order_list(ord);
     char gone[ORB_POOL_ENTRIES][ORB_POOL_SLUG_MAX];
@@ -2595,6 +2652,7 @@ esp_err_t orb_theme_install_bundle(const char *id, char *why, size_t whysz)
          * again now; and a fill paused here before goes on from its mark, if the table is the
          * one it left and the room is where it was */
         s_pool_busy = false;
+        s_fill_base = s_room_total > entry_size ? s_room_total - entry_size : 0;
         const uint32_t tcrc = esp_rom_crc32_le(0, (const uint8_t *)s_pool, sizeof *s_pool);
         mark = &s_fill_mark;
         if (mark->valid && (strcmp(mark->slug, slug) || mark->file_crc != file_geom_crc ||
@@ -3498,6 +3556,73 @@ static void clear_job(void *arg)
     if (orb_jobs_reboot_soon("theme: the active theme was deleted") != ESP_OK)
         ESP_LOGE(TAG, "deactivated but the reboot could not be armed — "
                       "a manual reboot lands the base face");
+}
+
+/* ---- theme-cache-plan ruling 7: the flash copies follow the card file ------------------
+ *
+ * Once a card has mounted (at boot, or back after a swap or a USB session), each choice's
+ * file is read against the CRC its copies were made from. A file that changed is stored
+ * again — the store rebuilds both copies, and reboots as every store does; a file that is
+ * gone takes both copies and the choice with it (the removal's own ladder, which reboots
+ * when it moved anything). One app a run: the reboot brings the next. A card that did not
+ * answer, or a header that would not read, changes nothing. */
+static void reconcile_job(void *arg)
+{
+    (void)arg;
+    if (!s_pool || orb_sd_ensure_mounted() != ESP_OK) return;
+    for (uint32_t c = 0; c < s_cache.n_choice; c++) {
+        const char *slug = s_cache.c[c].slug, *stem = s_cache.c[c].stem;
+        char path[ORB_SD_PATH_MAX + 16];
+        if (!theme_file(stem, path, sizeof path)) continue;
+        struct stat st;
+        orb_sd_lock();
+        const int rc = stat(path, &st), en = errno;
+        const bool dir_there = stat(ORB_SD_THEME_DIR, &st) == 0;   /* a card that answers */
+        orb_sd_unlock();
+        if (rc != 0 && en == ENOENT && dir_there) {
+            const bool held = orb_pool_find_kind(s_pool, slug, ORB_POOL_DISPLAY) >= 0 ||
+                              orb_pool_find_kind(s_pool, slug, ORB_POOL_VOICE) >= 0;
+            ESP_LOGW(TAG, "reconcile: %s's theme file \"%s\" is gone from the card: %s", slug, stem,
+                     held ? "its copies go with it" : "it had no copies; the choice goes");
+            if (held) { clear_job((void *)slug); return; }
+            choice_set(slug, NULL, 0);
+            continue;
+        }
+        if (rc != 0) continue;
+        orb_bundle3_hdr_t h;
+        uint32_t fsz = 0;
+        const char *w = NULL;
+        const int fd = card_open_verified_id3(stem, &h, &fsz, &w);
+        if (fd < 0) continue;
+        card_close(fd);
+        if (h.geom_crc == s_cache.c[c].file_crc) continue;
+        ESP_LOGW(TAG, "reconcile: %s's theme file \"%s\" changed on the card since it was stored: "
+                      "stored again", slug, stem);
+        char why[72] = "";
+        const orb_app_t *was = input_router_current();
+        char back[ORB_POOL_SLUG_MAX] = "";
+        if (was && was->slug) strlcpy(back, was->slug, sizeof back);
+        if (orb_theme_install_bundle(stem, why, sizeof why) != ESP_OK) {
+            ESP_LOGW(TAG, "reconcile: %s's store refused: %s", slug, why);
+            continue;                    /* refused before the park: nothing changed */
+        }
+        input_router_remember_slug(back[0] ? back : slug);   /* the reboot comes back where it was */
+        if (orb_jobs_reboot_soon("theme: a changed card file stored again") != ESP_OK)
+            ESP_LOGE(TAG, "reconcile: stored but the reboot could not be armed");
+        return;
+    }
+}
+
+void orb_theme_service(void)
+{
+    if (s_fill_changed) { s_fill_changed = false; s_reconciled_gen--; }   /* due again */
+    /* after the boot has settled (the first app bound, the carousel's previews read), with
+     * the worker free and no upload in flight; a refused post tries again next poll */
+    const uint32_t g = orb_sd_mount_gen();
+    if (g == s_reconciled_gen || !orb_sd_mounted() || esp_timer_get_time() < 20000000 ||
+        orb_jobs_busy() || orb_theme_upload_busy() || s_fill_slug[0])
+        return;
+    if (orb_jobs_post(reconcile_job, NULL, 0) == ESP_OK) s_reconciled_gen = g;
 }
 
 esp_err_t orb_theme_post_clear(void)

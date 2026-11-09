@@ -115,10 +115,11 @@ editor already takes: the app re-reads its stage at the first frame after an arr
   app halves its frame rate however it is paced, so it runs only while the preview is up
   and resumes when the app comes back. A card that is out, or a file that is gone, drops
   the preview and leaves the app bare; its settings page says why.
-- **The fill's shape** (from C0): a 64 KB block erased, then its sixteen sectors written,
-  block by block, so the ring keeps moving through what was a 2.5 s erase up front; the
-  whole fill marked as heavy I/O (`orb_io_heavy_*`), so a guest call the flash stalls is
-  forgiven its budget rather than trapped.
+- **The fill's shape** (from C0): a 64 KB block erased ahead of its writes, block by block,
+  so the ring keeps moving through what was a 2.5 s erase up front; the whole fill marked as
+  heavy I/O (`orb_io_heavy_*`), so a guest call the flash stalls is forgiven its budget
+  rather than trapped. Built in C5b (§6), with the card let go whenever the glass owes a
+  frame.
 
 ### 2.5 Boot
 
@@ -182,7 +183,7 @@ carries is read off the glass (its values blob draws; the preview is the card's)
 | **C2** | The table's format 2 (an entry's kind, voice or display; sixteen entries; the carry from format 1); voice banks packed first, never moved by an eviction | `host_pool_test.py`: the carry, evictions that never take or move a voice bank, a cut at every step of a voice bank's store — **built 2026-11-08** (§6) |
 | **C3** | Sound off the glass: a store writes the voice bank (≤ 1 MB), boot maps every voice bank, a bind no longer stops voices, one-shots unleased and loops leased to the glass, a sound import that needs no stage; the clock chimes from its service | bench: the clock chiming through a switch to weather, and on the hour with weather on the glass; the tick stopping when the clock leaves — **built and benched on Bronze 2026-11-08** (§6) |
 | **C4** | The choice record (NVS), the last-on-glass order, stores that make room instead of refusing, the shelf's budgets per theme | bench: a theme stored into a full pool evicts the least recent display entry — **built and benched on Bronze 2026-11-08** (§6) |
-| **C5** | The fill on arrival behind the preview and its slice (full speed, block by block, heavy I/O), the zoom into the app, the pause on leaving, the card-missing case | bench: four apps cycled through a pool that holds three; leaving mid-fill; a card pulled mid-fill — **C5a, the engine, built 2026-11-08** (§6); the face, the pause and a changed file owed |
+| **C5** | The fill on arrival behind the preview and its slice (full speed, block by block, heavy I/O), the zoom into the app, the pause on leaving, the card-missing case | bench: four apps cycled through a pool that holds three; leaving mid-fill; a card pulled mid-fill — **C5a, the engine, and C5b, the face and the pause, built 2026-11-08** (§6); a changed file, reconciliation and a pulled card owed (C5c) |
 | **C6** | The hub: "in the pool / on the card only" on the Themes page | the hub's lists still parse |
 
 ## 5. Open
@@ -228,7 +229,53 @@ held (20 fps), 1 s windows from the dial bench:
   and resumes the operation, so the operation stretches and the frame waits on it.
   Reverted; Bronze is back on the build without it.
 
-### C5a — the fill's engine (2026-11-08, Bronze; the face, pause and a changed file still owed)
+### C5b — the fill's face and its pause (2026-11-08, Bronze)
+
+- **The face** (`orb_strip.c`, states FILL and GROW): the app's preview at 300 px, the §61
+  ring 6 px outside it (arc 0x66DF over track 0x3186, clockwise from twelve), redrawn every
+  2 % of the copy; when the fill is over (landed or failed) the face grows to the glass and
+  fades into the app as the carousel's open does. It comes up two ways: the carousel's zoom
+  out stops at the face for an app whose theme is on the card only (or still filling), and an
+  arrival from anywhere else (a hub request, boot, a return) puts it up from
+  `wasm_activate`/`wasm_resume` (`orb_strip_fill_face`). A hold on the face opens the
+  carousel over it, zooming down from the face; a turn or press is spent.
+- **The preview of an evicted app** comes from its choice's card file
+  (`orb_theme_pool_stem` falls back to the choice): before, the carousel read previews only
+  for apps in the pool, so the face of an evicted app was a bare ring.
+- **The glass and the fill share the card** (`orb_theme_fill_glass`). The card lock lends
+  the display's DMA ring for as long as it is held, and a fill holds it from open to close, so
+  the face drew 12 frames in a 9 s fill and the carousel opened over a running fill drew none.
+  While the strip has the glass and owes a frame (a moving carousel, or a frame the held
+  card refused), the fill lets the card go at its next 4 KB chunk until the frame is out
+  (250 ms at most), and the ring is taken back at each return rather than after the
+  network's window (`DISPLAY_URGENT_FILL`). Letting go after every chunk instead cost the
+  fill 14 s → 24 s; waiting on every chunk for the face cost 25-33 s.
+- **The pause** (ruling 5): an app's suspend stops its fill at the next chunk and keeps a
+  mark (`fill_mark_t`: the slot, the table's CRC, the section, how far it was written and
+  erased). The job ends, so the worker is never held by a pause; the next fill for the same
+  app goes on from the mark when the table and the slot are as it left them, the sections
+  already written read back off the flash for their checksums. A store or another app's fill
+  in between changes the table, and the fill starts over.
+- **The pixels are erased 64 KB ahead of the writes** in a fill (a store still erases up
+  front), so the ring moves through what was one 2.5 s erase.
+- **Bronze, the radar's Scope (1,772 KB), evicted with `GET /api/v1/debug/fill?evict=<slug>`
+  (debug: parks the dial, drops the display entry, reboots):**
+
+  | | the fill | the face |
+  |---|---|---|
+  | from a hub request | 12.4 s | ring and preview, 28 frames — before the glass took the card back |
+  | left after 4 s, back 4 s later | paused at 140 KB, went on from 192 KB | up again on the return |
+  | carousel → face → carousel over the face → face | 12.6-13.2 s | 28-32 frames, ~130 ms each (the copy's flash writes stall the compose, ~60 ms) |
+
+- **PSRAM is the margin under radar:** the carousel kept its 434 KB snapshot of the glass for
+  as long as it was up, and a fill landing under the face found no room for the radar's layer
+  table (15 of 15 rows refused). The snapshot is now freed once the carousel opens an app.
+  With radar on the glass Bronze has ~370 KB of PSRAM free (1.5 MB under the clock).
+- **The bench door's first cut panicked** (*Cache disabled but cached memory accessed*): it
+  unmapped under the drawing clock, and the panic was charged to the clock as its second
+  fault, so a later switch to the clock was refused. It parks the dial first now.
+
+### C5a — the fill's engine (2026-11-08, Bronze)
 
 - **A fill is the store's own body** under a flag (`s_install_fill`): the same card checks,
   rebase, verdict, eviction (least recently worn first), copy, header and table, without the

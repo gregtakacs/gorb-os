@@ -5474,6 +5474,12 @@ static esp_err_t h_debug_fill(httpd_req_t *req)
         return httpd_resp_sendstr(req, orb_theme_bench_fill_last());
     }
     httpd_resp_set_type(req, "application/json");
+    if (q_param(req, "evict", id, sizeof id)) {
+        const esp_err_t e = orb_theme_bench_evict(id);
+        char b[80];
+        snprintf(b, sizeof b, "{\"evicting\":%s,\"err\":\"%s\"}", e == ESP_OK ? "true" : "false", esp_err_to_name(e));
+        return httpd_resp_sendstr(req, b);
+    }
     if (!q_param(req, "id", id, sizeof id)) return httpd_resp_sendstr(req, "{\"error\":\"id\"}");
     const uint32_t chunk = q_param(req, "chunk", v, sizeof v) ? (uint32_t)atoi(v) : 32;
     const bool urgent = !q_param(req, "urgent", v, sizeof v) || v[0] != '0';

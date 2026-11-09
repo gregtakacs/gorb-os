@@ -1932,12 +1932,29 @@ bool orb_theme_store_torn(void)
  * the next one is touched, and once from the partition afterwards, which proves the
  * flash wrote what it was given and produces the installed art region's own
  * checksum for the header. */
+/* theme-cache-plan §2.4: how far a fill got, so one paused when the owner left its app goes
+ * on from there when they come back (ruling 5). The worker is never held for a pause — a
+ * store or a settings write would queue behind it — so the job ends and this stays. Good
+ * only while the pool's table is the one it was made under (`table_crc`) and the slot is
+ * where it was. */
+typedef struct {
+    char     slug[ORB_POOL_SLUG_MAX];
+    uint32_t file_crc, at, table_crc;   /* at: the slot it writes */
+    uint32_t erased;            /* art bytes erased from SLOT_ART_OFF */
+    uint32_t sec, sec_done;     /* the section being copied, and its bytes written */
+    bool     valid;
+} fill_mark_t;
+static fill_mark_t s_fill_mark;
+static volatile bool s_fill_stop;              /* the owner left the app being filled */
+
+#define FILL_ERASE_STEP (64u * 1024u)          /* a fill erases this far ahead of its writes */
+
 static esp_err_t copy_bundle3(int fd, const orb_bundle_t *b, const uint8_t *region,
                               uint32_t file_art_base, const esp_partition_t *p,
                               uint32_t hdr_base, uint32_t *out_art_crc,
                               const char **why,
                               void (*progress)(void *arg, uint32_t done, uint32_t total),
-                              void *parg)
+                              void *parg, fill_mark_t *mark)
 {
     if (ensure_chunk() != ESP_OK) { *why = "out of memory for the card read buffer"; return ESP_ERR_NO_MEM; }
 
@@ -1962,13 +1979,21 @@ static esp_err_t copy_bundle3(int fd, const orb_bundle_t *b, const uint8_t *regi
      * flash that will not write — boots the base face rather than mapping half
      * an image under a header that described the theme before it. The header is
      * rewritten last, by the adopt stamp at the end of this store. */
-    esp_err_t e = esp_partition_erase_range(p, hdr_base, THEME_SECTOR);
-    if (e == ESP_OK) e = esp_partition_erase_range(p, hdr_base + SLOT_GEOM_OFF, geom_len);
-    if (e == ESP_OK) e = esp_partition_erase_range(p, hdr_base + SLOT_ART_OFF, art_len);
-    if (e != ESP_OK) { *why = "flash erase failed"; return e; }
+    /* theme-cache-plan §2.4: a fill (mark) erases its pixels a block ahead of its writes, so
+     * its face's ring moves the whole way rather than sitting at nought through one long
+     * erase; it may also go on from where a pause left it (mark->valid). */
+    const bool resume = mark && mark->valid;
+    esp_err_t e = ESP_OK;
+    if (!resume) {
+        e = esp_partition_erase_range(p, hdr_base, THEME_SECTOR);
+        if (e == ESP_OK) e = esp_partition_erase_range(p, hdr_base + SLOT_GEOM_OFF, geom_len);
+        if (e == ESP_OK && !mark) e = esp_partition_erase_range(p, hdr_base + SLOT_ART_OFF, art_len);
+        if (e != ESP_OK) { *why = "flash erase failed"; return e; }
+        if (mark) { mark->erased = 0; mark->sec = 0; mark->sec_done = 0; }
+    }
     if (progress) progress(parg, 0, art_len);
 
-    for (uint32_t done = 0; done < b->region_size; ) {
+    for (uint32_t done = 0; !resume && done < b->region_size; ) {
         const uint32_t want = (b->region_size - done > s_chunk_bytes) ? s_chunk_bytes
                                                                       : (b->region_size - done);
         e = esp_partition_write(p, hdr_base + SLOT_GEOM_OFF + done, region + done, want);
@@ -1980,9 +2005,37 @@ static esp_err_t copy_bundle3(int fd, const orb_bundle_t *b, const uint8_t *regi
         const orb_bundle_sec_t *s = &b->sec[i];
         size_t   pos = file_art_base + (s->art_off - SLOT_ART_OFF);
         uint32_t crc = 0, done = 0;
+        /* a resumed fill reads what it already wrote back off the flash for the section's
+         * checksum, never the card again */
+        const uint32_t kept = !resume || i > mark->sec ? 0 : (i < mark->sec ? s->art_size : mark->sec_done);
+        while (done < kept) {
+            const uint32_t want = (kept - done > s_chunk_bytes) ? s_chunk_bytes : (kept - done);
+            if (esp_partition_read(p, hdr_base + s->art_off + done, s_chunk, want) != ESP_OK) {
+                *why = "could not read the paused fill back"; return ESP_FAIL;
+            }
+            crc = esp_rom_crc32_le(crc, s_chunk, want);
+            done += want;
+        }
+        pos += done;
+        if (progress && kept) progress(parg, s->art_off - SLOT_ART_OFF + done, art_len);
         while (done < s->art_size) {
             const uint32_t want = (s->art_size - done > s_chunk_bytes) ? s_chunk_bytes
                                                                        : (s->art_size - done);
+            if (mark) {
+                if (s_fill_stop) {               /* ruling 5: the owner left; go on later */
+                    mark->sec = i; mark->sec_done = done; mark->valid = true;
+                    *why = "paused: the owner left the app";
+                    return ESP_ERR_TIMEOUT;
+                }
+                const uint32_t need = s->art_off - SLOT_ART_OFF + done + want;
+                while (mark->erased < need && mark->erased < art_len) {
+                    const uint32_t n = art_len - mark->erased > FILL_ERASE_STEP ? FILL_ERASE_STEP
+                                                                                : art_len - mark->erased;
+                    e = esp_partition_erase_range(p, hdr_base + SLOT_ART_OFF + mark->erased, n);
+                    if (e != ESP_OK) { *why = "flash erase failed"; return e; }
+                    mark->erased += n;
+                }
+            }
             if (rd_at(fd, &pos, s_chunk, want) != (ssize_t)want) {
                 *why = "bundle ended before its declared pixels"; return ESP_ERR_INVALID_SIZE;
             }
@@ -1995,6 +2048,14 @@ static esp_err_t copy_bundle3(int fd, const orb_bundle_t *b, const uint8_t *regi
         const char *rw = orb_bundle_bank_rule(s, done, crc);
         if (rw) { *why = rw; return ESP_ERR_INVALID_CRC; }
     }
+    /* the padding past the last section reads back erased, as a store's does */
+    while (mark && mark->erased < art_len) {
+        const uint32_t n = art_len - mark->erased > FILL_ERASE_STEP ? FILL_ERASE_STEP : art_len - mark->erased;
+        e = esp_partition_erase_range(p, hdr_base + SLOT_ART_OFF + mark->erased, n);
+        if (e != ESP_OK) { *why = "flash erase failed"; return e; }
+        mark->erased += n;
+    }
+    if (mark) mark->valid = false;
 
     uint32_t acrc = 0;
     for (uint32_t done = 0; done < art_len; ) {
@@ -2015,6 +2076,33 @@ typedef struct { char id[48]; uint32_t chunk_kb, pace_ms; bool urgent; } bench_f
 static volatile bool s_bench_fill_busy;
 static char s_bench_fill_last[400];        /* the last run's line, for the door */
 const char *orb_theme_bench_fill_last(void) { return s_bench_fill_last; }
+
+/* theme-cache-plan C5 bench: drop `slug`'s display entry as an eviction would (its voice bank
+ * and its choice stay), then reboot — the entries after it move, and some may be mapped. */
+static void bench_evict_job(void *arg)
+{
+    const char *slug = arg;
+    const esp_partition_t *p = art_bank_partition();
+    int r = ORB_POOL_ERR_ARG;
+    /* the dial parks first, as a removal's does: an unmap under a drawing dial panicked
+     * (Bronze 2026-11-08, "Cache disabled but cached memory region accessed") */
+    if (p && s_pool && pool_io(p) && store_park_dial(input_router_current(), 0, "removing")) {
+        orb_sound_stop_all();
+        art_bank_unmap();
+        s_slot_torn = true;
+        r = orb_pool_remove_kind(&s_pool_io, s_pool, &s_pool_which, slug, ORB_POOL_DISPLAY);
+    }
+    ESP_LOGW(TAG, "bench: %s's display entry %s; rebooting", slug, r ? "would not go" : "left the pool");
+    (void)orb_jobs_reboot_soon("bench: an eviction");
+}
+
+esp_err_t orb_theme_bench_evict(const char *slug)
+{
+    char a[ORB_POOL_SLUG_MAX];
+    if (!slug || !s_pool || orb_pool_find_kind(s_pool, slug, ORB_POOL_DISPLAY) < 0) return ESP_ERR_NOT_FOUND;
+    strlcpy(a, slug, sizeof a);
+    return orb_jobs_post(bench_evict_job, a, sizeof a);
+}
 
 static void bench_fill_job(void *arg)
 {
@@ -2252,11 +2340,29 @@ static esp_err_t store_voice(const esp_partition_t *p, const char *slug, const c
     return ESP_OK;
 }
 
+/* theme-cache-plan ruling 2: while the carousel or the fill's face has the glass (orb_strip)
+ * and owes a frame — a moving carousel, or a frame the held card refused — the fill lets the
+ * card go at its next chunk until the frame is out (250 ms at most: an 80 ms cap let the
+ * copy's flash writes back in mid-frame, and their cache stalls doubled the compose). The card lock carries the
+ * display's DMA ring (orb_sd_lock), and held from open to close it starved the glass (Bronze
+ * 2026-11-08: 9 face frames in a 33 s fill); let go after every 4 KB chunk it took the fill
+ * from 14 s to 24. */
+static volatile bool s_glass_up, s_glass_owed;
+void orb_theme_fill_glass(bool up, bool owed) { s_glass_up = up; s_glass_owed = owed; }
+
 static void fill_progress(void *arg, uint32_t done, uint32_t total)
 {
     (void)arg;
     s_fill_done = done;
     s_fill_total = total;
+    /* the file stays open; a card pulled meanwhile fails the next read, and the fill with it */
+    if (!s_glass_up || !s_glass_owed || s_fill_stop) return;
+    orb_sd_unlock();
+    const int64_t t0 = esp_timer_get_time();
+    while (s_glass_up && s_glass_owed && !s_fill_stop && esp_timer_get_time() - t0 < 250000)
+        vTaskDelay(1);
+    (void)orb_sd_ensure_mounted();      /* a card pulled meanwhile: the next read says so */
+    orb_sd_lock();
 }
 
 esp_err_t orb_theme_install_bundle(const char *id, char *why, size_t whysz)
@@ -2483,9 +2589,26 @@ esp_err_t orb_theme_install_bundle(const char *id, char *why, size_t whysz)
     uint32_t art_crc = 0;
     esp_err_t e = pr ? ESP_FAIL : ESP_OK;
     if (pr) w = "the theme area would not make room";
+    fill_mark_t *mark = NULL;
+    if (s_install_fill && e == ESP_OK) {
+        /* theme-cache-plan §2.4: the copy writes free space alone, so the other apps bind
+         * again now; and a fill paused here before goes on from its mark, if the table is the
+         * one it left and the room is where it was */
+        s_pool_busy = false;
+        const uint32_t tcrc = esp_rom_crc32_le(0, (const uint8_t *)s_pool, sizeof *s_pool);
+        mark = &s_fill_mark;
+        if (mark->valid && (strcmp(mark->slug, slug) || mark->file_crc != file_geom_crc ||
+                            mark->at != tgt || mark->table_crc != tcrc || ngone))
+            mark->valid = false;
+        if (mark->valid)
+            ESP_LOGI(TAG, "fill: %s goes on from %u KB (paused there)", slug, (unsigned)(mark->erased / 1024));
+        strlcpy(mark->slug, slug, sizeof mark->slug);
+        mark->file_crc = file_geom_crc; mark->at = tgt; mark->table_crc = tcrc;
+    }
     if (e == ESP_OK)
         e = copy_bundle3(fd, &b, region, file_art_base, p, tgt,
-                         &art_crc, &w, s_install_fill ? fill_progress : store_progress, NULL);
+                         &art_crc, &w, s_install_fill ? fill_progress : store_progress, NULL, mark);
+    if (mark && e != ESP_OK && e != ESP_ERR_TIMEOUT) mark->valid = false;   /* only a pause goes on */
     card_close(fd);
     heap_caps_free(region);
     if (e != ESP_OK) {
@@ -2931,9 +3054,13 @@ bool orb_theme_pool_stem(const char *slug, char *out, size_t outsz)
 {
     if (!slug || !out || !outsz || !s_pool) return false;
     const int k = orb_pool_find(s_pool, slug);
-    if (k < 0) return false;
-    theme_stem(slug, s_pool->e[k].name, out, outsz);
-    return true;
+    if (k >= 0) { theme_stem(slug, s_pool->e[k].name, out, outsz); return true; }
+    for (uint32_t c = 0; c < s_cache.n_choice; c++)      /* theme-cache-plan §2.4: on the card */
+        if (!strcmp(s_cache.c[c].slug, slug)) {          /* only, its preview is still its own */
+            strlcpy(out, s_cache.c[c].stem, outsz);
+            return true;
+        }
+    return false;
 }
 
 bool orb_theme_has(const char *slug)
@@ -3244,12 +3371,19 @@ static void fill_job(void *arg)
     for (uint32_t c = 0; c < s_cache.n_choice; c++)
         if (!strcmp(s_cache.c[c].slug, r->slug)) strlcpy(stem, s_cache.c[c].stem, sizeof stem);
     s_fill_done = 0; s_fill_total = 0;
+    s_fill_stop = false;
     orb_io_heavy_begin();                           /* a guest the flash stalls is forgiven */
     s_install_fill = true;
     const esp_err_t e = stem[0] ? orb_theme_install_bundle(stem, why, sizeof why) : ESP_ERR_NOT_FOUND;
     s_install_fill = false;
     s_pool_busy = false;
     orb_io_heavy_end();
+    if (e == ESP_ERR_TIMEOUT) {
+        ESP_LOGI(TAG, "fill: %s paused at %u of %u KB (the owner left it)", r->slug,
+                 (unsigned)(s_fill_done / 1024), (unsigned)(s_fill_total / 1024));
+        s_fill_slug[0] = '\0';
+        return;
+    }
     if (e != ESP_OK) {
         ESP_LOGW(TAG, "fill: %s's theme stays on the card: %s", r->slug, why[0] ? why : "the copy failed");
         s_fill_slug[0] = '\0';
@@ -3261,18 +3395,31 @@ static void fill_job(void *arg)
     lv_async_call(fill_landed, landed);
 }
 
-bool orb_theme_fill_post(const char *slug)
+static int fill_choice(const char *slug)            /* its choice's index, -1: no fill */
 {
-    if (!slug || !s_pool || orb_pool_find(s_pool, slug) >= 0 || s_fill_slug[0]) return false;
-    fill_req_t r;
+    if (!slug || !s_pool || orb_pool_find(s_pool, slug) >= 0 || s_fill_slug[0]) return -1;
     uint32_t c = 0;
     while (c < s_cache.n_choice && strcmp(s_cache.c[c].slug, slug)) c++;
-    if (c == s_cache.n_choice) return false;          /* nothing chosen: the bare form stands */
+    return c < s_cache.n_choice ? (int)c : -1;        /* nothing chosen: the bare form stands */
+}
+
+bool orb_theme_fill_wanted(const char *slug) { return fill_choice(slug) >= 0; }
+
+bool orb_theme_fill_post(const char *slug)
+{
+    const int c = fill_choice(slug);
+    if (c < 0) return false;
+    fill_req_t r;
     strlcpy(r.slug, slug, sizeof r.slug);
     strlcpy(s_fill_slug, slug, sizeof s_fill_slug);
     if (orb_jobs_post(fill_job, &r, sizeof r) != ESP_OK) { s_fill_slug[0] = '\0'; return false; }
     ESP_LOGI(TAG, "fill: %s's theme \"%s\" comes back from the card", slug, s_cache.c[c].stem);
     return true;
+}
+
+void orb_theme_fill_pause(const char *slug)
+{
+    if (slug && s_fill_slug[0] && !strcmp(s_fill_slug, slug)) s_fill_stop = true;
 }
 
 bool orb_theme_fill_progress(const char *slug, uint32_t *done, uint32_t *total)

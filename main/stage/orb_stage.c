@@ -2075,8 +2075,16 @@ static void clock_layers_build(orb_app_t *self)
             d.art.off = LABEL_PLANE_OFF;
         }
         const int h = svc->layer_add(self, &d);
-        if (h < 0) { refused++; continue; }   /* full, malformed, or no heap: the
+        if (h < 0) {                          /* full, malformed, or no heap: the
                                                * table counted it; the walk moves on */
+            if (!refused)                     /* the first, named (a fill's landing, C5) */
+                ESP_LOGW(TAG, "layer row %u/%u refused: tier %u cls %u %dx%d off %lu blend %u role %u prim %u",
+                         (unsigned)pick_cls[k], (unsigned)pick_slot[k], (unsigned)d.art.tier,
+                         (unsigned)d.art.cls, (int)d.art.w, (int)d.art.h, (unsigned long)d.art.off,
+                         (unsigned)d.blend, (unsigned)d.role, (unsigned)d.gen_prim);
+            refused++;
+            continue;
+        }
         clk_layer_key_t *r = &s_lay_key[s_lay_n];
         r->cls = pick_cls[k]; r->slot = pick_slot[k];
         r->frame0 = el.frame0; r->n_frames = el.n_frames;

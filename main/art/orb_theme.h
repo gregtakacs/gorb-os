@@ -218,7 +218,9 @@ orb_asset_ans_t orb_theme_design_stream(const char *handle,
  * erased and written alone, then pace_ms for the dial; urgent: the ring comes back after each
  * read rather than the network's window. */
 esp_err_t orb_theme_bench_fill(const char *id, uint32_t chunk_kb, uint32_t pace_ms, bool urgent);
-const char *orb_theme_bench_fill_last(void);   /* the last run's line, "" before one */
+const char *orb_theme_bench_fill_last(void);
+/* C5 bench: drop `slug`'s display entry as an eviction would, then reboot. */
+esp_err_t orb_theme_bench_evict(const char *slug);   /* the last run's line, "" before one */
 #endif
 
 /* theme-cache-plan §2.6: `slug`'s voice bank, mapped from boot whatever the stage is bound to,
@@ -232,6 +234,15 @@ size_t orb_theme_cache_json(char *b, size_t cap);
  * pool, or nothing is chosen) or a fill already runs. The app on the glass rebinds when it
  * lands (orb_wasm_theme_landed). */
 bool orb_theme_fill_post(const char *slug);
+/* True when opening `slug` would post a fill (its theme is chosen, on the card only, and no
+ * fill runs): the carousel zooms it to the fill's face, not the glass. */
+bool orb_theme_fill_wanted(const char *slug);
+/* Ruling 5: the owner left `slug`'s app; its fill stops at the next chunk and keeps its mark,
+ * so the next fill_post for it goes on from there while the pool is as it left it. */
+void orb_theme_fill_pause(const char *slug);
+/* The strip has the glass (`up`), and has a frame to draw (`owed`): a fill lets the card, and
+ * with it the display's DMA ring, go between its chunks while up, and waits while owed. */
+void orb_theme_fill_glass(bool up, bool owed);
 /* A fill's progress for its face: true while `slug` is filling. */
 bool orb_theme_fill_progress(const char *slug, uint32_t *done, uint32_t *total);
 

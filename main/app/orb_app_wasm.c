@@ -69,6 +69,7 @@
 #include "wasm3.h"
 #include "orb_live_work.h" /* OS v1.2.38: the back copies' worker */
 #include "orb_glass.h"   /* §6.21 */
+#include "orb_strip.h"   /* theme-cache-plan ruling 2: the fill's face */
 
 static const char *TAG = "appwasm";
 
@@ -2052,7 +2053,9 @@ static esp_err_t wasm_activate(orb_app_t *app)
     if (s->rt) beat_apply(s);
     if (s->stage && stage_bind(app) == ESP_OK)   /* its own theme on its own page */
         stage_run(true);                          /* the stage's frames, which call orb_tick */
-    if (s->stage) (void)orb_theme_fill_post(app->slug);   /* theme-cache-plan §2.4: its theme left */
+    /* theme-cache-plan §2.4: its theme left; ruling 2: the fill's face holds the glass while
+     * it comes back (one already running for it, from a visit before, included) */
+    if (s->stage) { (void)orb_theme_fill_post(app->slug); orb_strip_fill_face(app); }
     return ESP_OK;
 }
 
@@ -2068,6 +2071,7 @@ static void wasm_suspend(orb_app_t *app)
     if (!s) return;
     s->on_glass = false;
     beat_apply(s);
+    orb_theme_fill_pause(app->slug);             /* theme-cache-plan ruling 5 */
     if (s->stage && stage_bound(app)) stage_run(false);
     if (s->rt) (void)wasm_call(s, W_SUSPEND, NULL, 0);
 }
@@ -2080,7 +2084,7 @@ static void wasm_resume(orb_app_t *app)
     (void)wasm_call(s, W_RESUME, NULL, 0);
     if (s->rt) beat_apply(s);
     if (s->stage && stage_bind(app) == ESP_OK) stage_run(true);
-    if (s->stage) (void)orb_theme_fill_post(app->slug);   /* theme-cache-plan §2.4 */
+    if (s->stage) { (void)orb_theme_fill_post(app->slug); orb_strip_fill_face(app); }   /* §2.4 */
 }
 
 /* theme-cache-plan §2.4: the app's theme is back in the pool while it is on the glass on its

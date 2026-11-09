@@ -43,6 +43,10 @@ static const char *TAG = "strip";
 #define IDLE_MS   3000          /* §54: a pause this long opens the centre           */
 #define FADE_MS   260           /* the preview fades into the live app               */
 #define SETTLE_MS 900           /* the longest the fade waits for the app to draw    */
+#define FACE      300           /* theme-cache-plan ruling 2: the fill's face, a preview */
+#define RING_GAP  6             /* the progress ring, this far outside the face...       */
+#define RING_W    10            /* ...and this wide                                       */
+#define RING_STEP 20            /* permille between two redraws: each costs the fill one */
 
 /* One place on the strip: an app, or the gear (app NULL). The picture is a square in
  * wire order: the theme's preview (PV), the glass as the carousel found it (W, the app
@@ -68,8 +72,11 @@ typedef struct {
 } pv_t;
 
 /* SETTLE: the app is switched in under the held glass and is drawing into the mirror;
- * FADE: the preview fades into what it drew. */
-typedef enum { ST_OFF, ST_IN, ST_IDLE, ST_TURN, ST_OUT, ST_SETTLE, ST_FADE } st_t;
+ * FADE: the preview fades into what it drew. FILL: theme-cache-plan §2.4, the app's theme
+ * is coming back from the card while the app runs bare under the held glass: its preview at
+ * FACE with the progress ring round it; GROW: the fill is over, the face zooms to the glass
+ * and SETTLE and FADE follow as for any open. */
+typedef enum { ST_OFF, ST_IN, ST_IDLE, ST_TURN, ST_OUT, ST_SETTLE, ST_FADE, ST_FILL, ST_GROW } st_t;
 
 static pv_t      s_pv[MAX_ITEMS];
 static int       s_pv_n;
@@ -104,6 +111,11 @@ static int       s_open_i;      /* OUT: the item that opens */
 static bool      s_dirty;       /* the settled frame was skipped and is still owed */
 static uint32_t  s_frames0;     /* SETTLE: the held-frame count at the switch */
 static int       s_fade_a;      /* FADE: 0..32 toward the live app */
+static float     s_out_z;       /* OUT: the zoom's end, 1 = the glass, less = the fill's face */
+static float     s_in_z;        /* IN: the zoom's start, likewise (opened over the face) */
+#define FACE_Z   ((float)(FACE - PV) / (float)(W - PV))   /* the face, as a zoom */
+static const orb_app_t *s_face_app;   /* FILL, GROW: the app whose theme is filling */
+static int       s_ring = -1;   /* the ring as drawn, permille; -1 = no ring */
 
 /* Per frame. */
 static float     s_zoom;        /* 0 = strip, 1 = the centre fills the glass */
@@ -418,6 +430,67 @@ static void disc_row(uint16_t *d, int y, const disc_t *c)
     }
 }
 
+/* theme-cache-plan ruling 2: the fill's progress ring, theme_strip's (§61) — a bright arc
+ * over a dim track, clockwise from twelve — just outside the face. */
+static void ring_row(uint16_t *d, int y)
+{
+    const float r0 = FACE * 0.5f + RING_GAP, r1 = r0 + RING_W, dy = (y + 0.5f) - CY;
+    if (dy <= -r1 || dy >= r1) return;
+    const uint16_t track = wire(0x3186), arc = wire(0x66DF);
+    const float lim = (float)s_ring * (2.0f * (float)M_PI) / 1000.0f;
+    /* the band alone: from the outer edge in to the inner one, either side (one span
+     * through the middle rows that miss the inner circle) */
+    const float ho = sqrtf(r1 * r1 - dy * dy);
+    const float hi = fabsf(dy) < r0 ? sqrtf(r0 * r0 - dy * dy) : 0.0f;
+    const int spans[2][2] = { { (int)(CX - ho), (int)(CX - hi) }, { (int)(CX + hi), (int)(CX + ho) } };
+    for (int k = 0; k < 2; k++) {
+        int x0 = spans[k][0], x1 = spans[k][1];
+        if (k == 1 && hi == 0.0f) break;                 /* one span covered the row */
+        if (k == 0 && hi == 0.0f) x1 = spans[1][1];
+        if (x0 < 0) x0 = 0;
+        if (x1 > W - 1) x1 = W - 1;
+        for (int x = x0; x <= x1; x++) {
+            const float dx = (x + 0.5f) - CX, dist2 = dx * dx + dy * dy;
+            if (dist2 < r0 * r0 || dist2 > r1 * r1) continue;
+            float a = atan2f(dx, -dy);
+            if (a < 0) a += 2.0f * (float)M_PI;
+            d[x] = a <= lim ? arc : track;
+        }
+    }
+}
+
+/* The face's disc, d across: the app's full plane when it is in, else its cached preview,
+ * else a plain card (a fill at boot, before the cache has read anything). */
+static void face_disc(float d)
+{
+    const orb_app_t *a = s_face_app;
+    disc_t *q = &s_draw[0];
+    s_draw_n = 1;
+    *q = (disc_t){ .px = NULL, .side = PV, .cx = CX, .cy = CY, .d = d };
+    if (a && a->slug && s_hi_ready && s_hi && strcmp(a->slug, s_hi_slug) == 0) {
+        q->px = s_hi; q->side = W;
+    } else {
+        const pv_t *p = pv_for(a);
+        if (p) { q->px = p->px; q->side = p->side; }
+    }
+    if (!q->px) s_draw_n = 0;                    /* the ring alone, over black */
+    s_label = NULL;
+}
+
+/* theme-cache-plan §2.4: a fill holds the card, and the card lock carries the display's DMA
+ * ring, so while the strip has the glass it tells the fill so — the fill lets the card go after
+ * each chunk and waits while a frame is owed — and takes the ring back at every return rather
+ * than after the network's window (Bronze 2026-11-08: 12 face frames in a 9 s fill without;
+ * the carousel opened over a running fill drew nothing). Every poll, from orb_strip_poll. */
+static void glass_tell(void)
+{
+    const bool up = s_st != ST_OFF;
+    const bool owed = up && (s_dirty || s_st == ST_IN || s_st == ST_TURN ||
+                             s_st == ST_OUT || s_st == ST_GROW || s_st == ST_FADE);
+    display_ring_urgent_for(DISPLAY_URGENT_FILL, up);
+    orb_theme_fill_glass(up, owed);
+}
+
 static void compose(int y0, int rows, uint16_t *dst, void *arg)
 {
     (void)arg;
@@ -426,6 +499,7 @@ static void compose(int y0, int rows, uint16_t *dst, void *arg)
         uint16_t *d = dst + (size_t)r * W;
         memset(d, 0, (size_t)W * 2);
         for (int i = 0; i < s_draw_n; i++) disc_row(d, y, &s_draw[i]);
+        if (s_ring >= 0) ring_row(d, y);
         if (s_label && y >= NAME_Y && y < NAME_Y + NAME_H)
             memcpy(d + (CX - NAME_W / 2), s_label + (size_t)(y - NAME_Y) * NAME_W,
                    (size_t)NAME_W * 2);
@@ -501,6 +575,18 @@ static struct {
     int64_t  last_poll_us;
 } s_m;
 
+/* The glass as the carousel found it is spent once it opens an app: freed, not kept for the
+ * next open (one malloc then). Kept, its 434 KB of PSRAM starved the opened app — a fill
+ * landing under the face found no room for the app's layer table (Bronze 2026-11-08: 15 of
+ * 15 rows refused). */
+static void snap_free(void)
+{
+    for (int i = 0; i < s_n; i++)
+        if (s_it[i].px == s_snap) { s_it[i].px = NULL; }
+    heap_caps_free(s_snap);
+    s_snap = NULL;
+}
+
 static bool frame_kept(bool keep);
 static bool frame(void) { return frame_kept(false); }
 
@@ -543,6 +629,8 @@ bool orb_strip_active(void) { return s_st != ST_OFF; }
 bool orb_strip_open(const orb_app_t *from, int step)
 {
     if (s_st != ST_OFF || !s_pv_ready || !s_gear) return false;
+    uint32_t fd, ft;
+    const bool from_fill = from && from->slug && orb_theme_fill_progress(from->slug, &fd, &ft);
     const uint16_t *mirror = display_fb_mirror();
     if (!mirror) return false;
     if (!s_snap) s_snap = heap_caps_malloc((size_t)W * H * 2, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
@@ -572,10 +660,16 @@ bool orb_strip_open(const orb_app_t *from, int step)
     /* §61: Settings wears its own card, never a picture of the menu it was opened over: a
      * snapshot only comes off an app's card when the strip moves (start_turn), so the
      * Settings card kept the black MENU landing for the whole visit (owner, 2026-11-08). */
-    if (s_it[s_from_i].app) {
+    if (s_it[s_from_i].app && !from_fill) {
         s_it[s_from_i].px = s_snap;
         s_it[s_from_i].side = W;
     }
+    /* theme-cache-plan §2.4: opened over the fill's face, the zoom down starts from the face
+     * (its preview, not the bare app under it) */
+    s_in_z = from_fill ? FACE_Z : 1.0f;
+    s_out_z = 1.0f;
+    s_face_app = NULL;
+    s_ring = -1;
     make_names();
 
     display_glass_hold(true);
@@ -605,15 +699,42 @@ static void finish(int64_t now)
         input_router_open_settings();
     }
     ESP_LOGI(TAG, "opened %s", it->app && it->app->slug ? it->app->slug : "settings");
-    s_st = ST_SETTLE;
     s_t0 = now;
+    s_st = ST_SETTLE;
+    if (s_out_z < 1.0f) {
+        /* theme-cache-plan §2.4: the zoom stopped at the face; the open posted the fill (the
+         * face waits on it), or did not after all (it grows into the app at once) */
+        uint32_t d, t;
+        s_dirty = true;
+        s_st = orb_theme_fill_progress(it->app->slug, &d, &t) ? ST_FILL : ST_GROW;
+        snap_free();                           /* the face draws from the previews alone */
+    }
+}
+
+void orb_strip_fill_face(const orb_app_t *app)
+{
+    uint32_t d, t;
+    if (s_st != ST_OFF || !app || !app->slug || !orb_theme_fill_progress(app->slug, &d, &t)) return;
+    s_face_app = app;
+    s_n = 0;
+    s_ring = -1;
+    s_dirty = true;
+    hi_want(app);
+    memset(&s_m, 0, sizeof s_m);
+    display_glass_hold(true);
+    s_st = ST_FILL;
+    s_t0 = esp_timer_get_time();
+    ESP_LOGI(TAG, "fill face for %s", app->slug);
 }
 
 /* Hand the glass back: the panel already shows the mirror (the fade's last frame was
  * all app), so the release's full re-send changes nothing anyone can see. */
 static void release(void)
 {
+    snap_free();
     s_st = ST_OFF;
+    s_face_app = NULL;
+    s_ring = -1;
     display_glass_hold(false);
     log_figures("closed");
 }
@@ -621,7 +742,11 @@ static void release(void)
 void orb_strip_abort(void)
 {
     if (s_st == ST_OFF) return;
+    snap_free();
     s_st = ST_OFF;
+    s_face_app = NULL;
+    s_ring = -1;
+    glass_tell();
     orb_sched_set_running(true);
     display_glass_hold(false);
 }
@@ -630,6 +755,13 @@ static void start_out(int64_t now)
 {
     s_open_i = (int)floorf(s_pos + 0.5f);
     s_pos = (float)s_open_i;
+    /* theme-cache-plan ruling 2: an app whose theme is on the card only opens onto its fill's
+     * face, so the zoom stops there */
+    const orb_app_t *a = s_it[wrap(s_open_i)].app;
+    uint32_t fd, ft;
+    s_face_app = a && a->slug && (orb_theme_fill_wanted(a->slug) ||
+                                  orb_theme_fill_progress(a->slug, &fd, &ft)) ? a : NULL;
+    s_out_z = s_face_app ? FACE_Z : 1.0f;
     s_st = ST_OUT;
     s_t0 = now;
 }
@@ -667,7 +799,7 @@ static void step_once(int32_t delta, bool pressed, bool lpress, int64_t now)
         const float t = (float)(now - s_t0) / (ZOOM_MS * 1000.0f);
         const float p = ease(t);
         /* the glass shrinks from full to the centre slot; the neighbours slide in */
-        layout(s_pos, 1.0f - p, 1.0f + (1.0f - p) * 1.4f);
+        layout(s_pos, s_in_z * (1.0f - p), 1.0f + (1.0f - p) * 1.4f);
         frame();
         if (t >= 1.0f) {
             layout(s_pos, 0.0f, 1.0f);
@@ -715,9 +847,49 @@ static void step_once(int32_t delta, bool pressed, bool lpress, int64_t now)
     if (s_st == ST_OUT) {
         const float t = (float)(now - s_t0) / (ZOOM_MS * 1000.0f);
         const float p = ease(t);
-        layout(s_pos, p, 1.0f + p * 1.4f);
+        layout(s_pos, p * s_out_z, 1.0f + p * 1.4f);
         const bool frame_drawn_last = frame();
         if (t >= 1.0f && (frame_drawn_last || now - s_t0 > 2000000)) finish(now);
+        return;
+    }
+
+    if (s_st == ST_FILL) {
+        /* the app is not ready for the knob: a hold leaves (the carousel, over the face);
+         * a turn or a press is spent */
+        if (lpress) {
+            const orb_app_t *a = s_face_app;
+            s_st = ST_OFF;
+            s_ring = -1;
+                    if (!orb_strip_open(a, 0)) { display_glass_hold(false); input_router_inject(0, false, true); }
+            return;
+        }
+        uint32_t d = 0, t = 0;
+        if (!orb_theme_fill_progress(s_face_app->slug, &d, &t)) {
+            ESP_LOGI(TAG, "fill face for %s: %u ms", s_face_app->slug, (unsigned)((now - s_t0) / 1000));
+            s_st = ST_GROW;                     /* landed, or failed: the app either way */
+                    s_t0 = now;
+            return;
+        }
+        const int pm = t ? (int)((uint64_t)d * 1000u / t) : 0;
+        if (s_dirty || s_ring < 0 || pm - s_ring >= RING_STEP) {
+            const int was = s_ring;
+            s_ring = pm;
+            face_disc(FACE);
+            s_dirty = !frame_kept(true);         /* still between redraws: a bench grab sees it */
+            if (s_dirty) s_ring = was < 0 ? 0 : was;
+        }
+        return;
+    }
+    if (s_st == ST_GROW) {
+        const float t = (float)(now - s_t0) / (ZOOM_MS * 1000.0f);
+        s_ring = -1;
+        face_disc(FACE + (float)(W - FACE) * ease(t));
+        const bool drawn = frame();
+        if (t >= 1.0f && (drawn || now - s_t0 > 2000000)) {
+            s_frames0 = display_held_frames();
+            s_st = ST_SETTLE;
+            s_t0 = now;
+        }
         return;
     }
 
@@ -764,7 +936,8 @@ void orb_strip_poll(int32_t delta, bool pressed, bool lpress, int64_t now)
     s_m.last_poll_us = now;
     step_once(delta, pressed, lpress, now);
     const int64_t until = now + 200000;
-    while ((s_st == ST_IN || s_st == ST_TURN || s_st == ST_OUT) && esp_timer_get_time() < until) {
+    while ((s_st == ST_IN || s_st == ST_TURN || s_st == ST_OUT || s_st == ST_GROW) &&
+           esp_timer_get_time() < until) {
         /* SETTLE needs LVGL to run and draw the app, so the loop stops at it; the FADE
          * runs one frame a poll, so the app keeps drawing under it. */
         knob_poll();
@@ -775,4 +948,5 @@ void orb_strip_poll(int32_t delta, bool pressed, bool lpress, int64_t now)
         step_once(d, p, l, esp_timer_get_time());
     }
     if (s_st != ST_OFF) s_m.last_poll_us = esp_timer_get_time();
+    glass_tell();
 }

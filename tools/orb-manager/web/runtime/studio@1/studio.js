@@ -47,7 +47,7 @@
     return h('header', { className: 'st-top' },
       h('div', { className: 'st-crumb' },
         p.back ? h('button', { className: 'ui-ghost', onClick: p.back, title: p.backTip || 'Back' }, '←') : null,
-        h('span', { className: 'ui-mut' }, p.crumb || ''), h('span', { className: 'ui-mut' }, '/'),
+        h('span', { className: 'ui-mut' }, p.crumb || ''), nm ? h('span', { className: 'ui-mut' }, '/') : null,
         nm ? h('input', { className: 'st-name', type: 'text', value: nm.value, placeholder: nm.placeholder, title: nm.title, onChange: nm.onChange }) : null),
       h('nav', { className: 'st-steps' }, list(p.steps).map(function (t, i) {
         return h('button', { key: i, className: t.cls || '', onClick: t.pick, title: t.tip || '' }, t.label);
@@ -206,54 +206,67 @@
       p.children);
   };
 
-  /* ---- the start sheet (owner, §12.5: the clock's way for every app): over the stage, the
-   * app's starting points as pictures, the library under them, and Continue. Picking a
-   * tile chooses it; only Continue moves on.
-   *   title · tiles: [{key, name, short, tip, on, cls, draw(canvas)}] · scratch: {label, short, tip, on}
-   *   · library: {openFile, accept, rows (libraryRows), empty}. Saving is the Render step's
-   *     (RenderPanel's save), under the theme's name: the sheet only opens. A hosted editor
-   *     (host@1) passes no openFile: its file comes in through importFile, below the library.
-   *   · importFile: {accept, on}: Import a file, which puts it in the library and opens it
-   *   · foot: [{label, on, primary, tip}] */
+  /* ---- the start (owner, §12.5; theme-editor-kit-plan §8.10): every app's editor opens on
+   * four ways to start, each saying what it holds, and goes one way at a time, so a
+   * library or an import is never below a gallery of previews. New starts at once; Import
+   * picks a file at once; a template and the library each open their own panel, with the
+   * way back to the four.
+   *   title · pick: '' | 'template' | 'library' · setPick(p)
+   *   · fresh: {note, on}: New
+   *   · tiles: [{key, name, short, tip, on, cls, draw(canvas)}]: the templates
+   *   · library: {rows (libraryRows), empty}
+   *   · importFile: {accept, on}
+   *   · foot: [{label, on, primary, tip}]: the template panel's (Continue with …) */
   function Tile(p) {
     var R = root.React, ref = R.useRef(null), t = p.t;
     R.useEffect(function () { if (ref.current && t.draw) t.draw(ref.current); });
     return h('div', { className: cx('st-gc', t.cls), onClick: t.on, title: t.tip || '' },
       h('canvas', { ref: ref, width: 192, height: 192 }), h('b', null, t.name), h('span', null, t.short || ''));
   }
-  S.StartSheet = function (p) {
-    var L = p.library || null, I = p.importFile || null, fileRef = root.React.useRef(null), impRef = root.React.useRef(null);
+  var plural = function (n, one, many) { return n + ' ' + (n === 1 ? one : many); };
+  S.StartFlow = function (p) {
+    var fileRef = root.React.useRef(null), L = p.library || {}, I = p.importFile || {};
+    var tiles = list(p.tiles), rows = list(L.rows), pick = p.pick || '';
+    var back = h('button', { className: 'ui-ghost st-sm st-back', onClick: function () { p.setPick(''); }, title: 'Back to the four ways to start' }, '← All ways to start');
+    var file = h('input', { ref: fileRef, type: 'file', accept: I.accept || '.orbtheme,.orbdesign', style: { display: 'none' }, onChange: I.on });
+    var choice = function (key, icon, title, note, on, tip) {
+      return h('button', { key: key, className: 'st-choice', onClick: on, title: tip || '' },
+        h('span', { className: 'st-choice-i' }, icon), h('b', null, title), h('span', null, note));
+    };
+    var body;
+    if (pick === 'template') {
+      body = h(root.React.Fragment, null, back, h('h2', null, 'From a template'),
+        h('div', { className: 'ui-mut st-cap' }, 'Pick a look, then Continue: everything in it can be changed.'),
+        h('div', { className: 'st-gal' }, tiles.map(function (t) { return h(Tile, { key: t.key, t: t }); })));
+    } else if (pick === 'library') {
+      body = h(root.React.Fragment, null, back, h('h2', null, 'From my library'),
+        rows.length ? h('div', { className: 'ui-mut st-cap' }, 'Your drafts and themes on this hub: Open one to carry on with it.') : null,
+        rows.length ? null : h('div', { className: 'ui-mut st-lib-empty' }, L.empty || 'Nothing saved yet.'),
+        rows.map(function (r) {
+          return h('div', { key: r.name, className: 'st-lib-row' },
+            r.thumb ? h('img', { className: 'st-lib-pv', src: r.thumb, alt: '' }) : null,
+            h('b', null, r.name), h('span', { className: 'ui-mut', title: r.tagTip }, r.tag), h('span', { className: 'ui-mut ui-mono' }, r.meta),
+            h('button', { className: 'ui-ghost st-sm', onClick: r.load, title: r.loadTip }, 'Open'),
+            r.changed ? h('button', { className: 'ui-ghost st-sm', onClick: r.discard, title: 'Drop the unsent changes and keep the theme as it was baked' }, 'Discard changes') : null,
+            h('button', { className: 'ui-ghost st-sm', onClick: r.del, title: r.delTip }, r.delLabel));
+        }));
+    } else {
+      var fr = p.fresh || {};
+      body = h(root.React.Fragment, null, h('h2', null, p.title || 'Start a theme'),
+        h('div', { className: 'ui-mut st-cap' }, 'How do you want to start?'),
+        h('div', { className: 'st-choices' },
+          choice('new', '＋', 'New', fr.note || 'A blank design, every part present', fr.on, 'Start from a blank design and go straight to editing'),
+          choice('template', '◐', 'From a template', tiles.length ? plural(tiles.length, 'look', 'looks') + ' to start from' : 'None for this app', function () { p.setPick('template'); }, 'See the app’s looks and pick one to start from'),
+          choice('library', '▤', 'From my library', rows.length ? plural(rows.length, 'saved design', 'saved designs') : 'Nothing saved yet', function () { p.setPick('library'); }, 'Your drafts and themes on this hub'),
+          choice('import', '⇪', 'Import a file', 'An .orbtheme or a design file: it goes into your library', function () { if (fileRef.current) fileRef.current.click(); }, 'Add a theme (.orbtheme) or a design file (.orbdesign) to the library, then open it')));
+    }
     return h('div', { className: 'st-sheet' },
-      h('div', { className: 'st-sheet-in' },
-        h('h2', null, p.title || 'Start a theme'),
-        h('div', { className: 'st-gal' },
-          p.scratch ? h('button', { className: cx('st-gc', p.scratch.cls), onClick: p.scratch.on, title: p.scratch.tip || '' }, h('span', { className: 'st-blank' }, '＋'), h('b', null, p.scratch.label), h('span', null, p.scratch.short || '')) : null,
-          list(p.tiles).map(function (t) { return h(Tile, { key: t.key, t: t }); })),
-        L ? h(root.React.Fragment, null,
-          h('h2', { style: { marginTop: '18px' } }, 'Library'),
-          L.openFile ? h('div', { className: 'st-lib-bar' },
-            h('button', { className: 'ui-ghost st-sm', onClick: function () { fileRef.current && fileRef.current.click(); }, title: 'Open a theme (.orbtheme) or a design file (.orbdesign) in the editor' }, 'Open a file…'),
-            h('input', { ref: fileRef, type: 'file', accept: L.accept || '.orbtheme,.orbdesign', style: { display: 'none' }, onChange: L.openFile })) : null,
-          list(L.rows).length ? null : h('div', { className: 'ui-mut st-lib-empty' }, L.empty || 'Nothing in the library yet. Save to library on the Render step keeps a design on the hub as a draft; Send to orb bakes it into a theme under the same name.'),
-          list(L.rows).map(function (r) {
-            return h('div', { key: r.name, className: 'st-lib-row' },
-              r.thumb ? h('img', { className: 'st-lib-pv', src: r.thumb, alt: '' }) : null,
-              h('b', null, r.name), h('span', { className: 'ui-mut', title: r.tagTip }, r.tag), h('span', { className: 'ui-mut ui-mono' }, r.meta),
-              h('button', { className: 'ui-ghost st-sm', onClick: r.load, title: r.loadTip }, 'Open'),
-              r.changed ? h('button', { className: 'ui-ghost st-sm', onClick: r.discard, title: 'Drop the unsent changes and keep the theme as it was baked' }, 'Discard changes') : null,
-              h('button', { className: 'ui-ghost st-sm', onClick: r.del, title: r.delTip }, r.delLabel));
-          })) : null,
-        I ? h(root.React.Fragment, null,
-          h('h2', { style: { marginTop: '18px' } }, 'Import'),
-          h('div', { className: 'st-lib-bar' },
-            h('button', { className: 'ui-ghost st-sm', onClick: function () { impRef.current && impRef.current.click(); }, title: 'Add a theme (.orbtheme) or a design file (.orbdesign) to the library, then open it' }, 'Import a file…'),
-            h('span', { className: 'ui-mut' }, 'An .orbtheme or a design file: it goes into the library, then opens here.'),
-            h('input', { ref: impRef, type: 'file', accept: I.accept || '.orbtheme,.orbdesign', style: { display: 'none' }, onChange: I.on }))) : null),
-      h('div', { className: 'st-sheet-foot' }, list(p.foot).map(function (f, i) {
+      h('div', { className: 'st-sheet-in' }, body, file),
+      pick === 'template' && list(p.foot).length ? h('div', { className: 'st-sheet-foot' }, list(p.foot).map(function (f, i) {
         return h('button', { key: i, className: f.primary ? 'ui-primary' : 'ui-ghost', onClick: f.on, title: f.tip || '' }, f.label);
-      })));
+      })) : null);
   };
-  /* the library's rows for StartSheet, from a session: o.version (the editor's), o.meta(entry),
+  /* the library's rows for StartFlow, from a session: o.version (the editor's), o.meta(entry),
    * o.open(name), o.forget(name, what), o.armed (the name whose Delete was pressed once), o.arm(name) */
   S.libraryRows = function (lib, o) {
     return list(lib).map(function (m) {

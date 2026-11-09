@@ -2,8 +2,8 @@
  *
  * The hub serves this page for an app whose editor.json says "host": 1, and loads the app's
  * module after it. The module registers what only the app knows; everything else is here,
- * the same for every app: the start step (start fresh, the app's templates, the library,
- * import), the Render step (save to library, send to orb, export), the stage with its frame
+ * the same for every app: the start step (four ways, one at a time: new, a template, the
+ * library, import), the Render step (save to library, send to orb, export), the stage with its frame
  * clock, its render modes and its view controls, Reset, the fit, history and the send. An
  * app cannot replace any of it.
  *
@@ -170,6 +170,12 @@
       return made(A, k === 'blank' || tmpl(A, k) ? k : A.start && tmpl(A, A.start) ? A.start : (list(A.templates)[0] || { key: 'blank' }).key);
     }), d = dS[0], setD = dS[1];
     var stepS = u(function () { var s = q('step'); return STEPS.some(function (x) { return x[0] === s; }) ? s : 'start'; }), step = stepS[0], setStep = stepS[1];
+    // the start's panel: '' the four ways, 'template' or 'library' (?start= opens one)
+    var spS = u(function () { var v = q('start'); return v === 'template' || v === 'library' ? v : ''; }), startPick = spS[0], setStartPick = spS[1];
+    // whether a design has been chosen: until then the start is all there is (no steps, name,
+    // layers, readouts or Send, nothing baked or measured). New, a template's Continue, a
+    // library entry, an import, or an address naming a design or a step chooses one.
+    var chS = u(function () { var st = q('step'); return !!(q('preset') || (st && st !== 'start')); }), chosen = chS[0], setChosen = chS[1];
     var stS = u(''), status = stS[0], setStatus = stS[1];
     var viewS = u(function () { return H.viewInit(A, d); }), view = viewS[0], setView = viewS[1];
     var hidS = u({}), hidden = hidS[0], setHidden = hidS[1];
@@ -223,7 +229,7 @@
         content: async function () { return { design: stateRef.current.d }; },
         apply: function (doc) {
           var why = !doc.design ? 'that design carries no theme' : A.check(doc.design);
-          if (!why) { setD(complete(doc.design)); setStep(function (s) { return s === 'start' ? first : s; }); }
+          if (!why) { setD(complete(doc.design)); setChosen(true); setStep(function (s) { return s === 'start' ? first : s; }); }
           return why;
         },
         bake: async function () { var r = await bakeNow(); return r ? r.bytes : null; },
@@ -280,7 +286,7 @@
       } catch (e) { say('The preview could not be drawn: ' + err(e)); }
     }
     R.useEffect(function () { drawNow(); });
-    var playOn = !!(A.play && (!A.play.on || A.play.on(view, d)));
+    var playOn = !!(chosen && A.play && (!A.play.on || A.play.on(view, d)));
     var fps = A.play ? Math.max(1, +(typeof A.play.fps === 'function' ? A.play.fps(d) : A.play.fps) || 30) : 0;
     R.useEffect(function () {
       if (!playOn || !playing) { clock.dt = 0; return; }
@@ -333,7 +339,7 @@
      * is twice the last bake (at least 1.2 s, at most 6 s), so a slow design is not baked at
      * every breath; an edit while it waits or bakes starts the wait again ---- */
     R.useEffect(function () {
-      if (!ses.hubOrb()) return;
+      if (!ses.hubOrb() || !chosen) return;
       var k = keyOf(d);
       if (baked.key === k && baked.r) { setSize({ state: 'done', key: k, bytes: baked.r.bytes.length, ms: baked.ms }); return; }
       setSize(function (o) { return o.state === 'waiting' ? o : Object.assign({}, o, { state: 'waiting' }); });
@@ -347,7 +353,7 @@
         });
       }, Math.min(6000, Math.max(H.SIZE_PAUSE_MS, 2 * baked.ms)));
       return function () { clearTimeout(id); };
-    }, [d]);
+    }, [d, chosen]);
 
     /* ---- the frame rate (E6): what a view holds on the orb, from what its preview draws.
      * Half a second of the view is drawn at 60 fps on a canvas of its own, from a fresh memo
@@ -496,7 +502,7 @@
         ],
       }));
     else if (step === 'start') right = h('div', { className: 'hs-list' }, h('div', { className: 'ui-mut' },
-      'Start fresh, pick a template, open one from the library or import a file, then Continue. The steps after it: ' +
+      'Start new, from one of the app’s templates, from a design in your library, or from a file you import. The steps after it: ' +
       list(A.steps).map(function (s) { return s[1]; }).join(', ') + ', and Render to save, send or export it.' + (A.startNote ? ' ' + A.startNote : '')));
     else {
       var fields = [];
@@ -531,11 +537,12 @@
       thumbs[tk].p.then(paint, function () { /* the tile stays dark */ });
     };
     var pick = function (k, what) { setD(made(A, k)); ses.restart(); say('Starting from ' + what + ': Continue when you are ready'); };
-    var sheet = step === 'start' ? h(S.StartSheet, {
+    // the start (§8.10): four ways, one at a time; New goes straight to editing
+    var sheet = step === 'start' ? h(S.StartFlow, {
       title: 'Start a ' + A.title.toLowerCase() + ' theme',
-      scratch: { label: 'Start fresh', short: A.blank.note || '', cls: d.base === 'blank' ? 'on' : '',
-        tip: 'Every part present, nothing preset: a blank slate to build your own look on',
-        on: function () { pick('blank', 'a blank theme'); } },
+      pick: startPick, setPick: setStartPick,
+      fresh: { note: (A.blank.note ? A.blank.note + ': ' : '') + 'a blank design, every part present',
+        on: function () { setD(made(A, 'blank')); ses.restart(); say('A new blank design'); setChosen(true); setStep(first); } },
       tiles: list(A.templates).map(function (t) {
         return { key: t.key, name: t.name, short: t.note, tip: 'Start from ' + t.name + ': ' + t.note,
           cls: d.base === t.key ? 'on' : '', draw: function (c) { drawThumb(t.key, c); }, on: function () { pick(t.key, t.name); } };
@@ -544,9 +551,9 @@
         rows: S.libraryRows(ses.library(), { version: ses.version(), armed: mineDel, arm: setMineDel,
           meta: function (m) { var t = m.design && tmpl(A, m.design.base); return t ? t.name + ' · ' : ''; },
           open: function (nm) { ses.openEntry(nm); }, forget: function (nm, what) { ses.forgetEntry(nm, what); } }),
-        empty: 'Nothing in the library yet. Save to library on the Render step keeps a design here; Send to orb bakes it into a theme under the same name; Import a file adds one.' },
+        empty: 'Nothing saved yet. Save to library on the Render step keeps a design here; Send to orb bakes it into a theme under the same name; Import a file adds one.' },
       importFile: { accept: '.orbtheme,.orbdesign,.json', on: function (e) { var fl = e.target.files[0]; e.target.value = ''; if (fl) importFile(fl); } },
-      foot: [{ label: 'Continue with ' + d.name, primary: true, on: function () { setStep(first); } }],
+      foot: [{ label: 'Continue with ' + d.name, primary: true, on: function () { setChosen(true); setStep(first); } }],
     }) : null;
 
     /* ---- the stage's controls: the app's views, as it declares them ---- */
@@ -574,14 +581,14 @@
       h(S.TopBar, {
         back: function () { try { root.parent.postMessage({ type: 'theme.close' }, '*'); } catch (e) { /* not framed */ } },
         backTip: 'Back to the Themes page', crumb: A.title,
-        name: { value: d.name, placeholder: 'Theme name', title: 'The theme’s name on the orb', onChange: function (e) { upd('name', e.target.value); } },
-        steps: STEPS.map(function (s) { return { label: s[1], cls: s[0] === step ? 'on' : '', pick: function () { setStep(s[0]); } }; }),
-        undo: { on: function () { ses.undo(); }, tip: 'Undo', op: ses.undoStack.length ? 1 : 0.35 },
-        redo: { on: function () { ses.redo(); }, tip: 'Redo', op: ses.redoStack.length ? 1 : 0.35 },
-        extra: step !== 'start' ? [{ label: resetArm ? 'Press again to reset' : 'Reset to ' + baseName, title: 'Put this theme back to the start it came from, its name kept; Undo brings your version back', on: reset }] : [],
-        fit: fit, primary: { label: 'Send to orb', on: send, title: 'Bake and send this theme' },
+        name: chosen ? { value: d.name, placeholder: 'Theme name', title: 'The theme’s name on the orb', onChange: function (e) { upd('name', e.target.value); } } : null,
+        steps: chosen ? STEPS.map(function (s) { return { label: s[1], cls: s[0] === step ? 'on' : '', pick: function () { if (s[0] === 'start') setStartPick(''); setStep(s[0]); } }; }) : [],
+        undo: chosen ? { on: function () { ses.undo(); }, tip: 'Undo', op: ses.undoStack.length ? 1 : 0.35 } : null,
+        redo: chosen ? { on: function () { ses.redo(); }, tip: 'Redo', op: ses.redoStack.length ? 1 : 0.35 } : null,
+        extra: chosen && step !== 'start' ? [{ label: resetArm ? 'Press again to reset' : 'Reset to ' + baseName, title: 'Put this theme back to the start it came from, its name kept; Undo brings your version back', on: reset }] : [],
+        fit: chosen ? fit : null, primary: chosen ? { label: 'Send to orb', on: send, title: 'Bake and send this theme' } : null,
       }),
-      h(S.Pane, { side: 'left' }, left),
+      h(S.Pane, { side: 'left' }, chosen ? left : null),
       h(S.Stage, null,
         h(S.Glass, Object.assign({ status: status }, g),
           h('canvas', { ref: canvasRef, width: G, height: G, onPointerDown: onDown, onPointerMove: onMove, onPointerUp: onUp, onPointerCancel: onUp,

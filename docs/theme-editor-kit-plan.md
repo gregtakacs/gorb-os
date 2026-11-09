@@ -1002,3 +1002,46 @@ most, so it moves after the contract has carried the other three.
   "7.5 priced on its mean period" is the same number for every grid rate, so no check can
   catch it.
 
+### 8.10 The start, one way at a time (owner, 2026-11-08)
+
+Owner: "with so many previews, users miss their own library and the import button at the
+bottom. We really need to make it so they're corralled into the flow and know what
+they're looking for/finding. This should be hub driven uniform across all apps."
+
+- **Ruling.** §8.1 ruling 4's four choices are four ways in, not four sections of one
+  scrolling sheet. The start step opens on the four alone; each goes one way.
+- **As built.** `studio@1`'s `StartSheet` is replaced by `StartFlow`; the old sheet is gone,
+  so there is one way to start. The editor opens on **New**, **From a template**, **From my
+  library** and **Import a file**, each card saying what it holds ("8 looks to start
+  from", "1 saved design" or "Nothing saved yet", "An .orbtheme or a design file: it goes
+  into your library"), with no previews under them.
+  - **New** makes the app's blank design and goes straight to the first step.
+  - **From a template** opens the looks alone, with Continue.
+  - **From my library** opens your drafts and themes alone.
+  - **Import a file** opens the file picker; the file goes into the library and opens.
+
+  Each panel has "← All ways to start". Pressing Start in the step bar always shows the
+  four again. `?start=template` or `?start=library` opens a panel directly. The hub's
+  Themes tab still opens a new design with "Compose new theme" and a saved one with its
+  library row's Edit, so every app's new design comes through these four. The clock joins
+  with E7.
+- **Suites.** `headless-studio` (119 checks) holds the four, what each says, nothing under
+  them, each panel alone, the way back and the old sheet's absence. `headless-host` (62)
+  drives the flow: the four on opening, a template panel and Continue, Start showing the
+  four again, New straight to editing, and `?start=library`. Mutants caught: New staying on
+  the start, Start keeping the last panel, previews under the four, and the library's card
+  saying nothing.
+- **Benched 2026-11-08** in headless Chrome on the bench fake, in Weather's editor: the four
+  in a row ("8 looks", "1 saved design"); the library panel with only Scope; the template
+  panel with the eight looks and Continue; New landing on Ground with a blank design.
+- **Nothing shown before a choice** (owner, the same day: "it pre-loads Scope before I ever
+  select anything for flights with all its top menus and layers on the side"). Until a
+  design is chosen (New, a template's Continue, a library entry, an import, or an address
+  naming a design or a step: the Themes tab's Edit, `?preset=`, `?step=`), the editor shows
+  the start alone: no steps, no name, no Undo, Reset or Send, no readout, no layers. Nothing
+  is baked or measured and nothing plays. The crumb's "/" goes with the name. On the bench
+  fake, Flights' editor opened on the four under "← Flights"; a template's Continue brought
+  the steps, the name, "Fits, slower · 15 fps · 1,066 KB" and Send. The host suite holds
+  it (66 checks), and four mutants are caught: the chrome, the layers, the frame clock and
+  the bake shown or run before a choice.
+

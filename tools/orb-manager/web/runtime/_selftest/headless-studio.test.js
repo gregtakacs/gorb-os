@@ -256,20 +256,32 @@ Object.defineProperty(global, 'fn', { get: mkfn });
   ok(rows[0].tag === 'theme · unsent changes' && rows[0].changed && rows[1].tag === 'theme · needs a rebake' && /^Brass · /.test(rows[0].meta), 'each entry says what it is');
   rows[0].load(); rows[0].discard(); rows[0].del(); rows[1].del();
   ok(picked.join() === 'Night' && forgot.join() === 'Night:draft,Day:all' && armed === null && rows[1].delLabel === 'Press again', 'Open, Discard changes, and Delete asked twice');
-  const go = fn, sheet = render(S.StartSheet, { title: 'Start', tiles: [{ key: 'a', name: 'Alpha', short: 's', cls: 'on', on: fn }, { key: 'b', name: 'Beta', on: fn }],
-    library: { rows, openFile: fn }, foot: [{ label: 'Continue with Alpha', primary: true, on: go }] });
-  ok(by(sheet, 'div', 'st-gc').length === 2 && by(sheet, 'div', 'st-gc')[0].props.className === 'st-gc on' && by(sheet, 'canvas').length === 2, 'the starting points as pictures, the chosen one marked');
-  ok(by(sheet, 'div', 'st-lib-row').length === 2 && by(sheet, 'button').some((b) => b.props.onClick === go && text(b) === 'Continue with Alpha' && b.props.className === 'ui-primary'), 'the library under them, and Continue');
-  ok(!by(sheet, 'input').some((i) => i.props.type === 'text') && !by(sheet, 'button').some((b) => /Save/.test(text(b))), 'the sheet opens; it never saves (that is the Render step’s)');
-  ok(!by(sheet, 'div', 'st-lib-empty').length && by(render(S.StartSheet, { library: { rows: [] } }), 'div', 'st-lib-empty').length === 1, 'an empty library says how it fills');
-  // the hosted sheet (§8.1 ruling 4): Start fresh, the templates, the library, then Import
-  const imp = fn, hosted = render(S.StartSheet, { scratch: { label: 'Start fresh', on: fn }, tiles: [{ key: 'a', name: 'Alpha', on: fn }],
-    library: { rows }, importFile: { accept: '.orbtheme', on: imp } });
-  const heads = by(hosted, 'h2').map(text), file = by(hosted, 'input').filter((i) => i.props.type === 'file');
-  ok(heads.join('|') === 'Start a theme|Library|Import', 'the hosted sheet: the starts, the library, then Import', heads.join('|'));
-  ok(/Start fresh/.test(text(by(hosted, 'button', 'st-gc')[0])) && by(hosted, 'div', 'st-gc').length === 1, 'Start fresh leads the starts');
-  ok(file.length === 1 && file[0].props.onChange === imp && file[0].props.accept === '.orbtheme', 'one file input, and it is Import’s');
-  ok(by(hosted, 'button').some((b) => text(b) === 'Import a file…') && !by(hosted, 'button').some((b) => text(b) === 'Open a file…'), 'Import a file, and no Open a file beside the library');
+  // the start (§8.10): four ways, each saying what it holds; one panel at a time
+  let picked2 = null, freshed = 0;
+  const imp = fn, go = fn, base = { title: 'Start a tint theme', setPick: (p) => { picked2 = p; }, fresh: { note: 'Plain greys', on: () => { freshed++; } },
+    tiles: [{ key: 'a', name: 'Alpha', short: 's', cls: 'on', on: fn }, { key: 'b', name: 'Beta', on: fn }],
+    library: { rows, empty: 'Nothing saved yet.' }, importFile: { accept: '.orbtheme', on: imp }, foot: [{ label: 'Continue with Alpha', primary: true, on: go }] };
+  const four = render(S.StartFlow, base), ways = by(four, 'button', 'st-choice');
+  ok(ways.map((b) => text(by(b, 'b')[0])).join('|') === 'New|From a template|From my library|Import a file', 'four ways to start, in the owner’s order', ways.map((b) => text(by(b, 'b')[0])).join('|'));
+  ok(/2 looks to start from/.test(text(ways[1])) && /2 saved designs/.test(text(ways[2])) && /\.orbtheme/.test(text(ways[3])), 'each says what it holds', ways.map(text).join(' / '));
+  ok(!by(four, 'div', 'st-gc').length && !by(four, 'div', 'st-lib-row').length && !by(four, 'div', 'st-sheet-foot').length, 'no previews, no library rows and no Continue under the four');
+  ways[0].props.onClick(); ways[1].props.onClick();
+  ok(freshed === 1 && picked2 === 'template', 'New starts at once; a template opens its panel');
+  ways[2].props.onClick(); ok(picked2 === 'library', 'the library opens its panel');
+  const file = by(four, 'input').filter((i) => i.props.type === 'file');
+  ok(file.length === 1 && file[0].props.onChange === imp && file[0].props.accept === '.orbtheme', 'Import is the one file input');
+  const tpl = render(S.StartFlow, Object.assign({}, base, { pick: 'template' }));
+  ok(by(tpl, 'h2').map(text).join() === 'From a template' && by(tpl, 'div', 'st-gc').length === 2 && by(tpl, 'canvas').length === 2 && !by(tpl, 'div', 'st-lib-row').length,
+     'the template panel: the looks as pictures, nothing else');
+  ok(by(tpl, 'button').some((b) => b.props.onClick === go && text(b) === 'Continue with Alpha' && b.props.className === 'ui-primary'), 'and Continue');
+  const backB = by(tpl, 'button', 'st-back')[0]; backB.props.onClick();
+  ok(picked2 === '' && /All ways to start/.test(text(backB)), 'a way back to the four');
+  const lib = render(S.StartFlow, Object.assign({}, base, { pick: 'library' }));
+  ok(by(lib, 'h2').map(text).join() === 'From my library' && by(lib, 'div', 'st-lib-row').length === 2 && !by(lib, 'div', 'st-gc').length && !by(lib, 'div', 'st-sheet-foot').length,
+     'the library panel: your designs, nothing else');
+  const none = render(S.StartFlow, Object.assign({}, base, { pick: 'library', library: { rows: [], empty: 'Nothing saved yet.' } }));
+  ok(by(none, 'div', 'st-lib-empty').length === 1 && /Nothing saved yet/.test(text(render(S.StartFlow, Object.assign({}, base, { library: { rows: [] } })))), 'an empty library says so, on its card and in its panel');
+  ok(!('StartSheet' in S), 'one way to start: the old sheet is gone');
 }
 {
   // layerRows: bands, depth, selection, arrows, eye, tooltip; a made-up radar stack

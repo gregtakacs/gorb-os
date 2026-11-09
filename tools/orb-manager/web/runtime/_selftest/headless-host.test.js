@@ -145,24 +145,50 @@ const app = {
 const last = () => draws[draws.length - 1];
 
 (async () => {
-  // ---- the start step: Start fresh, the templates, the library, Import; the start it opens on
+  // ---- the start step (§8.10): four ways, one at a time; New straight to editing; the start it opens on
   {
     const H = mount(HOST.Editor, { app });
     await H.settle(20);
-    const heads = by(H.tree, 'h2').map(text);
-    ok(heads.join('|') === 'Start a tint theme|Library|Import', 'the start step: the starts, the library, then Import', heads.join('|'));
+    const way = (t) => by(H.tree, 'button', 'st-choice').filter((b) => text(by(b, 'b')[0]) === t)[0];
+    ok(by(H.tree, 'button', 'st-choice').map((b) => text(by(b, 'b')[0])).join('|') === 'New|From a template|From my library|Import a file' &&
+       !by(H.tree, 'div', 'st-gc').length, 'the editor opens on four ways to start, no previews under them');
+    ok(/2 looks/.test(text(way('From a template'))) && /Nothing saved yet|saved design/.test(text(way('From my library'))), 'each says what it holds');
+    ok(last().color === 'gold' && !button(H, 'Reset to Sun'), 'the design under it is the app’s start (Sun), and the start step has no Reset', last().color);
+    // nothing chosen yet: the start is all there is (owner, 2026-11-08: Scope was shown, its
+    // steps and layers, before anything was picked)
+    let unchosenBakes = 0;
+    const realBake = app.bake;
+    app.bake = async (d, o) => { unchosenBakes++; return realBake(d, o); };
+    await wait(1500); await H.settle();
+    ok(unchosenBakes === 0, 'and nothing is baked to measure it', unchosenBakes);
+    app.bake = realBake;
+    const top = by(H.tree, 'header')[0];
+    ok(!by(top, 'nav')[0].kids.length && !by(top, 'input').length && !button(H, 'Send to orb') && !by(top, 'div', 'st-fit').length &&
+       !by(H.tree, 'aside')[0].kids.length, 'before a choice: no steps, no name, no Send, no readout, no layers', text(top));
+    await press(H, '▶').catch(() => {});
+    await wait(60);
+    ok(!by(H.tree, 'button', 'st-play').length || !/Pause/.test(by(H.tree, 'button', 'st-play')[0].props.title), 'and nothing plays');
+    way('From a template').props.onClick(); H.render(); await H.settle();
     const tiles = by(H.tree, 'div', 'st-gc').map((t) => text(by(t, 'b')[0]));
-    ok(/Start fresh/.test(text(by(H.tree, 'button', 'st-gc')[0])) && tiles.join() === 'Sea,Sun', 'Start fresh, then the app’s templates', tiles.join());
-    ok(by(H.tree, 'input').filter((i) => i.props.type === 'text' && /name/i.test(i.props.placeholder || '')).length === 1 && last().color === 'gold', 'it opens on the app’s start (Sun)', last().color);
-    ok(by(H.tree, 'div', 'st-gc').filter((t) => /\bon\b/.test(t.props.className))[0] && text(by(H.tree, 'div', 'st-gc').filter((t) => /\bon\b/.test(t.props.className))[0]).indexOf('Sun') >= 0, 'and marks it');
+    ok(by(H.tree, 'h2').map(text).join() === 'From a template' && tiles.join() === 'Sea,Sun', 'From a template: the app’s templates alone', tiles.join());
+    ok(text(by(H.tree, 'div', 'st-gc').filter((t) => /\bon\b/.test(t.props.className))[0] || '').indexOf('Sun') >= 0, 'the start it opened on marked');
     by(H.tree, 'div', 'st-gc')[0].props.onClick(); H.render(); await H.settle();
-    ok(last().color === 'blue' && /Starting from Sea/.test(text(by(H.tree, 'div', 'st-toast')[0])), 'a tile starts from its template', last().color);
-    by(H.tree, 'button', 'st-gc')[0].props.onClick(); H.render(); await H.settle();
-    ok(last().color === 'grey', 'Start fresh starts from the app’s blank');
-    ok(!button(H, 'Reset to Blank'), 'the start step has no Reset');
-    await press(H, 'Continue with Blank');
+    ok(last().color === 'blue' && /Starting from Sea/.test(text(by(H.tree, 'div', 'st-toast')[0])), 'a tile picks its template', last().color);
+    await press(H, 'Continue with Sea');
     ok(lastFields && lastFields.step === 'colour', 'Continue goes to the app’s first step', lastFields && lastFields.step);
+    ok(by(by(H.tree, 'header')[0], 'nav')[0].kids.length === 4 && button(H, 'Send to orb') && by(by(H.tree, 'header')[0], 'input').length === 1,
+       'once chosen, the steps, the name and Send are there');
+    // back to Start: the four again, whichever panel was open
+    await press(H, 'Start');
+    ok(by(H.tree, 'button', 'st-choice').length === 4, 'the Start step shows the four again');
+    way('New').props.onClick(); H.render(); await H.settle();
+    ok(last().color === 'grey' && lastFields.step === 'colour' && !by(H.tree, 'button', 'st-choice').length, 'New starts the blank design and goes straight to editing', last().color);
     H.unmount();
+    location.search = '?start=library';
+    const L = mount(HOST.Editor, { app });
+    await L.settle(20);
+    ok(by(L.tree, 'h2').map(text).join() === 'From my library' && !by(L.tree, 'div', 'st-gc').length, '?start=library opens on the library alone', by(L.tree, 'h2').map(text).join());
+    L.unmount(); location.search = '';
   }
 
   // ---- the views: the address leads, then init, then the first option; show, active, captions
@@ -205,7 +231,7 @@ const last = () => draws[draws.length - 1];
 
   // ---- the frame clock: dt on a tick and only there; a view where nothing moves stops it
   {
-    location.search = '?size=m';
+    location.search = '?size=m&preset=sun';
     draws.length = 0;
     const H = mount(HOST.Editor, { app });
     await H.settle(20);
@@ -230,6 +256,7 @@ const last = () => draws[draws.length - 1];
   // ---- Panel and Split: the host draws the layers apart and blends them
   {
     draws.length = 0; panels.length = 0;
+    location.search = '?preset=sun';
     const H = mount(HOST.Editor, { app });
     await H.settle(20);
     await press(H, '❚❚');
@@ -246,7 +273,7 @@ const last = () => draws[draws.length - 1];
 
   // ---- kept parts: drawn once per key; a promise draws again when it lands; fresh is nothing till then
   {
-    location.search = '?preset=sun';
+    location.search = '?preset=sun&start=template';
     made.length = 0; draws.length = 0;
     const H = mount(HOST.Editor, { app });
     await H.settle(20);

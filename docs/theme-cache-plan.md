@@ -25,7 +25,10 @@ shelf's four defaults together must fit in 8 MB (Skeleton 3.48, Scope flights 1.
    sound should be allowed while an app is not on the display. I think yes." So a theme has
    **two tiers**: what an app needs off the glass (its sounds), **always resident**, and what
    it needs only on the glass (its art), which the cache may drop (§2.6). Settled before the
-   cache is built, because it changes what an eviction may take.
+   cache is built, because it changes what an eviction may take. Its details, ruled the same
+   day: **one-shots play on and may start off the glass; loops (the clock's ticking) only on
+   the glass**; **a voice bank is capped at 1 MB an app**; **the display tier stays until a
+   fill needs its room** (least recently on the glass first), never dropped just for leaving.
 
 ## 1. What is there today (read 2026-11-08)
 
@@ -136,12 +139,12 @@ carries is read off the glass (its values blob draws; the preview is the card's)
   bound or not, under the `sound` cap, the OS volume and quiet hours as today. The clock's
   chime decision moves from its tick to its service, so it chimes on the hour whatever is
   on the glass.
-- **Leases by kind:** a one-shot (a chime, a strike, an alert) plays to its end and may start
+- **Leases by kind** (ruled): a one-shot (a chime, a strike, an alert) plays to its end and may start
   off the glass; a loop (the clock's ticking) lives only while its app is on the glass.
 - **The table** grows a kind per entry (voice, display) and room for both per app: format
   2, sixteen entries (32 B head + 16 × 128 B, still one sector), with a carry from format 1.
-- **The budget:** the voice banks are permanent pool residents, so each is capped (proposed
-  1 MB an app); a display entry must fit the pool beside every voice bank.
+- **The budget:** the voice banks are permanent pool residents, so each is capped at **1 MB
+  an app** (ruled); a display entry must fit the pool beside every voice bank.
 
 ## 3. Costs
 
@@ -167,8 +170,7 @@ carries is read off the glass (its values blob draws; the preview is the card's)
 
 - **A store still reboots** (it may move the bound entry). Ruling 1 names fills; whether a
   store goes reboot-free too (unbind, store, rebind) is the owner's call after C3.
-- **Ruling 6's details:** that loops (the clock's ticking) stop off the glass while one-shots
-  play on; the voice bank's cap (proposed 1 MB an app).
+
 - **A trap not reproduced:** on the C0 bench day the radar failed with two faults, "wasm
   trapped in orb_input", at the first knob turns after a reboot, before any fill; three
   repeats of the same sequence did not trap. The fault record now names m3's trap message

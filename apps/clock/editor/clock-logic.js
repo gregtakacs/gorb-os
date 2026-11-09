@@ -10,7 +10,7 @@
 window.ClockLogic = function (DCLogic) {
 class Component extends DCLogic {
   DEF = { tick: 'sweep', favour: 'sweep', plan: '', shSmooth: 0, balance: '1', plate: 'train', spokes: 'train', etching: 'none', pinion: 'on', center: 'jewel', finish: 'train', glow: 1, temp: 2200, innerAngle: 90, outerLight: 1, outerAngle: 315, outerTemp: 2200, trainAngle: 0, plateAngle: 0, plateScale: 1, hue: 30, hueSat: 0, outerHue: 210, outerSat: 0, wb: 6500, orbD: 128, orbTip: 194, cageD: 107, rearFinish: 'train', shAngle: -1, shDist: 1, shBlur: 1, shOp: 1, shMove: 1, shRelief: 1 };
-  state = { frame: 0, playing: true, slow: false, seam: 'Rendering…', status: '', seeds: { spokes: 1, pinion: 1, center: 1, finish: 1, etching: 1 }, dial: 'skeleton', designs: {}, sel: null, selKind: null, themeName: '', artSlot: null, pickKey: null, guide: 'auto', hands: 'auto', handFinish: 'auto', hidden: {}, timeMode: 'live', caseStyle: 'polished', caseMetal: 'auto', caseOpen: 221.5, glassStyle: 'domed', train: 'classic', tab: 'start', cfg: {}, view: 'fit', fitPx: 466, addOpen: false, zoom: 2, viewCal: 1, sounds: {}, sndSim: true, sndCut: true, sndMsg: '', render: 'design', wipe: 233, step: 'start', diag: false, more: {} };
+  state = { frame: 0, playing: true, slow: false, seam: 'Rendering…', status: '', seeds: { spokes: 1, pinion: 1, center: 1, finish: 1, etching: 1 }, dial: 'skeleton', designs: {}, sel: null, selKind: null, themeName: '', artSlot: null, pickKey: null, guide: 'auto', hands: 'auto', handFinish: 'auto', hidden: {}, timeMode: 'live', caseStyle: 'polished', caseMetal: 'auto', caseOpen: 221.5, glassStyle: 'domed', train: 'classic', tab: 'start', cfg: {}, addOpen: false, sounds: {}, sndSim: true, sndCut: true, sndMsg: '', render: 'design', wipe: 233, step: 'start', diag: false, more: {} };
   KEYS = Object.keys(this.DEF);
   RND = ['spokes', 'pinion', 'center', 'finish', 'etching'];
   TABS = [['dial', 'Dial'], ['comps', 'Complications'], ['hands', 'Hand set'], ['timing', 'Timing'], ['move', 'Geartrain'], ['insides', 'Clock insides'], ['light', 'Light'], ['case', 'Case & glass'], ['sound', 'Sound'], ['export', 'Export']];
@@ -27,7 +27,6 @@ class Component extends DCLogic {
   base = null; gt = []; faces = {}; budgetStats = null; _artKey = null; _ftier = 15; _ftierKey = null; _ftierOcc = null; _rpDiag = null; _occCover = -1; _bk = null; _bp = 0; _Lk = null; _L = null; _mbc = null; _occ = null; _occKey = null; _bi = null; _biKey = null; _hbFps = 0; _rmTimer = 0; _rmAt = 0; _shLast = 0; _opLast = 0; _liveKey = null; _livePending = null; _liveTimer = 0; _liveBusy = false; _plan4 = null;
   dialEls = {}; handEls = {}; layerEls = {}; caseEls = {}; glassEls = {}; artEls = {}; cbs = {};
   mainRef = React.createRef();
-  stageRef = React.createRef();
   paneRef = React.createRef();
   cfg() {
     const c = { ...this.DEF, ...this.state.cfg }, E = window.WatchEngine, T = E && E.TRAINS[this.state.train];
@@ -610,62 +609,15 @@ class Component extends DCLogic {
    * The angle wraps to [0,360), where -15 and 345 are the same facing but only one of
    * them is what an author expects to read back in the field. */
   stepFacing(hid, d) { const hc = this.handComp(hid) || {}; const v = +hc.rot0 || 0; this.setHand(hid, { rot0: ((v + d) % 360 + 360) % 360 }); }
-  /* True size and the stage's views are the OS's (theme@1/preview, theme-editor-kit-plan K3):
-   * the panel's physical facts, the calibration (one per browser, shared by every app's
-   * editor, and carried over from the clock's old wc.viewCal key), and one function from the
-   * view to the stage box, the ruler and the captions. True size is the clock's default view:
-   * the panel is 466 px across 1.75 in, so a preview drawn 1:1 prints under a millimetre of
-   * type that still looks fine on the monitor, which is how dials got authored too small.
-   * "Calibrated" is tracked here, not re-read from storage, so blocked storage never makes
-   * the caption lie about itself. */
-  CAL_MIN = 0.5;
-  CAL_MAX = 3;
-  // the screen controller every editor shares (studio@1 S.viewer): this editor keeps the
-  // numbers in its own state (viewCal, diag) and the controller owns what they mean
-  get vw() {
-    if (!this._vw) this._vw = window.OrbStudio.viewer({
-      get: () => ({ view: this.state.view, zoom: this.state.zoom, fitPx: this.state.fitPx, cal: this.state.viewCal, open: this.state.diag }),
-      set: (p) => { const o = { ...p }; if ('cal' in o) { o.viewCal = o.cal; delete o.cal; } if ('open' in o) { o.diag = o.open; delete o.open; } this.setState(o); },
-      say: (t) => this.setState({ status: t }),
-    });
-    return this._vw;
-  }
-  cal() { return this.vw.cal(); }
-  calibrated() { return this.vw.calibrated(); }
-  calStep() { return window.OrbTheme.screen.step(this.cal()); }
-  loadCal() {
-    const r = window.OrbTheme.screen.load();
-    if (r.set) this.setState({ viewCal: r.cal });
-  }
-  setCal(v) { this.vw.setCal(v); }
-  solveCal(mm) { this.vw.solveRuler(mm); }
-  solveCard(mm) { this.vw.solveCard(mm); }
-  viewK() { return this.vw.view().k; }
-  setView(v) { this.vw.setView(v); }
-  setZoom(z) { this.vw.setZoom(z); }
-  // everything the stage row needs, from the one view the OS works out
+  /* The toolbar's render choices (D43 §5.1: what the pixels are, independent of how big they
+   * are drawn). The stage's view, zoom, true size and screen calibration are the host's
+   * (theme@1/preview through Orb Manager's host); E7 retired the clock's copies. */
   viewVals() {
-    const T = window.OrbTheme, s = this.state, cal = this.cal(), v = s.view;
-    const V = T.view({ view: v, zoom: s.zoom, fitPx: s.fitPx, cal, calibrated: this.calibrated() }), k = V.k;
-    const sel = (b) => ({ cls: b ? 'on' : '', bg: b ? '#1f3a5f' : '#1c2330', bd: b ? '#58a6ff' : '#2b3540', fg: b ? '#e6edf3' : '#e6edf3' });
-    const nudge = (d) => this.setCal(this.cal() + d * this.calStep());
+    const sel = (b) => ({ cls: b ? 'on' : '', bg: b ? '#1f3a5f' : '#1c2330', bd: b ? '#58a6ff' : '#2b3540', fg: '#e6edf3' });
     return {
-      stageCv: V.css, stageWin: V.win, stageRing: V.ring, stageRing2: V.ring + 1,
-      stageFlow: V.flow, stageRound: '50%', stageRef: this.stageRef,
-      hasZoom: v === 'zoom', zoomTag: V.tag,
-      showRuler: V.showRuler, rulerPx: V.rulerPx, rulerMm: V.rulerMm, rulerTicks: V.rulerTicks,
-      calText: V.calText, calVal: cal, calMin: this.CAL_MIN, calMax: this.CAL_MAX, calStep: this.calStep(),
-      setCal: (e) => this.setCal(e.target.value),
-      calUp: () => nudge(1), calDown: () => nudge(-1),
-      solve: (e) => this.solveCal(e.target.value),
-      resetCal: () => { this.setCal(1); this.setState({ status: 'Screen calibration reset to the 96 px/in standard' }); },
-      viewOpts: T.VIEWS.map(([id, label, tip]) => ({ label, tip, pick: () => this.setView(id), ...sel(v === id) })),
-      zoomOpts: T.ZOOMS.map((z) => ({ label: z + '×', pick: () => this.setZoom(z), ...sel(k === z) })),
-      // D43 §5.1: what the pixels are, independent of how big they are drawn
-      renderOpts: T.RENDERS.map(([id, label, tip]) => ({ label, tip, pick: () => this.setState({ render: id }), ...sel((this.state.render || 'design') === id) })),
+      renderOpts: window.OrbTheme.RENDERS.map(([id, label, tip]) => ({ label, tip, pick: () => this.setState({ render: id }), ...sel((this.state.render || 'design') === id) })),
       isCompare: this.state.render === 'compare', wipeVal: this.state.wipe,
       setWipe: (e) => this.setState({ wipe: Math.max(0, Math.min(466, +e.target.value || 0)) }),
-      viewText: V.text,
     };
   }
 
@@ -997,7 +949,6 @@ class Component extends DCLogic {
   async componentDidMount() {
     const p = {}; this.KEYS.forEach((k) => { if (this.props && this.props[k] != null) p[k] = this.props[k]; });
     if (Object.keys(p).length) this.setState({ cfg: p });
-    this.loadCal();
     window.__assetDirty = () => { if (this.ready) this.artDirty(); };
     // Escape on the stage deselects. Bound on the window rather than the canvas because
     // a canvas takes no focus: the key has to arrive whether the cursor is on the watch
@@ -1030,13 +981,6 @@ class Component extends DCLogic {
       .catch(() => {}).then(() => { this.faces = {}; this._fk = null; this._tk = null; this.forceUpdate(); });
   }
   componentDidUpdate() {
-    // D43 §4.2: Fit is the stage pane's own size, less a margin for the case ring; the shell's
-    // glass measures it after every render and reports it (studioGlass.onFit, K6)
-    const vz = this.state.view + ':' + this.state.zoom + ':' + this.state.fitPx, sc = this.stageRef && this.stageRef.current;
-    if (vz !== this._vz && sc && typeof sc.scrollTo === 'function') {
-      this._vz = vz; const cx = (sc.scrollWidth - sc.clientWidth) / 2, cy = (sc.scrollHeight - sc.clientHeight) / 2;
-      if (cx > 0 || cy > 0) sc.scrollTo(cx, cy);
-    }
     // A selection armed a scroll target in onDown; the rows it names only exist once
     // this commit has bound them, so this is the first place the jump can be honoured.
     if (this._scrollTo) { const a = this._scrollTo; this._scrollTo = null; this.scrollToAnchor(a); }
@@ -3598,7 +3542,7 @@ class Component extends DCLogic {
     const T = window.OrbStudio, O = window.OrbTheme;
     if (!T || !O) return {};
     return {
-      studioTool: { play: { icon: R.playIcon, label: R.playLabel, on: R.toggle }, time: R.timeOpts, view: R.viewOpts, zoom: R.hasZoom ? R.zoomOpts : null,
+      studioTool: { play: { icon: R.playIcon, label: R.playLabel, on: R.toggle }, time: R.timeOpts,
         render: R.renderOpts, wipe: R.isCompare ? { value: R.wipeVal, on: R.setWipe } : null },
       studioLayers: { title: 'Layers', rows: R.stackRows, warnings: R.stackWarns,
         cap: { text: R.stackCapShort, color: R.stackCapFg, tip: 'R6: the live rows the bake ships (hands and their shadow twins, the discs\u2019 value rows, the carriage) against the dial\u2019s cap' },

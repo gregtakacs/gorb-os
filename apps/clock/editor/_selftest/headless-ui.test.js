@@ -731,9 +731,7 @@ setTimeout(async () => {
      'three minutes more is excessive, and the warning says how much is the author\u2019s own');
   it.resetTab('sound');
 
-  // the calibration status names the panel's real width: 1.75 in is 44.45 mm, not the float's 44.4
-  it.solveCal(40); const st1 = it.state.status; it.solveCard(85.6); const st2 = it.state.status;
-  ok(/draws the face 44\.45 mm across/.test(st1) && /draws the face 44\.45 mm across/.test(st2), 'the ruler and card status say the dial is 44.45 mm across', st1);
+  // the calibration and its wording (44.45 mm) are the host's: theme@1/preview's own suite
 
   console.log(fails ? '\n' + fails + ' FAILED' : '\nall green (' + checked + ' checks)');
   process.exit(fails ? 1 : 0);

@@ -221,7 +221,7 @@ const stepOf = (it) => it.stepNow()[0];
     'dials', 'resetDesign', 'themeNameIn', 'themeNameLen', 'themeNamePh', 'themeNameVal',
     'dupOpen', 'dupNm', 'dupNote', 'dupStem', 'dupStop', 'dupCancel', 'dupReplace',
     'calDown', 'calMax', 'calMin', 'calStep', 'calUp', 'calVal', 'resetCal', 'setCal', 'solve', 'viewText', 'showRuler', 'rulerPx', 'rulerTicks', 'calText',
-    'stageCv', 'stageDown', 'stageFlow', 'stageRing', 'stageRing2', 'stageRound', 'stageWin', 'status']);
+    'stageCv', 'stageDown', 'stageFlow', 'stageRing', 'stageRing2', 'stageRound', 'stageWin', 'status', 'hasZoom', 'viewOpts', 'zoomOpts']);
   // K6: a value the clock hands the shell's parts through studioVals (R.<name>) is bound
   const sv = html.slice(html.indexOf('  studioVals(R) {'), html.indexOf('\n  }\n', html.indexOf('  studioVals(R) {')));
   (sv.match(/\bR\.([A-Za-z_][A-Za-z0-9_]*)/g) || []).forEach((m) => bound.add(m.slice(2)));
@@ -235,17 +235,12 @@ const stepOf = (it) => it.stepNow()[0];
 // ---- P5b: the studio's stage and chrome --------------------------------------
 {
   const it = mount('skeleton'), V = () => it.renderVals();
-  ok(it.state.view === 'fit' && /^Fit/.test(V().zoomTag) && V().stageCv === 466, 'the stage opens on Fit, sized by the pane (466 off-screen)', V().zoomTag + ' ' + V().stageCv);
-  it.setState({ fitPx: 700 });
-  ok(V().stageCv === 700 && /1\.50×/.test(V().zoomTag), 'Fit follows the measured pane', V().stageCv + ' ' + V().zoomTag);
-  V().viewOpts.find((o) => o.label === 'Magnify').pick();
-  ok(V().hasZoom && V().stageRound === '50%' && V().stageCv === 932, 'Magnify is a zoom stop: the glass stays round and the pane scrolls it', V().stageCv);
+  // the stage's view, zoom and true size are the host's (theme@1/preview, in the runtime's suites)
   // a colour's name sits under its swatches, never in a column its length resizes
   it.setState({ step: 'dial', tab: 'dial', sel: null, selKind: null });
   const rowsD = V().fields.filter((f) => f.isRow);
   ok(rowsD.some((f) => f.isColor || f.isSwatch) && rowsD.every((f) => (f.rowCls === 'wide') === !f.isRange), 'only sliders keep the value column; every other row reads its value underneath',
      rowsD.filter((f) => (f.rowCls === 'wide') === !!f.isRange).map((f) => f.label).join());
-  ok(V().viewOpts.map((o) => o.label).join() === 'Fit,1:1,True size,Magnify', 'the four view stops', V().viewOpts.map((o) => o.label).join());
   // a re-timed bake re-enters with the press's own ask (Gold, 2026-11-08: it passed the baker's
   // options, so every re-time fell through to Export: a Send downloaded, a quiet bake opened Save)
   {
@@ -259,7 +254,7 @@ const stepOf = (it) => it.stepNow()[0];
   it.setState({ sending: null, status: '' });
   // the three parts the hosted panes draw carry the clock's own values; its top bar, start,
   // Render and live size retired with E7 2d (the host's own, in the runtime's host suite)
-  { const R = V(); ok(R.studioTool.view === R.viewOpts && R.studioTool.render === R.renderOpts && R.studioLayers.rows === R.stackRows && R.studioFields.fields === R.fields
+  { const R = V(); ok(!('view' in R.studioTool) && R.studioTool.render === R.renderOpts && R.studioLayers.rows === R.stackRows && R.studioFields.fields === R.fields
       && !R.studioTop && !R.studioStart && !R.studioRender && !R.studioSend, 'the toolbar, the layers and the inspector carry the clock\u2019s own values, and nothing else is built', Object.keys(R).filter((k) => /^studio/.test(k)).join()); }
   // the quiet bake: a status-only update while it runs is kept, not shown; anything else goes through
   { it.setState({ status: 'before' });

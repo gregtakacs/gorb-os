@@ -1314,6 +1314,13 @@ Found by the owner using the hosted editor on Gold, decided and fixed after E7 c
   opening a design file. The clock's session suite retired with them (it tested that service a
   second time, through the class); the runtime's session and host suites cover the history,
   the library and the Edit door for every app.
+- **And its view and calibration** (owner, 2026-11-09): the stage's view stops, zoom, true size,
+  ruler and screen calibration were the host's since E4 (the hosted toolbar draws the host's;
+  the clock's Stage pane takes the host's size), so the class's copies went with their values:
+  the viewer wiring, `cal`/`setCal`/`solveCal`/`solveCard`, `setView`/`setZoom`, the
+  calibration load at mount, the stage scroll on a view change, `stageRef`, and the `view`,
+  `zoom`, `fitPx` and `viewCal` state. `viewVals` keeps the toolbar's render choices and the
+  split. The runtime's preview and studio suites hold the view stops and the 44.45 mm wording.
 - **App updates park the dial** (firmware, `h_app_upload`): Gold refused a clock update twice
   with "the card refused the write" (card write failed, I/O error) and took it on the third; the
   theme and OTA doors parked the dial for their copies, the app door did not

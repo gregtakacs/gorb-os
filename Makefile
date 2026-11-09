@@ -10,11 +10,13 @@
 #   make hub            build tools/orb-manager/bin/orb-manager for this machine
 #   make sdk            write build/orb-sdk-<version>.tar.gz, the standalone app SDK
 #   make dist           the hub's release archives (unsigned), into tools/orb-manager/bin/dist/
+#   make web            the release's web file, into tools/orb-manager/bin/web/ (design §6.1)
+#   make check-web      open the shipped editors in headless Chromium: needs Go, Chromium, minutes
 
 PYTHON ?= python3
 NODE   ?= $(shell command -v node 2>/dev/null || ls $$HOME/.local/share/nodeenv-gorb/bin/node 2>/dev/null)
 
-.PHONY: check check-host check-apps check-hub check-editor firmware apps hub sdk dist
+.PHONY: check check-host check-apps check-hub check-editor check-web firmware apps hub sdk dist web
 
 check: check-host check-apps check-hub check-editor
 	@echo 'check: host suites, apps, hub and editor all green'
@@ -57,6 +59,20 @@ check-editor:
 	@# the hub's map tool (maps@1) against tools/orbmap.py's bytes and orb_map_raster.c's pixels
 	$(PYTHON) tools/host_orbmap_js_test.py
 
+## check-web: the release's own web file, opened as a site would open it — unpack the
+## archive, extract-editors the shelf out of it, and smoke every editor it unpacked in
+## headless Chromium (no GorbHost, hub host, web host). Deliberately NOT part of `check`:
+## it needs the Go toolchain, a Chromium on PATH and a few minutes, none of which the
+## board-free `make check` ladder asks of a contributor.
+check-web: web
+	@test -n "$(NODE)" || { echo 'no node on PATH (see BUILDING.md: the editor suites need node 20+)'; exit 1; }
+	@tmp=$$(mktemp -d); \
+	  tar -xzf "$$(ls tools/orb-manager/bin/web/orb-web-*.tar.gz | head -1)" -C "$$tmp"; \
+	  root=$$(find "$$tmp" -mindepth 1 -maxdepth 1 -type d | head -1); \
+	  tools/orb-manager/bin/orb-manager extract-editors "$$root/apps" "$$tmp/editors" && \
+	    $(NODE) tools/orb-manager/web/runtime/_selftest/editors-smoke.js --runtime "$$root/runtime" --editors "$$tmp/editors"; \
+	  rc=$$?; rm -rf "$$tmp"; exit $$rc
+
 firmware:
 	idf.py build
 
@@ -71,3 +87,6 @@ sdk:
 
 dist:
 	$(MAKE) -C tools/orb-manager dist
+
+web:
+	$(MAKE) -C tools/orb-manager web

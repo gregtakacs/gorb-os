@@ -46,7 +46,7 @@ my_app/
 | `period_ms` | the fastest beat the app may ask for, at least 1000. Leave it out and the app never ticks |
 | `memory_kb` | the module's linear memory, 64 (default) or 128 |
 | `shelf` | in this repo only: `true` puts the app on the hub's shelf; `false` builds and checks it but keeps it off |
-| `editor` | in this repo only: names the editor region a tree tool builds (the clock's theme editor) |
+| `editor` | the app's theme editor: names a folder of the app (`"editor": "editor"`) holding `editor.json` (`entry`, and the `runtime` ids it needs) and the editor's files. `orbsdk.py` packs that folder into the container's editor region, which Orb Manager opens from the Themes page (the clock's region is built by `tools/make_clock_region.py`) |
 
 Kind, serial and the header's version all come from the SDK and `version.txt`, so
 there is nothing else to declare.

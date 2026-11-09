@@ -50,12 +50,17 @@ node suites. Two host suites read a configured firmware tree, so run `idf.py bui
 first. CI runs the same targets on every pull request. Each piece runs on its own
 too: `make check-host`, `check-apps`, `check-hub`, `check-editor`.
 
+`check-web` is the fifth and is deliberately not in `check`: it builds the release file and
+opens its editors in headless Chromium, so it needs a browser and a built hub.
+
 ## The hub
 
 ```sh
 make hub                                  # tools/orb-manager/bin/orb-manager
 make -C tools/orb-manager run             # build and open the app window
 make -C tools/orb-manager run ARGS=--no-window   # serve on 127.0.0.1:3779, no window
+make web                                  # tools/orb-manager/bin/web/orb-web-<version>.tar.gz
+make check-web                            # that file's editors, in headless Chromium
 ```
 
 `web/` is embedded at compile time, so after a UI edit you rebuild and reload
@@ -135,7 +140,7 @@ Two workflows live in `.github/workflows/`:
 | Workflow | Runs on | Does |
 |---|---|---|
 | `ci.yml` | every pull request and push to `main` | the four jobs below; a red one blocks the merge |
-| `release.yml` | a pushed tag `v*`, or by hand | builds, signs and packages the hub for Windows, macOS and Linux, plus the app SDK, as a **draft** release |
+| `release.yml` | a pushed tag `v*`, or by hand | builds, signs and packages the hub for Windows, macOS and Linux, plus the app SDK and the web release file, as a **draft** release |
 
 `ci.yml`'s jobs:
 
@@ -151,7 +156,9 @@ Two workflows live in `.github/workflows/`:
 ## Cutting a release
 
 A release is the hub executable for three platforms, with the current firmware, the shelf
-apps and the default theme built in, plus `orb-sdk-<version>.tar.gz` for app developers.
+apps and the default theme built in, plus `orb-sdk-<version>.tar.gz` for app developers
+and `orb-web-<version>.tar.gz` (the runtime, the shelf and the editor API fixtures, loose)
+for a site hosting the editors.
 
 1. **Firmware.** If `main/` changed since the last release, bump `version.txt`, run
    `idf.py reconfigure && idf.py build`, check it on a board, then run

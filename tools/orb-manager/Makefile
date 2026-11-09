@@ -29,7 +29,7 @@ MODULE    := github.com/gregtakacs/gorb-os/tools/orb-manager
 VERSION ?= $(shell git describe --tags --match 'v[0-9]*' --always --dirty 2>/dev/null || echo dev)
 LDFLAGS := -s -w -X main.version=$(VERSION)
 
-.PHONY: all build manager orbflash library test contract vet fmt check run desktop cdp reload flash windows win-test crosscheck clean firmware vendor-runtime vendor-check release dist winres usb-doc-test
+.PHONY: all build manager orbflash library test contract vet fmt check run desktop cdp reload flash windows win-test crosscheck clean firmware vendor-runtime vendor-check release dist web winres usb-doc-test
 
 all: test build
 
@@ -248,6 +248,16 @@ dist: release
 	  packaging/dist.sh stage $$p $(RELEASE_DIR) $(VERSION) $(DIST_DIR) && \
 	  packaging/dist.sh pack $$p $(VERSION) $(DIST_DIR) || exit 1; \
 	done
+
+## web: the release's web file, bin/web/orb-web-<version>.tar.gz (orb-os-net design §6.1): the
+## editor runtime as the hub serves it — laid out by this build's own export-runtime, so the
+## runtime is the release's — beside the shelf's .orbapp files and the editor API fixture. A
+## site unpacks it, unpacks the editors with extract-editors and serves them; the root
+## `make check-web` smokes the result in headless Chromium. packaging/orb-web.sh packs it
+## reproducibly, so a rebuild of the same tree gives the same sha256.
+web: manager
+	@rm -f $(BIN_DIR)/web/orb-web-*.tar.gz
+	packaging/orb-web.sh $(VERSION) $(BIN_DIR)/web $(BIN_DIR)/orb-manager
 
 ## winres: the Windows exe's icon and version resource, as rsrc_windows_amd64.syso in this
 ## dir, which the next GOOS=windows build of the hub links in. Fetches go-winres, so it is

@@ -13,6 +13,7 @@ firmware, the shelf apps and the default theme built in:
 | `orb-manager-<tag>-macos.dmg` | macOS 12+, Apple silicon and Intel (universal) | Developer ID, notarized and stapled |
 | `orb-manager-<tag>-linux-amd64.tar.gz` | Linux x86-64 | none (the sha256sums cover it) |
 | `orb-sdk-<os version>.tar.gz` | app developers ([apps/README.md](apps/README.md)) | none |
+| `orb-web-<tag>.tar.gz` | a website that hosts the theme editors: the runtime, the shelf apps, the editor API fixtures (orb-os-net §6.1) | none (the sha256sums cover it) |
 
 `.github/workflows/release.yml` builds and signs all three on GitHub Actions. It does
 the signing only when the secrets below exist. Without them it still ships: the
@@ -181,6 +182,14 @@ step ran, before you push a tag.
 - **Linux extras.** `install.sh` (per-user install with a menu entry), a `.desktop`
   file, and `60-orb.rules`, which grants the logged-in user USB serial access without
   needing the dialout group.
+- **Not in the box: `orb-web-<tag>.tar.gz`.** The same release, loose, for a site
+  that hosts the editors instead of a dial: `runtime/` as the hub serves it (laid out by
+  `orb-manager export-runtime`, so the runtime is the bytes this build gives a dial),
+  `apps/` with every shelf `.orbapp`, `contract/` with the hub's editor API fixtures a
+  site replays, and `version.txt`. A site unpacks it, runs `orb-manager extract-editors`
+  over `apps/` and serves the editors beside that runtime. `make web` builds it
+  (reproducibly: two runs on one tree give one sha256), `make check-web` opens each of
+  its editors in headless Chromium against a stub hub.
 
 ## Tested releases
 

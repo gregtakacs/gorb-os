@@ -876,6 +876,15 @@ renamed into place when complete) and every write is confined to it, so a member
 skipped), 1 an input or output problem, 2 wrong usage; stdout is one line per app or id and
 everything else goes to stderr prefixed `orb-manager: `.
 
+`make web` (here) or `make web` (root) packs both outputs into the release's web file,
+`bin/web/orb-web-<version>.tar.gz`: `runtime/` from `export-runtime`, `apps/` with every
+shelf `.orbapp`, `contract/` with the editor API fixtures, and `version.txt` — reproducible,
+so the sha256 names the file and not the minute it was packed (`packaging/orb-web.sh`).
+`make check-web` unpacks it, runs `extract-editors` over it and opens every editor it finds
+in headless Chromium against a stub hub (`web/runtime/_selftest/editors-smoke.js`): no
+throw, no 404, the host the runtime was told to see, and no hub route reached from a web
+host. It needs a browser, so it is not part of `make check`.
+
 ## Endpoints
 
 | Route | Purpose |

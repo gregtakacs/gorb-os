@@ -92,6 +92,15 @@ jobs:
         with:
           name: dist-sdk
           path: tools/orb-manager/bin/sdk/*.tar.gz
+      # The web release (orb-os-net design §6.1): the runtime as the hub serves it, the
+      # shelf .orbapp files and the hub's editor API fixtures, for a site that hosts the
+      # editors. The Linux build just made lays out the runtime, so it is this release's.
+      - name: Web release file
+        run: packaging/orb-web.sh '${{ steps.v.outputs.version }}' bin/web bin/release/orb-manager-linux-amd64/orb-manager
+      - uses: actions/upload-artifact@v7
+        with:
+          name: dist-web
+          path: tools/orb-manager/bin/web/*.tar.gz
 
   windows:
     needs: build

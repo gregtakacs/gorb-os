@@ -87,6 +87,8 @@ echo
 echo "Each needs Chrome, Edge, Brave or Chromium installed; Orb Manager opens its window with it."
 echo
 echo "orb-sdk-$(cat version.txt).tar.gz is the app SDK for this OS release, for writing apps outside this repo (apps/README.md)."
+echo
+echo "orb-web-$VERSION.tar.gz is the web release for this Orb Manager release: the editor runtime, the shelf's apps and the hub's editor API fixtures, for hosting the editors on a site of your own (RELEASING.md)."
 [ "${WIN_SIGNED:-}" = true ] || { echo; echo "The Windows build is not code-signed: SmartScreen will warn. Choose More info, then Run anyway."; }
 [ "${MAC_SIGNED:-}" = true ] || { echo; echo "The macOS build is not notarized, so macOS says it could not verify Orb Manager. Choose Done, open System Settings > Privacy & Security, press Open Anyway beside Orb Manager, then open it again. (macOS 14 and earlier: right-click Orb Manager, choose Open, then Open.)"; }
 if [ -n "$prev" ]; then

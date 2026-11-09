@@ -454,6 +454,9 @@ const orb_app_t  *orb_app_home(void);
 bool orb_app_failed_live(const orb_app_t *a);
 /** The entry on the glass; NULL before the first activate. */
 const orb_app_t  *orb_app_current(void);
+/* The carousel covers (on) or uncovers (off) the app on the glass: suspended under it as at a
+ * switch, resumed if the carousel lands back on it. LVGL task. */
+void orb_app_cover(bool on);
 /** Index of an entry, for the carousel's wraparound; -1 if not in the table. */
 int               orb_app_index_of(const orb_app_t *app);
 

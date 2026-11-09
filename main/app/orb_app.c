@@ -870,6 +870,22 @@ static void app_restore(orb_app_t *app)
     else if (app->iface->activate) app->iface->activate(app);
 }
 
+/* The carousel covers the app on the glass (owner, 2026-11-09: nothing of an app's display
+ * runs while it is not on the screen, and with it no card read): it leaves as it does at a
+ * switch, by its suspend hook, so its service keeps its background work (the clock's hours)
+ * and draws, fetches for the glass and opens map renders no more. The carousel landing back on
+ * it resumes it; landing elsewhere is a switch whose old app is already suspended. LVGL task. */
+static bool s_covered;
+void orb_app_cover(bool on)
+{
+    orb_app_t *app = s_current;
+    if (on == s_covered || !app || !app->iface) return;
+    s_covered = on;
+    if (on) { if (app->iface->suspend) app->iface->suspend(app); }
+    else if (app->iface->resume) app->iface->resume(app);
+    else if (app->iface->activate) app->iface->activate(app);
+}
+
 esp_err_t orb_app_activate(const orb_app_t *app_cp)
 {
     /* The table is this module's own storage, so the const on the way in is a
@@ -910,6 +926,8 @@ esp_err_t orb_app_activate(const orb_app_t *app_cp)
     }
 
     orb_app_t *old = s_current;
+    const bool covered = s_covered;              /* orb_app_cover: old is suspended already */
+    s_covered = false;
     if (old == app) {
         /* Re-revealing the app already on the glass still runs the hooks: the
          * long-press on the dial is exactly this case, and today it forces a
@@ -928,7 +946,7 @@ esp_err_t orb_app_activate(const orb_app_t *app_cp)
      * app before the claim matters: if two banked apps trade places, releasing
      * nothing first can push the second over the page budget the first is
      * still holding. */
-    if (old && old->iface->suspend) old->iface->suspend(old);
+    if (old && old->iface->suspend && !covered) old->iface->suspend(old);
     if (old) app_art_release(old);
     /* §4.2's auto-revoke, in the one place that knows what left the glass:
      * the app whose view was suspended cannot also hold the dial awake.

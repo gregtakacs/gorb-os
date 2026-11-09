@@ -39,6 +39,7 @@ enum {
     ORB_MAP_NOCARD = -2,
     ORB_MAP_BAD = -3,          /* the file failed its check */
     ORB_MAP_NOMEM = -4,
+    ORB_MAP_OFF_GLASS = -5,    /* the app is not on the glass: no render, no card read */
 };
 
 /* The file name a place's level has on the card, under ORB_MAP_DIR: "<place>-<lat_e4>_<lon_e4>-z<z>-f2.orbmap",

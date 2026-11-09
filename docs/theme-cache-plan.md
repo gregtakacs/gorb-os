@@ -271,8 +271,8 @@ happens only when they are not. No first fit, no compaction, no MOVING state.
   store writes it; the reconcile makes any that are missing. Each is mapped as a window
   (`orb_pagemap`), so the carousel's preview task, whose stack is PSRAM and may not read
   flash through the driver, reads it as plain memory (`orb_theme_preview_hold`, under a lock
-  a store takes to unmap it). Flights' Blueprint has no deflated preview (an old bake): its
-  thumbnail still comes off the card.
+  a store takes to unmap it). A bake with no deflated preview (before v1.2.20, flights'
+  Blueprint) keeps its raw square instead, up to 240 px (two pages, `PREVIEW_RAW`; see below).
 - **Three thumbnails at most** (owner: "only load 3 ... make sure this does not grow"): the
   centre app and one either side, built when the carousel opens and as it turns, freed as
   they leave the window and all at close, on the drawing task. Each is shrunk as the preview
@@ -286,6 +286,33 @@ happens only when they are not. No first fit, no compaction, no MOVING state.
 - **Bronze, Skeleton on the clock:** free PSRAM with the carousel shut 2.09 MB (largest block
   2.06 MB), back to exactly that after a visit; 1.10-1.21 MB free while browsing; the low
   water since boot 716 KB (it had been 14 KB, and 25 KB was seen mid-browse).
+
+### Nothing of an app's display runs off the glass (2026-11-09, owner's ruling, Bronze)
+
+- **The owner's report:** opened from radar, the carousel was slow, and flights' disc beside
+  the centre stayed blank until it reached the centre. The log: the carousel drew 29 frames
+  in 4 s and skipped 6,089 with the display's ring out to the card. Radar's service went on
+  drawing and opening map renders under the carousel (the stage's scheduler stops, the
+  service does not), and every map render reads the card. Flights' thumbnail came off the
+  card (no preview in flash), into a 434 KB buffer radar's PSRAM had no room for.
+- **Ruling:** stop all display activity of an app that is not on the screen, and with it its
+  card reads, for radar and every other app; keep a raw preview when no deflated one exists;
+  write it down in the SDK as best practice (apps/README.md, "Off the glass").
+- **The carousel suspends the app under it** (`orb_app_cover`): its suspend hook runs at the
+  open, as at a switch, so its service keeps the background (the clock's hours) and stands
+  down from the glass; landing back on it resumes it, landing elsewhere is a switch whose
+  outgoing app is already suspended. A fill under it pauses and goes on at the resume.
+- **The OS opens no map for an app off the glass** (`map_open` answers `ORB_MAP_OFF_GLASS`),
+  and radar opens none itself (its `view_open` and place change wait for `on_glass`).
+  Weather, flights and the clock already gated their drawing on their visible flags.
+- **Raw previews in flash:** the reconcile kept no preview for Blueprint ("no deflated
+  preview"). `preview_store` now keeps an old bake's raw square (`orb_theme_preview_read`'s
+  native RGB565) with `PREVIEW_RAW` in the head's flags, side x side x 2 bytes, which no
+  deflated stream is; `orb_theme_preview_hold` checks the flag and the size agree, and the
+  carousel copies (and, over 232 px, boxes down) the square.
+- **Bronze, radar on the glass:** no card read for the 11 s the carousel was up, 72 frames
+  and none skipped (was 6,089), flights' thumbnail 10-14 ms from flash (was 180-250 ms off
+  the card, or not at all); radar's resume at the landing 178 ms, under the held glass.
 
 ### The freeze after it, and the clock's re-read done right (2026-11-09, Bronze)
 

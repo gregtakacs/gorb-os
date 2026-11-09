@@ -315,6 +315,7 @@ static int32_t s_view = 0, s_view_next = 0;     /* handles; 0 = none */
 static bool    s_map_dirty, s_map_absent;
 static int64_t s_map_retry_ms;                  /* a map that failed for want of memory: again */
 static int     s_shown = -2;                   /* the frame on the glass, -1 none */
+static bool s_visible;                 /* between on_glass and orb_suspend */
 /* What drew the rain moved (a view, a zoom, the palette, the units, the place, the list, a
  * frame's body): the glass's rain is drawn again, and a picture drawn ahead is void. */
 #define RAIN_AGAIN(v) (s_shown = (v), s_rain_gen++)
@@ -325,6 +326,7 @@ static int     s_shown = -2;                   /* the frame on the glass, -1 non
 static void map_failed(int32_t why)
 {
     s_view_next = 0;
+    if (why == ORB_MAP_OFF_GLASS) return;               /* not now: on_glass opens it */
     const bool absent = why == ORB_MAP_ABSENT || why == ORB_MAP_NOCARD;
     if (absent) { s_map_absent = true; s_map_dirty = true; }
     s_map_retry_ms = up_ms() + (absent ? 20000 : 3000);
@@ -334,7 +336,8 @@ static void map_failed(int32_t why)
 static void view_open(void)
 {
     const where_t *w = here();
-    if (!w) return;
+    /* off the glass no map is rendered (the card is the glass's): on_glass opens it */
+    if (!w || !s_visible) return;
     orb_map_view_t v;
     memset(&v, 0, sizeof v);
     v.radius_m = rd_radius_m(s_zoom, w->lat_e6);
@@ -379,7 +382,7 @@ static const char *const ZOOM[RD_ZOOMS] = { "Wide", "Region", "Local", "Area", "
 static int     s_zoom_want = -1;
 static int64_t s_zoom_click_ms;
 static void zoom_step(void);
-static bool    s_visible, s_layers;
+static bool    s_layers;
 static bool    s_play = true;                  /* untouched: the loop plays */
 static int     s_loop = 0;                     /* the loop's frame, an index into F */
 static int64_t s_loop_ms, s_zoom_said_ms;
@@ -712,8 +715,8 @@ static void view_changed(bool frames)
 static void place_changed(void)
 {
     view_changed(true);
-    if (s_merged) orb_stage_live_copy(1, 0);             /* the old place's rain goes at once */
-    else if (s_layers) orb_stage_live(1, V.rain_order, 0);
+    if (s_visible && s_merged) orb_stage_live_copy(1, 0);   /* the old place's rain goes at once */
+    else if (s_visible && s_layers) orb_stage_live(1, V.rain_order, 0);   /* no layers off the glass */
     RAIN_AGAIN(-1);
 }
 

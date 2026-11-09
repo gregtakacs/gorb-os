@@ -2402,8 +2402,13 @@ static void fill_show(uint32_t done, uint32_t total)
  * without the card lock that lends the display's DMA ring — and builds its thumbnails when it
  * opens, keeping nothing while it is shut. Written by a store and, for a choice that has none
  * (or one from another file), by the reconcile. The entry: a 16-byte head (magic, side,
- * bytes), then the bytes. */
+ * bytes, flags), then the bytes. A bake from before v1.2.20 carries no deflated preview, only
+ * a raw 232 px square: that is kept as the square itself (owner, 2026-11-09: the carousel
+ * must not go to the card for one), PREVIEW_RAW in flags and side * side * 2 bytes, which no
+ * deflated stream ever is. */
 #define PREVIEW_MAGIC 0x31565250u                   /* "PRV1" */
+#define PREVIEW_RAW   1u
+#define PREVIEW_RAW_MAX 240u                        /* two pages: the old bakes' 232 px square */
 static void preview_unmap(const char *slug);
 static void preview_map(const char *slug);
 EXT_RAM_BSS_ATTR static orb_pool_pages_t s_prev_pg;
@@ -2415,8 +2420,25 @@ static esp_err_t preview_store(const char *slug, const char *stem, uint32_t file
     uint16_t side = 0;
     char why[96] = "";
     uint8_t *z = orb_theme_preview_zcopy(stem, &zn, &side, why, sizeof why);
+    uint32_t flags = 0;
+    if (!z && !why[0]) {                             /* not deflated: an older bake's raw square */
+        uint16_t w = 0, h = 0;
+        if (orb_theme_preview_read(stem, NULL, 0, &w, &h, why, sizeof why) == ORB_ASSET_OK &&
+            w == h && w && w <= PREVIEW_RAW_MAX) {
+            zn = (uint32_t)w * w * 2u;
+            z = heap_caps_malloc(zn, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+            if (z && orb_theme_preview_read(stem, z, zn, &w, &h, why, sizeof why) != ORB_ASSET_OK) {
+                heap_caps_free(z);
+                z = NULL;
+            }
+            side = w;
+            flags = PREVIEW_RAW;
+        } else if (w && !why[0]) {
+            snprintf(why, sizeof why, "a raw %ux%u preview, over the %u px kept raw", w, h, PREVIEW_RAW_MAX);
+        }
+    }
     if (!z) {
-        ESP_LOGW(TAG, "%s's preview: none to keep from \"%s\" (%s)", slug, stem, why[0] ? why : "no deflated preview");
+        ESP_LOGW(TAG, "%s's preview: none to keep from \"%s\" (%s)", slug, stem, why[0] ? why : "no preview");
         return ESP_ERR_NOT_FOUND;
     }
     const char *ord[CACHE_APPS];
@@ -2429,7 +2451,7 @@ static esp_err_t preview_store(const char *slug, const char *stem, uint32_t file
     int r = orb_pool_reserve(&s_pool_io, s_pool, &s_pool_which, slug, ORB_POOL_PREVIEW, total,
                              ord, nord, keep, pg, NULL, NULL);
     esp_err_t e = r ? ESP_FAIL : ESP_OK;
-    const uint32_t head[4] = { PREVIEW_MAGIC, side, zn, 0 };
+    const uint32_t head[4] = { PREVIEW_MAGIC, side, zn, flags };
     if (e == ESP_OK) e = pg_erase(pg, 0, orb_pool_round(total));
     if (e == ESP_OK) e = pg_write(pg, 0, head, sizeof head);
     if (e == ESP_OK) e = pg_write(pg, 16, z, zn);
@@ -2448,8 +2470,8 @@ static esp_err_t preview_store(const char *slug, const char *stem, uint32_t file
         return ESP_FAIL;
     }
     preview_map(slug);
-    ESP_LOGI(TAG, "%s's preview kept in flash: %u B on %u page%s", slug, (unsigned)zn,
-             (unsigned)pg->n, pg->n == 1 ? "" : "s");
+    ESP_LOGI(TAG, "%s's preview kept in flash%s: %u B on %u page%s", slug, flags ? " (raw)" : "",
+             (unsigned)zn, (unsigned)pg->n, pg->n == 1 ? "" : "s");
     return ESP_OK;
 }
 
@@ -2522,8 +2544,10 @@ const uint8_t *orb_theme_preview_hold(const char *slug, uint32_t *n, uint16_t *s
         const prev_reg_t *r = &s_prevs[i];
         if (!r->slug[0] || strcmp(r->slug, slug) || r->file_crc != want || !r->pm.ptr) continue;
         const uint32_t *head = r->pm.ptr;
+        const bool raw = head[3] & PREVIEW_RAW;
         if (head[0] != PREVIEW_MAGIC || !head[2] || !head[1] || head[1] > 466u ||
-            16u + head[2] > r->pm.pages * ORB_POOL_PAGE)
+            16u + head[2] > r->pm.pages * ORB_POOL_PAGE ||
+            raw != (head[2] == head[1] * head[1] * 2u))   /* the flag and the size agree */
             break;
         *n = head[2];
         *side = (uint16_t)head[1];

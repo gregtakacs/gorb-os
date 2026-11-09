@@ -248,8 +248,9 @@ bool orb_theme_chosen(const char *stem);
 int orb_theme_hot(const char *slug);
 /* Owner, 2026-11-09: `slug`'s chosen theme's preview, deflated, straight from its resident
  * entry's window in flash (plain memory: any task may read it), with *n its bytes and *side
- * its square's side; NULL when it has none for what it wears. Non-NULL holds the previews'
- * lock: read, then call orb_theme_preview_release. */
+ * its square's side; NULL when it has none for what it wears. *n == side * side * 2 is an
+ * older bake's raw square instead (RGB565, native order, no deflate). Non-NULL holds the
+ * previews' lock: read, then call orb_theme_preview_release. */
 const uint8_t *orb_theme_preview_hold(const char *slug, uint32_t *n, uint16_t *side);
 void orb_theme_preview_release(void);
 /* Why `slug` has no theme on the glass when it should: true with a few words for its dial

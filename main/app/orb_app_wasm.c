@@ -1269,6 +1269,8 @@ m3ApiRawFunction(imp_map_open)                /* i32 map_open(u32 place, const o
     m3ApiGetArgMem(const uint8_t *, v);
     m3ApiCheckMem(v, 44);
     MAP_GATE(ORB_MAP_ABSENT);
+    /* owner, 2026-11-09: an app off the glass draws nothing, and a map render reads the card */
+    if (!s->on_glass) m3ApiReturn(ORB_MAP_OFF_GLASS);
     orb_map_req_t r;
     memcpy(&r, v, sizeof r);
     m3ApiReturn(orb_map_open(slot_index(s), (int)place, &r));

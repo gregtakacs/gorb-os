@@ -306,6 +306,40 @@ and the OS copies them. The OS never hands out a pointer into its own memory.
 There are no options hooks: the app's menu page is the OS's, drawn from its declared
 settings ([Settings](#settings)). Themes are picked in the OS Themes menu (D49).
 
+### Off the glass
+
+An app off the glass does nothing for the screen. It's off the glass from
+`orb_suspend` until `orb_activate` or `orb_resume`. That covers another app being
+shown, the menu, and the app carousel opened over it (from OS v1.6.1 the carousel
+suspends the app under it and resumes it if the owner comes back to it). Off the
+glass the app's display isn't visible, and every pixel it draws, every map it renders
+and every frame it fetches for the screen costs the app on the glass. Map renders
+read the SD card, and while the card is read the display lends it its DMA memory and
+drops frames.
+
+Best practice, which the shipped apps follow:
+
+- **Keep a visible flag.** Set it in `orb_activate` / `orb_resume`, clear it in
+  `orb_suspend`, and gate all display work on it in `orb_service`.
+- **Draw nothing off the glass.** No `orb_cv_*`, `orb_ui_*` or `orb_stage_*` calls
+  from `orb_service` while the flag is clear. Mark what changed (a dirty flag) and
+  draw it in `orb_resume`.
+- **Open no maps off the glass.** From OS v1.6.1, `orb_map_open` answers
+  `ORB_MAP_OFF_GLASS` to an app off the glass. Treat that as "not now", not as a
+  failure: open the view again in `orb_resume`. The OS also frees an app's map
+  views when it leaves the glass.
+- **Fetch only what the background needs.** Data for a notification, an alarm or a
+  chime keeps flowing (`orb_net_*` from `orb_service`). Data only the screen shows
+  (a radar frame, a picture) waits until the app is back. The radar app's
+  `net_step(s_visible)` is the model.
+- **Keep sounds and alerts in `orb_service`.** `orb_tick` runs only on the glass. A
+  chime, a strike or an `orb_attention` that must happen whatever the owner is looking
+  at belongs in `orb_service`, with the on-glass path in `orb_tick` (the clock does
+  both, and its service stands down while it is on the glass).
+- **Expect a quick return.** A carousel the owner opens and closes is a suspend
+  and a resume a few seconds apart. Keep state across `orb_suspend` (don't free your
+  data), so `orb_resume` redraws what you had rather than starting over.
+
 ### Secrets
 
 A `secret` setting (for example an API key) is declared with the one host it may

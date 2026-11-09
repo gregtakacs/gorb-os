@@ -252,6 +252,15 @@ static const pv_t *pv_for(const orb_app_t *a)
     return NULL;
 }
 
+/* An older bake's preview, kept in flash as its raw square (orb_theme_preview_hold) */
+static bool raw_sq(uint32_t n, uint16_t side) { return n == (uint32_t)side * side * 2u; }
+static uint16_t *raw_copy(const uint8_t *z, uint32_t n)
+{
+    uint16_t *b = heap_caps_malloc(n, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (b) memcpy(b, z, n);
+    return b;
+}
+
 /* An app's preview, inflated at its own size into a fresh buffer (native order), from its
  * entry in flash; an app with none there (a choice the reconcile has not reached) reads it off
  * the card. NULL when it has none. Preview task. */
@@ -261,7 +270,7 @@ static uint16_t *pv_inflate(const char *slug, uint16_t *w_out)
     uint16_t side = 0;
     const uint8_t *z = orb_theme_preview_hold(slug, &n, &side);
     if (z) {
-        uint16_t *full = (uint16_t *)orb_preview_inflate(z, n, side);
+        uint16_t *full = raw_sq(n, side) ? raw_copy(z, n) : (uint16_t *)orb_preview_inflate(z, n, side);
         orb_theme_preview_release();
         *w_out = side;
         return full;
@@ -368,7 +377,17 @@ static uint16_t *pv_thumb(const char *slug)
         uint16_t side = 0;
         const uint8_t *z = orb_theme_preview_hold(slug, &n, &side);
         if (z) {
-            uint16_t *t = side >= PV ? shrink_disc(z, n, side) : NULL;
+            uint16_t *t = NULL;
+            if (raw_sq(n, side)) {                       /* an older bake's square */
+                uint16_t *sq = raw_copy(z, n);
+                if (sq && side > PV) {
+                    t = heap_caps_malloc((size_t)PV * PV * 2, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+                    if (t) box_down(sq, side, t, PV);
+                    heap_caps_free(sq);
+                } else if (side == PV) t = sq;
+                else heap_caps_free(sq);
+                if (t) for (size_t k = 0; k < (size_t)PV * PV; k++) t[k] = wire(t[k]);
+            } else if (side >= PV) t = shrink_disc(z, n, side);
             orb_theme_preview_release();
             if (t) {
                 ESP_LOGI(TAG, "thumbnail %s: %d ms (streamed)", slug, (int)((esp_timer_get_time() - t0) / 1000));
@@ -871,6 +890,7 @@ bool orb_strip_open(const orb_app_t *from, int step)
 
     display_glass_hold(true);
     orb_sched_set_running(false);
+    orb_app_cover(true);                      /* the app under it draws and reads nothing */
     s_pos = (float)s_from_i;
     s_pending = step;
     memset(&s_m, 0, sizeof s_m);
@@ -890,6 +910,7 @@ static void finish(int64_t now)
     s_frames0 = display_held_frames();
     if (same && it->app) {
         orb_sched_set_running(true);           /* the app never left the screen */
+        orb_app_cover(false);                  /* but it was suspended under the carousel */
     } else if (it->app) {
         input_router_show(it->app);
     } else {
@@ -944,6 +965,7 @@ void orb_strip_abort(void)
     s_ring = -1;
     glass_tell();
     orb_sched_set_running(true);
+    orb_app_cover(false);       /* a named screen follows: a switch, or the same app back */
     display_glass_hold(false);
 }
 

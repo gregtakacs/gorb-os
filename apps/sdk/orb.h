@@ -365,7 +365,8 @@ enum {
 };
 enum { ORB_MAP_DASH_SOLID, ORB_MAP_DASH_SHORT, ORB_MAP_DASH_LONG, ORB_MAP_DASH_DOT, ORB_MAP_DASH_DASHDOT };
 enum { ORB_MARK_CITY, ORB_MARK_TOWN, ORB_MARK_VILLAGE, ORB_MARK_AIRPORT };
-enum { ORB_MAP_ABSENT = -1, ORB_MAP_NOCARD = -2, ORB_MAP_BAD = -3, ORB_MAP_NOMEM = -4 };
+enum { ORB_MAP_ABSENT = -1, ORB_MAP_NOCARD = -2, ORB_MAP_BAD = -3, ORB_MAP_NOMEM = -4,
+       ORB_MAP_OFF_GLASS = -5 };   /* OS v1.6.1: map_open from an app off the glass; open it in orb_resume */
 
 typedef struct {
     int32_t  radius_m;             /* centre to the glass's edge */
@@ -442,7 +443,9 @@ void orb_logf(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
  *   void    orb_resume(void)            back on the glass without a rebuild
  *   void    orb_show(void)              the page was just loaded: re-push state
  *   void    orb_tick(uint32_t now_ms)   the beat, while on the glass
- *   void    orb_service(void)           every service pass, on the glass or not
+ *   void    orb_service(void)           every service pass, on the glass or not; off the
+ *                                       glass, no drawing and no maps (apps/README.md,
+ *                                       "Off the glass")
  *   void    orb_input(int32_t delta, int32_t pressed)   the knob, while armed
  *   void    orb_push(int32_t delta)     a press-and-turn: clicks turned with the knob held
  *                                       down (OS v1.2.19; radar-plan §2.10). Exporting it is

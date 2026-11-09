@@ -3709,23 +3709,23 @@ bool orb_theme_absent(const char *slug, const char **brief, char *why, size_t wh
             if (why) snprintf(why, whysz, "Its theme file \"%s\" was deleted from the card, so the "
                               "orb let its copy go. Send it a theme again.", s_gone.g[k].stem);
         }
+    const bool off_pool = s_pool && orb_pool_find_kind(s_pool, slug, ORB_POOL_DISPLAY) < 0;
+    if (chosen && !b && off_pool && !orb_sd_mounted()) {   /* a card out outranks a failed copy */
+        b = "no card";
+        if (why) snprintf(why, whysz, "Its theme is on the SD card, and no card is in. Put the "
+                          "card back and open the app.");
+    }
     for (int i = 0; chosen && !b && i < (int)CACHE_APPS; i++) {
         if (!s_note[i].slug[0] || strcmp(s_note[i].slug, slug)) continue;
         if (s_note[i].kind == NOTE_RESEND) {
             b = "send it again";
             if (why) snprintf(why, whysz, "Its theme \"%s\" was stored by older firmware without "
                               "its sounds. Send it again from the hub.", s_note[i].why);
-        } else if (s_pool && orb_pool_find_kind(s_pool, slug, ORB_POOL_DISPLAY) < 0) {
+        } else if (off_pool) {
             b = "copy failed";
             if (why) snprintf(why, whysz, "Its theme could not be copied back from the card: %s.",
                               s_note[i].why);
         }
-    }
-    if (chosen && !b && s_pool && orb_pool_find_kind(s_pool, slug, ORB_POOL_DISPLAY) < 0 &&
-        !orb_sd_mounted()) {
-        b = "no card";
-        if (why) snprintf(why, whysz, "Its theme is on the SD card, and no card is in. Put the "
-                          "card back and open the app.");
     }
     if (brief) *brief = b;
     return b != NULL;

@@ -903,7 +903,7 @@ typedef struct {
 } gone_rec_t;
 EXT_RAM_BSS_ATTR static gone_rec_t s_gone;
 enum { NOTE_FAILED = 1, NOTE_RESEND = 2 };
-static struct { char slug[ORB_POOL_SLUG_MAX]; uint8_t kind; char why[72]; } s_note[CACHE_APPS];
+EXT_RAM_BSS_ATTR static struct { char slug[ORB_POOL_SLUG_MAX]; uint8_t kind; char why[72]; } s_note[CACHE_APPS];
 
 static void gone_save(void)
 {

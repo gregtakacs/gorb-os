@@ -1,4 +1,6 @@
-# Layout C (§43): A/B OTA at 3.5 MB, one theme slot, the app ledger sized to wasm apps.
+# Layout D (2026-11-09): A/B OTA at 2.75 MB, the theme pool 9.5 MB, the app ledger sized
+# to wasm apps. Layout C had OTA at 3.5 MB and the pool at 8 MB; every row from `storage`
+# on is where it was, and `assets` ends where it did.
 #
 # RETENTION INVARIANT — do not change the nvs row's offset or size. Neither
 # `idf.py flash` nor OTA ever rewrites nvs (it is absent from build/flash_args),
@@ -15,8 +17,13 @@ phy_init, data, phy,     0x13000,   0x1000,
 # HSB editor and the flight tracker are wasm modules in the `apps` ledger now, and
 # the image is the OS alone (2,063,056 B at the move, measured from build/gorb-os.bin).
 # A slot smaller than the image turns every upgrade into ESP_ERR_OTA_VALIDATE_FAILED.
-ota_0,    app,  ota_0,   0x20000,   0x380000,
-ota_1,    app,  ota_1,   0x3A0000,  0x380000,
+# Layout D (owner, 2026-11-09) gave 0.75 MB of each back to the theme pool, so a fourth
+# app's theme fits: the image was 2,390,320 B then, 493 KB under 2.75 MB. The build's
+# check_sizes.py refuses an image that outgrows it. An orb only ever updated over Wi-Fi
+# keeps Layout C's table (OTA cannot rewrite it) and runs the same image: the pool reads
+# its size from the table (orb_pool.h).
+ota_0,    app,  ota_0,   0x20000,   0x2C0000,
+ota_1,    app,  ota_1,   0x2E0000,  0x2C0000,
 # No `factory` partition on purpose: with otadata erased the bootloader logs
 # "No factory image, trying OTA 0" and seeds otadata itself
 # (bootloader_support/src/bootloader_utility.c), and `idf.py flash` resolves the
@@ -32,7 +39,7 @@ ota_1,    app,  ota_1,   0x3A0000,  0x380000,
 # PartitionDefinition.from_csv) and turns a blank data subtype into `undefined`
 # 0x06; delete the comma and offset/size shift left into the wrong fields.
 # Lookup is always by LABEL, never by subtype.
-assets,   data, ,           0x720000, 0x800000,
+assets,   data, ,           0x5A0000, 0x980000,
 # Application settings + WiFi credentials, in their OWN NVS partition.
 # This is the retention fix: main.c still calls nvs_flash_erase() to recover from
 # a corrupt default NVS, and that call only wipes the `nvs` partition above —

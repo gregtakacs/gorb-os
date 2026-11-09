@@ -32,12 +32,11 @@ enum { H_MAGIC, H_FORMAT, H_SERIAL, H_N, H_ENTRY_BYTES, H_CRC, H_PAGES };
 #define E_WORDS    14                       /* format 3: format 2's thirteen and the page id */
 #define E_WORDS_F2 13
 #define E_WORDS_F1 12
-#define T3_BYTES   (ORB_POOL_MAP_AT + ORB_POOL_PAGES)   /* format 3's checked bytes */
+#define T3_BYTES(pages) (ORB_POOL_MAP_AT + (pages))   /* format 3's checked bytes */
 _Static_assert(E_WORDS_AT + E_WORDS * 4 <= ORB_POOL_ENTRY_BYTES, "an entry's words must fit its record");
 _Static_assert(E_WORDS_AT + E_WORDS_F2 * 4 <= ORB_POOL_ENTRY_BYTES_F2, "format 2's words fit its record");
 _Static_assert(E_WORDS_AT + E_WORDS_F1 * 4 <= ORB_POOL_ENTRY_BYTES_F1, "format 1's words fit its record");
-_Static_assert(T3_BYTES <= ORB_POOL_SECTOR, "the table and its page map are one sector");
-_Static_assert(ORB_POOL_PAGES <= 255u, "a page's owner is a byte");
+_Static_assert(T3_BYTES(ORB_POOL_PAGES_MAX) <= ORB_POOL_SECTOR, "the table and its page map are one sector");
 
 static uint32_t *entry_word(orb_pool_entry_t *e, int k)
 {
@@ -64,7 +63,7 @@ void orb_pool_encode(const orb_pool_t *p, uint8_t out[ORB_POOL_SECTOR])
     put32(out + H_SERIAL * 4, p->serial);
     put32(out + H_N * 4, p->n);
     put32(out + H_ENTRY_BYTES * 4, ORB_POOL_ENTRY_BYTES);
-    put32(out + H_PAGES * 4, ORB_POOL_PAGES);
+    put32(out + H_PAGES * 4, p->pages);
     for (uint32_t i = 0; i < p->n && i < ORB_POOL_ENTRIES; i++) {
         uint8_t *r = out + ORB_POOL_HEAD_BYTES + i * ORB_POOL_ENTRY_BYTES;
         orb_pool_entry_t e = p->e[i];
@@ -72,8 +71,8 @@ void orb_pool_encode(const orb_pool_t *p, uint8_t out[ORB_POOL_SECTOR])
         memcpy(r + ORB_POOL_SLUG_MAX, e.name, ORB_POOL_NAME_MAX);
         for (int k = 0; k < E_WORDS; k++) put32(r + E_WORDS_AT + 4 * k, *entry_word(&e, k));
     }
-    memcpy(out + ORB_POOL_MAP_AT, p->owner, ORB_POOL_PAGES);
-    put32(out + H_CRC * 4, table_crc(out, T3_BYTES));
+    memcpy(out + ORB_POOL_MAP_AT, p->owner, p->pages);
+    put32(out + H_CRC * 4, table_crc(out, T3_BYTES(p->pages)));
 }
 
 static bool str_ok(const char *s, size_t cap, bool need)
@@ -123,12 +122,14 @@ const char *orb_pool_decode(const uint8_t *in, size_t len, orb_pool_t *out)
     const uint32_t n = get32(in + H_N * 4);
     if (n > ORB_POOL_ENTRIES) return "more entries than the pool holds";
     if (get32(in + H_ENTRY_BYTES * 4) != ORB_POOL_ENTRY_BYTES) return "entries of another width";
-    if (get32(in + H_PAGES * 4) != ORB_POOL_PAGES) return "a pool of another page count";
-    if (get32(in + H_CRC * 4) != table_crc(in, T3_BYTES)) return "the table's CRC is wrong";
+    const uint32_t pages = get32(in + H_PAGES * 4);
+    if (!pages || pages > ORB_POOL_PAGES_MAX) return "a pool of more pages than this build holds";
+    if (get32(in + H_CRC * 4) != table_crc(in, T3_BYTES(pages))) return "the table's CRC is wrong";
     out->serial = get32(in + H_SERIAL * 4);
     out->n = n;
     out->format = fmt;
-    memcpy(out->owner, in + ORB_POOL_MAP_AT, ORB_POOL_PAGES);
+    out->pages = pages;
+    memcpy(out->owner, in + ORB_POOL_MAP_AT, pages);
     for (uint32_t i = 0; i < n; i++) {
         const uint8_t *r = in + ORB_POOL_HEAD_BYTES + i * ORB_POOL_ENTRY_BYTES;
         orb_pool_entry_t *e = &out->e[i];
@@ -145,13 +146,13 @@ const char *orb_pool_decode(const uint8_t *in, size_t len, orb_pool_t *out)
             if (!strcmp(out->e[j].slug, e->slug) && out->e[j].kind == e->kind) return "two entries of a kind for one app";
             if (out->e[j].pid == e->pid) return "two entries with one page id";
         }
-        if (!e->size || e->size % ORB_POOL_PAGE || e->size > ORB_POOL_CAP) return "an entry not in whole pages";
+        if (!e->size || e->size % ORB_POOL_PAGE || e->size > pages * ORB_POOL_PAGE) return "an entry not in whole pages";
         if (e->geom_size > e->art_off || e->art_off > e->size ||
             e->art_size > e->size - e->art_off)
             return "an entry's index or banks outside it";
     }
     /* the map names exactly each entry's pages, and its first is its `off` */
-    for (uint32_t pg = 0; pg < ORB_POOL_PAGES; pg++) {
+    for (uint32_t pg = 0; pg < pages; pg++) {
         if (!out->owner[pg]) continue;
         uint32_t k = 0;
         while (k < n && out->e[k].pid != out->owner[pg]) k++;
@@ -159,7 +160,7 @@ const char *orb_pool_decode(const uint8_t *in, size_t len, orb_pool_t *out)
     }
     for (uint32_t i = 0; i < n; i++) {
         uint32_t cnt = 0, first = UINT32_MAX;
-        for (uint32_t pg = 0; pg < ORB_POOL_PAGES; pg++)
+        for (uint32_t pg = 0; pg < pages; pg++)
             if (out->owner[pg] == out->e[i].pid) { if (!cnt) first = pg * ORB_POOL_PAGE; cnt++; }
         if (cnt * ORB_POOL_PAGE != out->e[i].size) return "an entry's pages are not its size";
         if (first != out->e[i].off) return "an entry's first page is not its offset";
@@ -183,20 +184,25 @@ void orb_pool_pages(const orb_pool_t *p, uint32_t k, orb_pool_pages_t *out)
 {
     out->n = 0;
     if (k >= p->n) return;
-    for (uint32_t pg = 0; pg < ORB_POOL_PAGES; pg++)
+    for (uint32_t pg = 0; pg < p->pages; pg++)
         if (p->owner[pg] == p->e[k].pid) out->off[out->n++] = pg * ORB_POOL_PAGE;
 }
 
 uint32_t orb_pool_free_pages(const orb_pool_t *p)
 {
     uint32_t f = 0;
-    for (uint32_t pg = 0; pg < ORB_POOL_PAGES; pg++) f += !p->owner[pg];
+    for (uint32_t pg = 0; pg < p->pages; pg++) f += !p->owner[pg];
     return f;
 }
 
 uint32_t orb_pool_used(const orb_pool_t *p)
 {
-    return (ORB_POOL_PAGES - orb_pool_free_pages(p)) * ORB_POOL_PAGE;
+    return (p->pages - orb_pool_free_pages(p)) * ORB_POOL_PAGE;
+}
+
+uint32_t orb_pool_cap(const orb_pool_t *p)
+{
+    return p->pages * ORB_POOL_PAGE;
 }
 
 uint32_t orb_pool_round(uint32_t n)
@@ -272,27 +278,45 @@ int orb_pool_pcrc(const orb_pool_io_t *io, const orb_pool_pages_t *pg, uint32_t 
 
 /* ---- the pool on flash ---- */
 
+/* A table that decodes and is this partition's: format 3 of its page count, or a format 1
+ * or 2 table, read for what it says (boot resets it). */
+static bool decode_for(const uint8_t *in, orb_pool_t *p, uint32_t pages)
+{
+    return orb_pool_decode(in, ORB_POOL_SECTOR, p) == NULL &&
+           (p->format != ORB_POOL_FORMAT || p->pages == pages);
+}
+
+static void empty(orb_pool_t *p, uint32_t pages)
+{
+    memset(p, 0, sizeof *p);
+    p->format = ORB_POOL_FORMAT;
+    p->pages = pages;
+}
+
 int orb_pool_load(const orb_pool_io_t *io, orb_pool_t *p, int *which)
 {
     if (!io->buf || io->buf_bytes < ORB_POOL_SECTOR) return ORB_POOL_ERR_ARG;
+    const uint32_t pages = ORB_POOL_PAGES_IN(io->part_bytes);
+    if (io->part_bytes < 3u * ORB_POOL_SECTOR || !pages || pages > ORB_POOL_PAGES_MAX)
+        return ORB_POOL_ERR_ARG;
     *which = 0;
-    int r = io->read(io->ctx, ORB_POOL_TABLE_A, io->buf, ORB_POOL_SECTOR);
+    int r = io->read(io->ctx, ORB_POOL_TABLE_A_IN(io->part_bytes), io->buf, ORB_POOL_SECTOR);
     if (r) return r;
-    const bool a_ok = orb_pool_decode(io->buf, ORB_POOL_SECTOR, p) == NULL;
+    const bool a_ok = decode_for(io->buf, p, pages);
     const uint32_t a_serial = a_ok ? p->serial : 0;
-    r = io->read(io->ctx, ORB_POOL_TABLE_B, io->buf, ORB_POOL_SECTOR);
+    r = io->read(io->ctx, ORB_POOL_TABLE_B_IN(io->part_bytes), io->buf, ORB_POOL_SECTOR);
     if (r) return r;
     /* B only where it is newer: decode it over p, and fall back to A if it lies. */
     if (get32(io->buf + H_MAGIC * 4) == ORB_POOL_MAGIC &&
         (!a_ok || get32(io->buf + H_SERIAL * 4) > a_serial)) {
-        if (orb_pool_decode(io->buf, ORB_POOL_SECTOR, p) == NULL) { *which = 2; return 0; }
-        if (!a_ok) { memset(p, 0, sizeof *p); p->format = ORB_POOL_FORMAT; return 0; }
-        r = io->read(io->ctx, ORB_POOL_TABLE_A, io->buf, ORB_POOL_SECTOR);
+        if (decode_for(io->buf, p, pages)) { *which = 2; return 0; }
+        if (!a_ok) { empty(p, pages); return 0; }
+        r = io->read(io->ctx, ORB_POOL_TABLE_A_IN(io->part_bytes), io->buf, ORB_POOL_SECTOR);
         if (r) return r;
         (void)orb_pool_decode(io->buf, ORB_POOL_SECTOR, p);
     }
     if (a_ok) *which = 1;
-    else { memset(p, 0, sizeof *p); p->format = ORB_POOL_FORMAT; }
+    else empty(p, pages);
     return 0;
 }
 
@@ -301,14 +325,16 @@ int orb_pool_write(const orb_pool_io_t *io, orb_pool_t *p, int *which)
     /* Never write a table this file would refuse to read. Static, not on the stack:
      * a pool is a few kilobytes, and pool work is one worker's, never two at once. */
     EXT_RAM_BSS_ATTR static orb_pool_t check;   /* PSRAM: internal RAM is the DMA ring's */
+    if (p->pages != ORB_POOL_PAGES_IN(io->part_bytes)) return ORB_POOL_ERR_ARG;
     p->serial++;
     orb_pool_encode(p, io->buf);
     if (orb_pool_decode(io->buf, ORB_POOL_SECTOR, &check)) { p->serial--; return ORB_POOL_ERR_TABLE; }
-    const uint32_t at = *which == 1 ? ORB_POOL_TABLE_B : ORB_POOL_TABLE_A;
+    const uint32_t at = *which == 1 ? ORB_POOL_TABLE_B_IN(io->part_bytes)
+                                    : ORB_POOL_TABLE_A_IN(io->part_bytes);
     int r = io->erase(io->ctx, at, ORB_POOL_SECTOR);
     if (!r) r = io->write(io->ctx, at, io->buf, ORB_POOL_SECTOR);
     if (r) return r;
-    *which = at == ORB_POOL_TABLE_A ? 1 : 2;
+    *which = at == ORB_POOL_TABLE_A_IN(io->part_bytes) ? 1 : 2;
     p->format = ORB_POOL_FORMAT;
     return 0;
 }
@@ -316,15 +342,14 @@ int orb_pool_write(const orb_pool_io_t *io, orb_pool_t *p, int *which)
 int orb_pool_reset(const orb_pool_io_t *io, orb_pool_t *p, int *which)
 {
     const uint32_t serial = p->serial;
-    memset(p, 0, sizeof *p);
+    empty(p, ORB_POOL_PAGES_IN(io->part_bytes));
     p->serial = serial;
-    p->format = ORB_POOL_FORMAT;
     return orb_pool_write(io, p, which);
 }
 
 static void drop(orb_pool_t *p, uint32_t k)
 {
-    for (uint32_t pg = 0; pg < ORB_POOL_PAGES; pg++)
+    for (uint32_t pg = 0; pg < p->pages; pg++)
         if (p->owner[pg] == p->e[k].pid) p->owner[pg] = 0;
     memmove(&p->e[k], &p->e[k + 1], (p->n - k - 1u) * sizeof p->e[0]);
     p->n--;
@@ -351,7 +376,7 @@ int orb_pool_fits(const orb_pool_t *p, const char *slug, uint32_t size)
     uint64_t total = orb_pool_round(size);
     for (uint32_t i = 0; i < p->n; i++)
         if ((int)i != k) total += p->e[i].size;
-    if (total > ORB_POOL_CAP) return ORB_POOL_ERR_FULL;
+    if (total > orb_pool_cap(p)) return ORB_POOL_ERR_FULL;
     if (k < 0 && p->n >= ORB_POOL_ENTRIES) return ORB_POOL_ERR_TABLE;
     return 0;
 }
@@ -380,14 +405,20 @@ int orb_pool_evictions_kind(const orb_pool_t *p, const char *slug, uint32_t kind
         for (uint32_t r = 0; order && r < n_order; r++)
             if (order[r] && !strcmp(order[r], p->e[k].slug)) { rank[k] = (int)r; break; }
     }
-    /* least recent first, ties in table order; never keep, never a voice bank */
-    while (total > ORB_POOL_CAP || count > ORB_POOL_ENTRIES) {
-        int pick = -1;
-        for (uint32_t k = 0; k < p->n; k++) {
+    /* Owner, 2026-11-09: previews go first, then display entries, each least recent first
+     * (ties in table order); a voice bank never, keep's display entry never. A preview is
+     * only ever stored into free room: it evicts nothing, not even another preview. */
+    while (total > orb_pool_cap(p) || count > ORB_POOL_ENTRIES) {
+        int pick = -1, pick_tier = 0;
+        for (uint32_t k = 0; kind != ORB_POOL_PREVIEW && k < p->n; k++) {
             if ((*mask >> k) & 1u) continue;
-            if (p->e[k].kind != ORB_POOL_DISPLAY) continue;
-            if (keep && !strcmp(p->e[k].slug, keep)) continue;
-            if (pick < 0 || rank[k] < rank[pick]) pick = (int)k;
+            const int tier = p->e[k].kind == ORB_POOL_PREVIEW ? 0 : p->e[k].kind == ORB_POOL_DISPLAY ? 1 : -1;
+            if (tier < 0) continue;
+            if (tier == 1 && keep && !strcmp(p->e[k].slug, keep)) continue;
+            if (pick < 0 || tier < pick_tier || (tier == pick_tier && rank[k] < rank[pick])) {
+                pick = (int)k;
+                pick_tier = tier;
+            }
         }
         if (pick < 0) { *mask = 0; return ORB_POOL_ERR_FULL; }
         *mask |= 1u << pick;
@@ -420,7 +451,7 @@ int orb_pool_reserve(const orb_pool_io_t *io, orb_pool_t *p, int *which,
         if (r) return r;
     }
     const uint32_t need = orb_pool_round(size) / ORB_POOL_PAGE;
-    for (uint32_t i = 0; i < ORB_POOL_PAGES && pg->n < need; i++)
+    for (uint32_t i = 0; i < p->pages && pg->n < need; i++)
         if (!p->owner[i]) pg->off[pg->n++] = i * ORB_POOL_PAGE;
     if (pg->n < need) { pg->n = 0; return ORB_POOL_ERR_FULL; }   /* the evictions said it would fit */
     return 0;
@@ -435,7 +466,7 @@ int orb_pool_commit(const orb_pool_io_t *io, orb_pool_t *p, int *which,
     if (!pg->n || pg->n * ORB_POOL_PAGE != e->size) return ORB_POOL_ERR_ARG;
     for (uint32_t i = 0; i < pg->n; i++) {
         const uint32_t page = pg->off[i] / ORB_POOL_PAGE;
-        if (pg->off[i] % ORB_POOL_PAGE || page >= ORB_POOL_PAGES || p->owner[page]) return ORB_POOL_ERR_ARG;
+        if (pg->off[i] % ORB_POOL_PAGE || page >= p->pages || p->owner[page]) return ORB_POOL_ERR_ARG;
         if (i && pg->off[i] <= pg->off[i - 1]) return ORB_POOL_ERR_ARG;   /* ascending: byte order */
     }
     uint32_t pid = 1;

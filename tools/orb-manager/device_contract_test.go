@@ -497,14 +497,16 @@ func TestEveryFirmwareDeviceRouteIsAllowedAndFakeable(t *testing.T) {
 	// map_view and png_bench, which time an OS map view and the PNG reader on the S3, and
 	// R3c's live, which draws into the stage's live layer under whatever app is showing.
 	// The theme cache's fill (C0's copy bench, C5's eviction and stale-choice doors) and the
-	// clock warp the chime tests run under are bench doors too (theme-cache-plan §6).
+	// clock warp the chime tests run under are bench doors too (theme-cache-plan §6), and
+	// so is the USB disk row's press from the bench host (debug/usb, the same section).
 	refused := map[string]bool{"/api/v1/ota": true, "/generate_204": true,
 		"/hotspot-detect.html": true, "/connect/test.php": true,
 		"/api/v1/debug/panic": true, "/api/v1/debug/flights": true,
 		"/api/v1/debug/fx": true, "/api/v1/debug/dial": true,
 		"/api/v1/debug/units_forget": true, "/api/v1/debug/map_bench": true,
 		"/api/v1/debug/map_view": true, "/api/v1/debug/png_bench": true,
-		"/api/v1/debug/live": true, "/api/v1/debug/fill": true, "/api/v1/debug/time": true}
+		"/api/v1/debug/live": true, "/api/v1/debug/fill": true, "/api/v1/debug/time": true,
+		"/api/v1/debug/usb": true}
 	checked := 0
 	for _, m := range found {
 		uri, method := m[1], strings.ToUpper(m[2])

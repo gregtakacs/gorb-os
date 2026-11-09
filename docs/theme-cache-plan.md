@@ -314,6 +314,43 @@ happens only when they are not. No first fit, no compaction, no MOVING state.
   `esp-aes: Failed to allocate memory`. Open: the radio's dynamic RX/TX buffers
   (`SPIRAM_TRY_ALLOCATE_WIFI_LWIP` was tried in v1.1.41 and backed out, see sdkconfig.defaults).
 
+### Layout D, and previews give way first (2026-11-09, owner's ruling, Bronze)
+
+- **The ruling:** "let's shrink the OTA A/B slots but also now that we have solved the SD card
+  read thrashing problem let's offload the uncompressed previews to the SD card and pre-fetch
+  them as we go around the carousel. Also, put the preview pool into the allowable memory to
+  evict ... so those go first before an app gets dropped. I rather have a slow carousel than
+  an app loading every time the app cycler tries to land on it."
+- **Layout D** (`partitions.csv`): `ota_0`/`ota_1` 3.5 -> 2.75 MB (0x2C0000 each, the image
+  2,390,320 B, 17% free), `assets` 0x5A0000 for 9.5 MB: 151 pages, was 127. Every row from
+  `storage` on is where it was, and `assets` ends where it did, so its tables are where Layout
+  C's were.
+- **One image on both layouts** (`orb_pool`): the page count is the partition's
+  (`ORB_POOL_PAGES_IN`, `orb_pool_io_t.part_bytes`, `orb_pool_t.pages`, arrays to
+  `ORB_POOL_PAGES_MAX` 160). An orb only ever updated over Wi-Fi keeps its 8 MB table and
+  pool. One reflashed over USB finds the old 127-page table at the new end: `orb_pool_load`
+  refuses a format 3 table of another page count, the pool starts empty, and the cache fills
+  from the card (the hub's full flash erases those tables anyway). `host_pool_test.py`: both
+  layouts, the old table refused under the new; 20 of 20 mutants.
+- **Previews go first, and take only free room** (`orb_pool_evictions_kind`): a display or a
+  voice bank evicts previews first, least recent first, then display entries; a voice bank
+  never; a preview evicts nothing (`preview_store` answers "it stays on the card"). After a
+  reserve, `previews_sync` takes down the windows of the previews it evicted before their
+  pages are written, and the log tells a preview leaving from a theme leaving.
+- **Raw previews stay on the card**: `preview_store` keeps no raw square, and one stored that
+  morning is removed at boot (`previews_map`).
+- **The carousel reads the card for what flash lacks**, a deflated preview streamed straight
+  into its thumbnail (`pv_thumb`, no 434 KB full-glass buffer) or the raw square, and builds
+  a fourth thumbnail: the app after the window in the way the strip last turned
+  (`THUMBS` 4, `s_turn_dir`).
+- **Bronze, Layout D by USB:** the old table refused, an empty 151-page pool; clock filled at
+  boot with its voice bank and three deflated previews; weather, radar and flights each
+  filled on opening, nothing evicted: **all four apps' themes in flash, 256 KB free**. The
+  carousel over radar: thumbnails from flash 100-155 ms, flights' raw one off the card ~300
+  ms, clock's built ahead of the turn that reached it; 88 frames, 0 skipped.
+- **Release step owed:** `tools/orb-manager/api_test.go` pins the bundled table's `assets`
+  (0x720000 + 0x800000); it moves to 0x5A0000 + 0x980000 with the bundle rebuild.
+
 ### USB disk mode pays for its own buffer (2026-11-09, owner's ruling, Bronze)
 
 - **The ruling:** "take out the entire 8K and instead when user asks for USB mode 1) flip to
@@ -349,12 +386,14 @@ happens only when they are not. No first fit, no compaction, no MOVING state.
 ### The carousel keeps nothing while shut (2026-11-09, owner's rulings, Bronze)
 
 - **Previews resident in flash:** a third entry kind, `ORB_POOL_PREVIEW`, one per chosen app,
-  never evicted: the theme's full-glass preview as its bundle deflated it (2-4 pages). A
+  never evicted (until the same day's later ruling, below: stored only into free room and the
+  first thing evicted): the theme's full-glass preview as its bundle deflated it (2-4 pages). A
   store writes it; the reconcile makes any that are missing. Each is mapped as a window
   (`orb_pagemap`), so the carousel's preview task, whose stack is PSRAM and may not read
   flash through the driver, reads it as plain memory (`orb_theme_preview_hold`, under a lock
   a store takes to unmap it). A bake with no deflated preview (before v1.2.20, flights'
-  Blueprint) keeps its raw square instead, up to 240 px (two pages, `PREVIEW_RAW`; see below).
+  Blueprint) kept its raw square instead, up to 240 px (two pages, `PREVIEW_RAW`); since the
+  later ruling below it stays on the card.
 - **Three thumbnails at most** (owner: "only load 3 ... make sure this does not grow"): the
   centre app and one either side, built when the carousel opens and as it turns, freed as
   they leave the window and all at close, on the drawing task. Each is shrunk as the preview
@@ -387,8 +426,9 @@ happens only when they are not. No first fit, no compaction, no MOVING state.
 - **The OS opens no map for an app off the glass** (`map_open` answers `ORB_MAP_OFF_GLASS`),
   and radar opens none itself (its `view_open` and place change wait for `on_glass`).
   Weather, flights and the clock already gated their drawing on their visible flags.
-- **Raw previews in flash:** the reconcile kept no preview for Blueprint ("no deflated
-  preview"). `preview_store` now keeps an old bake's raw square (`orb_theme_preview_read`'s
+- **Raw previews in flash** (withdrawn later the same day, "Layout D" below: those two pages
+  were what left three apps' themes one page short): the reconcile kept no preview for
+  Blueprint ("no deflated preview"). `preview_store` kept an old bake's raw square (`orb_theme_preview_read`'s
   native RGB565) with `PREVIEW_RAW` in the head's flags, side x side x 2 bytes, which no
   deflated stream is; `orb_theme_preview_hold` checks the flag and the size agree, and the
   carousel copies (and, over 232 px, boxes down) the square.

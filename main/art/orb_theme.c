@@ -605,7 +605,7 @@ static bool pool_io(const esp_partition_t *p)
     if (!s_pool_buf) s_pool_buf = heap_caps_malloc(ORB_POOL_SECTOR, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (!s_pool || !s_pool_buf || !p) return false;
     s_pool_io = (orb_pool_io_t){ (void *)p, pool_read, pool_erase, pool_write,
-                                 s_pool_buf, ORB_POOL_SECTOR, NULL };
+                                 s_pool_buf, ORB_POOL_SECTOR, NULL, (uint32_t)p->size };
     return true;
 }
 
@@ -997,15 +997,15 @@ size_t orb_theme_cache_json(char *b, size_t cap)
             (unsigned long)s_pool->e[k].off, (unsigned long)s_pool->e[k].size, (unsigned long)s_pool->e[k].file_crc);
         /* §4.1: its pages, as runs "first-last" (a scattered entry has several) */
         int n = 0;
-        for (uint32_t pg = 0; pg < ORB_POOL_PAGES; pg++) {
+        for (uint32_t pg = 0; pg < s_pool->pages; pg++) {
             if (s_pool->owner[pg] != s_pool->e[k].pid || (pg && s_pool->owner[pg - 1] == s_pool->e[k].pid)) continue;
             uint32_t end = pg;
-            while (end + 1 < ORB_POOL_PAGES && s_pool->owner[end + 1] == s_pool->e[k].pid) end++;
+            while (end + 1 < s_pool->pages && s_pool->owner[end + 1] == s_pool->e[k].pid) end++;
             PUT("%s\"%lu-%lu\"", n++ ? "," : "", (unsigned long)pg, (unsigned long)end);
         }
         PUT("]}");
     }
-    PUT("],\"capacity\":%lu,\"free\":%lu", (unsigned long)ORB_POOL_CAP,
+    PUT("],\"capacity\":%lu,\"free\":%lu", (unsigned long)(s_pool ? orb_pool_cap(s_pool) : 0),
         (unsigned long)(s_pool ? orb_pool_free_pages(s_pool) * ORB_POOL_PAGE : 0));
     if (s_fill_slug[0])                        /* §2.4: the fill running, as its face shows it */
         PUT(",\"fill\":{\"app\":\"%s\",\"done\":%lu,\"total\":%lu}", s_fill_slug,
@@ -2297,6 +2297,7 @@ static uint32_t voice_bank_size(const store_snd_t *snd)
 EXT_RAM_BSS_ATTR static orb_pool_pages_t s_voice_pg;
 EXT_RAM_BSS_ATTR static orb_pool_pages_t s_job_pg;      /* the install's entry, old then new */
 static void voice_add(const char *slug);
+static void previews_sync(const char *for_slug, char (*gone)[ORB_POOL_SLUG_MAX], uint32_t ngone);
 static esp_err_t store_voice(const char *slug, const char *name, const orb_pool_pages_t *src,
                              int fd, uint32_t file_art_base,
                              uint32_t sec_art_off, uint32_t src_crc, uint32_t serial, const char **w)
@@ -2326,8 +2327,7 @@ static esp_err_t store_voice(const char *slug, const char *name, const orb_pool_
     orb_pool_pages_t *pg = &s_voice_pg;
     const int r = orb_pool_reserve(&s_pool_io, s_pool, &s_pool_which, slug, ORB_POOL_VOICE, total,
                                    ord, nord, slug, pg, gone, &ngone);
-    for (uint32_t i = 0; i < ngone; i++)
-        ESP_LOGI(TAG, "making room for %s's sounds: %s's theme left the pool", slug, gone[i]);
+    previews_sync(slug, gone, ngone);
     if (r) { *w = r == ORB_POOL_ERR_FULL ? "no room for its sounds" : "the theme area would not make room for its sounds"; return ESP_FAIL; }
     const uint32_t size = orb_pool_round(total), hb = orb_voice_head_bytes(snd->n);
     if (ensure_chunk() != ESP_OK) { *w = "out of memory for the copy"; return ESP_ERR_NO_MEM; }
@@ -2398,14 +2398,17 @@ static void fill_show(uint32_t done, uint32_t total)
 
 /* ---- owner, 2026-11-09: each chosen app's preview, resident in flash ----------------------
  * The theme's full-glass preview, deflated as its bundle carries it, in an entry of its own
- * that is never evicted (ORB_POOL_PREVIEW): the carousel reads it from flash — fast, and
- * without the card lock that lends the display's DMA ring — and builds its thumbnails when it
- * opens, keeping nothing while it is shut. Written by a store and, for a choice that has none
- * (or one from another file), by the reconcile. The entry: a 16-byte head (magic, side,
- * bytes, flags), then the bytes. A bake from before v1.2.20 carries no deflated preview, only
- * a raw 232 px square: that is kept as the square itself (owner, 2026-11-09: the carousel
- * must not go to the card for one), PREVIEW_RAW in flags and side * side * 2 bytes, which no
- * deflated stream ever is. */
+ * (ORB_POOL_PREVIEW): the carousel reads it from flash, fast, and builds its thumbnails when
+ * it opens, keeping nothing while it is shut. Written by a store and, for a choice that has
+ * none (or one from another file), by the reconcile. The entry: a 16-byte head (magic, side,
+ * bytes, flags), then the bytes.
+ *
+ * Owner, 2026-11-09 (later the same day): a preview takes only free room and is the first
+ * thing evicted, and a bake from before v1.2.20 (no deflated preview, a raw 232 px square)
+ * keeps it on the card: "I rather have a slow carousel than an app loading every time the app
+ * cycler tries to land on it". Without one in flash the carousel reads the card, which since
+ * the card's own DMA arena costs the glass nothing. An entry stored raw before that
+ * (PREVIEW_RAW in flags) is removed at boot (previews_map). */
 #define PREVIEW_MAGIC 0x31565250u                   /* "PRV1" */
 #define PREVIEW_RAW   1u
 #define PREVIEW_RAW_MAX 240u                        /* two pages: the old bakes' 232 px square */
@@ -2420,22 +2423,10 @@ static esp_err_t preview_store(const char *slug, const char *stem, uint32_t file
     uint16_t side = 0;
     char why[96] = "";
     uint8_t *z = orb_theme_preview_zcopy(stem, &zn, &side, why, sizeof why);
-    uint32_t flags = 0;
+    const uint32_t flags = 0;
     if (!z && !why[0]) {                             /* not deflated: an older bake's raw square */
-        uint16_t w = 0, h = 0;
-        if (orb_theme_preview_read(stem, NULL, 0, &w, &h, why, sizeof why) == ORB_ASSET_OK &&
-            w == h && w && w <= PREVIEW_RAW_MAX) {
-            zn = (uint32_t)w * w * 2u;
-            z = heap_caps_malloc(zn, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-            if (z && orb_theme_preview_read(stem, z, zn, &w, &h, why, sizeof why) != ORB_ASSET_OK) {
-                heap_caps_free(z);
-                z = NULL;
-            }
-            side = w;
-            flags = PREVIEW_RAW;
-        } else if (w && !why[0]) {
-            snprintf(why, sizeof why, "a raw %ux%u preview, over the %u px kept raw", w, h, PREVIEW_RAW_MAX);
-        }
+        ESP_LOGI(TAG, "%s's preview is an older bake's raw square: it stays on the card", slug);
+        return ESP_ERR_NOT_FOUND;
     }
     if (!z) {
         ESP_LOGW(TAG, "%s's preview: none to keep from \"%s\" (%s)", slug, stem, why[0] ? why : "no preview");
@@ -2450,6 +2441,11 @@ static esp_err_t preview_store(const char *slug, const char *stem, uint32_t file
     const char *keep = (s_active_valid && s_live_sec) ? s_live_sec->slug : slug;
     int r = orb_pool_reserve(&s_pool_io, s_pool, &s_pool_which, slug, ORB_POOL_PREVIEW, total,
                              ord, nord, keep, pg, NULL, NULL);
+    if (r == ORB_POOL_ERR_FULL) {                    /* a preview takes only free room */
+        heap_caps_free(z);
+        ESP_LOGI(TAG, "%s's preview: no free room in flash, so it stays on the card", slug);
+        return ESP_ERR_NO_MEM;
+    }
     esp_err_t e = r ? ESP_FAIL : ESP_OK;
     const uint32_t head[4] = { PREVIEW_MAGIC, side, zn, flags };
     if (e == ESP_OK) e = pg_erase(pg, 0, orb_pool_round(total));
@@ -2528,6 +2524,42 @@ static void previews_map(void)
 {
     for (uint32_t k = 0; k < s_pool->n; k++)
         if (s_pool->e[k].kind == ORB_POOL_PREVIEW) preview_map(s_pool->e[k].slug);
+    /* a raw square stored by the day's earlier ruling goes back to the card (see above) */
+    for (uint32_t i = 0; i < CACHE_APPS; i++) {
+        char slug[ORB_POOL_SLUG_MAX] = "";
+        prev_lock();
+        const uint32_t *head = s_prevs[i].pm.ptr;
+        if (s_prevs[i].slug[0] && head && (head[3] & PREVIEW_RAW))
+            strlcpy(slug, s_prevs[i].slug, sizeof slug);
+        prev_unlock();
+        if (!slug[0]) continue;
+        preview_unmap(slug);
+        const int r = orb_pool_remove_kind(&s_pool_io, s_pool, &s_pool_which, slug, ORB_POOL_PREVIEW);
+        ESP_LOGI(TAG, "%s's raw preview left flash for the card (%d)", slug, r);
+    }
+}
+
+/* After a reserve that made room: the windows of previews it evicted come down before their
+ * pages are written (a reader holds the lock, so this waits for it), and the log says what
+ * went — a preview leaving is not its app's theme leaving. Internal-stack tasks only. */
+static void previews_sync(const char *for_slug, char (*gone)[ORB_POOL_SLUG_MAX], uint32_t ngone)
+{
+    for (uint32_t i = 0; i < CACHE_APPS; i++) {
+        char slug[ORB_POOL_SLUG_MAX] = "";
+        prev_lock();
+        if (s_prevs[i].slug[0] && orb_pool_find_kind(s_pool, s_prevs[i].slug, ORB_POOL_PREVIEW) < 0)
+            strlcpy(slug, s_prevs[i].slug, sizeof slug);
+        prev_unlock();
+        if (slug[0]) preview_unmap(slug);
+    }
+    for (uint32_t i = 0; i < ngone; i++) {
+        if (orb_pool_find(s_pool, gone[i]) >= 0)
+            ESP_LOGI(TAG, "making room for %s: %s's preview left flash (the carousel reads it "
+                          "from the card)", for_slug, gone[i]);
+        else
+            ESP_LOGI(TAG, "making room for %s: %s's theme left the pool (least recently on the "
+                          "glass; its file stays on the card)", for_slug, gone[i]);
+    }
 }
 
 const uint8_t *orb_theme_preview_hold(const char *slug, uint32_t *n, uint16_t *side)
@@ -2775,7 +2807,7 @@ esp_err_t orb_theme_install_bundle(const char *id, char *why, size_t whysz)
             if (f == ORB_POOL_ERR_FULL)
                 snprintf(sent, sizeof sent, "this theme needs %u KB and the theme area has "
                          "%u KB free", (unsigned)(entry_size / 1024),
-                         (unsigned)((ORB_POOL_CAP - orb_pool_used(s_pool) +
+                         (unsigned)((orb_pool_cap(s_pool) - orb_pool_used(s_pool) +
                                      (orb_pool_find(s_pool, slug) >= 0
                                       ? s_pool->e[orb_pool_find(s_pool, slug)].size : 0)) / 1024));
             else
@@ -2839,9 +2871,7 @@ esp_err_t orb_theme_install_bundle(const char *id, char *why, size_t whysz)
     uint32_t ngone = 0;
     const int pr = orb_pool_reserve(&s_pool_io, s_pool, &s_pool_which, slug, ORB_POOL_DISPLAY,
                                     entry_size, ord, nord, NULL, pg, gone, &ngone);
-    for (uint32_t i = 0; i < ngone; i++)
-        ESP_LOGI(TAG, "making room: %s's theme left the pool (least recently on the glass; its file "
-                      "stays on the card)", gone[i]);
+    previews_sync(slug, gone, ngone);
     uint32_t art_crc = 0;
     esp_err_t e = pr ? ESP_FAIL : ESP_OK;
     if (pr) w = "the theme area would not make room";
@@ -3328,8 +3358,8 @@ static void pool_carry(const esp_partition_t *p)
         e.abi       = h.geom_abi;
         e.kind      = ORB_POOL_DISPLAY;
         cpg.n = e.size / ORB_POOL_PAGE;
-        for (uint32_t i = 0; i < cpg.n && i < ORB_POOL_PAGES; i++) cpg.off[i] = i * ORB_POOL_PAGE;
-        if (cpg.n > ORB_POOL_PAGES) why = "the slot is bigger than the pool";
+        for (uint32_t i = 0; i < cpg.n && i < s_pool->pages; i++) cpg.off[i] = i * ORB_POOL_PAGE;
+        if (cpg.n > s_pool->pages) why = "the slot is bigger than the pool";
         else if (orb_pool_pcrc(&s_pool_io, &cpg, 0, e.geom_size, &e.geom_crc) ||
                  orb_pool_pcrc(&s_pool_io, &cpg, e.art_off, e.art_size, &e.art_crc))
             why = "the slot would not read back";
@@ -3527,7 +3557,7 @@ esp_err_t orb_theme_boot(void)
     else
         ESP_LOGI(TAG, "pool: %u theme%s, %u of %u B used", (unsigned)s_pool->n,
                  s_pool->n == 1 ? "" : "s", (unsigned)orb_pool_used(s_pool),
-                 (unsigned)ORB_POOL_CAP);
+                 (unsigned)orb_pool_cap(s_pool));
     if (live < 0) {
         /* Nothing to draw. A store's witness that outlived it says which store did
          * not land: no entry can answer it, so it stays up for the row to read. */

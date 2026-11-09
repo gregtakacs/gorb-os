@@ -95,9 +95,13 @@ static char      s_hi_want[24];
 static TaskHandle_t s_pv_th;
 static uint16_t *s_gear;        /* PV x PV wire order, made at open, freed at close */
 static volatile bool s_thumbs_want; /* the carousel is open: build its thumbnails */
-#define THUMBS    3             /* owner, 2026-11-09: three thumbnails at most, whatever the apps */
+/* Owner, 2026-11-09: three thumbnails at most, whatever the apps — and then, with previews
+ * the first thing the cache evicts and so often read off the card, one more: the app after
+ * the window in the way the strip last turned, fetched before it arrives. */
+#define THUMBS    4
 static char      s_thumb_list[THUMBS][24];   /* the window's apps, centre first (s_pv_mx) */
 static int       s_thumb_list_n;
+static int       s_turn_dir = 1;   /* the way the strip last turned: the prefetch's side */
 static volatile uint32_t s_thumb_gen; /* bumped at each thumbnail built */
 static uint32_t  s_thumb_seen;
 EXT_RAM_BSS_ATTR static StaticSemaphore_t s_pv_mx_buf;
@@ -391,6 +395,22 @@ static uint16_t *pv_thumb(const char *slug)
             orb_theme_preview_release();
             if (t) {
                 ESP_LOGI(TAG, "thumbnail %s: %d ms (streamed)", slug, (int)((esp_timer_get_time() - t0) / 1000));
+                return t;
+            }
+        }
+    }
+    {   /* off the card, deflated, shrunk on the way too: no full-glass buffer */
+        char stem[64], why[96];
+        if (orb_theme_pool_stem(slug, stem, sizeof stem)) {
+            while (orb_jobs_busy() || orb_theme_upload_busy()) vTaskDelay(pdMS_TO_TICKS(500));
+            uint32_t n = 0;
+            uint16_t side = 0;
+            uint8_t *zc = orb_theme_preview_zcopy(stem, &n, &side, why, sizeof why);
+            uint16_t *t = (zc && side >= PV) ? shrink_disc(zc, n, side) : NULL;
+            heap_caps_free(zc);
+            if (t) {
+                ESP_LOGI(TAG, "thumbnail %s: %d ms (card, streamed)", slug,
+                         (int)((esp_timer_get_time() - t0) / 1000));
                 return t;
             }
         }
@@ -1004,7 +1024,7 @@ static void thumbs_window(int centre)
         s_it[t].hot = (int8_t)(s_it[t].app && s_it[t].app->slug ? orb_theme_hot(s_it[t].app->slug) : -1);
     char list[THUMBS][24];
     int n = 0;
-    const int order[THUMBS] = { 0, -1, 1 };
+    const int order[THUMBS] = { 0, -s_turn_dir, s_turn_dir, 2 * s_turn_dir };
     for (int k = 0; k < THUMBS && s_n; k++) {
         const item_t *it = &s_it[wrap(centre + order[k])];
         if (!it->app || !it->app->slug) continue;
@@ -1045,6 +1065,7 @@ static void start_turn(int steps, int64_t now)
     }
     /* Once the strip leaves the app it opened on, that app wears its preview again. */
     item_t *f = &s_it[s_from_i];
+    s_turn_dir = steps > 0 ? 1 : -1;
     thumbs_window(wrap(s_target));             /* the window goes where the strip is going */
     s_st = ST_TURN;
     s_t0 = now;

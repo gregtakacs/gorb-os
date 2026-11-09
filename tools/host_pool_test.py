@@ -51,6 +51,14 @@ HARNESS_C = r"""
 #include "esp_rom_crc.h"
 #include "orb_pool.h"
 
+/* The 8 MB layout most of these run on; t_layouts runs the 9.5 MB one beside it. The
+ * simulated flash spans the larger, and an io's ctx is its partition's base in it. */
+#define ORB_POOL_PART_BYTES 0x800000u
+#define ORB_POOL_TABLE_A    ORB_POOL_TABLE_A_IN(ORB_POOL_PART_BYTES)
+#define ORB_POOL_PAGES      ORB_POOL_PAGES_IN(ORB_POOL_PART_BYTES)
+#define ORB_POOL_CAP        (ORB_POOL_PAGES * ORB_POOL_PAGE)
+#define FL_BYTES            0x980000u
+
 static int g_fail, g_quick;
 #define CK(c, ...) do { if (!(c)) { g_fail++; printf("FAIL "); printf(__VA_ARGS__); printf("\n"); } } while (0)
 
@@ -61,27 +69,27 @@ static int g_dead;
 
 static int f_read(void *c, uint32_t off, void *dst, uint32_t n)
 {
-    (void)c;
+    off += (uint32_t)(uintptr_t)c;
     if (g_dead) return -1;
-    if (off + n > ORB_POOL_PART_BYTES) return -2;
+    if (off + n > FL_BYTES) return -2;
     memcpy(dst, fl + off, n);
     return 0;
 }
 static int cut_now(void) { return g_cut >= 0 && ++g_ops == g_cut; }
 static int f_erase(void *c, uint32_t off, uint32_t n)
 {
-    (void)c;
+    off += (uint32_t)(uintptr_t)c;
     if (g_dead) return -1;
-    if (off % ORB_POOL_SECTOR || n % ORB_POOL_SECTOR || off + n > ORB_POOL_PART_BYTES) return -3;
+    if (off % ORB_POOL_SECTOR || n % ORB_POOL_SECTOR || off + n > FL_BYTES) return -3;
     if (cut_now()) { memset(fl + off, 0xFF, n / 2); g_dead = 1; return -1; }
     memset(fl + off, 0xFF, n);
     return 0;
 }
 static int f_write(void *c, uint32_t off, const void *src, uint32_t n)
 {
-    (void)c;
+    off += (uint32_t)(uintptr_t)c;
     if (g_dead) return -1;
-    if (off + n > ORB_POOL_PART_BYTES) return -4;
+    if (off + n > FL_BYTES) return -4;
     const uint8_t *s = src;
     const int cut = cut_now();
     const uint32_t m = cut ? n / 2 : n;
@@ -91,7 +99,8 @@ static int f_write(void *c, uint32_t off, const void *src, uint32_t n)
 }
 
 static uint8_t g_buf[ORB_POOL_SECTOR];
-static const orb_pool_io_t IO = { NULL, f_read, f_erase, f_write, g_buf, sizeof g_buf, NULL };
+static orb_pool_io_t IO = { NULL, f_read, f_erase, f_write, g_buf, sizeof g_buf, NULL,
+                           ORB_POOL_PART_BYTES };
 
 static void power(long cut) { g_ops = 0; g_cut = cut; g_dead = 0; }
 
@@ -219,7 +228,8 @@ static void t_decode(void)
         { "a pool table of another format", 4, 4, 4 },
         { "more entries than the pool holds", 12, 17, 4 },
         { "entries of another width", 16, 132, 4 },
-        { "a pool of another page count", 24, 128, 4 },
+        { "a pool of more pages than this build holds", 24, ORB_POOL_PAGES_MAX + 1u, 4 },
+        { "the table's CRC is wrong", 24, 128, 4 },    /* a page count the CRC did not cover */
         { "the table's CRC is wrong", ORB_POOL_MAP_AT + 100, 0x01, 1 },
         { "an entry with no app", E0, 0, 1 },
         { "an entry of no known kind", EW(12), 4, 4 },
@@ -394,6 +404,53 @@ static void t_evict(void)
     sound(&p, "after the eviction");
 }
 
+/* Owner, 2026-11-09: previews are the first to go, and a preview takes only free room. */
+static void t_previews(void)
+{
+    orb_pool_t p;
+    int w;
+    memset(fl, 0xFF, ORB_POOL_PART_BYTES);
+    power(-1);
+    (void)orb_pool_load(&IO, &p, &w);
+    char slugs[8][8];
+    th_t big[8];
+    for (int i = 0; i < 8; i++) {
+        snprintf(slugs[i], sizeof slugs[i], "app%d", i);
+        big[i] = (th_t){ slugs[i], ORB_POOL_DISPLAY, 0x1000, 0x10000, 13 * ORB_POOL_PAGE, (uint8_t)(90 + i) };
+    }
+    const th_t PV0 = { "app0", ORB_POOL_PREVIEW, 0x10, 0x10, 2 * ORB_POOL_PAGE - 0x10, 7 };
+    const th_t PV5 = { "app5", ORB_POOL_PREVIEW, 0x10, 0x10, 2 * ORB_POOL_PAGE - 0x10, 8 };
+    for (int i = 0; i < 8; i++) CK(store(&p, &w, &big[i]) == 0, "store app%d", i);   /* 112 pages */
+    CK(store(&p, &w, &PV0) == 0 && store(&p, &w, &PV5) == 0, "two previews into free room");
+    CK(store(&p, &w, &CVOICE) == 0, "a voice bank too");                            /* 119 of 127 */
+    const th_t PV7 = { "app7", ORB_POOL_PREVIEW, 0x10, 0x10, 9 * ORB_POOL_PAGE - 0x10, 9 };
+    uint32_t nev = 0;
+    CK(store_o(&p, &w, &PV7, ORDER0, 0, NULL, &nev) == ORB_POOL_ERR_FULL && nev == 0,
+       "a preview with no free room evicts nothing");
+    const char *order[] = { "app0", "app1", "app2", "app3", "app4", "app5", "app6", "app7" };
+    const th_t NEW = { "app9", ORB_POOL_DISPLAY, 0x1000, 0x10000, 11 * ORB_POOL_PAGE, 99 };
+    uint32_t mask;
+    /* 8 pages free: 9 takes one preview, 12 both, 14 both and then a display entry */
+    CK(orb_pool_evictions(&p, "app9", 9 * ORB_POOL_PAGE, order, 8, NULL, &mask) == 0 &&
+       mask == (1u << orb_pool_find_kind(&p, "app0", ORB_POOL_PREVIEW)),
+       "a little short: one preview, the least recent app's, and nothing else");
+    CK(orb_pool_evictions(&p, "app9", 12 * ORB_POOL_PAGE, order, 8, NULL, &mask) == 0 &&
+       mask == (1u << orb_pool_find_kind(&p, "app0", ORB_POOL_PREVIEW) |
+                1u << orb_pool_find_kind(&p, "app5", ORB_POOL_PREVIEW)),
+       "both previews before any display entry");
+    CK(orb_pool_evictions(&p, "app9", 14 * ORB_POOL_PAGE, order, 8, NULL, &mask) == 0 &&
+       mask == (1u << orb_pool_find_kind(&p, "app0", ORB_POOL_PREVIEW) |
+                1u << orb_pool_find_kind(&p, "app5", ORB_POOL_PREVIEW) |
+                1u << orb_pool_find(&p, "app0")),
+       "then the least recent display entry");
+    CK(store_o(&p, &w, &NEW, order, 8, NULL, &nev) == 0 && nev == 2 &&
+       orb_pool_find_kind(&p, "app0", ORB_POOL_PREVIEW) < 0 && orb_pool_find_kind(&p, "app5", ORB_POOL_PREVIEW) < 0 &&
+       orb_pool_find(&p, "app0") >= 0,
+       "the store lands with only the previews gone");
+    CK(orb_pool_find_kind(&p, "clock", ORB_POOL_VOICE) >= 0, "the voice bank stays");
+    sound(&p, "after the previews went");
+}
+
 /* ---- commit's refusals ---- */
 static void t_commit(void)
 {
@@ -486,17 +543,50 @@ static void t_cuts(void)
     printf("ok    %d cuts across a %ld-step store that evicts two, every one whole\n", checked, total);
 }
 
+/* 2026-11-09: one image on both layouts. An orb updated over Wi-Fi keeps its 8 MB `assets`
+ * (127 pages); one reflashed over USB gets 9.5 MB (151 pages) that END where the old one
+ * did, so its tables sit where the old ones were, 1.5 MB further from its base. The old
+ * table found there is not this pool's: the pool starts empty, and then works. */
+static void t_layouts(void)
+{
+    const uint32_t OLD_BASE = FL_BYTES - ORB_POOL_PART_BYTES;      /* 0x180000 into the new */
+    orb_pool_t p;
+    int w;
+    memset(fl, 0xFF, FL_BYTES);
+    power(-1);
+    IO.ctx = (void *)(uintptr_t)OLD_BASE;                          /* the old layout's pool */
+    CK(orb_pool_load(&IO, &p, &w) == 0 && p.pages == 127u, "the 8 MB pool is 127 pages");
+    CK(store(&p, &w, &CLOCK) == 0 && store(&p, &w, &WX) == 0, "two themes on the old layout");
+    IO.ctx = NULL;
+    IO.part_bytes = FL_BYTES;                                      /* the new layout */
+    CK(orb_pool_load(&IO, &p, &w) == 0 && w == 0 && p.n == 0 && p.pages == 151u,
+       "the old table under the new layout: refused, an empty 151-page pool");
+    CK(orb_pool_cap(&p) == 151u * ORB_POOL_PAGE, "its capacity is its pages");
+    CK(store(&p, &w, &CLOCK) == 0 && store(&p, &w, &FLIGHT) == 0 && store(&p, &w, &WX) == 0,
+       "three themes on the new layout");
+    orb_pool_pages_t pg;
+    CK(orb_pool_reserve(&IO, &p, &w, "big", ORB_POOL_DISPLAY, 140u * ORB_POOL_PAGE, ORDER0, 0,
+                        NULL, &pg, NULL, NULL) == 0 && pg.n == 140u && pg.off[139] < 151u * ORB_POOL_PAGE,
+       "a 140-page entry fits only a 151-page pool");
+    orb_pool_t q;
+    int qw;
+    CK(orb_pool_load(&IO, &q, &qw) == 0 && q.pages == 151u && qw == w, "and it loads back as one");
+    IO.part_bytes = ORB_POOL_PART_BYTES;
+}
+
 int main(int argc, char **argv)
 {
     g_quick = argc > 1 && !strcmp(argv[1], "--quick");
-    fl = malloc(ORB_POOL_PART_BYTES);
+    fl = malloc(FL_BYTES);
     if (!fl) return 2;
     t_decode();   printf("ok    decode\n");
     t_format2();  printf("ok    a format 2 table, read and reset\n");
     t_pages();    printf("ok    an entry's bytes through its pages\n");
     t_scatter();  printf("ok    a hole's pages taken, nothing moved\n");
     t_evict();    printf("ok    the eviction\n");
+    t_previews(); printf("ok    previews go first and take only free room\n");
     t_commit();   printf("ok    commit's refusals\n");
+    t_layouts();  printf("ok    both layouts, and the old table refused under the new\n");
     t_cuts();
     printf("%d failure%s\n", g_fail, g_fail == 1 ? "" : "s");
     return g_fail ? 1 : 0;
@@ -508,19 +598,22 @@ MUTANTS = (
     ("an entry's page count", "if (cnt * ORB_POOL_PAGE != out->e[i].size) return \"an entry's pages are not its size\";", ""),
     ("an entry's first page", "if (first != out->e[i].off) return \"an entry's first page is not its offset\";", ""),
     ("one page id twice", "if (out->e[j].pid == e->pid) return \"two entries with one page id\";", ""),
-    ("whole pages", "if (!e->size || e->size % ORB_POOL_PAGE || e->size > ORB_POOL_CAP) return \"an entry not in whole pages\";", ""),
-    ("commit: an owned page", "page >= ORB_POOL_PAGES || p->owner[page]) return ORB_POOL_ERR_ARG;", "page >= ORB_POOL_PAGES) return ORB_POOL_ERR_ARG;"),
+    ("whole pages", "if (!e->size || e->size % ORB_POOL_PAGE || e->size > pages * ORB_POOL_PAGE) return \"an entry not in whole pages\";", ""),
+    ("commit: an owned page", "page >= p->pages || p->owner[page]) return ORB_POOL_ERR_ARG;", "page >= p->pages) return ORB_POOL_ERR_ARG;"),
+    ("a table of another page count", "(p->format != ORB_POOL_FORMAT || p->pages == pages);", "true;"),
     ("commit: ascending pages", "if (i && pg->off[i] <= pg->off[i - 1]) return ORB_POOL_ERR_ARG;", ""),
     ("commit: the page count", "if (!pg->n || pg->n * ORB_POOL_PAGE != e->size) return ORB_POOL_ERR_ARG;", "if (!pg->n) return ORB_POOL_ERR_ARG;"),
     ("reserve: free pages only", "if (!p->owner[i]) pg->off[pg->n++] = i * ORB_POOL_PAGE;", "pg->off[pg->n++] = i * ORB_POOL_PAGE;"),
-    ("a voice bank never evicted", "if (p->e[k].kind != ORB_POOL_DISPLAY) continue;", ""),
-    ("keep never evicted", "if (keep && !strcmp(p->e[k].slug, keep)) continue;", ""),
-    ("least recent first", "if (pick < 0 || rank[k] < rank[pick]) pick = (int)k;", "if (pick < 0 || rank[k] > rank[pick]) pick = (int)k;"),
+    ("a voice bank never evicted", "if (tier < 0) continue;", ""),
+    ("keep never evicted", "if (tier == 1 && keep && !strcmp(p->e[k].slug, keep)) continue;", ""),
+    ("least recent first", "(tier == pick_tier && rank[k] < rank[pick])", "(tier == pick_tier && rank[k] > rank[pick])"),
+    ("previews before displays", "if (pick < 0 || tier < pick_tier ||", "if (pick < 0 || tier > pick_tier ||"),
+    ("a preview evicts nothing", "for (uint32_t k = 0; kind != ORB_POOL_PREVIEW && k < p->n; k++) {", "for (uint32_t k = 0; k < p->n; k++) {"),
     ("a part's page bound", "if (page >= pg->n) return ORB_POOL_ERR_ARG;", ""),
     ("the page split", "const uint32_t k = n < ORB_POOL_PAGE - in ? n : ORB_POOL_PAGE - in;", "const uint32_t k = n;"),
     ("drop frees its pages", "if (p->owner[pg] == p->e[k].pid) p->owner[pg] = 0;", ""),
     ("the write's own check", "if (orb_pool_decode(io->buf, ORB_POOL_SECTOR, &check)) { p->serial--; return ORB_POOL_ERR_TABLE; }", ""),
-    ("the map in the CRC", "put32(out + H_CRC * 4, table_crc(out, T3_BYTES));", "put32(out + H_CRC * 4, table_crc(out, ORB_POOL_MAP_AT));"),
+    ("the map in the CRC", "put32(out + H_CRC * 4, table_crc(out, T3_BYTES(p->pages)));", "put32(out + H_CRC * 4, table_crc(out, ORB_POOL_MAP_AT));"),
 )
 
 

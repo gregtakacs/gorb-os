@@ -4,7 +4,7 @@
  *
  * The `assets` partition holds several apps' themes and, in its last two sectors, two
  * copies of a table saying what is where. Format 3 (C7, the owner's 2026-11-09 choice):
- * the pool is ORB_POOL_PAGES whole 64 KB pages (the S3's MMU page), and every entry is a
+ * the pool is its pages (ORB_POOL_PAGES_IN its partition) of 64 KB (the S3's MMU page), and every entry is a
  * set of them, wherever they were free. An entry's pages in ascending flash order are its
  * bytes in order, so its page i is the i-th page it owns. Nothing ever moves: a new entry
  * is written into free pages no table names, then one table write names them; an eviction
@@ -29,13 +29,16 @@
 
 #define ORB_POOL_SECTOR      0x1000u                       /* the erase unit */
 #define ORB_POOL_PAGE        0x10000u                      /* the MMU page: an entry's unit */
-#define ORB_POOL_PART_BYTES  0x800000u                     /* partitions.csv `assets` */
 #define ORB_POOL_FIRST       0x0u                          /* the one slot is entry 0 */
-#define ORB_POOL_TABLE_A     (ORB_POOL_PART_BYTES - 2u * ORB_POOL_SECTOR)
-#define ORB_POOL_TABLE_B     (ORB_POOL_PART_BYTES - 1u * ORB_POOL_SECTOR)
-#define ORB_POOL_END         ORB_POOL_TABLE_A              /* entries stop here */
-#define ORB_POOL_PAGES       (ORB_POOL_END / ORB_POOL_PAGE)   /* 127 whole pages */
-#define ORB_POOL_CAP         (ORB_POOL_PAGES * ORB_POOL_PAGE) /* 8,323,072 B */
+/* The pool is the `assets` partition as the device's own table sizes it, so one image runs
+ * on both layouts: 8 MB (127 pages, an orb only ever updated over Wi-Fi keeps its table)
+ * and 9.5 MB (151 pages, partitions.csv since 2026-11-09). The tables are its last two
+ * sectors and the pages everything before them. A table of another page count is not this
+ * pool's: it is refused, and the pool starts empty. */
+#define ORB_POOL_PAGES_MAX   160u                          /* the arrays' bound: a 10 MB partition */
+#define ORB_POOL_TABLE_A_IN(part) ((part) - 2u * ORB_POOL_SECTOR)
+#define ORB_POOL_TABLE_B_IN(part) ((part) - 1u * ORB_POOL_SECTOR)
+#define ORB_POOL_PAGES_IN(part)   (((part) - 2u * ORB_POOL_SECTOR) / ORB_POOL_PAGE)
 #define ORB_POOL_ENTRIES     16u                           /* theme-cache-plan §2.6: a voice bank and a display entry for each of B5's eight apps */
 #define ORB_POOL_ENTRIES_F1  8u                            /* a format 1 table's */
 #define ORB_POOL_SLUG_MAX    24u                           /* the 23-byte slug rule + NUL */
@@ -54,8 +57,8 @@ enum { ORB_POOL_LIVE = 1, ORB_POOL_MOVING = 2 };           /* MOVING: formats 1 
  * entries. */
 enum { ORB_POOL_DISPLAY = 1, ORB_POOL_VOICE = 2,
        /* owner, 2026-11-09: an app's preview, the theme's full-glass picture as the bundle
-        * deflated it, resident like a voice bank (never evicted), so the carousel reads it
-        * from flash, never the card, and keeps nothing while it is shut */
+        * deflated it, so the carousel reads it from flash. Stored only into free room and the
+        * first thing evicted; without one the carousel reads it off the card. */
        ORB_POOL_PREVIEW = 3 };
 
 /* One app's theme (or voice bank) in the pool. Offsets inside it are the entry's own: its
@@ -78,14 +81,15 @@ typedef struct {
     uint32_t         serial;
     uint32_t         n;
     uint32_t         format;                /* as decoded: 3, or 1/2 (not carried) */
+    uint32_t         pages;                 /* the pool's page count (ORB_POOL_PAGES_IN) */
     orb_pool_entry_t e[ORB_POOL_ENTRIES];
-    uint8_t          owner[ORB_POOL_PAGES]; /* each page's entry pid, 0 = free */
+    uint8_t          owner[ORB_POOL_PAGES_MAX]; /* each page's entry pid, 0 = free */
 } orb_pool_t;
 
 /* An entry's pages as flash offsets, in its byte order. */
 typedef struct {
     uint32_t n;
-    uint32_t off[ORB_POOL_PAGES];
+    uint32_t off[ORB_POOL_PAGES_MAX];
 } orb_pool_pages_t;
 
 /* Flash access. Offsets are partition-relative; erase is whole sectors. Each answers 0
@@ -99,6 +103,7 @@ typedef struct {
     uint32_t buf_bytes;
     /* Unused since format 3 (nothing moves); kept so a caller's progress hook compiles. */
     void   (*progress)(void *ctx, uint32_t done, uint32_t total);
+    uint32_t part_bytes;                    /* the partition's size: the pool's pages and tables */
 } orb_pool_io_t;
 
 /* Failures, beside the io's own negatives. */
@@ -134,6 +139,9 @@ uint32_t orb_pool_used(const orb_pool_t *p);
 /* Whether `slug`'s display entry of `size` bytes fits once `slug`'s old one is gone: 0, or
  * ORB_POOL_ERR_FULL (no room), or ORB_POOL_ERR_TABLE (the table's slots). Pure. */
 int orb_pool_fits(const orb_pool_t *p, const char *slug, uint32_t size);
+
+/* The bytes the pool's pages hold. */
+uint32_t orb_pool_cap(const orb_pool_t *p);
 
 /* A size rounded up to whole pages. */
 uint32_t orb_pool_round(uint32_t n);
@@ -174,8 +182,10 @@ int orb_pool_remove_kind(const orb_pool_io_t *io, orb_pool_t *p, int *which, con
 /* The theme cache (docs/theme-cache-plan.md §2.2): the entries a new entry of `kind` and
  * `size` bytes for `slug` evicts, least recently on the glass first. `order` lists slugs
  * from least to most recent; an entry it does not name counts as older than any it does,
- * in table order. `keep` (may be NULL) is never evicted; `slug`'s own old entry of `kind`
- * always goes; only display entries are ever evicted. Pure: sets bit k of *mask for each
+ * in table order. `keep`'s display entry (may be NULL) is never evicted; `slug`'s own old
+ * entry of `kind` always goes. Previews go first, then display entries, a voice bank never;
+ * a new preview evicts nothing (owner, 2026-11-09: a slower carousel before a reloading
+ * app). Pure: sets bit k of *mask for each
  * entry k to drop, and answers 0, or ORB_POOL_ERR_FULL when even every entry it may evict
  * leaves too few pages (or no table slot). */
 int orb_pool_evictions_kind(const orb_pool_t *p, const char *slug, uint32_t kind, uint32_t size,

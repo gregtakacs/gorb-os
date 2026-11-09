@@ -157,6 +157,11 @@ def check(rows, rules, zones, ts):
 
 
 def main():
+    # held to the release the table was baked from, not whatever /usr/share carries
+    # (CI, 2026-11-09: the IDF image's older zoneinfo read BC as still changing clocks)
+    sys.path.insert(0, HERE)
+    from make_cities import pin_tzdata
+    print("tzrule: zone rules from", pin_tzdata())
     rules, zones = table()
     for rule, z in EXTRA:                       # extra rules, each with a zone to be held to
         zones.append((z, len(rules)))

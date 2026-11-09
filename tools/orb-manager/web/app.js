@@ -3603,6 +3603,46 @@ function laneWaitMessage(e) {
 // the older run quit at its next await boundary, so exactly one paint lands.
 let themeLoadGen = 0;
 
+// themeUpdateCounts is the Themes face's update arithmetic on data alone, for every app
+// at once: a card row the firmware refuses for its bake needs a rebake; one whose slot
+// draws an older copy (changed), or whose library entry is a later bake of the same
+// name, has an update. themeRow and themeLibraryRows tag the same rows on the face.
+function themeUpdateCounts(rows, libByApp) {
+  let ups = 0, rebakes = 0;
+  for (const t of rows) {
+    if (!t.ok && /re-bake/i.test(t.why || "")) { rebakes++; continue; }
+    if (t.changed) { ups++; continue; }
+    const name = String(t.name || "").toLowerCase();
+    const e = name && (libByApp[t.app || "clock"] || []).find((x) => String(x.name || "").toLowerCase() === name);
+    const th = e && e.theme;
+    if (th && !th.stale && t.serial > 0 && th.serial && th.serial !== t.serial &&
+        th.baked > 0 && t.baked > 0 && th.baked > t.baked) ups++;
+  }
+  return { ups, rebakes };
+}
+
+// themeBadgeFrom puts the Themes tab's count up from a card listing, reading each app's
+// hub library (local, no orb dial) so the tab is right before the face is ever opened.
+async function themeBadgeFrom(ip, rows) {
+  const lib = {};
+  for (const a of new Set(rows.map((t) => t.app || "clock"))) {
+    try {
+      const j = await (await hubFetch("/api/library/entries?app=" + encodeURIComponent(a))).json();
+      lib[a] = j && j.ok && Array.isArray(j.data) ? j.data : [];
+    } catch (e) { lib[a] = []; }
+  }
+  if (ip !== current.ip || typeof tabBadge !== "function") return;
+  const { ups, rebakes } = themeUpdateCounts(rows, lib);
+  tabBadge("themes", ups + rebakes, [ups ? ups + " theme update" + (ups === 1 ? "" : "s") : "", rebakes ? rebakes + " theme" + (rebakes === 1 ? "" : "s") + " needing a rebake" : ""].filter(Boolean).join(", ") + " for this orb");
+}
+
+// themeBadgePass is the unopened face's read: the card listing, then the count.
+async function themeBadgePass(ip) {
+  const d = await themeListWithRetry(ip);
+  if (ip !== current.ip || !d || !d.mounted) return;
+  await themeBadgeFrom(ip, Array.isArray(d.themes) ? d.themes : []);
+}
+
 async function loadThemes(ip) {
   const gen = ++themeLoadGen;
   const state = $("#mn-themestate"), list = $("#mn-themes"), card = $("#mn-themecard");
@@ -3686,7 +3726,8 @@ async function loadThemes(ip) {
   // card themes this orb's firmware refuses for their bake: each needs a rebake (or the
   // library's newer bake), so the tab says so the way it says an update is waiting
   const rebakes = list.querySelectorAll("li.trow[data-rebake]").length;
-  if (typeof tabBadge === "function") tabBadge("themes", ups + rebakes, [ups ? ups + " theme update" + (ups === 1 ? "" : "s") : "", rebakes ? rebakes + " theme" + (rebakes === 1 ? "" : "s") + " needing a rebake" : ""].filter(Boolean).join(", ") + " for this orb");
+  // the tab counts every app's themes, not just this sub-tab's (themeBadgeFrom)
+  themeBadgeFrom(ip, rows).catch(() => {});
   if (ups) state.textContent += " \u00b7 " + ups + " update" + (ups === 1 ? "" : "s") + " in the hub library";
   if (rebakes) state.textContent += " \u00b7 " + rebakes + " need" + (rebakes === 1 ? "s" : "") + " a rebake for this firmware";
   if (!shown.length && !shelfN) themeEmptyPane(list, scope);

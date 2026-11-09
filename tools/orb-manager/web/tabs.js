@@ -11,6 +11,7 @@
 
 let tabNow = "orb";
 const tabLoaded = new Set();
+let badgesFor = "";   // the board warmBadges last counted for
 let fwStamp = "";              // status's fw line, for the doors that gate on it
 
 // tabOffered is the smaller question tabPaneVisible never answers: does this
@@ -117,6 +118,7 @@ function cardChanged() {
 // faces are simply un-loaded: they fetch fresh the moment they are pressed.
 function tabRearm() {
   tabLoaded.clear();
+  badgesFor = "";
   showTab(tabNow);
 }
 
@@ -125,6 +127,7 @@ function tabRearm() {
 // wrong paint. app.js calls it from openOrbByIP before the first loadOrb.
 function orbTabsReset() {
   tabLoaded.clear();
+  badgesFor = "";
   stopHomeWake();                 // last orb's home wait is not this orb's promise
   homeClearPend();                // nor is a point proposed to it
   themeFaceReset();
@@ -148,6 +151,18 @@ function orbTabsReset() {
 function orbTabsStatus(st) {
   fwStamp = (st && st.fw) || "";
   showTab(tabNow);   // re-assert the shape; the faces themselves refresh on press
+  warmBadges();
+}
+
+// warmBadges counts the Apps and Themes updates once per opened board, so the tabs
+// carry their amber numbers before either face is pressed (owner, 2026-11-09). The
+// Apps face is cheap and loads whole; Themes counts from data and paints nothing,
+// since its face queues previews that must not run under another face.
+function warmBadges() {
+  if (!current.ip || badgesFor === current.ip) return;
+  badgesFor = current.ip;
+  lazyTab("apps", loadApps);
+  if (tabNow !== "themes" && typeof themeBadgePass === "function") themeBadgePass(current.ip).catch(() => {});
 }
 
 document.querySelectorAll("#orb-tabs .tab").forEach((b) => {

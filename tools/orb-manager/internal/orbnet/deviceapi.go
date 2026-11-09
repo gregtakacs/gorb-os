@@ -194,6 +194,15 @@ func (e *DeviceError) OverwriteConflict() bool {
 	return env.Overwrite != nil && !*env.Overwrite
 }
 
+// CardJobBusy reports the orb's one-job-at-a-time gate: a 409 from a door that queues
+// onto the card worker (apps/install) while another job holds it. v1.6.0 runs theme
+// fills and card reconciles on that worker, so an owner's install can arrive mid-job;
+// the answer is to wait for the worker, not to fail the run.
+func (e *DeviceError) CardJobBusy() bool {
+	return e.Status == http.StatusConflict && !e.OverwriteConflict() &&
+		bytes.Contains(e.Body, []byte("card job"))
+}
+
 // CommitToken reads the one-shot commit token out of a duplicate refusal's body.
 // A device that answers OverwriteConflict with a token is offering to file the
 // copy it already staged: ThemeCommit spends the offer with an empty POST instead

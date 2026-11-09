@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io/fs"
 	"log"
@@ -856,8 +857,27 @@ func (s *Server) installOneApp(ctx context.Context, ip, slug string, blob []byte
 	}
 
 	// The install: queue it, then watch the ledger for the row.
-	if _, err := s.device.AppInstallCard(ip, slug); err != nil {
-		return fmt.Errorf("installing %s: %w", slug, plainDeviceErr(err, 0))
+	// A busy worker (a theme fill or a card reconcile, v1.6.0) answers 409: wait it
+	// out on the install's own hard leash, saying so, instead of failing the run.
+	busyUntil := time.Now().Add(installHard)
+	for told := false; ; {
+		_, err := s.device.AppInstallCard(ip, slug)
+		if err == nil {
+			break
+		}
+		var de *orbnet.DeviceError
+		if !errors.As(err, &de) || !de.CardJobBusy() || time.Now().After(busyUntil) {
+			return fmt.Errorf("installing %s: %w", slug, plainDeviceErr(err, 0))
+		}
+		if !told {
+			send(installStep{Step: slug, Action: "waiting", Note: "the orb is finishing another card job"})
+			told = true
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(installPoll):
+		}
 	}
 	send(installStep{Step: slug, Action: "installing"})
 	deadline := time.Now().Add(installWait)

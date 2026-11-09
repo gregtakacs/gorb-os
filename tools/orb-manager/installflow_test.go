@@ -407,6 +407,59 @@ func TestAnInstallThatRodeTheRebootSaysSo(t *testing.T) {
 	}
 }
 
+// TestAnInstallWaitsOutABusyWorker: v1.6.0 runs theme fills and card reconciles on the
+// orb's one job worker, so an install can meet "a card job is already running" (owner,
+// 2026-11-09, mid Install everything). The step waits, says so, and installs; any other
+// 409 still refuses at once.
+func TestAnInstallWaitsOutABusyWorker(t *testing.T) {
+	old := installPoll
+	installPoll = 10 * time.Millisecond
+	defer func() { installPoll = old }()
+	for _, body := range []string{`{"error":"a card job is already running"}`, `{"error":"something else"}`} {
+		busy, installed := 3, false
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			switch r.URL.Path {
+			case "/api/v1/apps":
+				if installed {
+					w.Write([]byte(`{"mounted":true,"apps":[{"stem":"sentinel","ok":true}],"installed":[{"slug":"sentinel"}]}`))
+					return
+				}
+				w.Write([]byte(`{"mounted":true,"apps":[{"stem":"sentinel","ok":true}],"installed":[]}`))
+			case "/api/v1/apps/install":
+				if busy > 0 {
+					busy--
+					w.WriteHeader(http.StatusConflict)
+					w.Write([]byte(body))
+					return
+				}
+				installed = true
+				w.Write([]byte(`{"state":"installing","stem":"sentinel"}`))
+			default:
+				w.Write([]byte(`{}`))
+			}
+		}))
+		s := newHub()
+		s.lib = &Library{}
+		s.device = orbnet.NewClient(deviceTimeout)
+		s.device.DevicePort = portOf(srv.URL)
+		waited := 0
+		err := s.installOneApp(context.Background(), "127.0.0.1", "sentinel", nil, false, func(st installStep) {
+			if st.Action == "waiting" {
+				waited++
+			}
+		})
+		srv.Close()
+		if strings.Contains(body, "card job") {
+			if err != nil || !installed || waited != 1 {
+				t.Errorf("busy worker: want one wait then the install, got err=%v installed=%v waits=%d", err, installed, waited)
+			}
+		} else if err == nil || installed {
+			t.Errorf("other 409: want a refusal, got err=%v installed=%v", err, installed)
+		}
+	}
+}
+
 // TestAnOlderFormatCardCopyIsReplaced: an orb that took v1.2.32's firmware from v1.2.16 holds
 // every app's card copy in FORMAT 3, which the dial refuses by number. Install sends the
 // library's bytes over such a copy instead of refusing (owner, 2026-11-08); a card copy

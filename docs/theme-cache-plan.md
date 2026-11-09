@@ -162,9 +162,11 @@ carries is read off the glass (its values blob draws; the preview is the card's)
 |---|---|---|
 | **C0** | Measure a live copy on Bronze: a card→pool copy with the radar's sweep on the glass (fps, longest stall, copy time) | numbers in §6 before C3 is built — **measured 2026-11-08** (§6) |
 | **C1** | `orb_pool_evictions`, `orb_pool_reserve_lru` (pure C; the table format unchanged) | `host_pool_test.py`: the order, keep, the table's slots, refusals untouched, a cut at every step of two fills — **built 2026-11-08** (§6) |
-| **C2** | The choice record (NVS) and the last-on-glass order (RAM, saved lazily); stores make room instead of refusing; the shelf's budgets per theme | bench: a fifth theme stored into a full pool evicts the least recent; host suites |
-| **C3** | The fill on arrival behind the preview and its slice, the zoom into the app, the card-missing case | bench: four apps cycled through a pool that holds three; a card pulled mid-fill |
-| **C4** | The hub: "in the pool / on the card only" on the Themes page | the hub's lists still parse |
+| **C2** | The table's format 2 (an entry's kind, voice or display; sixteen entries; the carry from format 1); voice banks packed first, never moved by an eviction | `host_pool_test.py`: the carry under every cut, evictions that never take or move a voice bank |
+| **C3** | Sound off the glass: a store writes the voice bank (≤ 1 MB), boot maps every voice bank, a bind no longer stops voices, one-shots unleased and loops leased to the glass, a sound import that needs no stage; the clock chimes from its service | bench: the clock chiming through a switch to weather, and on the hour with weather on the glass; the tick stopping when the clock leaves |
+| **C4** | The choice record (NVS), the last-on-glass order, stores that make room instead of refusing, the shelf's budgets per theme | bench: a theme stored into a full pool evicts the least recent display entry |
+| **C5** | The fill on arrival behind the preview and its slice (full speed, block by block, heavy I/O), the zoom into the app, the pause on leaving, the card-missing case | bench: four apps cycled through a pool that holds three; leaving mid-fill; a card pulled mid-fill |
+| **C6** | The hub: "in the pool / on the card only" on the Themes page | the hub's lists still parse |
 
 ## 5. Open
 

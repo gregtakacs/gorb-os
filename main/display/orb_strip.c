@@ -92,7 +92,9 @@ static char      s_hi_want[24];
 static TaskHandle_t s_pv_th;
 static uint16_t *s_gear;        /* PV x PV wire order, made at open, freed at close */
 static volatile bool s_thumbs_want; /* the carousel is open: build its thumbnails */
-static char      s_thumb_centre[24]; /* ...nearest this app first */
+#define THUMBS    3             /* owner, 2026-11-09: three thumbnails at most, whatever the apps */
+static char      s_thumb_list[THUMBS][24];   /* the window's apps, centre first (s_pv_mx) */
+static int       s_thumb_list_n;
 static volatile uint32_t s_thumb_gen; /* bumped at each thumbnail built */
 static uint32_t  s_thumb_seen;
 EXT_RAM_BSS_ATTR static StaticSemaphore_t s_pv_mx_buf;
@@ -306,28 +308,40 @@ static void pv_load(void)
     s_pv_ready = true;
 }
 
-/* The carousel opened: its thumbnails, the centre app's neighbours first, each published
- * the moment it is built (the strip draws it from its next frame). Preview task. */
+/* The window's thumbnails (the centre app and one either side, at most THUMBS whatever the
+ * apps), the centre first, each published the moment it is built — if it is still in the
+ * window — and drawn from the strip's next frame. The strip frees what leaves the window, on
+ * its own task, so no frame draws a freed plane. Preview task. */
 static void thumbs_build(void)
 {
-    int c = 0;
-    for (int i = 0; i < s_pv_n; i++) if (!strcmp(s_pv[i].slug, s_thumb_centre)) c = i;
-    for (int d = 0; d <= s_pv_n / 2 && s_thumbs_want; d++)
-        for (int sgn = -1; sgn <= 1 && s_thumbs_want; sgn += 2) {
-            if (d == 0 && sgn > 0) continue;
-            const int i = ((c + sgn * d) % s_pv_n + s_pv_n) % s_pv_n;
-            if (s_pv[i].px) continue;
+    for (int pass = 0; pass < 4 && s_thumbs_want; pass++) {
+        char list[THUMBS][24];
+        int n = 0;
+        xSemaphoreTake(s_pv_mx, portMAX_DELAY);
+        n = s_thumb_list_n;
+        memcpy(list, s_thumb_list, sizeof list);
+        xSemaphoreGive(s_pv_mx);
+        bool built = false;
+        for (int k = 0; k < n && s_thumbs_want; k++) {
+            int i = 0;
+            while (i < s_pv_n && strcmp(s_pv[i].slug, list[k])) i++;
+            if (i == s_pv_n || s_pv[i].px) continue;
             uint16_t *px = pv_thumb(s_pv[i].slug);
             xSemaphoreTake(s_pv_mx, portMAX_DELAY);
-            if (px && s_thumbs_want && !s_pv[i].px) {
+            bool still = false;
+            for (int j = 0; j < s_thumb_list_n; j++) if (!strcmp(s_thumb_list[j], s_pv[i].slug)) still = true;
+            if (px && s_thumbs_want && still && !s_pv[i].px) {
                 s_pv[i].side = PV;
                 s_pv[i].px = px;
                 s_thumb_gen++;
                 px = NULL;
+                built = true;
             }
             xSemaphoreGive(s_pv_mx);
-            heap_caps_free(px);                          /* shut meanwhile: not kept */
+            heap_caps_free(px);                          /* left the window, or shut: not kept */
         }
+        if (!built) break;                               /* the window is whole */
+    }
 }
 
 void orb_strip_preview_changed(const char *slug)
@@ -647,6 +661,7 @@ static void strip_give_back(void)
     /* the thumbnails and the Settings card: the carousel keeps nothing while it is shut */
     s_thumbs_want = false;
     if (s_pv_mx) xSemaphoreTake(s_pv_mx, portMAX_DELAY);
+    s_thumb_list_n = 0;
     for (int i = 0; i < s_pv_n; i++) { heap_caps_free(s_pv[i].px); s_pv[i].px = NULL; }
     if (s_pv_mx) xSemaphoreGive(s_pv_mx);
     for (int i = 0; i < MAX_ITEMS; i++) s_it[i].px = NULL;
@@ -701,6 +716,9 @@ static float ease(float t)
 
 bool orb_strip_active(void) { return s_st != ST_OFF; }
 
+static void item_face(item_t *it);
+static void thumbs_window(int centre);
+
 bool orb_strip_open(const orb_app_t *from, int step)
 {
     if (s_st != ST_OFF || !s_pv_ready) return false;
@@ -722,10 +740,7 @@ bool orb_strip_open(const orb_app_t *from, int step)
         if (!a || a->kind == ORB_APP_KIND_SHELL) continue;
         item_t *it = &s_it[s_n];
         it->app = a;
-        const pv_t *pv = pv_for(a);
-        const uint16_t *ic = pv ? NULL : icon_for(a);   /* §61: no theme: its own icon */
-        it->px = pv ? pv->px : (ic ? ic : s_gear);
-        it->side = pv ? pv->side : PV;
+        item_face(it);                          /* its thumbnail when built, else its icon */
         if (a == from) s_from_i = s_n;
         s_n++;
     }
@@ -750,12 +765,11 @@ bool orb_strip_open(const orb_app_t *from, int step)
     s_face_app = NULL;
     s_ring = -1;
     make_names();
-    /* the thumbnails: none are kept while the carousel is shut; the preview task builds them
-     * now, this app's neighbours first, and each disc wears its icon until its own lands */
-    snprintf(s_thumb_centre, sizeof s_thumb_centre, "%s", from && from->slug ? from->slug : "");
+    /* the thumbnails: none are kept while the carousel is shut; the preview task builds the
+     * window's now (this app and one either side), and each disc wears its icon until its
+     * own lands */
     s_thumb_seen = s_thumb_gen;
-    s_thumbs_want = true;
-    if (s_pv_th) xTaskNotifyGive(s_pv_th);
+    thumbs_window(s_from_i);
 
     display_glass_hold(true);
     orb_sched_set_running(false);
@@ -851,6 +865,50 @@ static void start_out(int64_t now)
     s_t0 = now;
 }
 
+/* An item's picture now: its thumbnail if built, else its app's icon, else nothing drawn. */
+static void item_face(item_t *it)
+{
+    const pv_t *p = pv_for(it->app);
+    it->px = p ? p->px : icon_for(it->app);
+    it->side = PV;
+}
+
+/* The thumbnail window moves to the item at `centre`: its app and the one either side. What
+ * leaves it is freed here, on the drawing task, after every disc that wore it lets it go;
+ * the preview task is asked for what is new. LVGL task. */
+static void thumbs_window(int centre)
+{
+    char list[THUMBS][24];
+    int n = 0;
+    const int order[THUMBS] = { 0, -1, 1 };
+    for (int k = 0; k < THUMBS && s_n; k++) {
+        const item_t *it = &s_it[wrap(centre + order[k])];
+        if (!it->app || !it->app->slug) continue;
+        bool dup = false;
+        for (int j = 0; j < n; j++) if (!strcmp(list[j], it->app->slug)) dup = true;
+        if (!dup) snprintf(list[n++], sizeof list[0], "%s", it->app->slug);
+    }
+    xSemaphoreTake(s_pv_mx, portMAX_DELAY);
+    memcpy(s_thumb_list, list, sizeof list);
+    s_thumb_list_n = n;
+    for (int i = 0; i < s_pv_n; i++) {
+        if (!s_pv[i].px) continue;
+        bool keep = false;
+        for (int j = 0; j < n; j++) if (!strcmp(list[j], s_pv[i].slug)) keep = true;
+        if (keep) continue;
+        uint16_t *old = s_pv[i].px;
+        s_pv[i].px = NULL;
+        for (int t = 0; t < s_n; t++)
+            if (s_it[t].px == old) { item_face(&s_it[t]); s_dirty = true; }
+        for (int d = 0; d < s_draw_n; d++)
+            if (s_draw[d].px == old) { s_draw[d] = s_draw[--s_draw_n]; d--; }
+        heap_caps_free(old);
+    }
+    xSemaphoreGive(s_pv_mx);
+    s_thumbs_want = true;
+    if (s_pv_th) xTaskNotifyGive(s_pv_th);
+}
+
 static void start_turn(int steps, int64_t now)
 {
     if (!steps) return;
@@ -863,12 +921,8 @@ static void start_turn(int steps, int64_t now)
     }
     /* Once the strip leaves the app it opened on, that app wears its preview again. */
     item_t *f = &s_it[s_from_i];
-    if (f->px == s_snap && f->app) {
-        const pv_t *p = pv_for(f->app);
-        const uint16_t *ic = p ? NULL : icon_for(f->app);
-        f->px = p ? p->px : (ic ? ic : s_gear);
-        f->side = p ? p->side : PV;
-    }
+    if (f->px == s_snap && f->app) item_face(f);
+    thumbs_window(wrap(s_target));             /* the window goes where the strip is going */
     s_st = ST_TURN;
     s_t0 = now;
 }

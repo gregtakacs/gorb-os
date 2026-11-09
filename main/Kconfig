@@ -450,15 +450,21 @@ menu "Orb USB file access"
             assembled by accident because the language will not build both.
 
             Disk mode is the default. It is the class that works: the host gets
-            a drive letter, the firmware answers BOT with the component's own
+            a drive letter, the firmware answers BOT with its copy of TinyUSB's
             MSC class, and nothing depends on the MTP response path — which is
             the class that shipped first and never enumerated a store on either
             a Windows host or a Linux one (docs/history/usb-sd-msc-plan.md §14).
 
     config ORB_USB_MODE_MSC
         bool "Disk mode — hand the whole card to the host as a USB stick"
-        select TINYUSB_MSC_ENABLED
         help
+            The class is the orb's own copy of TinyUSB's MSC device class
+            (main/usb/orb_msc_class.c), registered as an application driver, and
+            TinyUSB's own (TINYUSB_MSC_ENABLED) stays off: its endpoint buffer is a
+            static 8 KB of internal DMA RAM every boot pays for, where ours is one
+            of the display's two tiles, lent by pointer for the window (owner,
+            2026-11-09).
+
             The card leaves the orb's filesystem entirely for the window: /sd is
             not mounted, the dial draws from flash, and the host owns the whole
             volume as one LUN with full read/write. The orb does not read the

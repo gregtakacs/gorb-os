@@ -5570,6 +5570,23 @@ static esp_err_t h_debug_png_bench(httpd_req_t *req)
     heap_caps_free(scratch);
     return httpd_resp_sendstr(req, b);
 }
+
+/* GET /api/v1/debug/usb?do=share|stop — the dial's USB disk row, pressed from the bench: share
+ * hands the card to the host now, stop reboots out of the window (orb_usb_msc.c). */
+static esp_err_t h_debug_usb(httpd_req_t *req)
+{
+    char v[8] = "";
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    httpd_resp_set_type(req, "application/json");
+    (void)q_param(req, "do", v, sizeof v);
+    const esp_err_t e = !strcmp(v, "share") ? orb_usb_msc_request_start()
+                      : !strcmp(v, "stop")  ? orb_usb_msc_request_stop()
+                      : ESP_ERR_INVALID_ARG;
+    char b[96];
+    snprintf(b, sizeof b, "{\"do\":\"%s\",\"err\":\"%s\",\"state\":\"%s\"}", v,
+             esp_err_to_name(e), orb_usb_msc_state());
+    return httpd_resp_sendstr(req, b);
+}
 #endif /* CONFIG_ORB_DEBUG_HTTP */
 
 #if CONFIG_ORB_DEBUG_HTTP
@@ -8981,6 +8998,7 @@ static esp_err_t net_start_httpd(void)
         { .uri = "/api/v1/debug/png_bench", .method = HTTP_GET, .handler = h_debug_png_bench },
         { .uri = "/api/v1/debug/fill", .method = HTTP_GET, .handler = h_debug_fill },
         { .uri = "/api/v1/debug/time", .method = HTTP_GET, .handler = h_debug_time },
+        { .uri = "/api/v1/debug/usb",  .method = HTTP_GET,  .handler = h_debug_usb },
 #endif
         /* microSD + themes. /themes is the page; the routes under /api/v1/sd are its
          * backing calls. Migration 1 deleted the flip and default doors: under the

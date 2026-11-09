@@ -33,6 +33,7 @@
 #include "orb_net.h"
 #include "orb_sd.h"
 #include "orb_tls_mem.h"
+#include "orb_usb_msc.h"
 
 static const char *TAG = "appnet";
 
@@ -124,6 +125,16 @@ static bool sink(const char *buf, size_t len, void *ctx)
 
 static void fetch(net_slot_t *n)
 {
+    /* A USB disk window: the owner has handed the card to a computer and can do
+     * nothing else with the orb until the reboot that ends it (owner, 2026-11-09), so
+     * the apps' fetches stand down and their kept connections close, which gives
+     * their TLS sessions' memory back for the window. The app sees a failure, as it
+     * would with no network. */
+    if (orb_usb_msc_window_open()) {
+        if (n->cli) { orb_https_free(n->cli); n->cli = NULL; }
+        n->err = ESP_ERR_INVALID_STATE;
+        return;
+    }
     const int64_t t0 = esp_timer_get_time();
     const char *why;
     while ((why = gate()) != NULL) {

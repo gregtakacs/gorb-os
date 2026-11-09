@@ -275,11 +275,12 @@ CONFIG_ORB_DEBUG_HTTP=y
 # than merely unwanted. Setting both symbols is a Kconfig error, not a config.
 CONFIG_ORB_USB_MODE_MSC=y
 
-# MSC's transfer window. 8192 is the number the board plan measured (§7): it is a
-# whole SD sector count rather than a stream, the allocation is internal DMA RAM,
-# and this sits under the display tile ring's loan, so it is sized to what the
-# pool can still produce after the dial is up rather than to throughput.
-CONFIG_TINYUSB_MSC_BUFSIZE=8192
+# TinyUSB's own MSC class stays OFF (owner, 2026-11-09). Its endpoint buffer is a
+# static 8 KB of internal DMA RAM that every boot paid for and only a disk window
+# used. Disk mode runs the orb's copy of the class (main/usb/orb_msc_class.c), whose
+# buffer is one display tile lent for the window, or failing that the largest of
+# 32 KB down to 4 KB the heap gives first.
+# CONFIG_TINYUSB_MSC_ENABLED is not set
 
 # Below here is the MTP build's tuning, inert while the choice selects MSC and kept
 # so that reverting the mode is this one line rather than a search. The object

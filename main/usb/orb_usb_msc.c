@@ -28,12 +28,20 @@
 #include "esp_log.h"
 #include "nvs.h"
 
+#include "esp_heap_caps.h"
+#include "soc/usb_dwc_struct.h"   /* GHWCFG3: what one transfer can count (the_cap) */
+#include "sdmmc_cmd.h"
 #include "tinyusb.h"
 #include "tinyusb_default_config.h"   /* TINYUSB_DEFAULT_CONFIG is variadic and lives here */
-#include "tinyusb_msc.h"
+/* The class header wants a compile-time buffer size for its static checks; the
+ * buffer itself is the window's (orb_msc_class.h). */
+#undef  CFG_TUD_MSC_BUFSIZE
+#define CFG_TUD_MSC_EP_BUFSIZE 512
+#include "class/msc/msc_device.h"
 
 #include "orb_usb_msc.h"
-#include "display.h"            /* display_dma_borrow — see orb_usb_msc_start */
+#include "orb_msc_class.h"
+#include "display.h"            /* display_tile_lend — the window's endpoint buffer */
 #include "orb_sd.h"
 #include "orb_jobs.h"
 #include "orb_app.h"        /* the service-tier row at the bottom of this file */
@@ -50,17 +58,18 @@ static const char *TAG = "orb_usb_msc";
 #define MSC_NVS_KEY       "usb_disk"
 
 /* PENDING is the press's word, not the mode's: the press landed and the worker
- * owns the job, but the card has not moved yet. It exists so the row repaints
- * honestly BEFORE the tile ring is borrowed, because the frame painted at that
- * moment is the last frame the glass will get until the reboot — a share window
- * freezes the dial on whatever was funded when the loan opened (display.c, the
- * tile-ring loan). */
+ * owns the job, but the card has not moved yet, so the row can say "starting".
+ * (Until 2026-11-09 the window froze the glass, its whole tile ring lent away; it
+ * now keeps drawing on one tile while the class holds the other.) */
 enum { MSC_OFF, MSC_PENDING, MSC_ACTIVE };
 
 static volatile int                 s_state;
 static volatile bool                s_host_up;     /* set by the ATTACHED event */
 static volatile bool                s_stopping;    /* the door was pressed; the reboot timer is running */
-static tinyusb_msc_storage_handle_t s_store;
+static sdmmc_card_t                *s_card;       /* the raw card, the host's for the window */
+static uint8_t                     *s_buf;        /* the class's endpoint buffer */
+static uint32_t                     s_buf_size;
+static bool                         s_buf_tile;   /* s_buf is a display tile, not the heap's */
 static bool                         s_tinyusb_up;  /* one install per boot, at most */
 static char                         s_reason[48] = "";
 
@@ -162,19 +171,150 @@ static void usb_event_cb(tinyusb_event_t *event, void *arg)
     }
 }
 
-/* The component's own storage bookkeeping. Two of these lines earn their place:
- * MOUNT_COMPLETE fires for an unmount as well as a mount, so nothing here tries to
- * read a direction out of the id (§10), and FORMAT_REQUIRED is the mode refusing
- * to destroy a card, which a bystander would otherwise read as a failure. */
-static void msc_storage_cb(tinyusb_msc_storage_handle_t handle,
-                           tinyusb_msc_event_t *event, void *arg)
+/* ------------------------------------------------------------------ the LUN
+ *
+ * One LUN, the whole card, raw sectors. The class hands these callbacks its own
+ * endpoint buffer, which is internal DMA memory a multiple of 512 long (s_buf), so a
+ * READ(10)/WRITE(10) chunk is one multi-block card command straight to or from it:
+ * no bounce, no allocation, no FatFs. Writes are not cached, so a SYNCHRONIZE CACHE
+ * has nothing to do. The volume is exported as it is: nothing formats it here. */
+void tud_msc_inquiry_cb(uint8_t lun, uint8_t vendor_id[8], uint8_t product_id[16],
+                        uint8_t product_rev[4])
 {
-    (void)handle; (void)arg;
-    if (event->id == TINYUSB_MSC_EVENT_FORMAT_REQUIRED) {
-        ESP_LOGW(TAG, "no filesystem the orb can read — the host may format it, we will not");
-    } else if (event->id == TINYUSB_MSC_EVENT_MOUNT_FAILED) {
-        ESP_LOGE(TAG, "MSC storage operation failed");
+    (void)lun;
+    memcpy(vendor_id, "Orb", 3);
+    memcpy(product_id, "Card", 4);
+    memcpy(product_rev, "1.0", 3);
+}
+
+bool tud_msc_test_unit_ready_cb(uint8_t lun)
+{
+    if (s_card && !s_stopping) return true;
+    tud_msc_set_sense(lun, SCSI_SENSE_NOT_READY, 0x3A, 0x00);   /* medium not present */
+    return false;
+}
+
+void tud_msc_capacity_cb(uint8_t lun, uint32_t *block_count, uint16_t *block_size)
+{
+    (void)lun;
+    *block_count = s_card ? (uint32_t)s_card->csd.capacity : 0;
+    *block_size  = s_card ? (uint16_t)s_card->csd.sector_size : 512;
+}
+
+/* An eject from the host changes nothing here: the card is not taken back while
+ * the window holds (the header note), and the reboot is what ends it. */
+bool tud_msc_start_stop_cb(uint8_t lun, uint8_t power_condition, bool start, bool load_eject)
+{
+    (void)lun; (void)power_condition; (void)start; (void)load_eject;
+    return true;
+}
+
+static int32_t lun_io(uint8_t lun, bool write, uint32_t lba, uint32_t offset,
+                      void *buffer, uint32_t bufsize)
+{
+    const uint32_t ss = s_card ? s_card->csd.sector_size : 0;
+    if (!ss || s_stopping || offset || bufsize % ss) {
+        tud_msc_set_sense(lun, SCSI_SENSE_ILLEGAL_REQUEST, 0x21, 0x00);   /* LBA out of range */
+        return -1;
     }
+    const esp_err_t e = write ? sdmmc_write_sectors(s_card, buffer, lba, bufsize / ss)
+                              : sdmmc_read_sectors(s_card, buffer, lba, bufsize / ss);
+    if (e != ESP_OK) {
+        ESP_LOGE(TAG, "%s of %" PRIu32 " sectors at %" PRIu32 ": %s", write ? "write" : "read",
+                 bufsize / ss, lba, esp_err_to_name(e));
+        tud_msc_set_sense(lun, SCSI_SENSE_MEDIUM_ERROR, write ? 0x0C : 0x11, 0x00);
+        return -1;
+    }
+    return (int32_t)bufsize;
+}
+
+int32_t tud_msc_read10_cb(uint8_t lun, uint32_t lba, uint32_t offset, void *buffer,
+                          uint32_t bufsize)
+{
+    return lun_io(lun, false, lba, offset, buffer, bufsize);
+}
+
+int32_t tud_msc_write10_cb(uint8_t lun, uint32_t lba, uint32_t offset, uint8_t *buffer,
+                           uint32_t bufsize)
+{
+    return lun_io(lun, true, lba, offset, buffer, bufsize);
+}
+
+int32_t tud_msc_scsi_cb(uint8_t lun, uint8_t const scsi_cmd[16], void *buffer, uint16_t bufsize)
+{
+    (void)buffer; (void)bufsize;
+    switch (scsi_cmd[0]) {
+    case SCSI_CMD_PREVENT_ALLOW_MEDIUM_REMOVAL:
+    case 0x35:                        /* SYNCHRONIZE CACHE (10): writes are not cached */
+        return 0;
+    default:
+        tud_msc_set_sense(lun, SCSI_SENSE_ILLEGAL_REQUEST, 0x20, 0x00);   /* invalid opcode */
+        return -1;
+    }
+}
+
+/* ------------------------------------------------------------------ the descriptor
+ *
+ * One interface, MSC, bulk pair on endpoint 1. The component builds this itself only
+ * while its own MSC class is on, and ours is off (orb_msc_class.c). */
+#define MSC_EP_OUT 0x01
+#define MSC_EP_IN  0x81
+static const uint8_t s_fs_config[] = {
+    TUD_CONFIG_DESCRIPTOR(1, 1, 0, TUD_CONFIG_DESC_LEN + TUD_MSC_DESC_LEN, 0, 100),
+    TUD_MSC_DESCRIPTOR(0, 0, MSC_EP_OUT, MSC_EP_IN, 64),
+};
+
+/* ------------------------------------------------------------------ the buffer
+ *
+ * Owner, 2026-11-09: the window pays for its buffer, the image does not. First the
+ * display's second tile, lent by pointer (display_tile_lend): 18,640 B of internal
+ * DMA memory nothing frees, while the glass draws on the first. Failing that, the
+ * largest of 32 KB down to 4 KB the heap gives first. Whole sectors either way. */
+static bool buffer_take(void)
+{
+    size_t sz = 0;
+    s_buf = display_tile_lend(&sz);
+    if (s_buf) {
+        s_buf_tile = true;
+        s_buf_size = (uint32_t)(sz & ~(size_t)511u);
+    } else {
+        for (uint32_t want = 32768; want >= 4096 && !s_buf; want -= 4096) {
+            s_buf = heap_caps_aligned_alloc(4, want, MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA);
+            if (s_buf) s_buf_size = want;
+        }
+    }
+    if (!s_buf) return false;
+    orb_msc_class_set_buffer(s_buf, s_buf_size);
+    ESP_LOGI(TAG, "disk window buffer: %" PRIu32 " B from %s", s_buf_size,
+             s_buf_tile ? "a display tile" : "the heap");
+    return true;
+}
+
+/* What one bulk transfer can carry on this controller. TinyUSB's DWC2 port programs a
+ * transfer's packet count as ceil(bytes / 64) and never splits one, and the count is
+ * as wide as the core was built with: GHWCFG3 says 4 + n bits. Bronze, 2026-11-09:
+ * 8,192 B (128 packets) enumerated and listed; 16,384 B (256) and 18,432 B (288) left
+ * Windows resetting the device five times a second, its count wrapped. The register
+ * reads only once the core is clocked, so this runs after the driver is installed and
+ * before the reconnect pulse lets a host send a command. */
+static uint32_t the_cap(void)
+{
+    const usb_dwc_ghwcfg3_reg_t h = USB_DWC.ghwcfg3_reg;
+    const uint32_t packets = (1u << (4 + h.pktsizewidth)) - 1u;
+    const uint32_t bytes   = (1u << (11 + h.xfersizewidth)) - 1u;
+    uint32_t cap = packets * 64u < bytes ? packets * 64u : bytes;
+    return cap & ~511u;
+}
+
+static void buffer_give(void)
+{
+    if (!s_buf) return;
+    orb_msc_class_set_buffer(NULL, 0);
+    if (s_buf_tile) display_tile_return(s_buf);
+    else heap_caps_free(s_buf);
+    s_buf = NULL;
+    s_buf_size = 0;
+    s_buf_tile = false;
 }
 
 esp_err_t orb_usb_msc_start(void)
@@ -196,69 +336,35 @@ esp_err_t orb_usb_msc_start(void)
                  esp_err_to_name(he));
         return he;
     }
-
-    /* auto_mount_off, on purpose. Left to itself the component re-mounts the
-     * volume for the application when USB lets go, which would put FatFs back on
-     * top of a LUN a host may still be writing to — and it is the one place the
-     * mode could acquire two owners without anybody asking. */
-    const tinyusb_msc_driver_config_t dcfg = {
-        .callback = msc_storage_cb,
-        .user_flags.auto_mount_off = 1,
-    };
-    /* 2026-10-24: the ring loan must cover the allocations, not just the card
-     * hand-over. orb_sd_lock lends and orb_sd_unlock returns, so the ring was
-     * already funded back when the component went looking for its storage
-     * object — which embeds the 8 KB write buffer inline (MSC_BUFSIZE=8192)
-     * and asks for it as one MALLOC_CAP_DMA calloc. Measured on the bench:
-     * that calloc met a largest DMA block of 7,168 B and answered NO_MEM
-     * ("lun: ESP_ERR_NO_MEM"); the same instant inside a borrow window shows
-     * 19,456 B free. Refcounted, so hand_to_usb's own inner pair nests here
-     * harmlessly. Held through the rest of the window on purpose: the flush
-     * path drops, the panel holds its GRAM, and the only exit from the mode
-     * is a reboot anyway (§6.1) — a funded ring buys a share window nothing. */
-    display_dma_borrow();
-
-    esp_err_t e = tinyusb_msc_install_driver(&dcfg);
-    if (e != ESP_OK && e != ESP_ERR_INVALID_STATE) {
+    if (!buffer_take()) {
         s_state = MSC_OFF;
-        snprintf(s_reason, sizeof s_reason, "msc: %s", esp_err_to_name(e));
-        ESP_LOGE(TAG, "tinyusb_msc_install_driver: %s", esp_err_to_name(e));
-        display_dma_return();
+        snprintf(s_reason, sizeof s_reason, "no memory for the disk buffer");
+        ESP_LOGE(TAG, "no display tile to spare and no 4 KB of internal DMA memory");
         orb_sd_hand_back();
-        return e;
+        return ESP_ERR_NO_MEM;
     }
+    s_card = card;
 
-    /* One LUN, the whole volume, mounted to USB and never to the app.
-     * do_not_format is not a preference: the card carries somebody's photos, and a
-     * card we cannot read is reported rather than erased — the same rule
-     * mount_at_khz() follows from the other side. */
-    const tinyusb_msc_storage_config_t scfg = {
-        .medium.card          = card,
-        .mount_point          = TINYUSB_MSC_STORAGE_MOUNT_USB,
-        .fat_fs.base_path     = NULL,
-        .fat_fs.do_not_format = true,
-    };
-    e = tinyusb_msc_new_storage_sdmmc(&scfg, &s_store);
-    if (e != ESP_OK) {
-        s_state = MSC_OFF;
-        snprintf(s_reason, sizeof s_reason, "lun: %s", esp_err_to_name(e));
-        ESP_LOGE(TAG, "tinyusb_msc_new_storage_sdmmc: %s", esp_err_to_name(e));
-        display_dma_return();
-        orb_sd_hand_back();
-        return e;
-    }
-    const tinyusb_config_t tusb_cfg = TINYUSB_DEFAULT_CONFIG(usb_event_cb);
-    e = tinyusb_driver_install(&tusb_cfg);
+    tinyusb_config_t tusb_cfg = TINYUSB_DEFAULT_CONFIG(usb_event_cb);
+    tusb_cfg.descriptor.full_speed_config = s_fs_config;
+    const esp_err_t e = tinyusb_driver_install(&tusb_cfg);
     if (e != ESP_OK) {
         s_state = MSC_OFF;
         snprintf(s_reason, sizeof s_reason, "tinyusb: %s", esp_err_to_name(e));
         ESP_LOGE(TAG, "tinyusb_driver_install: %s", esp_err_to_name(e));
-        (void)tinyusb_msc_delete_storage(s_store); s_store = NULL;
-        display_dma_return();
+        s_card = NULL;
+        buffer_give();
         orb_sd_hand_back();
         return e;
     }
     s_tinyusb_up = true;
+    const uint32_t cap = the_cap();
+    if (cap >= 512 && cap < s_buf_size) {
+        ESP_LOGI(TAG, "one transfer carries %" PRIu32 " B here: the buffer is used to that",
+                 cap);
+        s_buf_size = cap;
+        orb_msc_class_set_buffer(s_buf, s_buf_size);
+    }
 
     s_state   = MSC_ACTIVE;
     s_host_up = tud_mounted();
@@ -272,24 +378,18 @@ esp_err_t orb_usb_msc_start(void)
 
 /* No unmount and no hand-back of the CARD here either, and that remains the
  * design: the host may be mid-write, and the only moment it is safe to take
- * the volume back is a boot. What does come back is the tile ring — 2026-10-24,
- * after owners read the frozen window as a lock-up. The door press starts a
- * 750 ms reboot timer; inside that window the USB side can be laid down
- * honestly first (a clean host-facing detach, then the class and the driver —
- * which frees the DMA memory the ring was lent to), so the flush path's own
- * refund retry can paint the card's closing line before the panel goes dark.
- * If the memory does not come back, nothing regresses: the ring stays parked
- * and the frame the owner already reads is the one they keep until the boot. */
+ * the volume back is a boot. The press starts a 750 ms reboot timer; inside it
+ * the USB side is laid down honestly first (a clean host-facing detach, then the
+ * driver), and the buffer goes back to the glass. */
 esp_err_t orb_usb_msc_stop(void)
 {
     if (s_state != MSC_ACTIVE || s_stopping) return ESP_OK;
     s_stopping = true;
     ESP_LOGW(TAG, "rebooting out of disk mode — eject from the host first if it is copying");
     tud_disconnect();                              /* the host sees go before we vanish */
-    if (s_store) { (void)tinyusb_msc_delete_storage(s_store); s_store = NULL; }
-    (void)tinyusb_msc_uninstall_driver();
     if (s_tinyusb_up) { (void)tinyusb_driver_uninstall(); s_tinyusb_up = false; }
-    (void)display_dma_return();
+    s_card = NULL;
+    buffer_give();
     orb_jobs_reboot_soon("USB disk mode stopped");
     return ESP_OK;
 }
@@ -298,10 +398,7 @@ static void job_start(void *arg)
 {
     (void)arg;
     /* The press set PENDING on the LVGL task and the menu repainted under it;
-     * give that frame time to reach the glass before the loan parks the ring.
-     * One poll period is 10 ms and the paint is submitted in the press's own
-     * handler pass, so this waits on a commit already in flight, not on a hope:
-     * the frame the freeze preserves is the honest one. */
+     * give that frame time to reach the glass before the console goes. */
     vTaskDelay(pdMS_TO_TICKS(150));
     if (s_state != MSC_PENDING) return;   /* withdrawn while the job queued */
     (void)orb_usb_msc_start();
@@ -400,8 +497,8 @@ static const char *const s_act_armed = "Cancel the next boot";
 /* The only way out, and the honest label: stopping means a reboot, because the
  * console this mode gave up comes back no other way and because the card must
  * not be remounted under a host that may still be writing. PENDING and the note
- * row carry it too — a share window paints no more frames (the tile ring is on
- * loan to the card), so this row's own press is the door, found blind or not. */
+ * row carry it too, so this row's own press is the door, found blind or not (the
+ * window froze the glass until 2026-11-09; it draws on one tile now). */
 static const char *const s_act_on    = "Press to restart, stop sharing";
 /* The note's whole job was saying what the press makes true, before it is true.
  * It now says it from the action row's value slot (see USB_ROW_ACTION): during a

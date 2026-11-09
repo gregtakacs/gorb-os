@@ -314,6 +314,38 @@ happens only when they are not. No first fit, no compaction, no MOVING state.
   `esp-aes: Failed to allocate memory`. Open: the radio's dynamic RX/TX buffers
   (`SPIRAM_TRY_ALLOCATE_WIFI_LWIP` was tried in v1.1.41 and backed out, see sdkconfig.defaults).
 
+### USB disk mode pays for its own buffer (2026-11-09, owner's ruling, Bronze)
+
+- **The ruling:** "take out the entire 8K and instead when user asks for USB mode 1) flip to
+  single buffer for the display ... 2) ask for 32k->4k gradually first fit ... 3) stop all
+  other app's wifi serving ... 4) when user is done, reboot."
+- **The class is ours** (`main/usb/orb_msc_class.c`): TinyUSB's MSC device class from
+  esp_tinyusb 3.0.0, copied with three changes: no `CFG_TUD_MSC` guard, the endpoint buffer a
+  pointer and size set per window (`orb_msc_class_set_buffer`), and registration through
+  `usbd_app_driver_get_cb`. `CONFIG_TINYUSB_MSC_ENABLED` is off, so the component's static
+  8 KB `_mscd_epbuf` and its storage layer are out of the image: internal RAM in use
+  216,847 -> 208,655 B (`idf.py size`). Normal-boot internal free after it, Bronze: 36-37 KB
+  (low water 22.5 KB).
+- **The LUN is raw sectors** (`orb_usb_msc.c`): READ(10)/WRITE(10) are one multi-block card
+  command straight to or from the endpoint buffer, uncached, so SYNCHRONIZE CACHE is a no-op;
+  our own one-interface configuration descriptor, since the component builds one only with its
+  class on.
+- **The buffer** is the display's second tile, lent by pointer (`display_tile_lend`, the glass
+  draws on the first: the window no longer freezes it); failing that, the largest of 32 KB
+  down to 4 KB in 4 KB steps the heap gives first.
+- **One transfer is capped by the controller**: TinyUSB's DWC2 port programs a transfer's
+  packet count as ceil(bytes/64) and never splits one. Bronze's GHWCFG3 says 7 bits (127
+  packets), so the window uses `the_cap()` = 7,680 B of the buffer. Measured before reading the
+  register: 8,192 B (128 packets) listed a directory, 16,384 and 18,432 B left Windows resetting
+  the device ~5 times a second. TinyUSB's own class ran at 8,192 B, past the count, so a
+  transfer of its whole buffer wrapped.
+- **Apps' fetches stand down for the window** (`orb_app_net.c` `fetch`): a failure as with no
+  network, and the app's kept TLS connection is closed. Not seen on the device: the log ring
+  showed no app fetch lines before the window either.
+- **Bronze, Windows host:** one configure, the card as E:, a 20 MB write 39.7 s, a cold read
+  (the next window, a fresh mount) 32.2 s, hashes equal; `glass.tiles` 1 for the window and 2
+  after the reboot. `GET /api/v1/debug/usb?do=share|stop` presses the dial's row from a bench.
+
 ### The carousel keeps nothing while shut (2026-11-09, owner's rulings, Bronze)
 
 - **Previews resident in flash:** a third entry kind, `ORB_POOL_PREVIEW`, one per chosen app,

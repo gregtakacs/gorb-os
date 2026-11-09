@@ -120,6 +120,7 @@ idf_component_register(
         # of the menu — see docs/history/usb-sd-msc-plan.md §13.1.
         "usb/orb_usb_mtp.c"
         "usb/orb_usb_msc.c"
+        "usb/orb_msc_class.c" # TinyUSB's MSC class, its buffer lent per window (see the file head)
         # The RAM log ring: /api/v1/log's source, and the only witness that survives
         # the file-share window taking the console (docs/history/usb-sd-msc-plan.md §13.3).
         "util/orb_log.c"

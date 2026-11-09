@@ -28,6 +28,17 @@ func seedApps(t *testing.T) (newer, older []byte) {
 	if errA != nil || errB != nil {
 		t.Fatalf("shipped apps do not parse: %v %v", errA, errB)
 	}
+	if c, ok := orbnet.AppVersionCompare(ca.Version, cb.Version); !ok || c == 0 {
+		// Every shipped app at one release (v1.6.0): the older one is the color picker as
+		// it shipped before, kept in testdata for exactly this.
+		b, err2 = os.ReadFile(filepath.Join("testdata", "color_picker-v1.3.1.orbapp"))
+		if err2 != nil {
+			t.Fatalf("the older app fixture: %v", err2)
+		}
+		if cb, errB = orbnet.ParseApp(b); errB != nil {
+			t.Fatalf("the older app fixture does not parse: %v", errB)
+		}
+	}
 	switch c, ok := orbnet.AppVersionCompare(ca.Version, cb.Version); {
 	case !ok || c == 0:
 		t.Fatalf("clock %q and color_picker %q do not order", ca.Version, cb.Version)

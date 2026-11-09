@@ -114,7 +114,9 @@ def bake_flights(v):
 def _bake_flights(v, keep):
     r = subprocess.run([sys.executable, os.path.join(ROOT, "apps", "flights", "editor", "_selftest", "bake_check.py")],
                        env=dict(os.environ, FLIGHTS_BAKE_KEEP=keep), capture_output=True, text=True)
-    got = os.path.join(keep, DEFAULTS["flights"])
+    # flights' bake keeps its default under the bake's own name (modern.orbtheme, the look
+    # titled Scope); the shelf files it as flights-scope since ae048c4
+    got = os.path.join(keep, "modern.orbtheme")
     if r.returncode or not os.path.exists(got):
         print("  the bake failed:\n    " + (r.stdout + r.stderr).strip()[-1500:].replace("\n", "\n    "))
         return False

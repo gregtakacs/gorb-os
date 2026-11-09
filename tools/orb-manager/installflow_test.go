@@ -294,7 +294,7 @@ func TestThemeStepIsPerApp(t *testing.T) {
 // Weather and flights need v1.2.37: their themes' fonts carry the accent marks (radar-plan
 // §6.22), 129 glyphs, which an earlier reader refuses.
 func TestShelfAppsCarryTheirOSFloor(t *testing.T) {
-	for slug, want := range map[string]string{"flights": "v1.2.37", "weather": "v1.2.37", "clock": "v1.2.20"} {
+	for slug, want := range map[string]string{"flights": "v1.2.38", "weather": "v1.2.38", "clock": "v1.2.20"} {
 		body, err := os.ReadFile(filepath.Join("apps", slug+".orbapp"))
 		if err != nil {
 			t.Fatalf("%s: %v", slug, err)

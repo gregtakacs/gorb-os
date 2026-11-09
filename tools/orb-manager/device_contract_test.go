@@ -496,13 +496,15 @@ func TestEveryFirmwareDeviceRouteIsAllowedAndFakeable(t *testing.T) {
 	// bench host (radar-plan R0, §1.9 and §2.12): a bench door, not a page's. So are R3's
 	// map_view and png_bench, which time an OS map view and the PNG reader on the S3, and
 	// R3c's live, which draws into the stage's live layer under whatever app is showing.
+	// The theme cache's fill (C0's copy bench, C5's eviction and stale-choice doors) and the
+	// clock warp the chime tests run under are bench doors too (theme-cache-plan §6).
 	refused := map[string]bool{"/api/v1/ota": true, "/generate_204": true,
 		"/hotspot-detect.html": true, "/connect/test.php": true,
 		"/api/v1/debug/panic": true, "/api/v1/debug/flights": true,
 		"/api/v1/debug/fx": true, "/api/v1/debug/dial": true,
 		"/api/v1/debug/units_forget": true, "/api/v1/debug/map_bench": true,
 		"/api/v1/debug/map_view": true, "/api/v1/debug/png_bench": true,
-		"/api/v1/debug/live": true}
+		"/api/v1/debug/live": true, "/api/v1/debug/fill": true, "/api/v1/debug/time": true}
 	checked := 0
 	for _, m := range found {
 		uri, method := m[1], strings.ToUpper(m[2])

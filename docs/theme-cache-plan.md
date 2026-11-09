@@ -184,7 +184,7 @@ carries is read off the glass (its values blob draws; the preview is the card's)
 | **C3** | Sound off the glass: a store writes the voice bank (≤ 1 MB), boot maps every voice bank, a bind no longer stops voices, one-shots unleased and loops leased to the glass, a sound import that needs no stage; the clock chimes from its service | bench: the clock chiming through a switch to weather, and on the hour with weather on the glass; the tick stopping when the clock leaves — **built and benched on Bronze 2026-11-08** (§6) |
 | **C4** | The choice record (NVS), the last-on-glass order, stores that make room instead of refusing, the shelf's budgets per theme | bench: a theme stored into a full pool evicts the least recent display entry — **built and benched on Bronze 2026-11-08** (§6) |
 | **C5** | The fill on arrival behind the preview and its slice (full speed, block by block, heavy I/O), the zoom into the app, the pause on leaving, the card-missing case | bench: four apps cycled through a pool that holds three; leaving mid-fill; a card pulled mid-fill — **C5a, the engine, C5b, the face and the pause, C5c, the card file followed, built 2026-11-08** (§6); a card pulled mid-fill not benched (needs hands) |
-| **C6** | The hub: "in the pool / on the card only" on the Themes page | the hub's lists still parse |
+| **C6** | The hub: "in the pool / on the card only" on the Themes page | the hub's lists still parse — **built 2026-11-09** (§6) |
 
 ## 5. Open
 
@@ -241,6 +241,21 @@ held (20 fps), 1 s windows from the dial bench:
   of ~33, the paced fills at 5-9 fps (20 ms) and 3-6 fps (1 ms). Each cache miss suspends
   and resumes the operation, so the operation stretches and the frame waits on it.
   Reverted; Bronze is back on the build without it.
+
+### C6 — the hub says where a theme is (2026-11-09)
+
+- Each theme row of `GET /api/v1/sd` carries `chosen` (`orb_theme_chosen`: the row is its
+  app's choice). With `stored` it reads three ways: chosen and stored, **in the pool**;
+  chosen and not stored, **on the card only** (evicted; it comes back when the app opens);
+  neither, a card file nobody wears.
+- The hub decodes it (`ThemeEntry.Chosen`), names what an app wears from its choice first
+  (an evicted choice is still what the app wears; older firmware falls back to the stored
+  row), and the Themes page tags the chosen row "in the pool" or "on the card only", the
+  latter muted, each with a sentence on hover.
+- `GET /api/v1/theme_cache` is on the hub's allowlist and the fake answers it; the bench
+  doors (`debug/fill`, `debug/time`) are listed as bench doors in the route contract.
+- **Bronze:** flights, the clock and weather read stored and chosen; radar, evicted, chosen
+  alone. The page itself was not looked at on a running hub.
 
 ### C5c — the card file followed, and four apps through a pool for three (2026-11-08, Bronze)
 

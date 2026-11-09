@@ -336,6 +336,9 @@ func (o *Orb) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		o.serveBundle(w, r)
 	case r.URL.Path == "/api/v1/sd/rescan" && r.Method == http.MethodPost:
 		writeJSON(w, 200, fmt.Sprintf(`{"mounted":true,"card":%q}`, o.Card))
+	case r.URL.Path == "/api/v1/theme_cache" && r.Method == http.MethodGet:
+		// theme-cache-plan §2.1: a pool holding nothing, nothing chosen, no fill running
+		writeJSON(w, 200, `{"choices":[],"order":[],"pool":[],"capacity":8380416}`)
 	// The P4 card-app verbs. Registered here in the same order orb_net.c's uri table
 	// lists them, so a route the firmware grows and this switch does not fails the
 	// contract test rather than quietly answering 404 like a made-up path.

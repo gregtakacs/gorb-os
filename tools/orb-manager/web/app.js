@@ -3638,7 +3638,7 @@ async function loadThemes(ip) {
   // what IT wears (its row with the stored witness, which the hub reports as `wearing`);
   // the listing's one OS-wide `active` name is only the fallback for a face with no app
   const scopeRow = scope ? themeAppsRows.find((a) => a.slug === scope) : null;
-  const wears = scopeRow ? (scopeRow.wearing || (shown.find((t) => t.stored) || {}).name || "") : "";
+  const wears = scopeRow ? (scopeRow.wearing || (shown.find((t) => t.chosen) || shown.find((t) => t.stored) || {}).name || "") : "";
   state.textContent = shown.length + " theme" + (shown.length === 1 ? "" : "s")
     + (scope ? " for " + themeAppTitle(scope) + (themeAppsRows.length === 1 ? " \u2014 the only theme-capable app on this orb" : "")
              : (themeAppsRows.length > 1 ? " for any app on this orb" : ""))
@@ -4044,6 +4044,17 @@ function themeRow(t, state, list) {
     tag.className = "tag on";
     tag.textContent = "active";
     li.appendChild(tag);
+  }
+  // theme-cache-plan C6: the app's choice, in the orb's flash pool or, evicted to make room
+  // for another app's, on the card only until the app next opens
+  if (t.chosen) {
+    const pool = document.createElement("span");
+    pool.className = "tag " + (t.stored ? "on" : "mut");
+    pool.textContent = t.stored ? "in the pool" : "on the card only";
+    pool.title = t.stored
+      ? "This app's theme has a copy in the orb's theme memory: it opens at once."
+      : "This app's theme was moved out of the orb's theme memory to make room for another app's. It is copied back from the card, with its preview on the glass, the next time the app opens.";
+    li.appendChild(pool);
   }
   // An overwrite leaves the name, and so the id, alone: the row can read active while
   // the card holds newer bytes than the glass is drawing. Saying so is the difference

@@ -3613,6 +3613,13 @@ static void reconcile_job(void *arg)
     }
 }
 
+bool orb_theme_chosen(const char *stem)
+{
+    for (uint32_t c = 0; stem && c < s_cache.n_choice; c++)
+        if (!strcmp(s_cache.c[c].stem, stem)) return true;
+    return false;
+}
+
 void orb_theme_service(void)
 {
     if (s_fill_changed) { s_fill_changed = false; s_reconciled_gen--; }   /* due again */

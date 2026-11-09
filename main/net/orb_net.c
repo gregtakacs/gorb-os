@@ -5940,7 +5940,8 @@ static esp_err_t h_sd(httpd_req_t *req)
          * never this flag. */
         off += snprintf(json + off, sizeof json - (size_t)off,
             "%s{\"name\":\"%s\",\"id\":\"%s\",\"app\":\"%s\",\"why\":\"%s\",\"bytes\":%u,\"serial\":%u,"
-            "\"design\":%u,\"baked\":%u,\"ok\":%s,\"active\":%s,\"changed\":%s,\"fmt\":%u,\"sects\":%u,\"stored\":%s}",
+            "\"design\":%u,\"baked\":%u,\"ok\":%s,\"active\":%s,\"changed\":%s,\"fmt\":%u,\"sects\":%u,\"stored\":%s,"
+            "\"chosen\":%s}",
             i ? "," : "", e_name, e_id, e_app, e_why,
             (unsigned)ent[i].art_size, (unsigned)ent[i].serial, (unsigned)ent[i].design_size,
             (unsigned)ent[i].baked_s,
@@ -5948,7 +5949,8 @@ static esp_err_t h_sd(httpd_req_t *req)
             ent[i].active ? "true" : "false",
             ent[i].changed ? "true" : "false",
             (unsigned)ent[i].fmt, (unsigned)ent[i].n_sections,
-            ent[i].stored ? "true" : "false");
+            ent[i].stored ? "true" : "false",
+            orb_theme_chosen(ent[i].id) ? "true" : "false");   /* chosen: theme-cache-plan C6 */
     }
     if (!too_big)
         off += snprintf(json + off, sizeof json - (size_t)off, "]}");

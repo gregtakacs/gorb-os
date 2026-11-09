@@ -239,6 +239,9 @@ bool orb_theme_fill_post(const char *slug);
 /* Ruling 7, once per card mount: each choice's file against its copies' CRC (a changed file is
  * stored again, a file gone takes both copies). LVGL task, every poll; it posts the work. */
 void orb_theme_service(void);
+/* theme-cache-plan C6: `stem` is an app's choice (in the pool or on the card only: the row's
+ * `stored` says which). */
+bool orb_theme_chosen(const char *stem);
 /* True when opening `slug` would post a fill (its theme is chosen, on the card only, and no
  * fill runs): the carousel zooms it to the fill's face, not the glass. */
 bool orb_theme_fill_wanted(const char *slug);

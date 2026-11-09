@@ -79,6 +79,11 @@ type ThemeEntry struct {
 	// it the second press: one press of store IS the theme change, and this bool is
 	// what tells the caller the copy landed — the door acks the queue, not the write.
 	Stored bool `json:"stored"`
+	// Chosen is this file being its app's choice (theme-cache-plan C6): the theme the app
+	// wears whether its copy is in the flash pool (Stored) or, evicted, on the card only —
+	// it comes back from the card the next time the app opens. False on older firmware,
+	// which kept every app's theme in the pool and said so with Stored alone.
+	Chosen bool `json:"chosen"`
 	// Design is the app design's size in bytes after the banks (D43 P7): non-zero means
 	// the theme can be reopened in its editor; 0 on a design-less theme or an older orb.
 	Design uint32 `json:"design"`

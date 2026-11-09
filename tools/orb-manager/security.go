@@ -390,6 +390,9 @@ var deviceRoutes = map[string][]string{
 	// the A/B choice, each pinned by the firmware comment beside its handler.
 	"/api/v1/sd/bundle": {http.MethodPost},
 	"/api/v1/sd/rescan": {http.MethodPost},
+	// theme-cache-plan §2.1: each app's choice, the order of the glass, the pool's entries
+	// and a fill's progress, read-only.
+	"/api/v1/theme_cache": {http.MethodGet},
 	// P4's card-app verbs, added because the merge that landed them in firmware left
 	// them out of this map: a device feature the hub cannot dial is a feature nobody
 	// can manage. None of the five reboots, so none inherits the arm/disarm gate that

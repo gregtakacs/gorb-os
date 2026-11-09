@@ -364,6 +364,7 @@ body:has(.mask:not([hidden])){overflow:hidden}
 .arow .tag{font-size:11px;padding:2px 7px;border-radius:5px;border:1px solid var(--line)}
 .arow .tag.on,.themelist .tag.on{border-color:#6fbf73;color:#9adc9e}
 .arow .tag.mut{opacity:.8}
+.themelist .tag.mut{color:var(--mut)}   /* theme-cache-plan C6: on the card only */
 .arow .tag.err{border-color:#c9525a;color:#f2a0a6}
 .themelist .tag.id{border:none;padding:0;color:var(--mut);font-family:ui-monospace,monospace}
 /* An update is the loudest thing on a row: a filled amber chip and a filled amber press. */

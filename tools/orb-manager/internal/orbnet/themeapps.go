@@ -114,6 +114,7 @@ func (c *Client) ThemeAppsFrom(ip string, apps *AppList, appErr error, list *The
 		count   int
 		active  bool
 		wearing string
+		chosen  bool // wearing came from the app's choice, not a stored row
 	}
 	groups := map[string]*appGroup{}
 	if list != nil {
@@ -137,7 +138,11 @@ func (c *Client) ThemeAppsFrom(ip string, apps *AppList, appErr error, list *The
 			if t.Active {
 				g.active = true
 			}
-			if t.Stored && g.wearing == "" {
+			// the app's choice names what it wears, in the pool or not (theme-cache-plan
+			// C6); the stored row stands in for it on firmware that has no choices
+			if t.Chosen {
+				g.wearing, g.chosen = t.Name, true
+			} else if t.Stored && !g.chosen && g.wearing == "" {
 				g.wearing = t.Name
 			}
 		}

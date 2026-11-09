@@ -5571,6 +5571,100 @@ static esp_err_t h_debug_png_bench(httpd_req_t *req)
     return httpd_resp_sendstr(req, b);
 }
 
+/* GET /api/v1/debug/card_bench?op=write|read&n=18&kb=200&pace=250&bounce=0|1 — radar frames on
+ * the card, benched before they are designed (owner, 2026-11-09): write n files of kb KB under
+ * /sd/radar-bench, or read them in turn as a loop would, pace ms apart, each into PSRAM, either
+ * straight (FatFs bounces every sector) or through a lent display tile (multi-block reads). Each
+ * file under the card lock, as an app's read would be; min/avg/max per file. */
+static esp_err_t h_debug_card_bench(httpd_req_t *req)
+{
+    char op[8] = "", v[8];
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    httpd_resp_set_type(req, "application/json");
+    (void)q_param(req, "op", op, sizeof op);
+    const int n = q_param(req, "n", v, sizeof v) ? atoi(v) : 18;
+    const int kb = q_param(req, "kb", v, sizeof v) ? atoi(v) : 200;
+    const int pace = q_param(req, "pace", v, sizeof v) ? atoi(v) : 250;
+    const bool bounce = q_param(req, "bounce", v, sizeof v) && v[0] == '1';
+    const bool wr = !strcmp(op, "write");
+    const uint32_t f0 = display_frames();
+    const int64_t w0 = esp_timer_get_time();
+    if (!strcmp(op, "idle")) {                      /* the same window with no card at all */
+        const int ms = q_param(req, "ms", v, sizeof v) ? atoi(v) : 5000;
+        vTaskDelay(pdMS_TO_TICKS(ms > 0 && ms <= 20000 ? ms : 5000));
+        char b[96];
+        snprintf(b, sizeof b, "{\"op\":\"idle\",\"fps\":%.1f}",
+                 (display_frames() - f0) * 1e6 / (double)(esp_timer_get_time() - w0));
+        return httpd_resp_sendstr(req, b);
+    }
+    if ((!wr && strcmp(op, "read")) || n < 1 || n > 24 || kb < 1 || kb > 256 || pace < 0 || pace > 2000)
+        return httpd_resp_sendstr(req, "{\"error\":\"op=write|read|idle, n 1-24, kb 1-256, pace 0-2000\"}");
+    const size_t size = (size_t)kb * 1024u;
+    uint8_t *buf = heap_caps_malloc(size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!buf) return httpd_resp_sendstr(req, "{\"error\":\"no PSRAM\"}");
+    if (wr) for (size_t i = 0; i < size; i++) buf[i] = (uint8_t)(i * 2654435761u >> 24);
+    if (orb_sd_ensure_mounted() != ESP_OK) { heap_caps_free(buf); return httpd_resp_sendstr(req, "{\"error\":\"no card\"}"); }
+    if (wr) mkdir(ORB_SD_BASE "/radar-bench", 0777);
+    int64_t mn = INT64_MAX, mx = 0, sum = 0;
+    int done = 0, short_reads = 0, tiled = 0;
+    for (int i = 0; i < n; i++) {
+        char path[64];
+        snprintf(path, sizeof path, ORB_SD_BASE "/radar-bench/f%02d.bin", i);
+        const int64_t t0 = esp_timer_get_time();
+        orb_sd_lock();
+        size_t got = 0;
+        if (wr) {
+            const int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0666);
+            size_t tsz = 0;
+            uint8_t *t = (fd >= 0 && bounce) ? display_tile_lend(&tsz) : NULL;
+            tsz &= ~(size_t)511u;
+            if (t) tiled++;
+            while (fd >= 0 && got < size) {
+                const size_t ask = t ? (size - got < tsz ? size - got : tsz) : size - got;
+                if (t) memcpy(t, buf + got, ask);
+                const ssize_t r = write(fd, t ? t : buf + got, ask);
+                if (r <= 0) { ESP_LOGW(TAG, "card_bench: write %s at %u: %d (errno %d)", path, (unsigned)got, (int)r, errno); break; }
+                got += (size_t)r;
+            }
+            if (t) display_tile_return(t);
+            if (fd >= 0 && close(fd) != 0) ESP_LOGW(TAG, "card_bench: close %s: errno %d", path, errno);
+            if (fd < 0) ESP_LOGW(TAG, "card_bench: open %s: errno %d", path, errno);
+        } else {
+            const int fd = open(path, O_RDONLY);
+            size_t tsz = 0;
+            uint8_t *t = (fd >= 0 && bounce) ? display_tile_lend(&tsz) : NULL;
+            tsz &= ~(size_t)511u;
+            if (t) tiled++;
+            while (fd >= 0 && got < size) {
+                const size_t ask = t ? (size - got < tsz ? size - got : tsz) : size - got;
+                const ssize_t r = read(fd, t ? t : buf + got, ask);
+                if (r <= 0) break;
+                if (t) memcpy(buf + got, t, (size_t)r);
+                got += (size_t)r;
+            }
+            if (t) display_tile_return(t);
+            if (fd >= 0) close(fd);
+        }
+        orb_sd_unlock();
+        const int64_t dt = esp_timer_get_time() - t0;
+        if (got != size) { short_reads++; continue; }
+        done++;
+        sum += dt;
+        if (dt < mn) mn = dt;
+        if (dt > mx) mx = dt;
+        if (!wr && pace) vTaskDelay(pdMS_TO_TICKS(pace));
+    }
+    heap_caps_free(buf);
+    const double fps = (display_frames() - f0) * 1e6 / (double)(esp_timer_get_time() - w0);
+    char b[288];
+    const double avg = done ? (double)sum / done / 1000.0 : 0.0;
+    snprintf(b, sizeof b, "{\"op\":\"%s\",\"files\":%d,\"kb\":%d,\"bounce\":%s,\"tiled\":%d,\"short\":%d,"
+             "\"min_ms\":%.1f,\"avg_ms\":%.1f,\"max_ms\":%.1f,\"kb_s\":%.0f,\"fps\":%.1f}",
+             op, done, kb, bounce ? "true" : "false", tiled, short_reads,
+             mn == INT64_MAX ? 0.0 : mn / 1000.0, avg, mx / 1000.0, avg > 0 ? kb / (avg / 1000.0) : 0.0, fps);
+    return httpd_resp_sendstr(req, b);
+}
+
 /* GET /api/v1/debug/usb?do=share|stop — the dial's USB disk row, pressed from the bench: share
  * hands the card to the host now, stop reboots out of the window (orb_usb_msc.c). */
 static esp_err_t h_debug_usb(httpd_req_t *req)
@@ -8999,6 +9093,7 @@ static esp_err_t net_start_httpd(void)
         { .uri = "/api/v1/debug/fill", .method = HTTP_GET, .handler = h_debug_fill },
         { .uri = "/api/v1/debug/time", .method = HTTP_GET, .handler = h_debug_time },
         { .uri = "/api/v1/debug/usb",  .method = HTTP_GET,  .handler = h_debug_usb },
+        { .uri = "/api/v1/debug/card_bench", .method = HTTP_GET, .handler = h_debug_card_bench },
 #endif
         /* microSD + themes. /themes is the page; the routes under /api/v1/sd are its
          * backing calls. Migration 1 deleted the flip and default doors: under the

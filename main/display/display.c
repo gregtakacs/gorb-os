@@ -1811,6 +1811,9 @@ size_t display_dma_borrow(void)
 /* The ring is out (lent, or back but not yet re-funded): frames are dropped. */
 bool display_dma_parked(void) { return s_ring_parked; }
 
+/* Frames sent to the panel since boot, for a bench that wants its own window's rate. */
+uint32_t display_frames(void) { return s_bench_frames; }
+
 /* The tile buffers the flush path is driving now (0 while parked). /api/v1/status
  * shows it, because a ring that came back short (1) or not at all (0, parked) is
  * the glass's whole health and nothing on the panel says so. */

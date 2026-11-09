@@ -325,8 +325,21 @@ static inline int32_t orb_net_get(const char *url, const char *cred)
  * memory cannot hold a radar's frames. 768 KB an app; the OS frees them 15 min after the
  * app leaves the glass. */
 ORB_IMPORT("net_keep")  int32_t  orb_net_keep(uint32_t slot);   /* the landed body -> slot; ORB_OK */
-ORB_IMPORT("blob_len")  uint32_t orb_blob_len(uint32_t slot);   /* 0 = empty or reclaimed */
+ORB_IMPORT("blob_len")  uint32_t orb_blob_len(uint32_t slot);   /* 0 = empty or reclaimed; any tier */
 ORB_IMPORT("blob_free") void     orb_blob_free(uint32_t slot);
+/* OS v1.6.1: a kept body can wait on the card (README "Kept bodies on the card"). Park one
+ * the app will not draw soon: its PSRAM goes once the card has it (ORB_ERR_NOT_SUPPORTED with
+ * no card: it stays in PSRAM). Load it back before drawing it (ORB_ERR_NO_MEM past the 768 KB:
+ * park another first). Both are asynchronous: orb_blob_state says where it is, and
+ * orb_cv_png8 answers ORB_ERR_NOT_FOUND for a body not in PSRAM. A park is the card's last
+ * priority, so expect it to take seconds when the orb is busy. */
+#define ORB_BLOB_EMPTY  0
+#define ORB_BLOB_RAM    1               /* in PSRAM: drawable */
+#define ORB_BLOB_CARD   2               /* on the card only: load it first */
+#define ORB_BLOB_MOVING 3               /* being parked or loaded */
+ORB_IMPORT("blob_park")  int32_t orb_blob_park(uint32_t slot);
+ORB_IMPORT("blob_load")  int32_t orb_blob_load(uint32_t slot);
+ORB_IMPORT("blob_state") int32_t orb_blob_state(uint32_t slot);
 
 /* An indexed PNG (colour type 3, 1-8 bits, not interlaced) from a kept body, drawn onto a
  * canvas (or ORB_CV_LIVE0/1) through the app's 256 ARGB words: alpha blends, 0 leaves the

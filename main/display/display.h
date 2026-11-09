@@ -262,6 +262,8 @@ void    display_tile_return(void *tile);
 bool    display_dma_parked(void);
 /** Tile buffers in use now: 2 healthy, 1 short, 0 parked. */
 int     display_tiles(void);
+/** Frames sent to the panel since boot. */
+uint32_t display_frames(void);
 /** The ring's return when nothing else would make it: the flush path re-funds the
  *  ring and re-sends the frames it dropped, but a still page (the menu after a card
  *  walk) never flushes, so the panel kept the picture from before the read until a

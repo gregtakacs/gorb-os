@@ -365,6 +365,34 @@ Read it in pieces with `orb_net_read`, or tokenize it in place with
 carry keys up to 31 bytes and strings up to 95. Longer text is cut, and
 `key_trunc` / `str_trunc` say so.
 
+### Kept bodies on the card (OS v1.6.1)
+
+`orb_net_keep(slot)` moves a landed body into one of 24 OS-owned slots, 768 KB of PSRAM
+an app, and `orb_cv_png8` draws from that. When an app keeps more than fits, such as a
+radar loop on a rainy day, it can park bodies on the SD card and load them back before it
+draws them:
+
+- `orb_blob_park(slot)` hands the body to the card. Its PSRAM goes once the card holds it.
+  It answers `ORB_ERR_NOT_SUPPORTED` with no usable card (none, or shared over USB), and the
+  body stays in PSRAM. Keep the old behaviour for that case.
+- `orb_blob_load(slot)` brings a parked body back. It answers `ORB_ERR_NO_MEM` past the
+  768 KB. Park something else first.
+- `orb_blob_state(slot)` is `ORB_BLOB_EMPTY`, `_RAM`, `_CARD` or `_MOVING`. Only `_RAM` can
+  be drawn: `orb_cv_png8` answers `ORB_ERR_NOT_FOUND` for the rest. `orb_blob_len` answers
+  in every state.
+
+Best practice:
+
+- **Keep a small window in PSRAM**: what is on the glass and what comes next. Park the rest
+  as it lands, and ask for loads a step or two before you need them. A 200 KB body loads in
+  about 0.3 s.
+- **Wait, don't skip**: if the next body is still `_MOVING`, hold the picture you have.
+- **Expect parks to be slow**. A park is the card's last priority: it stands aside while a
+  carousel is open, an app is switching, a theme copies, or an upload runs, and a 200 KB
+  write takes about a second. Nothing on the glass depends on it.
+- **Bodies are cache, not storage**. They go 15 minutes after the app leaves the glass, at
+  uninstall, and at every boot, card copies included.
+
 ## Rules the OS enforces
 
 - **Time budget.** `orb_init` gets 1000 ms. Every other entry point gets 250 ms

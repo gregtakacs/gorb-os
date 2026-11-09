@@ -98,6 +98,10 @@ static const char *s_sw_name;
 static int64_t     s_sw_since_us;      /* window-origin, never re-armed: total silence */
 static bool        s_sw_lent_logged;   /* the with-explanation line prints once */
 
+/* An app switch is under way: from the press until the new view's first frame. Read from any
+ * task (a 64-bit word written on the LVGL task: a torn read only says "busy" a moment). */
+bool input_router_switching(void) { return s_sw_open_us != 0; }
+
 /* If the new view has not painted inside this, that is itself the finding, and it
  * is reported as one instead of waiting indefinitely for a commit that never
  * comes. Comfortably longer than the 40 ms beat the fastest theme bakes. */

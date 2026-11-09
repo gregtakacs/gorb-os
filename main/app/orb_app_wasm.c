@@ -1184,9 +1184,32 @@ m3ApiRawFunction(imp_blob_len)                /* u32 blob_len(u32 slot) */
     m3ApiReturnType(uint32_t);
     CALLER();
     m3ApiGetArg(uint32_t, i);
-    uint32_t len = 0;
-    (void)orb_blob_get(slot_index(s), (int)i, &len);
-    m3ApiReturn(len);
+    m3ApiReturn(orb_blob_len(slot_index(s), (int)i));   /* radar-plan §7: on the card too */
+}
+
+/* radar-plan §7 (OS v1.6.1): a kept body parked on the card, loaded back, and its tier. */
+m3ApiRawFunction(imp_blob_park)               /* i32 blob_park(u32 slot) */
+{
+    m3ApiReturnType(int32_t);
+    CALLER();
+    m3ApiGetArg(uint32_t, i);
+    m3ApiReturn(orb_blob_park(slot_index(s), (int)i));
+}
+
+m3ApiRawFunction(imp_blob_load)               /* i32 blob_load(u32 slot) */
+{
+    m3ApiReturnType(int32_t);
+    CALLER();
+    m3ApiGetArg(uint32_t, i);
+    m3ApiReturn(orb_blob_load(slot_index(s), (int)i));
+}
+
+m3ApiRawFunction(imp_blob_state)              /* i32 blob_state(u32 slot) */
+{
+    m3ApiReturnType(int32_t);
+    CALLER();
+    m3ApiGetArg(uint32_t, i);
+    m3ApiReturn(orb_blob_state(slot_index(s), (int)i));
 }
 
 m3ApiRawFunction(imp_blob_free)               /* void blob_free(u32 slot) */
@@ -1821,6 +1844,9 @@ static const wasm_bind_t s_binds[] = {
     { "orb", "places_gen",    "i()",       imp_places_gen },
     { "orb", "net_keep",      "i(i)",      imp_net_keep },
     { "orb", "blob_len",      "i(i)",      imp_blob_len },
+    { "orb", "blob_park",     "i(i)",      imp_blob_park },
+    { "orb", "blob_load",     "i(i)",      imp_blob_load },
+    { "orb", "blob_state",    "i(i)",      imp_blob_state },
     { "orb", "blob_free",     "v(i)",      imp_blob_free },
     { "orb", "cv_png8",       "i(ii)",     imp_cv_png8 },
     { "orb", "map_open",      "i(ii)",     imp_map_open },
@@ -2222,6 +2248,7 @@ static void wasm_service(orb_app_t *app)
             if (orb_blob_used(slot_index(s))) orb_blob_free_all(slot_index(s));
             orb_map_drop(slot_index(s));
         }
+        orb_blob_service(slot_index(s));             /* §7: what the card worker finished */
         orb_blob_note_glass(slot_index(s), s->on_glass, now);
         orb_map_note_glass(slot_index(s), s->on_glass, now);
     }

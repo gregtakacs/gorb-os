@@ -1999,3 +1999,81 @@ frees flash, not PSRAM, so they wait on PSRAM found elsewhere):
   `CONFIG_LV_FONT_MONTSERRAT_18=y` in `sdkconfig.defaults`, and the build stopped at
   `orb_ui.c`; the local file was brought into line.
 
+
+## 7. Frames on the card (owner, 2026-11-09)
+
+### 7.1 The rulings
+
+- "I would think on a rainy day is exactly when you'd want to see more precision and more
+  data, especially for the future." No thinning of the frames on a wet day, and no variable
+  time step ("I also wonder if a variable time rate would look too jumpy").
+- "Let's drop it to 3fps so we have 333ms to load a frame, plenty of time with a bit headroom."
+- "Regarding the writes every 10 minutes, we don't have to 'immediately' serve it as we get it
+  so that is a no big deal if there is a 6s delay." The concern is the rest of the orb: "what
+  happens when radar is writing and we switch apps or try to open the carousel?"
+- "Write a plan then build it."
+
+### 7.2 Why (measured 2026-11-09, Austin, Region)
+
+- The OS keeps 768 KB of kept bodies an app (`ORB_BLOB_BUDGET`). Austin's Region frames that
+  day were 91-97 KB past and 62-87 KB nowcast, 1.55 MB for the 18; the fetch order (the newest
+  past frame, the nowcast, then the past newest first) ran out at -30, so the loop began at -20.
+- A frame's bytes scale with its rain: 131-217 KB a frame fully covered (Local to Wide), the
+  incompressible ceiling 262 KB, past the OS's 256 KB body cap. The 18 at full cover are
+  3.2-3.9 MB; PSRAM under radar has ~2.0 MB free, 580 KB at its low with the carousel up.
+- The card, benched on Bronze under radar (`/api/v1/debug/card_bench`, not shipped):
+  a 200 KB file read in 283 ms into PSRAM plainly (the driver bounces every sector), 140-150 ms
+  through a lent display tile. Radar's sweep: 17.2-17.8 fps idle, 16.7-17.0 with tile reads at
+  the loop's pace, 14.8-16.2 back to back, 17.2-17.7 with plain reads. A 200 KB write took
+  ~820 ms (2 s worst) plainly. A write through the tile wedged the card until a power cycle:
+  cause unknown, path not used (§7.6).
+
+### 7.3 The design: a second tier behind the kept bodies
+
+The OS keeps an app's kept bodies on the card as well as in PSRAM. PSRAM stays the only place
+a frame is drawn from (`orb_cv_png8`), and the app says which bodies it wants there.
+
+- **Three new SDK calls** (OS v1.6.1, `apps/sdk/orb.h`, `binds.json`):
+  - `orb_blob_park(slot)`: keep the body on the card; its PSRAM goes once it is written. Async.
+    `ORB_ERR_NOT_SUPPORTED` with no card (or the card shared over USB): the body stays in RAM.
+  - `orb_blob_load(slot)`: bring a parked body back to PSRAM. Async. `ORB_ERR_NO_MEM` past the
+    768 KB (the app parks another first).
+  - `orb_blob_state(slot)`: `ORB_BLOB_EMPTY`, `_RAM`, `_CARD`, `_MOVING`. `orb_blob_len` answers
+    the length in any state; `orb_cv_png8` answers `ORB_ERR_NOT_FOUND` for one not in RAM.
+- **The budget** stays 768 KB of PSRAM an app, counting a load from when it is asked for. The card
+  holds up to the 24 slots at the 256 KB body cap (6 MB), in `/sd/System/blobs/s<app>-<slot>.bin`,
+  wiped at boot, when the app's bodies go (15 min off the glass), and at uninstall.
+- **One OS task does the card work** (`blobio`, priority 2, PSRAM stack): loads first (they are
+  for the glass), then parks, then deletes. Each body moves in 16 KB pieces, each piece its own
+  hold of the card lock (~25 ms a read, ~65 ms a write), the file kept open between them (the
+  fill's precedent). PSRAM is touched only on the LVGL task: a load's buffer is taken there
+  before the read and adopted there after it; a parked body's PSRAM is freed there once written.
+- **The writes are the card's last priority** (the owner's concern). Before every piece the
+  writer stands aside while: the app carousel or the theme carousel is up, an app switch is
+  under way (the input router's switch window), a job runs (a fill, a store), an upload or any
+  other writer is active (`orb_sd_write_idle_ms`), or the card is shared over USB. Whoever wants
+  the card waits for one piece at most. Loads stand aside only for USB (they are for the glass,
+  and an app off the glass draws nothing and asks for none).
+
+### 7.4 Radar
+
+- **3 fps**: a loop step every 333 ms (was 250), Now held 2 s.
+- **What stays in PSRAM**: the frame on the glass, the next two the loop (or the dial) will
+  show, and the newest; every other frame is parked as it lands. Before a step, the next frame
+  must be in RAM: its load is asked two steps ahead, and a step waits for it rather than skip.
+- **Room for a landing**: before a frame is fetched there must be room for 256 KB; else the
+  farthest frame from the playhead is parked and the fetch waits for its PSRAM to go.
+- **No card**: as before (the oldest past frames go, the loop starts later).
+- The scrub's "drawn ahead" (§6.28) asks the load of the next frame the dial turns toward.
+
+### 7.5 Checks
+
+- Bronze, Austin Region on a wet list: the loop from -110; PSRAM and internal low water; the
+  sweep's fps idle and looping (`card_bench op=idle`); the carousel opened and an app switched
+  while a list's frames are being written (the writer's log says it stood aside).
+- No card: the old behaviour.
+
+### 7.6 Open
+
+- The tile-lent write that wedged the card: to be reproduced in small steps (4 KB from internal,
+  8 KB, then 18 KB) before any write uses a tile.

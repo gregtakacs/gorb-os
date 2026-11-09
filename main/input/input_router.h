@@ -98,6 +98,10 @@ const orb_app_t *input_router_current(void);
 /** True while some entry is armed, i.e. rotate belongs to it and not to the step. */
 bool input_router_armed(void);
 
+/** True from an app switch's press until the new view's first frame (the card's background
+ *  writers stand aside meanwhile, radar-plan §7.3). */
+bool input_router_switching(void);
+
 /**
  * Ask the router to switch entries from another task. Safe to call from
  * anywhere: it only records the pointer, and the router's own poll on the LVGL

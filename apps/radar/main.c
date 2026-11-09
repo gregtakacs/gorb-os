@@ -117,6 +117,15 @@ static int64_t  s_next_list_ms;
 static uint32_t s_backoff_ms;
 static int64_t  s_retry_ms;                     /* frames: not before this after a failure */
 
+/* radar-plan §7 (OS v1.6.1): frames wait on the card. In PSRAM stay the frame on the glass, the
+ * next two the loop or the dial will show, and the newest; the rest are parked as they land,
+ * and loaded back two steps ahead. With no usable card (or an OS that cannot park) the old
+ * rule stands: the oldest past frames go and the loop starts later. */
+#define FRAME_MAX      (256u * 1024u)    /* the OS's body cap: the room a landing needs */
+#define BLOB_BUDGET    (768u * 1024u)    /* the OS's kept bodies an app (PSRAM) */
+static bool     s_card_ok = true;        /* parks are answered; false: the old rule */
+static int64_t  s_card_retry_ms;         /* a refused park: asked again after this */
+
 static bool slot_used(int s)
 {
     for (int i = 0; i < RD_FRAMES; i++) if (F[i].slot == s) return true;
@@ -138,6 +147,9 @@ static void frames_drop(void)                    /* a new place or zoom: none of
     }
 }
 static int idx_newest(void) { return s_npast - 1; }
+
+static int fstate(const frame_t *f) { return f && f->slot >= 0 ? (int)orb_blob_state((uint32_t)f->slot) : ORB_BLOB_EMPTY; }
+static bool fready(const frame_t *f) { return fstate(f) == ORB_BLOB_RAM; }
 
 /* A new list: a frame keeps its body when the same time and kind come back; a nowcast
  * frame kept is asked again (it may have been re-forecast); one that turned from nowcast
@@ -184,6 +196,20 @@ static int next_frame(void)
 static bool s_rain_dirty, s_ui_dirty;
 static bool s_merged;              /* the two layers composed as one (§6.19) */
 
+/* §7.4: the PSRAM the frames hold (a load counts from its ask, a park until it is written),
+ * the biggest frame yet, and whether every frame in PSRAM is one the window keeps. */
+static uint32_t s_biggest;
+static uint32_t ram_used(void)
+{
+    uint32_t u = 0;
+    for (int k = 0; k < s_npast + s_nnow; k++) {
+        const int st = fstate(&F[k]);
+        if (st == ORB_BLOB_RAM || st == ORB_BLOB_MOVING) u += orb_blob_len((uint32_t)F[k].slot);
+    }
+    return u;
+}
+static bool s_parkable;            /* frames_tend: a frame in PSRAM the window does not keep */
+
 static void net_done(void)
 {
     orb_net_free();
@@ -221,6 +247,9 @@ static void net_step(bool visible)
         if (t < s_retry_ms) return;
         const int i = next_frame();
         if (i < 0) return;
+        /* §7.4: room for the landing first; the parks frames_tend asked for free it */
+        const uint32_t need = s_biggest ? s_biggest + s_biggest / 4 : FRAME_MAX;
+        if (s_card_ok && s_parkable && ram_used() + need > BLOB_BUDGET) return;
         const where_t *w = here();
         char url[200], hdr[48] = "";
         if (!rd_frame_url(url, sizeof url, s_source, F[i].path, rd_img_side(s_zoom), rd_img_zurl(s_zoom), w->lat_e6, w->lon_e6,
@@ -277,6 +306,13 @@ static void net_step(bool visible)
     if (ni.state != ORB_NET_DONE || ni.status != 200 || ni.len < 40) { net_failed(&ni); return; }
     const int s = f->slot >= 0 ? f->slot : slot_free();
     int32_t kept = s < 0 ? ORB_ERR_NO_MEM : orb_net_keep((uint32_t)s);
+    if (kept == ORB_ERR_NO_MEM && s >= 0 && s_card_ok) {
+        /* §7.4: with the card, room comes from parking, never from giving frames up: the
+         * frame is asked again once the parks have freed it */
+        s_retry_ms = up_ms() + 2000;
+        net_done();
+        return;
+    }
     /* The newest past frame and the nowcast make room: the oldest past frames held go,
      * and the loop starts later. Refused here, a new list's newest frame backed off for
      * up to 10 minutes, and a place flipped meanwhile sat at "Loading radar" (owner,
@@ -300,6 +336,7 @@ static void net_step(bool visible)
     if (kept != ORB_OK) { net_failed(&ni); return; }
     f->slot = (int8_t)s;
     f->recheck = false;
+    if (ni.len > s_biggest) s_biggest = ni.len;
     char tag[24];
     const int32_t tn = orb_net_header("ETag", tag, sizeof tag);
     if (tn > 0 && tn < (int32_t)sizeof tag) memcpy(f->etag, tag, (size_t)tn + 1); else f->etag[0] = 0;
@@ -534,7 +571,7 @@ static bool back_begin(int i, bool spec)
     s_back_drawn = -1;
     s_tgt = ORB_CV_BACK1;
     const frame_t *f = i >= 0 ? &F[i] : NULL;
-    if (!f || f->slot < 0 || !orb_blob_len((uint32_t)f->slot)) { draw_scale(); return true; }
+    if (!f || f->slot < 0 || !fready(f)) { draw_scale(); return true; }
     const int k = rd_img_k(s_zoom);
     orb_png_draw_t d = { .slot = (uint32_t)f->slot, .sx = s_sx, .sy = s_sy, .dx = s_dx, .dy = s_dy,
                          .w = RD_GLASS, .h = RD_GLASS, .scale = k > 1 ? (k | ORB_PNG_SMOOTH) : 1, .pal = f->now ? s_pal_fc : s_pal };
@@ -562,7 +599,7 @@ static void back_step(void)
     /* §6.28: scrubbing, the next frame the way the dial turns is drawn ahead into the idle back,
      * so the next detent that way is one blip (the decode and the compare already made) */
     const int n = s_shown + s_scrub_dir;
-    if (!s_play && s_shown >= 0 && n >= 0 && n < s_npast + s_nnow && F[n].slot >= 0 && orb_blob_len((uint32_t)F[n].slot))
+    if (!s_play && s_shown >= 0 && n >= 0 && n < s_npast + s_nnow && fready(&F[n]))
         (void)back_begin(n, true);
 }
 
@@ -584,6 +621,12 @@ static void draw_rain(void)
     if (s_shown == i && f && f->slot >= 0) {
         s_rain_dirty = false;
         if (s_back_open) s_back_spec = true;   /* the dial came back: what is in flight is not asked for */
+        return;
+    }
+    /* §7: on the card, being loaded: the rain on the glass stays until it is in PSRAM */
+    if (f && f->slot >= 0 && !fready(f)) {
+        if (fstate(f) == ORB_BLOB_CARD) (void)orb_blob_load((uint32_t)f->slot);
+        s_rain_dirty = true;
         return;
     }
     /* the map, then the rain over it (merged), or a clear layer: begun in the back copy, over
@@ -720,7 +763,8 @@ static void place_changed(void)
     RAIN_AGAIN(-1);
 }
 
-/* The loop (§2.5): oldest held past frame to Now, 250 ms a step, Now held 2 s. */
+/* The loop (§2.5): oldest held past frame to Now, 333 ms a step (§7.1: 3 a second, a card
+ * read's time with headroom; was 250), Now held 2 s. */
 static void loop_step(void)
 {
     if (!s_play || !s_npast || s_zoom_want >= 0) return;   /* choosing a zoom: it holds */
@@ -729,12 +773,67 @@ static void loop_step(void)
     if (s_back_open && !s_back_spec) return;
     orb_burst(1000);               /* a theme with no moving rows ticks once a second: keep 4 */
     const int64_t t = up_ms();
-    const int hold = s_loop == idx_newest() ? 2000 : 250;
+    const int hold = s_loop == idx_newest() ? 2000 : 333;
     if (t - s_loop_ms < hold) return;
-    s_loop_ms = t;
     int next = s_loop >= idx_newest() ? 0 : s_loop + 1;
     while (next < idx_newest() && F[next].slot < 0) next++;    /* skip what has not landed */
+    /* §7.4: a frame on the card waits for its load (asked two steps ahead) rather than skip */
+    if (next != s_loop && F[next].slot >= 0 && !fready(&F[next])) {
+        if (fstate(&F[next]) == ORB_BLOB_CARD) (void)orb_blob_load((uint32_t)F[next].slot);
+        return;
+    }
+    s_loop_ms = t;
     if (next != s_loop) { s_loop = next; s_rain_dirty = s_ui_dirty = true; }
+}
+
+/* §7.4: the frames to keep in PSRAM: the one wanted, the next `ahead` the loop (or the dial,
+ * the way it turns) will show, and the newest. */
+static bool in_window(int k, int cur, int ahead)
+{
+    if (k == cur || (ahead > 1 && k == idx_newest())) return true;
+    const int n = s_npast + s_nnow;
+    for (int a = 1, j = cur; a <= ahead && j >= 0; a++) {
+        j = s_play ? (j >= idx_newest() ? 0 : j + 1) : j + s_scrub_dir;
+        if (j < 0 || j >= n) break;
+        if (j == k) return true;
+    }
+    return false;
+}
+
+/* §7.4, once a service pass: what the window keeps is loaded, the rest parked. A window too big
+ * for the 768 KB with room for a landing keeps the wanted frame and the next alone. */
+static void frames_tend(void)
+{
+    s_parkable = false;
+    if (!s_npast) return;
+    if (!s_card_ok) {
+        if (up_ms() < s_card_retry_ms) return;
+        s_card_ok = true;
+    }
+    const int cur = frame_wanted();
+    uint32_t win = 0;
+    for (int k = 0; k < s_npast + s_nnow; k++)
+        if (F[k].slot >= 0 && in_window(k, cur, 2)) win += orb_blob_len((uint32_t)F[k].slot);
+    const int ahead = win + (s_biggest ? s_biggest : FRAME_MAX) > BLOB_BUDGET ? 1 : 2;
+    int calls = 0;
+    for (int k = 0; k < s_npast + s_nnow && calls < 4; k++) {
+        const int st = fstate(&F[k]);
+        if (st != ORB_BLOB_RAM && st != ORB_BLOB_CARD) continue;
+        const bool keep = in_window(k, cur, ahead);
+        if (keep && st == ORB_BLOB_CARD) {
+            calls++;
+            (void)orb_blob_load((uint32_t)F[k].slot);   /* NO_MEM: the parks below free it */
+        } else if (!keep && st == ORB_BLOB_RAM) {
+            s_parkable = true;
+            calls++;
+            if (orb_blob_park((uint32_t)F[k].slot) == ORB_ERR_NOT_SUPPORTED) {
+                s_card_ok = false;
+                s_card_retry_ms = up_ms() + 60000;
+                orb_logf("radar: no card to keep frames on: the oldest go for room (asked again in 60 s)");
+                return;
+            }
+        }
+    }
 }
 
 /* ---- the bare form: no theme bound (app-platform-plan §26: every app draws its base
@@ -790,7 +889,7 @@ static void bare_draw(void)
     const int i = frame_wanted();
     const frame_t *f = i >= 0 ? &F[i] : NULL;
     s_shown = -1;
-    if (f && f->slot >= 0 && orb_blob_len((uint32_t)f->slot)) {
+    if (fready(f)) {
         const int k = rd_img_k(s_zoom);
         orb_png_draw_t d = { .slot = (uint32_t)f->slot, .sx = s_sx, .sy = s_sy, .dx = s_dx, .dy = s_dy,
                              .w = RD_GLASS, .h = RD_GLASS, .scale = k > 1 ? (k | ORB_PNG_SMOOTH) : 1, .pal = s_pal };
@@ -843,6 +942,12 @@ static void redraw(void)
 {
     if (!s_visible) return;
     if (!s_themed) {
+        const int i = frame_wanted();
+        const frame_t *f = i >= 0 ? &F[i] : NULL;
+        if (f && f->slot >= 0 && !fready(f)) {            /* §7: the picture stays while it loads */
+            if (fstate(f) == ORB_BLOB_CARD) (void)orb_blob_load((uint32_t)f->slot);
+            return;
+        }
         if (s_cv && (s_map_dirty || s_rain_dirty || s_ui_dirty)) bare_draw();
         return;
     }
@@ -1042,6 +1147,7 @@ ORB_EXPORT("orb_service") void orb_service(void)
         s_flip_ms = 0;                                   /* the new map is up: the pill goes */
         s_ui_dirty = true;
     }
+    if (s_visible) frames_tend();                        /* §7.4: off the glass the OS frees them */
     net_step(s_visible && s_zoom_want < 0);             /* nothing fetched while choosing */
     if (s_visible) redraw();
 }

@@ -227,6 +227,13 @@ const orb_voice_t *orb_theme_voice(const char *slug, const uint8_t **bank);
 /* theme-cache-plan §2.1: each app's choice, the order of the glass and the pool's entries, as
  * JSON into b (cap bytes); answers the length. GET /api/v1/theme_cache. */
 size_t orb_theme_cache_json(char *b, size_t cap);
+/* theme-cache-plan §2.4: copy `slug`'s chosen theme back from the card, on the worker, when
+ * its display entry has left the pool; false when there is nothing to fill (it is in the
+ * pool, or nothing is chosen) or a fill already runs. The app on the glass rebinds when it
+ * lands (orb_wasm_theme_landed). */
+bool orb_theme_fill_post(const char *slug);
+/* A fill's progress for its face: true while `slug` is filling. */
+bool orb_theme_fill_progress(const char *slug, uint32_t *done, uint32_t *total);
 
 orb_asset_ans_t orb_theme_preview_read(const char *handle,
                                        uint8_t *buf, size_t cap,

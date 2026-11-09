@@ -2563,6 +2563,13 @@ void stage_run(bool on)
      * not run. Waking the pose pass here would re-pose the layer table from
      * cached image descriptors into a mapping that no longer exists — a load
      * fault, not a repaint. The dial stays exactly as the glass holds it. */
+    if (on && (s_base || !orb_theme_resident())) {
+        /* theme-cache-plan §2.4: a stage bound to an app's bare face (its theme a fill
+         * away) has no frames to run, and the dial's tables are empty under it: the
+         * tick read the NULL geometry (Bronze, 2026-11-08, LoadProhibited at 0x34) */
+        orb_sched_set_running(false);
+        return;
+    }
     if (on && orb_theme_store_torn()) {
         ESP_LOGW(TAG, "bounce refused: the store took the bank down, reboot pending");
         orb_sched_set_running(false);
@@ -2739,6 +2746,13 @@ esp_err_t stage_bind(orb_app_t *app)
     s_opened = true;
     ESP_LOGI(TAG, "stage bound to %s%s", app->slug, s_base ? " (base face: no theme)" : "");
     return ESP_OK;
+}
+
+/* theme-cache-plan §2.4: bind again, a bare-face binding let go first (a fill just landed). */
+esp_err_t stage_rebind(orb_app_t *app)
+{
+    if (s_opened && s_lay_app == app) stage_release();
+    return stage_bind(app);
 }
 
 esp_err_t stage_open(orb_app_t *app, bool *base)

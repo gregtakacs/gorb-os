@@ -100,6 +100,8 @@ esp_err_t stage_live_back_ensure(int l);
 bool stage_live_back_lock(int l, uint16_t **px, uint8_t **a, uint16_t **src_px, uint8_t **src_a, int src);
 void stage_live_back_unlock(void);
 esp_err_t stage_live_present(int l, const int16_t *x0, const int16_t *x1);
+/* theme-cache-plan §2.4: bind `app` again, its bare-face binding let go first. */
+esp_err_t stage_rebind(orb_app_t *app);
 /* The last swap's blip has been paid for: the next may go (stage_live_present's pace). */
 bool stage_live_swap_due(void);
 #if CONFIG_ORB_DEBUG_HTTP

@@ -53,6 +53,9 @@
 #include "art_bank.h"
 #include "orb_sched.h"          /* store_park_dial: the tick's park gate is the task-safe half of §6.3 */
 #include "orb_app.h"            /* orb_app_home(): the row the store hands the glass to */
+#include "orb_app_wasm.h"       /* theme-cache-plan §2.4: orb_wasm_theme_landed */
+#include "lvgl.h"               /* theme-cache-plan §2.4: lv_async_call, a landed fill rebinds on the LVGL task */
+#include "orb_io_window.h"      /* theme-cache-plan §2.4: the fill is heavy I/O to a guest's budget */
 #include "input_router.h"       /* input_router_request/current: the task-safe screen switch */
 #include "orb_boot_overlay.h"   /* the store's progress frames (§6.3) */
 #include "display.h"            /* display_lvgl_passes: the store waits out a render before it unmaps */
@@ -454,6 +457,12 @@ static uint32_t      s_bundle_bytes;
  * paints the base digital face, which still tells the time. s_geo.theme stays NULL and is
  * only ever dereferenced on the themed leg, which the residency gate has already fenced
  * off by the time anything reads it. */
+/* No art is a zeroed theme, never a NULL one: clk_theme dereferences the geometry's theme
+ * unguarded on every flush (orb_sched_l4_active -> orb_bg_gif_mode), and a bind that let its
+ * art go while the stage still flushed read address 0x34 in a boot loop (Bronze, 2026-11-08,
+ * theme-cache-plan ruling 8's refusal). Zero reads as no gif, no sweep, no rows. */
+EXT_RAM_BSS_ATTR static clk_theme_t s_no_theme;
+
 static void use_no_art(void)
 {
     /* The apps resolve against nothing: retire the published index with the
@@ -462,7 +471,8 @@ static void use_no_art(void)
     s_live_region = NULL;
     s_live_sec = NULL;
     memset(&s_live_b, 0, sizeof s_live_b);
-    s_geo.theme      = NULL;
+    memset(&s_no_theme, 0, sizeof s_no_theme);
+    s_geo.theme      = &s_no_theme;
     s_geo.rects      = NULL;
     s_geo.rect_first = NULL;
     s_geo.gif_delays = NULL;
@@ -1025,6 +1035,13 @@ static const orb_bundle_sec_t *sole_sec(const orb_bundle_t *b)
 {
     return (b && b->n_sections >= 1) ? &b->sec[0] : NULL;
 }
+
+/* theme-cache-plan §2.4: a fill is the store's own body, copying an evicted app's display
+ * entry back from the card, without the park, the unmap's silence or the reboot. */
+static volatile bool s_install_fill;          /* the install running is a fill            */
+static volatile bool s_pool_busy;             /* a fill is moving entries: binds wait     */
+static volatile uint32_t s_fill_done, s_fill_total;   /* the fill's progress, for its face */
+static char s_fill_slug[ORB_POOL_SLUG_MAX];   /* the app being filled, "" for none        */
 
 /* theme-cache-plan §2.6: the store's sounds, taken from its verdict's projection. */
 typedef struct { clk_sound_t s[CLK_SND_SLOTS]; uint32_t n; uint8_t pattern; } store_snd_t;
@@ -2235,6 +2252,13 @@ static esp_err_t store_voice(const esp_partition_t *p, const char *slug, const c
     return ESP_OK;
 }
 
+static void fill_progress(void *arg, uint32_t done, uint32_t total)
+{
+    (void)arg;
+    s_fill_done = done;
+    s_fill_total = total;
+}
+
 esp_err_t orb_theme_install_bundle(const char *id, char *why, size_t whysz)
 {
     if (why && whysz) why[0] = '\0';
@@ -2276,6 +2300,17 @@ esp_err_t orb_theme_install_bundle(const char *id, char *why, size_t whysz)
      * active/changed comparison reads: the rebase below restamps h.geom_crc to the
      * slot's figure, and the card file keeps the one it shipped with. */
     const uint32_t file_geom_crc = h.geom_crc;
+    if (s_install_fill) {
+        /* a fill copies the file the app chose; a file changed on the card is a store's
+         * (its voice bank is rebuilt too) — theme-cache-plan ruling 7, owed in C5c */
+        uint32_t c = 0;
+        while (c < s_cache.n_choice && strcmp(s_cache.c[c].stem, id)) c++;
+        if (c == s_cache.n_choice || s_cache.c[c].file_crc != file_geom_crc) {
+            heap_caps_free(region); card_close(fd);
+            return install_failed(ESP_ERR_INVALID_STATE, "the theme changed on the card since it "
+                                  "was chosen: send it again", why, whysz);
+        }
+    }
 
     /* Banks to SLOT_ART_OFF, records and region checksum following. The file's base
      * comes back for the stream's seeks: after this the records describe the slot. */
@@ -2398,6 +2433,12 @@ esp_err_t orb_theme_install_bundle(const char *id, char *why, size_t whysz)
      * itself will not land, refuse while the bank is still resident. */
     s_slot_torn = false;
     const orb_app_t *was = input_router_current();
+    if (s_install_fill) {
+        /* theme-cache-plan §2.4: the app being filled is on the glass on its bare face (its
+         * bind let the art go, on the LVGL task); binds wait while entries move; the voice
+         * banks the fill never moves keep playing */
+        s_pool_busy = true;
+    } else {
     job_stage("parking", 0, 0);
     if (!store_park_dial(was, h.art_size, "storing")) {
         orb_boot_overlay_release();        /* the overlay's band goes back with the glass */
@@ -2408,6 +2449,7 @@ esp_err_t orb_theme_install_bundle(const char *id, char *why, size_t whysz)
     orb_sound_stop_all();                  /* theme-cache-plan §2.6: voices read the voice banks it moves */
     art_bank_unmap();
     s_slot_torn = true;                    /* from here the reboot is the only way back */
+    }
 
     /* The serial counts up over this app's last theme; none, or a header that cannot be
      * read, restarts the count at 1 — the count is a staleness guard, not a version
@@ -2425,9 +2467,9 @@ esp_err_t orb_theme_install_bundle(const char *id, char *why, size_t whysz)
     /* The target: the pool takes this app's old theme out, packs every other app's down
      * over the gap (the map is down, so nothing reads a byte it moves), and answers
      * where the packed run ends. Every SLOT_* offset below is relative to it. */
-    staged_mark(id);
+    if (!s_install_fill) staged_mark(id);
     uint32_t tgt = 0;
-    s_pool_io.progress = room_progress;
+    s_pool_io.progress = s_install_fill ? NULL : room_progress;
     const char *ord[CACHE_APPS];
     const uint32_t nord = order_list(ord);
     char gone[ORB_POOL_ENTRIES][ORB_POOL_SLUG_MAX];
@@ -2443,7 +2485,7 @@ esp_err_t orb_theme_install_bundle(const char *id, char *why, size_t whysz)
     if (pr) w = "the theme area would not make room";
     if (e == ESP_OK)
         e = copy_bundle3(fd, &b, region, file_art_base, p, tgt,
-                         &art_crc, &w, store_progress, NULL);
+                         &art_crc, &w, s_install_fill ? fill_progress : store_progress, NULL);
     card_close(fd);
     heap_caps_free(region);
     if (e != ESP_OK) {
@@ -2504,6 +2546,12 @@ esp_err_t orb_theme_install_bundle(const char *id, char *why, size_t whysz)
     /* theme-cache-plan §2.6: the app's voice bank, from the entry just written (or the old
      * one gone, for a theme with no sounds). A failure leaves the theme stored without it,
      * which binds no more (ruling 8): the app runs bare and its log says to send it again. */
+    if (s_install_fill) {
+        s_pool_busy = false;
+        ESP_LOGI(TAG, "fill: %s's theme \"%s\" is back in the pool (%u KB in %u ms)", slug, h.name,
+                 (unsigned)(entry_size / 1024), (unsigned)((esp_timer_get_time() - t0) / 1000));
+        return ESP_OK;
+    }
     {
         const char *vw = NULL;
         choice_set(slug, id, file_geom_crc);       /* theme-cache-plan §2.1: what it wears */
@@ -2890,7 +2938,11 @@ bool orb_theme_pool_stem(const char *slug, char *out, size_t outsz)
 
 bool orb_theme_has(const char *slug)
 {
-    return slug && s_pool && orb_pool_find(s_pool, slug) >= 0;
+    if (!slug || !s_pool) return false;
+    if (orb_pool_find(s_pool, slug) >= 0) return true;
+    for (uint32_t c = 0; c < s_cache.n_choice; c++)      /* theme-cache-plan §2.4: chosen, */
+        if (!strcmp(s_cache.c[c].slug, slug)) return true;   /* its copy a fill away       */
+    return false;
 }
 
 /* theme-pool-plan P4: make `slug`'s theme the one the paint path reads — its entry
@@ -2899,9 +2951,20 @@ bool orb_theme_has(const char *slug)
  * widget, row or voice is reading the map this replaces. Already bound: nothing to do. */
 esp_err_t orb_theme_bind(const char *slug)
 {
+    if (s_pool_busy) return ESP_ERR_INVALID_STATE;     /* a fill is moving entries (§2.4) */
     const esp_partition_t *p = art_bank_partition();
     const int k = (p && s_pool) ? orb_pool_find(s_pool, slug) : -1;
-    if (k < 0) return ESP_ERR_NOT_FOUND;
+    if (k < 0) {
+        /* theme-cache-plan §2.4: no theme of its own in the pool. The last app's adoption
+         * goes with it, here on the LVGL task: the stage then builds this app's bare face
+         * (it had built the clock's on weather's page), and nothing reads the bank a fill
+         * is about to move (Bronze, 2026-11-08: the clock's gear bank read an unmapped page
+         * mid-fill, "Cache disabled but cached memory region accessed"). */
+        if (s_active_valid) use_no_art();
+        art_bank_unmap();
+        s_live_base = 0;
+        return ESP_ERR_NOT_FOUND;
+    }
     if (s_active_valid && s_live_base == s_pool->e[k].off && s_live_sec &&
         !strcmp(s_live_sec->slug, slug))
         return ESP_OK;
@@ -2935,6 +2998,7 @@ esp_err_t orb_theme_bind(const char *slug)
  * draws the default; those are the only two outcomes. */
 esp_err_t orb_theme_boot(void)
 {
+    if (!s_geo.theme) s_geo.theme = &s_no_theme;        /* never NULL (use_no_art) */
     /* The clock's themes source enters the OS's file table HERE, on the boot
      * rung and before any door task exists — not on the clock app's init. The
      * join-time theme death this replaces (bench, 2026-10-29) had the upload door
@@ -3162,6 +3226,60 @@ static void bundle_job(void *arg)
                                ? slug : "clock");
     if (orb_jobs_reboot_soon("theme: the store") != ESP_OK)
         ESP_LOGE(TAG, "bundle stored but the reboot could not be armed");
+}
+
+/* ---- theme-cache-plan §2.4: the fill ------------------------------------------------- */
+typedef struct { char slug[ORB_POOL_SLUG_MAX]; } fill_req_t;      /* the stem is its choice's */
+
+static void fill_landed(void *arg)                 /* LVGL task */
+{
+    const orb_app_t *app = orb_app_find_slug((const char *)arg);
+    if (app && input_router_current() == app) orb_wasm_theme_landed((orb_app_t *)app);
+}
+
+static void fill_job(void *arg)
+{
+    const fill_req_t *r = arg;
+    char why[72] = "", stem[ORB_THEME_HANDLE_MAX + 1] = "";
+    for (uint32_t c = 0; c < s_cache.n_choice; c++)
+        if (!strcmp(s_cache.c[c].slug, r->slug)) strlcpy(stem, s_cache.c[c].stem, sizeof stem);
+    s_fill_done = 0; s_fill_total = 0;
+    orb_io_heavy_begin();                           /* a guest the flash stalls is forgiven */
+    s_install_fill = true;
+    const esp_err_t e = stem[0] ? orb_theme_install_bundle(stem, why, sizeof why) : ESP_ERR_NOT_FOUND;
+    s_install_fill = false;
+    s_pool_busy = false;
+    orb_io_heavy_end();
+    if (e != ESP_OK) {
+        ESP_LOGW(TAG, "fill: %s's theme stays on the card: %s", r->slug, why[0] ? why : "the copy failed");
+        s_fill_slug[0] = '\0';
+        return;
+    }
+    static char landed[ORB_POOL_SLUG_MAX];
+    strlcpy(landed, r->slug, sizeof landed);
+    s_fill_slug[0] = '\0';
+    lv_async_call(fill_landed, landed);
+}
+
+bool orb_theme_fill_post(const char *slug)
+{
+    if (!slug || !s_pool || orb_pool_find(s_pool, slug) >= 0 || s_fill_slug[0]) return false;
+    fill_req_t r;
+    uint32_t c = 0;
+    while (c < s_cache.n_choice && strcmp(s_cache.c[c].slug, slug)) c++;
+    if (c == s_cache.n_choice) return false;          /* nothing chosen: the bare form stands */
+    strlcpy(r.slug, slug, sizeof r.slug);
+    strlcpy(s_fill_slug, slug, sizeof s_fill_slug);
+    if (orb_jobs_post(fill_job, &r, sizeof r) != ESP_OK) { s_fill_slug[0] = '\0'; return false; }
+    ESP_LOGI(TAG, "fill: %s's theme \"%s\" comes back from the card", slug, s_cache.c[c].stem);
+    return true;
+}
+
+bool orb_theme_fill_progress(const char *slug, uint32_t *done, uint32_t *total)
+{
+    if (!slug || strcmp(s_fill_slug, slug)) return false;
+    *done = s_fill_done; *total = s_fill_total;
+    return true;
 }
 
 esp_err_t orb_theme_post_bundle(const char *id)

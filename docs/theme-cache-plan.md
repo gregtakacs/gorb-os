@@ -182,7 +182,7 @@ carries is read off the glass (its values blob draws; the preview is the card's)
 | **C2** | The table's format 2 (an entry's kind, voice or display; sixteen entries; the carry from format 1); voice banks packed first, never moved by an eviction | `host_pool_test.py`: the carry, evictions that never take or move a voice bank, a cut at every step of a voice bank's store — **built 2026-11-08** (§6) |
 | **C3** | Sound off the glass: a store writes the voice bank (≤ 1 MB), boot maps every voice bank, a bind no longer stops voices, one-shots unleased and loops leased to the glass, a sound import that needs no stage; the clock chimes from its service | bench: the clock chiming through a switch to weather, and on the hour with weather on the glass; the tick stopping when the clock leaves — **built and benched on Bronze 2026-11-08** (§6) |
 | **C4** | The choice record (NVS), the last-on-glass order, stores that make room instead of refusing, the shelf's budgets per theme | bench: a theme stored into a full pool evicts the least recent display entry — **built and benched on Bronze 2026-11-08** (§6) |
-| **C5** | The fill on arrival behind the preview and its slice (full speed, block by block, heavy I/O), the zoom into the app, the pause on leaving, the card-missing case | bench: four apps cycled through a pool that holds three; leaving mid-fill; a card pulled mid-fill |
+| **C5** | The fill on arrival behind the preview and its slice (full speed, block by block, heavy I/O), the zoom into the app, the pause on leaving, the card-missing case | bench: four apps cycled through a pool that holds three; leaving mid-fill; a card pulled mid-fill — **C5a, the engine, built 2026-11-08** (§6); the face, the pause and a changed file owed |
 | **C6** | The hub: "in the pool / on the card only" on the Themes page | the hub's lists still parse |
 
 ## 5. Open
@@ -227,6 +227,34 @@ held (20 fps), 1 s windows from the dial bench:
   of ~33, the paced fills at 5-9 fps (20 ms) and 3-6 fps (1 ms). Each cache miss suspends
   and resumes the operation, so the operation stretches and the frame waits on it.
   Reverted; Bronze is back on the build without it.
+
+### C5a — the fill's engine (2026-11-08, Bronze; the face, pause and a changed file still owed)
+
+- **A fill is the store's own body** under a flag (`s_install_fill`): the same card checks,
+  rebase, verdict, eviction (least recently worn first), copy, header and table, without the
+  park, the voice stop, the staged witness or the reboot. It refuses a card file whose CRC is
+  no longer the choice's (a changed file is a store's: owed, C5c). Binds wait while it moves
+  entries (`s_pool_busy`), and it is heavy I/O to a guest's budget.
+- **It starts** when an app with a recorded choice and no display entry comes to the glass
+  (`wasm_activate`/`wasm_resume` post it; `orb_theme_has` counts a choice, so such an app
+  keeps its stage). **It lands** on the LVGL task: the app, still on the glass, rebinds its
+  stage (`stage_rebind`) and is resumed, so it reads its theme anew.
+- **Bronze:** weather, evicted, came back in ~6 s (102.9 s the fill posted, 109.0 s its 51
+  rows on the glass), no reboot.
+- **Three crashes found and fixed on the way:**
+  1. *Cache disabled but cached memory accessed*: a bind of an app with no theme in the pool
+     left the last app's adoption in place, so the stage built the clock's theme on weather's
+     page and the scheduler went on applying the clock's gear frames from a bank the fill then
+     unmapped. Such a bind now lets the adoption go and unmaps, on the LVGL task; the fill
+     unmaps nothing.
+  2. *LoadProhibited at 0x34* (`stage_run` → `orb_bg_gif_mode`): a stage bound to a bare face
+     started the dial's tick over a NULL geometry. `stage_run(true)` now parks for a bare face.
+  3. *A boot loop* (the owner's Neon Moon refused by ruling 8): the same NULL geometry read on
+     every flush (`orb_sched_l4_active`). No art is now a zeroed theme, never NULL
+     (`use_no_art`, and boot before any adoption). Bronze was flashed over USB to recover.
+- **Not explained:** the owner's store of Neon Moon (from the hub, mid-bench) left it without
+  a voice bank and evicted flights though it fitted; the same file stored again from the card
+  made its bank (3 sounds, 668 KB). Watch for it.
 
 ### C4 — the choices, the order, and stores that make room (2026-11-08, Bronze)
 

@@ -2052,6 +2052,7 @@ static esp_err_t wasm_activate(orb_app_t *app)
     if (s->rt) beat_apply(s);
     if (s->stage && stage_bind(app) == ESP_OK)   /* its own theme on its own page */
         stage_run(true);                          /* the stage's frames, which call orb_tick */
+    if (s->stage) (void)orb_theme_fill_post(app->slug);   /* theme-cache-plan §2.4: its theme left */
     return ESP_OK;
 }
 
@@ -2079,6 +2080,19 @@ static void wasm_resume(orb_app_t *app)
     (void)wasm_call(s, W_RESUME, NULL, 0);
     if (s->rt) beat_apply(s);
     if (s->stage && stage_bind(app) == ESP_OK) stage_run(true);
+    if (s->stage) (void)orb_theme_fill_post(app->slug);   /* theme-cache-plan §2.4 */
+}
+
+/* theme-cache-plan §2.4: the app's theme is back in the pool while it is on the glass on its
+ * bare face. Its stage binds again, and the app is resumed, so it reads its stage anew (as
+ * every app does at an arrival). LVGL task. */
+void orb_wasm_theme_landed(orb_app_t *app)
+{
+    wasm_slot_t *s = slot_of_app(app);
+    if (!s || !s->rt || !s->on_glass) return;
+    s->stage = true;
+    if (stage_rebind(app) == ESP_OK) stage_run(true);
+    (void)wasm_call(s, W_RESUME, NULL, 0);
 }
 
 static void wasm_show(orb_app_t *app)

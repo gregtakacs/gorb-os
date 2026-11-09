@@ -123,6 +123,11 @@ void orb_wasm_bench_top(char *out, size_t cap);
  * back its kept bodies and map files on its service pass. Call it again to hold it. */
 void orb_app_want_room(void);
 
+/* theme-cache-plan §2.4: `app`'s theme is back in the pool (a fill landed) while it is on the
+ * glass: its stage binds again and the app reads it. LVGL task. */
+struct orb_app;
+void orb_wasm_theme_landed(struct orb_app *app);
+
 #ifdef __cplusplus
 }
 #endif

@@ -391,13 +391,13 @@ def build(appdir, out_dir=None):
 
 # ---- the editor region (flight-tracker-design §12.2) ---------------------------------
 # An app whose app.json names a directory of its own as "editor" ships that directory as
-# its editor region: the hub opens it from the Themes page. The recipe is the clock's
-# (tools/make_clock_region.py): a flat STORE ZIP, editor.json first and canonical, then
+# its editor region: the hub opens it from the Themes page. The recipe was the clock's
+# (make_clock_region.py, retired with its dc page in E7 2d): a flat STORE ZIP, editor.json first and canonical, then
 # the directory's top-level files in name order, the fixed date and mode, read back
 # before it ships. Subdirectories (an editor's _selftest/) and dotfiles stay home. One member
 # is written here: orb-app.js, `window.__ORB_APP = {slug, version}`, the release the
 # theme@1 session stamps into every design (the clock's region sets the same).
-EDITOR_KEYS = {"baker", "editor", "entry", "runtime"}
+EDITOR_KEYS = {"baker", "editor", "entry", "host", "module", "runtime"}
 RUNTIME_ID = re.compile(r"^[a-z][a-z0-9_-]*@[0-9][0-9.]*$")
 ZIP_DATE = (1980, 1, 1, 0, 0, 0)
 
@@ -425,18 +425,38 @@ def editor_region(appdir, m, release):
     except (OSError, ValueError) as e:
         fail("%s's editor has no readable editor.json (%s)" % (m["slug"], e))
     if not isinstance(ej, dict) or set(ej) - EDITOR_KEYS:
-        fail("editor.json carries %s; it names entry, runtime, editor and baker"
+        fail("editor.json carries %s; it names entry or host and module, runtime, editor and baker"
              % ", ".join(sorted(set(ej) - EDITOR_KEYS)) if isinstance(ej, dict) else "editor.json is not an object")
-    entry = ej.get("entry")
-    if not isinstance(entry, str) or "/" in entry or not entry.endswith((".html", ".htm")):
-        fail("editor.json's entry must be a plain .html file of the editor, not %r" % (entry,))
     runtime = ej.get("runtime", [])
     if not isinstance(runtime, list) or not all(isinstance(r, str) and RUNTIME_ID.match(r) for r in runtime):
         fail("editor.json's runtime lists ids like theme@1, not %r" % (runtime,))
     files = sorted(n for n in os.listdir(d)
                    if not n.startswith(".") and n != "editor.json" and os.path.isfile(os.path.join(d, n)))
-    if entry not in files:
-        fail("editor.json's entry %s is not in %s" % (entry, d))
+    if "host" in ej:
+        # the hosted editor (theme-editor-kit-plan §8): Orb Manager's page, the app's module
+        if ej["host"] != 1:
+            fail("editor.json's host must be 1, the contract this SDK packs, not %r" % (ej["host"],))
+        if "entry" in ej:
+            fail("a hosted editor names no entry: Orb Manager serves its page")
+        if "host@1" not in runtime:
+            fail("a hosted editor lists host@1 in its runtime")
+        mods = ej.get("module")
+        if not isinstance(mods, list) or not mods or not all(
+                isinstance(f, str) and "/" not in f and not f.startswith(".") and f.endswith(".js") for f in mods):
+            fail("editor.json's module lists the editor's .js files, not %r" % (mods,))
+        for f in mods:
+            if f not in files:
+                fail("editor.json's module %s is not in %s" % (f, d))
+        if any(n.endswith((".html", ".htm")) for n in files):
+            fail("a hosted editor ships no page of its own: %s" % ", ".join(n for n in files if n.endswith((".html", ".htm"))))
+    else:
+        if "module" in ej:
+            fail("editor.json names a module only for a hosted editor (host: 1)")
+        entry = ej.get("entry")
+        if not isinstance(entry, str) or "/" in entry or not entry.endswith((".html", ".htm")):
+            fail("editor.json's entry must be a plain .html file of the editor, not %r" % (entry,))
+        if entry not in files:
+            fail("editor.json's entry %s is not in %s" % (entry, d))
     if "orb-app.js" in files:
         fail("%s's editor carries orb-app.js, which the SDK writes" % m["slug"])
     members = [("editor.json", json.dumps(ej, sort_keys=True, separators=(",", ":")).encode())]

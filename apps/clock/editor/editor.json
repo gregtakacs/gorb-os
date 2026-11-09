@@ -1,0 +1,1 @@
+{"baker": 3, "editor": 1, "host": 1, "module": ["dial-renderer.js", "watch-engine.js", "stack.js", "sound-engine.js", "clock-logic.js", "clock-host.js"], "runtime": ["baker@1", "fonts@1", "host@1", "react@18.3.1", "studio@1", "theme@1", "ui@1"]}

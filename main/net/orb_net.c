@@ -3100,18 +3100,22 @@ static esp_err_t h_home_post(httpd_req_t *req)
  * clears one: {"i":1,"lat":38.72,"lon":-9.14,"name":"Lisbon"} or {"i":1,"clear":1}. The
  * name is optional (the OS names the point from its city list, as home does). The hub
  * names a point first with GET /api/v1/home?lat=&lon=, which stores nothing.
+ * Each set place carries its zone (owner, 2026-11-08): "zone" in the body names one the
+ * zone table holds, else it is the nearest city's; GET answers it with its rule ("tz"),
+ * its offset now in minutes east of UTC ("tz_offset"), "dst", and "exact" (false where
+ * the table's rule only approximates the zone).
  * ------------------------------------------------------------------------- */
 
 #define NET_PLACES_BODY_MAX 256
 
 static esp_err_t places_reply(httpd_req_t *req, const char *state)
 {
-    char *json = heap_caps_malloc(640, MALLOC_CAP_SPIRAM);
+    char *json = heap_caps_malloc(1024, MALLOC_CAP_SPIRAM);
     if (!json) {
         httpd_resp_set_status(req, "503 Service Unavailable");
         return httpd_resp_sendstr(req, "{\"error\":\"no memory\"}");
     }
-    int n = snprintf(json, 640, "{%s%s%s\"gen\":%lu,\"places\":[", state ? "\"state\":\"" : "",
+    int n = snprintf(json, 1024, "{%s%s%s\"gen\":%lu,\"places\":[", state ? "\"state\":\"" : "",
                      state ? state : "", state ? "\"," : "", (unsigned long)orb_places_gen());
     for (int i = 0; i < ORB_PLACES_N; i++) {
         orb_place_rec_t p;
@@ -3119,13 +3123,24 @@ static esp_err_t places_reply(httpd_req_t *req, const char *state)
             char la[16], lo[16];
             orb_geo_fmt(p.lat_e6, la, sizeof la);
             orb_geo_fmt(p.lon_e6, lo, sizeof lo);
-            n += snprintf(json + n, 640 - (size_t)n, "%s{\"i\":%d,\"set\":true,\"lat\":%s,\"lon\":%s,\"name\":\"%s\"}",
+            /* the place's zone (owner, 2026-11-08): its name, its offset now, and whether the
+             * zone table's rule is exact for it */
+            int32_t off = 0;
+            bool dst = false, exact = false;
+            const char *iana = "";
+            const bool zoned = orb_places_zone(i, (int64_t)time(NULL), &off, &dst, &iana, &exact);
+            n += snprintf(json + n, 1024 - (size_t)n, "%s{\"i\":%d,\"set\":true,\"lat\":%s,\"lon\":%s,\"name\":\"%s\"",
                           i ? "," : "", i, la, lo, p.name);
+            if (zoned)
+                n += snprintf(json + n, 1024 - (size_t)n, ",\"zone\":\"%s\",\"zone_named\":%s,\"tz\":\"%s\",\"tz_offset\":%ld,\"dst\":%s,\"exact\":%s",
+                              iana, p.zone_named ? "true" : "false", orb_geo_zone_posix(p.zone), (long)off,
+                              dst ? "true" : "false", exact ? "true" : "false");
+            n += snprintf(json + n, 1024 - (size_t)n, "}");
         } else {
-            n += snprintf(json + n, 640 - (size_t)n, "%s{\"i\":%d,\"set\":false}", i ? "," : "", i);
+            n += snprintf(json + n, 1024 - (size_t)n, "%s{\"i\":%d,\"set\":false}", i ? "," : "", i);
         }
     }
-    snprintf(json + n, 640 - (size_t)n, "]}");
+    snprintf(json + n, 1024 - (size_t)n, "]}");
     const esp_err_t r = httpd_resp_sendstr(req, json);
     heap_caps_free(json);
     return r;
@@ -3185,7 +3200,7 @@ static esp_err_t h_places_post(httpd_req_t *req)
         why = orb_places_clear((int)idx);
     } else {
         int32_t la = 0, lo = 0;
-        char name[ORB_GEO_PLACE_MAX];
+        char name[ORB_GEO_PLACE_MAX], zone[ORB_HOME_ZONE_MAX] = "";
         bool has_name = false;
         if (!json_deg_e6(body, len, "lat", &la) || !json_deg_e6(body, len, "lon", &lo))
             why = "lat and lon required";
@@ -3195,7 +3210,9 @@ static esp_err_t h_places_post(httpd_req_t *req)
             has_name = json_str(body, len, "name", name, sizeof name);
             if (!has_name) why = "name not a string, or too long";
         }
-        if (!why) why = orb_places_set((int)idx, la, lo, has_name ? name : NULL);
+        if (!why && json_find(body, len, "zone") && !json_str(body, len, "zone", zone, sizeof zone))
+            why = "zone not a string, or too long";
+        if (!why) why = orb_places_set((int)idx, la, lo, has_name ? name : NULL, zone);
     }
     if (why) {
         ESP_LOGW(TAG, "places: refused (%s)", why);
@@ -7688,6 +7705,15 @@ static esp_err_t h_app_upload(httpd_req_t *req)
                 : "{\"error\":\"could not open the app file on the card\"}");
     }
 
+    /* The file is open: park the dial for the copy, as the theme door does. A card write
+     * under a running dial competes with the panel for internal DMA RAM, and the sdmmc
+     * driver's small asks lose on a fragmented pool: Gold, 2026-11-08, a clock.orbapp
+     * update refused twice with "card write failed (I/O error)" under the Clock and went
+     * through on the third (§17.6's shape). Parked, the clock's scheduler stops, the home
+     * screen takes the glass under the copying overlay, and the copy names itself there.
+     * A park that loses to a raced resume proceeds anyway: the bytes are the job. */
+    const bool parked = orb_theme_upload_park((uint32_t)clen, "copying");
+
     /* The receive buffer lives in PSRAM, not internal .bss. This file already
      * carries the theme upload's static rx[4096] and the OTA chunk; a SECOND
      * internal-static rx starved the httpd task's own stack on orb-A the day it
@@ -7706,6 +7732,7 @@ static esp_err_t h_app_upload(httpd_req_t *req)
         rx = heap_caps_malloc(APP_RX, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
         if (!rx) {
             orb_app_upload_cancel(&up);
+            if (parked) orb_theme_upload_unpark();
             httpd_resp_set_status(req, "503 Service Unavailable");
             return httpd_resp_sendstr(req, "{\"error\":\"out of memory for the upload buffer\"}");
         }
@@ -7718,12 +7745,14 @@ static esp_err_t h_app_upload(httpd_req_t *req)
             /* Client vanished: cancel() deletes the .part, so nothing survives on the
              * card to be listed as an app and fail to load. */
             orb_app_upload_cancel(&up);
+            if (parked) orb_theme_upload_unpark();
             httpd_resp_set_status(req, "400 Bad Request");
             return httpd_resp_sendstr(req, "{\"error\":\"upload aborted by client\"}");
         }
         const esp_err_t de = orb_app_upload_data(up, rx, (size_t)r);
         if (de != ESP_OK) {
             orb_app_upload_cancel(&up);
+            if (parked) orb_theme_upload_unpark();
             if (de == ESP_ERR_INVALID_SIZE) {
                 httpd_resp_set_status(req, "413 Payload Too Large");
                 return httpd_resp_sendstr(req, "{\"error\":\"upload too large\"}");
@@ -7745,10 +7774,12 @@ static esp_err_t h_app_upload(httpd_req_t *req)
                 : "{\"error\":\"the card refused the write\"}");
         }
         got += r;
+        if (parked) orb_theme_upload_progress((uint32_t)got, (uint32_t)clen);
     }
 
     const char *why = NULL;
     const esp_err_t ee = orb_app_upload_end(&up, overwrite, &why);
+    if (parked) orb_theme_upload_unpark();   /* the file is verified (or refused): the dial is back */
     if (ee == ORB_APP_UPLOAD_E_DUP) {
         /* A different app already lives under that slug. 409, not 422: nothing is
          * wrong with the upload — the owner decides, and the page re-sends with

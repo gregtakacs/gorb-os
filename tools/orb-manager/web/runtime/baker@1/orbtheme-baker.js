@@ -5451,7 +5451,7 @@
     // a clock section the compiled dial projects, and the D29 sums read back off finished
     // bytes. bakeClock3 refuses with orb_clock3.c's own sentences, so the editor names the
     // reason the dial will print instead of a reason of its own.
-    bank3: bank3, stage3: stage3, bakeClock3: bakeClock3, budget3: budget3, splitPolicy3: splitPolicy3, estimate3: estimate3, estimate4: estimate4, EST4: EST4, pickPlan4: pickPlan4, planKey4: planKey4, bestPlan4: bestPlan4,
+    bank3: bank3, stage3: stage3, bakeClock3: bakeClock3, budget3: budget3, splitPolicy3: splitPolicy3, estimate3: estimate3, estimate4: estimate4, EST4: EST4, GRID4: GRID4, pickPlan4: pickPlan4, planKey4: planKey4, bestPlan4: bestPlan4,
     carriageRect3: carriageRect3, carriageStart3: carriageStart3,
     liveComps3: liveComps3, compPlan3: compPlan3, wheelPlan3: wheelPlan3, wheelDither3: wheelDither3, readDesign3: readDesign3, THEME_UPLOAD_MAX: THEME_UPLOAD_MAX, wheelTurns3: wheelTurns3, pointerPlan3: pointerPlan3,
     pointerDefault3: pointerDefault3,

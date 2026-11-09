@@ -33,6 +33,7 @@ import orbbundle as ob          # noqa: E402
 
 SHELF = os.path.join(ROOT, "tools", "orb-manager", "themes")
 CHROME = "/mnt/c/Program Files/Google/Chrome/Application/chrome.exe"
+BAKE_TIMEOUT_S = 180
 CLOCK_STAGE, CLOCK_STAGE_WIN = "/mnt/c/Temp/rebake-shelf-clock", "C:/Temp/rebake-shelf-clock"
 
 # app slug -> the shelf file of its default theme
@@ -68,24 +69,29 @@ def stale(slug):
 
 
 def bake_clock(v):
-    """Skeleton through bank3-drive.html, staged with an editor extract cut from the html
-    today (a checked-in component.js can trail the editor), then installed by
+    """Skeleton through bank3-drive.html, staged by the selftest deployer (which carries the
+    editor's own clock-logic.js, so the stage is the editor as it stands), then installed by
     make_default_theme.py, whose gate it must pass."""
     ed = os.path.join(ROOT, "apps", "clock", "editor")
     if os.path.isdir(CLOCK_STAGE):
         shutil.rmtree(CLOCK_STAGE)
-    subprocess.run([sys.executable, os.path.join(ed, "deploy_test_folder.py"), CLOCK_STAGE], check=True, capture_output=True)
-    src = open(os.path.join(ed, "Watch Composer.dc.html"), encoding="utf8").read()
-    tag = '<script type="text/x-dc" data-dc-script>'
-    i = src.index(tag)
-    body = src[i + len(tag):src.index("</script>", i)]
-    open(os.path.join(CLOCK_STAGE, "_selftest", "component.js"), "w", encoding="utf8").write(
-        "window.COMP_CLASS = function (DCLogic) {\n" + body + "\nreturn Component;\n};\n")
-    r = subprocess.run([CHROME, "--headless=new", "--disable-gpu", "--no-sandbox", "--user-data-dir=C:\\Temp\\rebake-shelf-profile",
-                        "--allow-file-access-from-files", "--autoplay-policy=no-user-gesture-required",
-                        "--virtual-time-budget=600000", "--dump-dom",
-                        "file:///" + CLOCK_STAGE_WIN + "/_selftest/bank3-drive.html?dial=skeleton&name=Skeleton&appv=" + v],
-                       capture_output=True, text=True, timeout=1200)
+    subprocess.run([sys.executable, os.path.join(ed, "_selftest", "deploy_test_folder.py"), CLOCK_STAGE], check=True, capture_output=True)
+    # The bake takes seconds. A page that never goes idle (a Save dialog nobody answers, E7
+    # Stage 1) holds headless Chrome's virtual clock still, so the budget never runs out and
+    # only the wall clock ends it: three minutes, then the Windows Chrome is stopped too
+    # (killing the WSL side leaves it holding the profile, and the next bake exits 21).
+    try:
+        r = subprocess.run([CHROME, "--headless=new", "--disable-gpu", "--no-sandbox", "--user-data-dir=C:\\Temp\\rebake-shelf-profile",
+                            "--allow-file-access-from-files", "--autoplay-policy=no-user-gesture-required",
+                            "--virtual-time-budget=600000", "--dump-dom",
+                            "file:///" + CLOCK_STAGE_WIN + "/_selftest/bank3-drive.html?dial=skeleton&name=Skeleton&appv=" + v],
+                           capture_output=True, text=True, timeout=BAKE_TIMEOUT_S)
+    except subprocess.TimeoutExpired:
+        subprocess.run(["powershell.exe", "-NoProfile", "-Command",
+                        "Get-CimInstance Win32_Process -Filter \"Name='chrome.exe'\" | Where-Object { $_.CommandLine -match 'rebake-shelf-profile' } | "
+                        "ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }"], capture_output=True)
+        print("  the bake failed: bank3-drive.html did not finish in %d s (the page never went idle: a dialog, a hung promise)" % BAKE_TIMEOUT_S)
+        return False
     m = re.search(r'<pre id="out">(.*?)</pre>', r.stdout, re.S)
     text = (m.group(1) if m else r.stdout[-3000:]).replace("&gt;", ">").replace("&lt;", "<").replace("&amp;", "&")
     b64 = re.search(r"^B64:(\S+)", text, re.M)

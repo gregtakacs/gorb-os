@@ -9,7 +9,7 @@
 // version the headless-test.js runner picks up.
 require('./headless-stub.js');
 global.React = { createRef: () => ({ current: null }) };
-require('./component.js');
+require('../clock-logic.js');
 
 let fails = 0, checked = 0;
 const ok = (cond, name, extra) => { checked++; console.log((cond ? 'PASS ' : 'FAIL ') + name + (extra ? '  [' + extra + ']' : '')); if (!cond) fails++; };
@@ -17,7 +17,7 @@ const eq = (a, b, name) => ok(a === b, name, JSON.stringify(a) + ' vs ' + JSON.s
 
 const DCLogic = function () { };
 DCLogic.prototype.setState = function (p) { Object.assign(this.state, typeof p === 'function' ? p(this.state) : p); };
-const Comp = global.COMP_CLASS(DCLogic);
+const Comp = global.ClockLogic(DCLogic);
 const E = global.WatchEngine;
 
 // A mounted component reading a real preset, priced at the 15 tier as the probe does.

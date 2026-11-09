@@ -1,6 +1,7 @@
 # The theme editor kit: what every app's editor gets from the OS
 
-Status: **RULED 2026-11-03 (owner, §0.1). Nothing is built.** Written at `7cc1221` (gorb-os-2 `main`).
+Status: **RULED 2026-11-03 (owner, §0.1). K1–K10 and H1 built (§7). §8, the hosted editor, ruled
+2026-11-08 and not built.** Written at `7cc1221` (gorb-os-2 `main`).
 The owner asked for it while the flight tracker's theme is being drawn in the sibling
 clone (`flight-tracker-design.md` §11). The clock is the first consumer, flights is the
 second, and flights is the proof.
@@ -65,9 +66,10 @@ vocabulary on the app's side. Flights cannot call a clock bake (§4, K5).
    what may move); the field builders (sliders, chips, colours, art slots, grouped
    sections) driven by a field list the app declares; the Render step (fit, estimate,
    send, downloads). The app fills the stage and declares its steps, fields and rows.
-3. **An editor's own way.** An editor that lists only `baker@1` (or nothing) in
-   `editor.json` keeps full control, as it does today. Each layer can be used without the
-   one above it: services without the shell, the shell with the app's own panes.
+3. **An editor's own way.** ~~An editor that lists only `baker@1` (or nothing) in
+   `editor.json` keeps full control, as it does today.~~ Retired by the owner 2026-11-08
+   (§8.1 ruling 1): Orb Manager owns the editor page, and an app supplies its content to
+   it. An app cannot replace the start step, the Render step, the stage or the readouts.
 
 ## 3. The services, as the clock does them today
 
@@ -161,7 +163,8 @@ in parallel with any of them.
 ## 6. Open decisions
 
 None open. The three raised here (how much the shell owns, where calibration lives, the
-runtime ids) were ruled on 2026-11-03 (§0.1 rulings 1–3).
+runtime ids) were ruled on 2026-11-03 (§0.1 rulings 1–3). §8's preview question was ruled 2026-11-08
+(§8.4).
 
 ## 7. As built
 
@@ -670,3 +673,672 @@ the Themes tab's shelf rows) that each showed half of what the hub holds. Agreed
   send that folds a draft was not benched on the card (another store and reboot of Gold); the Go
   and session suites drive the fold.
 
+
+## 8. The hosted editor: Orb Manager owns the page (ruled 2026-11-08)
+
+Owner, 2026-11-08: theme and file management belongs to Orb Manager, not to the apps. An
+editor opens on four choices: start fresh, start from one of the app's templates, open a
+library entry, or import a file. It ends on the Render step with three: save to library,
+send to orb, export the `.orbtheme`. The preview engine is Orb Manager's in its entirety,
+not only its sizing. An app asks for the views it needs (time, weather, place, which pane),
+and Orb Manager draws them as buttons and dropdowns in the centre pane. Each app and each
+view shows its estimated frame rate, and a live size readout replaces "Check the bake".
+
+### 8.0 What is true today (at `45165cd`)
+
+- **The kit is a library the app calls.** Each app's editor is its own page
+  (`apps/<app>/editor/index.html`, the clock's `Watch Composer.dc.html`), which puts the
+  `studio@1` pieces together itself. Nothing stops an app from doing a step its own way.
+- **Start.** Flights, Weather and Radar each fill `OrbStudio.StartSheet` (scratch, tiles,
+  library, Open a file) with their own wording. The clock draws its own start sheet.
+- **Render.** Send and Save to library are the kit's. Download .orbtheme and Check the bake
+  are each app's own code (`bakeNow` plus `OrbTheme.download`), four copies. Check the bake
+  bakes the whole design and reports its KB.
+- **Stage.** The kit sizes the glass, calibrates true size, blends layers (`OrbTheme.panel`)
+  and runs the frame clock. The app draws the layers and adds its own toolbar controls
+  (Weather's condition select, Radar's zoom and time), each in its own style.
+- **Frame rate.** `OrbTheme.fit` gets a pace only from the clock (`_devPace`). The other
+  three pass rows and the cap, so their badge says "Fits" and never shows an fps.
+- **Files.** The download is an anchor download, so it lands in the default Downloads folder
+  of the app window's own Chrome profile, with no Save dialog.
+- **Off the hub,** an editor still runs, with Download as its only output.
+
+### 8.1 Owner rulings, 2026-11-08
+
+1. **Orb Manager owns the editor page.** An app supplies its content through a declared
+   module (§8.2) and cannot replace the start step, the Render step, the stage or the
+   readouts. This retires §2's layer 3.
+2. **Orb Manager is a required dependency.** The off-hub editor goes.
+3. **The app's part of the editor still ships in the `.orbapp`:** its module (§8.2), and
+   only that. The page, the start step, the library, the Render step, the preview and the
+   readouts are Orb Manager's and never ship in an app. Any `.orbapp` stays editable in Orb
+   Manager wherever it came from: the hosted page loads the module from the app's own editor
+   region, and nothing app-specific is built into Orb Manager.
+4. **The start step offers four choices, in this order:** start fresh, a template (the list
+   is the app's), open from the library, import a file.
+5. **Import puts the file in the library at once,** then opens it: an `.orbtheme` as a theme,
+   an `.orbdesign` as a draft.
+6. **The Render step offers three actions:** Save to library, Send to orb, Export .orbtheme.
+   Export asks where to save.
+7. **The preview engine is Orb Manager's:** the frame loop, the view state, the glass, the
+   blend, the calibration and the view controls in the centre pane. An app declares its views.
+8. **A live size readout replaces Check the bake.**
+9. **Every app and every view shows its estimated frame rate,** not only the clock.
+
+### 8.2 The contract (a sketch; the first slice settles it)
+
+`editor.json` names the hosted contract (`"host": 1`) and the module the page loads. The
+module registers what only the app knows:
+
+- `schema`, `migrate`: the design schema and its steps, as `theme@1/session` takes today;
+- `blank()` and `templates`: start fresh, and the app's starting points (key, name, note,
+  design), drawn by the host as tiles;
+- `steps` and the panes: the editing steps, and each step's left and right panes, built from
+  `studio@1`'s fields and layers;
+- `views`: the controls the stage offers, as data, for example `time: live | 10:10`,
+  `weather: clear … storm`, `place: home | 1–3`, `pane: scope | info card`. Each is a
+  segmented control or a dropdown, and may name when it applies;
+- `draw(view, frame)`: the layers for one view at one frame, which the host blends and paces;
+- `bake(design)`: the design baked to `.orbtheme` bytes, for Send, Export, the live readout
+  and Rebake all.
+
+Everything else (the library, import, export, send, history, the views' controls, the fit,
+size and fps readouts) is the host's, done once.
+
+- **Export** uses `showSaveFilePicker`, which the app window allows (`127.0.0.1` is a secure
+  context), with the plain download where a browser lacks it.
+- **The live readout** re-bakes about a second after the last edit and shows the size and
+  the fit, marked as updating while an edit is newer than the bake. (This sketch said "in a
+  worker"; the apps' bakes draw on canvases with the page's loaded faces, so they run on the
+  page, after a pause that grows with the bake: §8.8.)
+- **Frame rate per view:** priced from the frames the view's preview moves, on
+  estimate4's compositor costs (§8.9; the sketch named `estimate3`, which prices a clock's
+  seconds and gears and calls an app's own rows still). The clock keeps `_devPace` as its
+  own model.
+
+### 8.3 Slices
+
+| Slice | Content | Gate |
+|---|---|---|
+| **E1** | the hosted page and the contract, with Radar on it (the smallest editor) | runtime and Radar suites; on Gold, Radar's editor opened from its Themes tab offers the four starts and the three Render actions — **built and benched on Gold 2026-11-08**, with E2's import and export (§8.5) |
+| **E2** | import into the library, Export with a Save dialog | Go suites for the import route; session suites with the hub stubbed; on Gold, an imported `.orbtheme` is in the library before it opens — **built with E1** (§8.5); the Save dialog benched by the owner in a headed browser on Gold 2026-11-08 (Export of Broad arrow saved, and the file imported back) |
+| **E3** | Weather and Flights on the host | each app's suites; no app code left that draws a start sheet, a Render step or a download — **built 2026-11-08**, benched on the bench fake at OS v1.2.38 (§8.6) |
+| **E4** | declared views in the centre pane, for all three | the same controls in every app; each view reaches the glass — **built 2026-11-08**, benched on the bench fake with home and two places (§8.7) |
+| **E5** | the live size readout; Check the bake goes | the clock's bake timed first; a readout that matches the bake's bytes — **built 2026-11-08** (§8.8) |
+| **E6** | frame rate per view, every app | an estimate shown for each view; checked against Gold for at least one view per app — **built 2026-11-08** (§8.9); checked on Gold for Flights and Weather (Radar has no moving view; the clock is E7's) |
+| **E7** | the clock on the host | the clock's headless suites (about 1,500 checks) green; nothing lost against the P5 checklist — **in two stages (owner, 2026-11-08): Stage 1, the clock's own page given the shared start, import, Render and live size, built 2026-11-08 (§8.11); Stage 2, the move onto the host: 2a–2d built and 2e benched on Gold 2026-11-08 (§8.13)** |
+
+The clock goes last. It is the largest editor and the one where the frame rate matters
+most, so it moves after the contract has carried the other three.
+
+### 8.4 How far the preview goes (ruled 2026-11-08)
+
+- **Now: the host runs the stage and the app's `draw` paints each view,** as §8.2 sketches.
+  `draw` is kept narrow (one view, one frame, layers out) so that it can be replaced later
+  without changing the rest of the contract.
+- **Later: full orb OS emulation in Orb Manager** (owner: the eventual goal, not now). The
+  host plays the baked theme as the orb does, running the app's wasm against a stand-in for
+  the OS, so that the preview and the fps come from the bake itself and not from a model.
+  It is not a slice here. How much of it `baker@1`'s panel mirror already covers is not
+  checked.
+
+### 8.5 As built: E1 and E2 (2026-11-08)
+
+- **The page.** `runtime/host@1/page.html` and `host.js`. An `editor.json` with `"host": 1`
+  names its `module` files and lists `host@1` in its runtime, and no `entry`. The hub
+  (`editor.go`, `hostedEditor`, `serveHostedEditor`) answers the editor's address with that
+  page: the core runtime (React, `baker@1`, `theme@1`, `studio@1`, `host@1`), `maps@1` only
+  when listed, then the module files in their listed order. The launch token goes on the
+  page, as on any editor's entry document. A manifest it cannot serve (another contract, no
+  `host@1`, no module, a module that is a path, not a `.js`, or not in the region, a runtime
+  id the hub lacks) is refused by name.
+- **The contract** is `host.js`'s header: `slug`, `title`, `schema`, `migrate`, `check`,
+  `complete`, `blank`, `templates`, `picture`, `steps`, `parts`, `fields(step, c)`, `views`,
+  `setup(c)`, `draw(x, d, c)`, `bake`, `fit`. The design carries its `name`; the host stamps
+  `base`. `draw` gets the view, what `setup` loaded (`env`), the hidden parts and a `memo`
+  the app caches its own drawn parts in.
+- **The host owns** the frame, the steps (Start, the app's, Render), the start sheet (Start
+  fresh, the templates, the library, Import), the Render step (Save to library, Send to orb,
+  Export .orbtheme, and Check the bake until E5), history, the send and its modals, the
+  parts pane's eyes, the view controls (one segmented control per declared view, before
+  the screen's own), and the fit. Opened off the hub, it says to open it from Orb Manager.
+- **Import** (`session.importFile`): an `.orbtheme` goes to `/api/library/keep` as a theme,
+  a design file to `/api/design/save` as a draft (with its picture), and then it opens. A
+  name already in the library asks first ("Replace it"), and the opening cover goes up only
+  after the answer: on Gold the cover sat over the question and took its clicks, and the
+  suite now holds that. Another app's theme, a file that is neither, and a design with no
+  name are refused before anything is kept; a theme with no design is kept (it installs)
+  and says it cannot be opened.
+- **Export** (`OrbTheme.saveFile`): `showSaveFilePicker` with the theme's card stem as the
+  suggested name; closing the dialog saves nothing; a browser without it downloads.
+- **`studio@1`**: `StartSheet` takes `importFile` (an Import section under the library) and
+  shows Open a file only when the library passes `openFile`, so Flights, Weather and the
+  clock keep theirs until E3 and E7. `RenderPanel` lists Save to library before Send to orb
+  for every app.
+- **Radar** (v1.2.2, still unpushed when this was built, so no version bump):
+  `radar-editor.js` registers with `OrbHost` (347 lines, was 499), `index.html` is gone,
+  `editor.json` is hosted. Its views are Zoom (Region, Area, City) and Time (Now, −40 min,
+  +30 min); its parts are drawn once per change of their own part of the design, in `memo`.
+- **SDK** (`orbsdk.py`): packs a hosted editor and refuses one with another contract, an
+  `entry`, no `host@1`, a module that is missing or not a plain `.js`, or a page of its own;
+  `module` without `host` is refused too.
+- **Suites.** Go: `TestHostedEditorServesTheHubsPageWithTheAppsModule`,
+  `TestHostedEditorRefusesAManifestItCannotServe` (seven refusals). Runtime: the session
+  suite's import and export checks (83 checks; five mutants caught: no replace question,
+  no refresh before the open, no envelope check, no Save dialog, the cover over the
+  question); the studio suite's hosted start sheet and the Render order (115 checks).
+  `host_sdk_editor_test.py` gained the hosted cases and four mutants (15 of 15 caught); its
+  "no release stamp" mutant's anchor had gone stale with the `os_min` stamp and was fixed.
+- **Benched on Gold, 2026-11-08,** with a bench hub limited to Gold and headless Chrome. The
+  new Radar installed over the hub's route; its editor, opened from the hub's page, showed
+  Start fresh, the six templates, the library and Import; Continue, the Map step's fields,
+  the preview on Gold's own home map (Fort Worth), City and +30 min in the toolbar; Render
+  listed Save to library, Send to orb, Export .orbtheme and Check the bake. Save to library
+  made "unsent changes"; Import of the shelf's Radarscope asked to replace it and, pressed
+  with the mouse, imported it as a theme; Send to orb asked about the card's Radarscope,
+  Replace on the card stored 1,861 KB, and Gold came back drawing it; `?entry=Radarscope`
+  opened on the Ground step. Export's Save dialog was not benched: headless Chrome shows no
+  dialog. Gold keeps the new Radar.
+
+### 8.6 As built: E3 (2026-11-08)
+
+- **Weather and Flights are hosted.** Their `index.html` is gone and their `editor.json`
+  names `host: 1` and their module files in load order. `weather-editor.js` went from 632
+  lines to 456, `flights-editor.js` from 737 to 550; with Radar's, no app code is left that
+  draws a start sheet, a Render step, a send, a download or a toolbar.
+- **What the host gained**, each an Orb Manager feature any app declares rather than code an
+  app carries:
+  - **a frame clock** (`play: {fps, on(view), what, idle}`): one play/pause button, `c.t`
+    and `c.dt` in `draw`, and `dt` only on a tick, so a frame drawn for any other reason
+    moves nothing. Weather plays on Now only; Flights at its bake's sweep rate;
+  - **Panel and Split** for an app that draws its layers apart (`layers: true`, `c.layer`
+    `'under'`, `'live'` or `'all'`): the host blends them through `OrbTheme.panel` with the
+    wipe slider. Flights' was its own; any app can now have it;
+  - **view controls**: a segmented control or a dropdown (`kind: 'select'`), options fixed
+    or a function of the design and what `setup` loaded (Flights' ranges follow the orb's
+    distance unit), `show` (Flights' range only with its map on), `active` and `idle`
+    (Weather's condition only on Now), and `init` (Flights' third range, Weather's partly
+    cloudy), with `?<key>=` in the address leading;
+  - **the glass's pointer** (`pointer: {down, move, up, cursor}`, in glass px): Weather's
+    Layout step picks and drags Now's elements with it;
+  - **the app's own preview state** (`ui`, `c.ui`, `c.setUi`), outside history: Weather's
+    picked element, shared by its fields, its frame and its pointer;
+  - **Reset to <its start>** in the top bar for every app (it was Weather's alone): a
+    second press within 4 s, the name kept, undoable;
+  - **`c.part(name, key, make, {fresh})`**: a drawn part kept until its key changes, a
+    promise drawing the frame again when it lands. It replaced the `usePart` hook both apps
+    carried; `fresh` keeps a stale map level from standing in for the one being fetched;
+  - `start` (the template the editor opens on), `startNote`, a part's `also` (Flights'
+    Words row lit on the Frames step) and `eyes: false` (Weather hides nothing).
+- **Moved into the host from the apps:** Flights' "pick your plane picture first" is its
+  `bake` refusing, said as "Not baked: …"; the library's meta line is the entry's template
+  name for every app (Weather's said its icon pack, Flights' its family).
+- **The bench fake** (`internal/orbfake`) kept an uploaded app's version and editor region
+  at last, so the hub serves a hosted editor from it as from a device: its editor word
+  positions read 47..49, which no container has; a real one puts the triple at 44..46 and
+  the version at 47. `TestAnUploadKeepsItsVersionAndEditor` uploads the tree's own
+  `weather.orbapp` and fails on the old positions.
+- **Benched 2026-11-08** on the bench fake stamped `v1.2.38+abc1234` with Fort Worth as home,
+  in headless Chrome; Gold was not used, because these Weather and Flights builds ask for
+  OS v1.2.38 and the hub's built-in firmware is still v1.2.37. Weather: the start sheet
+  (eight tiles), Now animating (the frame changes between reads, holds still on pause),
+  Snow picked from the dropdown and falling over the home map, the dropdown off and the
+  button's tip "The weather plays on Now" on 5 days, Layout's grab cursor, a mouse drag of
+  the icon setting Angle 289° and Distance 81 px, and Undo putting it back. Flights: Info
+  and Roam, the four ranges in km once its map is on, Panel and Split with the wipe, five
+  parts with eyes, Check the bake (1,062 KB). Send to orb from each, through the card's
+  duplicate question and Replace: Modern (Flights, 1,062 KB) and Scope (Weather, 1,282 KB)
+  stored. The Export dialog is still unbenched in a headed browser.
+
+### 8.7 As built: E4 (2026-11-08)
+
+- **Two rows under the glass.** The upper row is what the preview shows: the play button,
+  then each of the app's views under its caption (`label`, with `tip` for the longer
+  sentence). The lower row is how the glass is shown: View, the zoom, Render (Design, Panel,
+  Split) and the screen's ⚙. Flights' one wrapping toolbar is gone, and every app's views
+  read the same.
+- **The places are the host's.** `OrbHost.places(ip)` reads the orb's home, its three
+  places and its distance unit once, for every app (home named Home, as the apps name it).
+  `draw` and `fields` get `c.home`, `c.unit`, `c.places` and `c.place`. A view with
+  `kind: 'place'` lists home and the set places; `home: false` leaves home out, and a
+  place control with nothing to list is not drawn. A choice the orb does not have falls to
+  the control's first option, so the glass and the control never disagree. `?place=p2` in
+  the address is kept until the places are read.
+- **Radar** has a Place view (Home and the orb's places, as its knob walks them) beside
+  Zoom and Time. Its map is the chosen place's at the chosen zoom, read on demand and kept
+  per zoom, and the preview names home "Home" as `main.c` does (it said the home's place
+  name). Its `setup` is gone.
+- **Weather's Places screen** shows the place control's choice from the orb's own places,
+  with that place's map; with none set it still shows the made-up Lisbon. Its Place
+  control acts on Places only. Its `setup` is gone. The place's clock read Lisbon's UTC until the
+  places carried their zones (radar-plan §6.29, 2026-11-08); it now reads the place's own
+  local time.
+- **Flights** reads home and the unit from the host. Its levels are read per range on
+  demand (a step back is at once), and its `setup` is gone. Its views read Shows and Range.
+- **Suites.** `headless-host.test.js` (48 checks) drives the real `host.js` with a made-up
+  app through a small hooks runtime: the start step, the address, `init`, `show` and
+  `active`, the two rows and their captions, the place list, the frame clock (`dt` on a
+  tick only, pause, a view it does not play in), Panel and Split, kept parts (a promise
+  drawing again, `fresh`), Reset (asked twice, undoable), the pointer in glass px, the
+  app's own state, the Render step, an app's refused bake, off the hub, and an orb with no
+  home or places. Ten mutants caught.
+- **Benched 2026-11-08** on the bench fake (`v1.2.38+abc1234`) with home at Fort Worth and
+  places Lisbon (1) and Houston (3), its library in scratch copies. Radar: Place
+  `Home | Lisbon | Houston`, Zoom, Time; Houston picked, its map built and drawn, the name
+  Houston on the glass. Weather: Screen, Weather, Place `Lisbon | Houston` (no Home);
+  Places showed Lisbon, then Houston with Houston's map. Flights: Shows and Range, with
+  Design, Panel and Split on the lower row.
+
+### 8.8 As built: E5 (2026-11-08)
+
+- **Timed first**, in headless Chrome against the bench fake, every template of each app:
+  Radar 230–320 ms (1.8 MB), Weather 160–220 ms (1.25–1.35 MB), Flights 160–320 ms
+  (0.8–1.2 MB); the clock's Skeleton, through its own Download, 1.1 s cold and 0.44 s warm
+  (3.4 MB). A heavier clock (a 30 fps sweep) will take longer. A worker was not used: the
+  apps' bakes draw on canvases with the page's loaded faces.
+- **The readout.** A pause after the last edit, the host bakes the design and keeps the
+  bake for the design it was made from. The pause is twice the last bake, at least 1.2 s
+  (`OrbHost.SIZE_PAUSE_MS`) and at most 6 s, so a slow design is not baked at every breath;
+  an edit while it waits starts the wait again, and a bake an edit overtook is not shown.
+  Bakes run one at a time.
+- **Where it is said.** The top bar's fit reads "Fits · 1,062 KB" ("…" while it measures,
+  "not baked" when the app refuses, the dot red past what an orb takes). The Render step
+  leads with a Size line: "1,062 KB of the 8,320 KB an orb takes (13%) · baked in 0.2 s",
+  "Measuring its size when you pause…", "Not baked: <the app's reason>", or "an orb will
+  refuse it" past `GorbBake.THEME_UPLOAD_MAX`. Check the bake is gone.
+- **Send to orb and Export reuse the kept bake** when nothing changed since it, so pressing
+  either after the readout settles bakes nothing again.
+- **Suites.** The host suite (55 checks) adds the readout: measuring before the pause, the
+  size after it in the top bar and on Render, Export reusing the kept bake, an edit
+  restarting the pause and two edits baking once, an app's refusal said in both places, and
+  the over-the-limit line. Five more mutants caught (no kept bake, edits not restarting the
+  pause, the refusal unsaid, no over-limit, the top bar without the size).
+- **Benched 2026-11-08** in headless Chrome on the bench fake: Flights opened at
+  "Fits · 1,062 KB" (it read MB until the top bar was put in KB, as Render is); renaming the
+  theme put both back to measuring, and 1.2 s later they read 1,062 KB, baked in 0.2 s.
+
+### 8.9 As built: E6 (2026-11-08)
+
+- **Why not the baker's estimators.** `estimate3` and `estimate4` price a clock bake: its
+  seconds hands, cadences and gear banks. Flights' arm and traffic and Weather's particles
+  are rows the app poses itself, which both read as still. So the estimate comes from what
+  a view's preview moves, which every hosted app already draws.
+- **`OrbTheme.frameCost(a, b)`** prices one frame from the pixels that changed between two:
+  per screen row one restored span, first changed pixel to last, less the widest inkless gap
+  inside when it is 24 px or more (orb_gfx.c INK_GAP_MIN), and the changed pixels walked;
+  `frame_ms = 0.744 restored_kpx + 0.507 walk_kpx + 7.2` (estimate4's §49.15 fit, `GorbBake.EST4`).
+- **`OrbTheme.pace(frames, {base, want})`**: frames sampled at `base` fps; each rate on the
+  panel's grid (`GorbBake.GRID4`, now exported) at or under the wanted one (the grid's top,
+  20, caps it) is priced on frames base/H apart, its worst frame against `floor(60 / H)`
+  scans, as estimate4's judge does: it holds when `cost × 1.15 + 20 ms` fits. The estimate
+  is the fastest rate that holds. (estimate4's prose says 7.5 fps alternates 7 and 8 scans;
+  its code prices it on 8, and so does this.)
+- **The host samples a view** after the live size settles: a second's warm-up, then half a
+  second at 60 fps, drawn on a canvas of its own from a fresh memo, so the live preview is
+  untouched; one view at a time, kept per design and view. A view the app does not play in
+  is still. The top bar and the fit badge carry the rate of the view on the glass
+  ("Fits · 20 fps · 1,282 KB", "Fits, slower · 15 fps"); Render adds a Frame rate block
+  listing each option of the app's `paceBy` views (`{key, with, label}`: Weather's weather
+  rows are measured on Now whatever screen shows).
+- **The apps.** Weather: `play.want` 20 (Now bursts at the panel's ceiling, the grid's top;
+  its preview plays at 30), `paceBy` Screen and Weather on Now. Flights: `paceBy` Shows;
+  its verdict now carries a rate, which §8.1 ruling 9 asked for and which the rows-only
+  ruling of 2026-11-04 had left out. Radar has no moving view, and says still.
+- **Measured.** Flights' Modern: ~15 of 20 fps in every mode (its worst frame priced 33.9
+  ms: 24.9 kpx restored, 16.1 kpx walked). Weather's Scope: Now ~20 of 20 under every
+  condition; Places, Hourly and 5 days still.
+- **On Gold** (`/api/v1/debug/dial?ms=4000`, the app on the glass by `/api/v1/screen?to=`,
+  the clock put back after): Flights v1.4.2 presented 18.5 fps against its 20, every commit
+  under 20 ms, 12.8 kpx restored and 15.9 kpx walked a frame; Weather's Now 21.3 fps. The
+  walk matches the estimate's; the restore is about twice Gold's, but Gold flew whatever
+  traffic was live near home while the preview flies its twelve made-up aircraft, so this
+  one point is not a calibration and the model was left as it is. On these two the estimate
+  is right for Weather (20) and cautious for Flights (15 where Gold held 18.5 of 20).
+- **Suites.** `headless-measure` (30 checks) adds the frame cost (still, one mover, the gap
+  rule both ways) and the pace (a small mover holds 20, a whole-glass change does not, the
+  wanted rate and the grid's top cap it, 7.5 on 8 scans). `headless-host` (57) adds the
+  Render block and the top bar's rate. Mutants caught: a view played where the app does not
+  play, the top bar without the rate, the gap not left out, the slowest rate winning.
+  "7.5 priced on its mean period" is the same number for every grid rate, so no check can
+  catch it.
+
+### 8.10 The start, one way at a time (owner, 2026-11-08)
+
+Owner: "with so many previews, users miss their own library and the import button at the
+bottom. We really need to make it so they're corralled into the flow and know what
+they're looking for/finding. This should be hub driven uniform across all apps."
+
+- **Ruling.** §8.1 ruling 4's four choices are four ways in, not four sections of one
+  scrolling sheet. The start step opens on the four alone; each goes one way.
+- **As built.** `studio@1`'s `StartSheet` is replaced by `StartFlow`; the old sheet is gone,
+  so there is one way to start. The editor opens on **New**, **From a template**, **From my
+  library** and **Import a file**, each card saying what it holds ("8 looks to start
+  from", "1 saved design" or "Nothing saved yet", "An .orbtheme or a design file: it goes
+  into your library"), with no previews under them.
+  - **New** makes the app's blank design and goes straight to the first step.
+  - **From a template** opens the looks alone, with Continue.
+  - **From my library** opens your drafts and themes alone.
+  - **Import a file** opens the file picker; the file goes into the library and opens.
+
+  Each panel has "← All ways to start". Pressing Start in the step bar always shows the
+  four again. `?start=template` or `?start=library` opens a panel directly. The hub's
+  Themes tab still opens a new design with "Compose new theme" and a saved one with its
+  library row's Edit, so every app's new design comes through these four. The clock joins
+  with E7.
+- **Suites.** `headless-studio` (119 checks) holds the four, what each says, nothing under
+  them, each panel alone, the way back and the old sheet's absence. `headless-host` (62)
+  drives the flow: the four on opening, a template panel and Continue, Start showing the
+  four again, New straight to editing, and `?start=library`. Mutants caught: New staying on
+  the start, Start keeping the last panel, previews under the four, and the library's card
+  saying nothing.
+- **Benched 2026-11-08** in headless Chrome on the bench fake, in Weather's editor: the four
+  in a row ("8 looks", "1 saved design"); the library panel with only Scope; the template
+  panel with the eight looks and Continue; New landing on Ground with a blank design.
+- **Nothing shown before a choice** (owner, the same day: "it pre-loads Scope before I ever
+  select anything for flights with all its top menus and layers on the side"). Until a
+  design is chosen (New, a template's Continue, a library entry, an import, or an address
+  naming a design or a step: the Themes tab's Edit, `?preset=`, `?step=`), the editor shows
+  the start alone: no steps, no name, no Undo, Reset or Send, no readout, no layers. Nothing
+  is baked or measured and nothing plays. The crumb's "/" goes with the name. On the bench
+  fake, Flights' editor opened on the four under "← Flights"; a template's Continue brought
+  the steps, the name, "Fits, slower · 15 fps · 1,066 KB" and Send. The host suite holds
+  it (66 checks), and four mutants are caught: the chrome, the layers, the frame clock and
+  the bake shown or run before a choice.
+
+### 8.11 E7 Stage 1: the clock's page, uniform (2026-11-08)
+
+E7 moves a document of nearly 5,000 lines in the dc template format, a 4,700-line class and
+a 5,100-line engine, whose 5,300 lines of suites and whose region packer
+(`tools/make_clock_region.py`) read the template directly. The owner chose two stages:
+first the clock's own page gets every shared piece a user sees, then the full move.
+
+- **The start** is `studio@1`'s `StartFlow`: New (the clock's From scratch: nothing yet,
+  every part to build), From a template ("21 looks to start from", each tile the clock's
+  own thumbnail drawn into the flow's canvas), From my library (the clock's own rows, in
+  the shell's shape), Import a file. Until a design is chosen the top bar has no steps,
+  name, undo, readout or Send and the Layers pane is empty; leaving the start (Continue,
+  New, any step) or opening a design chooses one, and Start after that shows the four again.
+- **Import** goes through `session.importFile` (the theme's name is the design's
+  `themeName`, else its template's), asking with the shell's new `S.Confirm` before a
+  library name is replaced. **Export** is "Export .orbtheme" through the browser's Save
+  dialog where there is one, the download otherwise (the clock's own `download()`, which
+  its suites watch).
+- **The live size.** A pause after the last edit (twice the last bake, 1.2 s to 6 s),
+  once the movement has settled and no press is baking, the clock bakes again through
+  `_export3Body({send: 'bytes'})`, the walk Send and Export run, and says the size in the
+  top bar ("Fits · 6 fps · 3,408 KB") and as the Render step's first block. The bake is
+  quiet: while it runs the class's `setState` keeps a status-only update (the bake's
+  progress and refusals) rather than showing it; a press waits for it, and it waits for a
+  press. Send and Export still bake for themselves (the host's reuse waits for Stage 2).
+- **Shared.** `S.Confirm` (the host's, moved), `S.RenderPanel`'s `blocks` (the host's Size
+  and Frame rate now ride it), `S.sizeWords` (one wording; the host's `OrbHost.sizeWords`
+  answers it), and the blocks' styles in `studio.css`.
+- **Suites.** The clock's flow suite (92 checks; its extract `_selftest/component.js`
+  regenerated) holds the top bar's Export label, the bare top bar before a choice, the start
+  flow's templates, library and Import, Continue choosing, Start after a choice, the size in
+  both places and a refusal in both, and the quiet bake keeping status lines and passing
+  every other update. All 20 clock suites, the 12 runtime suites and the clock region suite
+  pass; `clock.orbapp` is rebuilt (v1.2.30, already bumped in this push).
+- **Benched 2026-11-08** on the bench fake in headless Chrome: the clock's editor opened on
+  the four with only "Clock theme" above them; the template panel drew all 21 looks; after
+  Continue the top bar read "Fits · 6 fps · 3,408 KB" within three seconds; Render led with
+  "3,408 KB of the 8,320 KB an orb takes (41%) · baked in 1.0 s", then Save to library,
+  Send to orb and Export .orbtheme.
+- **Stage 2, not started:** the clock as a module on the host (its panes, tiles, layers with
+  their mechanical rules, art and sound uploads, frame-stepping diagnostics and pace model
+  as host contract or app content), its suites and its region packer moved with it.
+
+### 8.12 E7 Stage 2: the clock on the host (plan, 2026-11-08)
+
+The dc runtime (`support@1`) compiles a whole template and mounts it as one page: it cannot
+render a template's parts into the host's slots. So the clock moves as two halves:
+
+- **The logic class** (`class Component extends DCLogic`, ~4,700 lines) keeps its methods
+  and leaves the `.dc.html` for a plain module, `clock-logic.js`. It runs under the host's
+  stand-in for `DCLogic` (state, `setState`, `forceUpdate`, `props`, the three lifecycle
+  calls), so its suites keep driving the same methods.
+- **The template** (~150 lines of `sc-if`, `sc-for` and `x-import`) becomes React code,
+  `clock-panes.js`, split into the host's slots: the left pane (Layers and the mechanical
+  switch), the stage (the canvas and its pointer, the diagnostics panel, the toolbar's
+  guide button), the right pane (the inspector's head, body and foot) and the modals the
+  app keeps.
+
+**The host's stateful contract.** An app may register `create(host)`, which answers a
+controller instead of the stateless functions: `content(withArt)` and `apply(doc)` (the
+design document both ways), `templates` and `pick(key)`, `blank()`, `bake()`,
+`picture(px)`, `fit()` with its own `pace`, `steps` and `goStep(id)`, `snapshot()` and
+`restore(snap)` for the host's history, and `panes: {left, stage, right, tool}` as React
+components fed the controller. The host owns what it owns for every app: the frame, the top
+bar, the start, the library, import, the Render step, Send, Export, the live size, the
+confirm. The clock's own session, history, start sheet, Render panel and top bar retire.
+
+**Steps:**
+
+| Step | Content | Gate |
+|---|---|---|
+| 2a | the stateful contract in `host@1`, proven by a made-up stateful app | the host suite drives it: create, panes, history through snapshot and restore, a library open through apply, the bake |
+| 2b | `clock-logic.js`: the class out of the `.dc.html`, the suites' extract pointed at it — **folded into 2d** (§8.13) | the 20 clock suites green on the module; the `.dc.html` still runs it unchanged |
+| 2c | `clock-panes.js` (built as `clock-host.js`): the template as React in the host's slots, the clock's controller — **built 2026-11-08** | the clock's pages and UI suites ported; every binding of the template still in a pane |
+| 2d | the switch: `editor.json` hosted, the packer packs the module, the `.dc.html` and its session, history and start retired — **built 2026-11-08** (§8.13; the clock's own packer retired with the page) | the packer's checks and a `clock-host.js` suite; the shelf rebaked if a bake changes |
+| 2e | the bench — **benched on Gold 2026-11-08** (§8.13, Rebake all included) | on Gold: start, every step, layers drag, art and sound uploads, diagnostics, Send, the size and pace readouts |
+
+### 8.13 E7 Stage 2 so far (2026-11-08)
+
+- **2a, built.** `host@1` takes a stateful app: `panes` (`left`, `right`, `stage`, `tool`,
+  `overlay`) stand in the host's slots; the app pushes the design it changes itself
+  (`c.push`) and is handed one the host changes (`adopt`: a template, an opened design,
+  Undo, Reset, the first); `toDoc` and `fromDoc` keep an app's own file shape both ways; an
+  app with its own pace model and no host frame clock fills the Frame rate block from
+  `fit`. The host suite (75 checks) drives a made-up stateful app through all of it; two
+  mutants caught (the host handing back the app's own push; never handing it anything).
+- **2b** folds into 2d: the dc runtime evaluates the class before it loads the page's
+  scripts, so the class cannot live in a module while the `.dc.html` still runs it. Until
+  the switch the module `clock-logic.js` is generated from the `.dc.html`, as the suites'
+  extract is; at the switch it becomes the source.
+- **2c, working on the bench, not yet switched.** `apps/clock/editor/clock-host.js` runs the
+  class under a `DCLogic` stand-in (setState merging at once, as the suites' stub does; the
+  panes drawing again; `componentDidUpdate` after) and registers the clock: templates and
+  New from the engine's presets and `SCRATCH`, pictures through the class's thumbnail walk,
+  `adopt` and pushes keyed in one field order (and the last hand-over remembered, so a bake
+  of the host's form of a template does not rebuild the movement), `toDoc`/`fromDoc` as
+  `designContent`, the bake as `_export3Body({send: 'bytes'})` quietly, the fit from the
+  clock's rows and `_devPace`, and the composer's panes as React: Layers with the
+  mechanical switch, the inspector (head, sub-tabs, movement cards, the parts catalogue,
+  case, glass and hand tiles, fields, Remove), the stage canvas at the host's size, the
+  diagnostics overlay, and the toolbar's play, time, render, wipe, guide and diagnostics
+  buttons. The host's step bar and the class's own walk follow each other.
+- **Benched 2026-11-08** with a hosted `clock.orbapp` built by a scratch script into the
+  bench library (the real packer is 2d), in headless Chrome on the bench fake: the four
+  ways in; Skeleton from the template panel; Movement's cards, the Layers list and a painted
+  stage; Dial from the host's bar moving the inspector; "Fits · 6 fps · 3,408 KB" and
+  Render's "3,408 KB … baked in 1.0 s" with "~6 of 6 fps · 6 of 24 live rows"; Parts' + Hand
+  taking the watch from 5 parts to 6 with the new hand's fields shown, the host's Undo back
+  to 5 and Redo to 6; Finish's Light, Case & glass and Sound; the diagnostics overlay with
+  its frame stepping and seam check; Send to orb storing 3,461 KB; no script errors.
+- **2d, built 2026-11-08: the switch.** `clock-logic.js` is the source: the class, wrapped
+  `window.ClockLogic = function (DCLogic) { ... }`, which the suites, the probe pages and
+  `clock-host.js` all load. `Watch Composer.dc.html` is gone, and with it the clock's own
+  packer: `apps/clock/editor/editor.json` names the hosted page (`"host": 1`, the six
+  modules, the runtimes) as the other apps' do, `app.json`'s `editor` is the `editor` dir,
+  and `make_factory_apps.py` packs it like any app's, so `make_clock_region.py` and its
+  region suite retired with the page. The selftest deployer moved into `_selftest/` and
+  stages `clock-logic.js`; `rebake_shelf.py`'s clock bake stages through it (no extract cut
+  from the html); `headless-pages` checks the host page's runtime tags in place of the dc
+  page's; `headless-flow`'s binding check reads the panes (`Rv.<name>`, the shell's parts
+  and the canvases' refs) and counts what the host now draws (the steps, the Render step,
+  the duplicate question, the true-size caption) as bound. A new `headless-host` suite (21
+  checks) drives `clock-host.js`: the contract and the five panes, every template and New
+  passing the clock's check, a hand-over not handed back (nor the same watch in another
+  field order), an edit the class makes pushed once, the file round trip, the fit; two
+  mutants caught (keys in the object's own order; a push every draw). The 21 clock suites,
+  `check-host`, `check-apps` (the shelf current) and `check-editor` green; the hub's Go
+  suite has only the two release failures it had before (the built-in bundle at v1.2.37
+  under the apps' v1.2.38 floor). The class still carries its retired start sheet, Render
+  panel and top-bar values, unused by the panes; cutting them is a tidy-up, not a gate.
+- **Found in 2d: Stage 1 had broken the shelf's clock bake.** Stage 1's Export asks a Save
+  dialog where the browser has one (`OrbTheme.saveFile`); `bank3-drive.html` caught only
+  the old download, so under headless Chrome's virtual clock the bake waited on a dialog
+  nobody answers until `rebake_shelf.py` timed it out at 20 minutes. The drive page and the
+  three browser probes (`theme-check`, `probe-bake-motion`, `probe-coverage`) now catch
+  `saveFile` too; the bake runs in 6 s again, and a dry run (not installed) passes
+  `make_default_theme.py`'s gate. The shipped Skeleton is unchanged and still current.
+- **2e, benched on Gold 2026-11-08** (bench hub on :3790 with scratch libraries, headless
+  Chrome over CDP): the four ways in with nothing drawn before a choice; Skeleton from the
+  template panel; Movement, Dial, Parts and Finish each with its inspector; + Hand (6 → 8
+  of 24 rows), Undo and Redo; a Layers drag (Hour hand to the top), undone and redone;
+  dial art (3,457 → 3,470 KB) and a tick upload; diagnostics (8-frame bank, seam check
+  seamless); Render's size, frame rate and fit; Save to library; Send storing "E7 bench"
+  and Gold drawing it (`/api/v1/fb`); the Edit door reopening it off the card with its
+  name, art and layer order; Export (3,312,853 B, the size Render showed). Gold put back
+  after: Skeleton active, the bench theme deleted, its theme list identical to before.
+  Rebake all was not benched: it acts only on a library theme the orb would refuse, and
+  every Skeleton in the history is ABI 6; it reuses the open-then-bake path the Edit door
+  and Send exercised.
+- **Found and fixed on the bench:**
+  - *A rename never reached the bake.* The host's top bar owns the name, but the class
+    bakes and files under its own `themeName`, and `adopt` keyed only the watch, so a
+    renamed design baked as "Skeleton" and Send offered to replace the orb's own Skeleton
+    with it. `clock-host.js` hands the host's name to the class (a rename alone rebuilds
+    nothing and pushes nothing back).
+  - *A design's sound upload was dropped on open.* `fromDoc` emptied the uploads, which
+    snapshots leave out; a file's uploads now ride under a ref the snapshot carries, so an
+    open and Undo back to it keep them, and the file it writes back carries them with no
+    ref of the host's.
+  - *A new upload was no change.* With the voice already "upload", replacing the file
+    left the snapshot as it was: no live size, no history, no unsent changes. Snapshots
+    carry a fingerprint of the uploads (names and lengths, no PCM).
+  - *The Edit door's "Opening…" line outlived the open*; `session.js` now says it opened,
+    as the library's open does.
+  - *Leftovers of the dc page*: `orbvendor` and `make vendor-runtime` read the font links
+    from the retired page (now from `_selftest/bank3-drive.html`, the same ten links);
+    `tools/bench/loopcheck.py` reads `clock-logic.js` (its two failing cases fail the same
+    on the commit before 2d); `bake_presets.py` and `make_default_theme.py`'s recipe name
+    the moved deployer.
+  The `clock-host.js` suite is 32 checks; each fix's checks fail on the code before it.
+- **Second round on Gold (2026-11-08, after the owner's review):**
+  - *Rebake all, benched:* a scratch Skeleton marked ABI 5 (header CRC recomputed) listed as
+    stale; Rebake all rebaked it (3,484,720 B, ABI 6, 6 sounds; it passes
+    `make_default_theme.py`'s gate). Three faults on the way, all fixed: (1) the host baked
+    the design BEFORE the one it had just opened, for every app: `apply` set React state and
+    the bake read the ref React fills on its next draw (the host suite's new check baked
+    "gold" for "teal"); (2) the clock's bake had no controller when no pane had drawn yet;
+    (3) a failed bake was reported as the stale status line, now its own reason.
+  - *A re-timed bake lost the press's ask* (since clock v1.2.24, d1c1368): the retime
+    re-entered `_export3Body` with the baker's options, so a Send that re-timed its gears
+    downloaded instead (or opened Save), and a quiet bake did the same. It now carries the
+    press's `send`, and the one-retime guard reads the right flag.
+  - *The reopened design's 256 KB:* its uploaded tick shipped as silence. JSON writes the
+    Int16Array samples as `{"0": v, ...}` and nothing turned them back, so every reopened
+    design (and every Edit-door open) with an uploaded sound baked it silent, which ADPCM
+    packs small. `fromDoc` revives the samples; a fresh build and its reopen now bake the
+    same 3,576,301 B with identical art, the design differing only in `made`. The host's
+    snapshot ref and fingerprint no longer leak into the class, so a bake's embedded design
+    carries neither.
+  - *The Send dialog keeps its button:* past the commit it reads "Waiting for the orb…"
+    (disabled) instead of a Cancel it cannot keep, and the verdict stays up, "Sent to the
+    orb" with Done, "Not sent" with Close, an unwitnessed store with a check, until pressed
+    (owner: no close until done, done unmistakable). A cancel or the duplicate question still
+    closes it; an exact match ends as done. Benched on Gold: Waiting… through the store, then
+    Done, which closed it.
+  - *loopcheck* passes: its seal checks follow the wheel cutout's second seal (c0a8f45) and
+    the FORMAT 3 bake's sealed walk (the layer kit retired in 825e5ee), and its mutants are
+    caught by rerunning the checks rather than by a missing string.
+  Gold back as before each time (Skeleton active, bench themes deleted, its list identical).
+- **The clock's frame rate on Gold (E6's owed point, 2026-11-08):** Skeleton on the glass
+  (`/api/v1/debug/dial?ms=4000`, windows kept only with the clock on the glass at both ends,
+  Gold rotating apps every 15 s): 5.75 to 6.0 fps on a 168 ms period, every commit 99 to 103 ms,
+  about 87 kpx restored and 26 kpx walked a frame. The hosted editor says "~6 of 6 fps" and
+  the bake's own estimate puts the flush at about 106 ms: the clock's estimate holds on Gold.
+- **Tidy-up after the move (2026-11-08):**
+  - *The class's retired chrome is cut* (clock-logic.js, 263 lines): the nine shell parts the
+    host replaced (top bar, start, confirm, glass, calibration, opening, send and duplicate
+    dialogs, Render), its own send path (sender, Send, the duplicate question, the hub-address
+    probe, the post branch of the bake), its live size and start state, its import, and the
+    values only those read. The panes' three parts (layers, toolbar, inspector) stay. The
+    clock's send suite retired with its path (the runtime's sender suite covers the sender);
+    `headless-flow`'s binding check names the bindings the host draws (`HOSTED`) instead of
+    pretending the class still supplies them. The class's own undo history and session stay:
+    the suites drive the class through them, and the Edit-door and bake paths use the session.
+  - *A library editor is served the moment its file changes:* the hub's editor memo keys a
+    region it read off the library on the file's size and modification time
+    (`Library.ContainerStamp`), so a rebuilt `.orbapp` is served on the next request rather
+    than after `editorFetchTTL`; benched with a marker rebuilt into the bench library.
+
+
+### 8.14 After the move: the owner's review on Gold (2026-11-08/09)
+
+Found by the owner using the hosted editor on Gold, decided and fixed after E7 closed.
+
+- **A bake never holds the queue, and says what it waits for.** Export once sat on
+  "Baking “Broad arrow”…" with no end. Bakes run one at a time (`baked.chain`), so a bake that
+  never answered held every later one. Now:
+  - the host caps any app's bake at `OrbHost.BAKE_CAP_MS` (2 minutes): it fails in those words
+    and the next bake runs;
+  - a press's bake hands the app a `say`, so a wait the app knows about is said; the live
+    size's bake stays quiet;
+  - the clock says "Waiting for the movement to finish drawing (n of N frames) — keep this
+    window in front" after 2 s, and gives up in words after 15 s with no new frame
+    (`ClockHost.STALL_MS`); a re-time waits 30 s for the rebuilt movement, not two minutes.
+- **The clock keeps its own update loop.** The cause behind the hang, a "4 fps" readout for
+  Broad arrow's 15 and a balance that stopped: the class rebuilds its movement only from
+  `componentDidUpdate`, which the dc page ran after every render and the hosted editor ran only
+  when a pane redrew. A re-time learned in a bake changed the movement's key with no redraw, so
+  the bank sat at 8 of 15 frames. `clock-host.js` now runs the update every 100 ms while the
+  editor is open and every 40 ms through a bake, as the shelf's driver page always has. Measured
+  in Chrome on Broad arrow with play running: 0.18 s of script per 10 s (under 2 % of a core),
+  1.24 ms an update.
+- **Status notes have a kind** (owner, 2026-11-09: prompts and acknowledgements fade, errors are
+  dismissed or replaced). `OrbStudio.noteKind` reads the words the services already use:
+  - an **error** ("Not baked", "Not sent", "Could not", "Send failed", "refused", "did not
+    answer", "stopped drawing") stays with a × until dismissed or replaced;
+  - **work in progress** (ending in "…", "Waiting for", a percentage) stays while it runs;
+  - **anything else** fades after `OrbStudio.NOTE_MS` (4 s), but never under an open send
+    dialog, which shows the same line as its verdict; the fade waits for it to close.
+  Before, "Starting from Skeleton: Continue when you are ready", "Redone" and "Opening…" stayed
+  through every step.
+- **Undo and redo.** The host keeps the history for every app: the ↶ ↷ buttons, 100 steps, a
+  burst of edits inside 600 ms one step. The review found the keys missing: the clock's page
+  had Ctrl+Z, Ctrl+Shift+Z and Ctrl+Y (and Escape to deselect) on its own handler, which the
+  hosted editor never bound. The host now binds Ctrl/⌘+Z, Ctrl/⌘+Shift+Z and Ctrl/⌘+Y for every
+  app, a text box keeping its own; `clock-host.js` hands the clock only Escape (its own undo is
+  the history the host replaced). In the clock, an upload's bytes are not in the history: a
+  snapshot carries a sound upload's fingerprint and an image's asset id, never samples or
+  pixels, and the bytes stay held by the editor, so Undo past an upload puts the design back
+  (the voice, the dial's art reference) and Redo finds the bytes still there.
+- **The clock class's own history and library are gone** (owner, 2026-11-09). They were thin
+  wiring into the same session service the host runs, unused once hosted (`trackHistory` was
+  overridden to nothing, only Escape reached its key handler): `trackHistory`, `undo`, `redo`,
+  `restoreSnap`, the snapshot keys, burst and depth, the Ctrl+Z branch, the library list,
+  Save, Open, Delete, Discard, Rebake all's `bakeBytes`, the session's boot and the class's
+  Edit door. The class keeps the session for the design document's envelope, schema walk and
+  opening a design file. The clock's session suite retired with them (it tested that service a
+  second time, through the class); the runtime's session and host suites cover the history,
+  the library and the Edit door for every app.
+- **And its view and calibration** (owner, 2026-11-09): the stage's view stops, zoom, true size,
+  ruler and screen calibration were the host's since E4 (the hosted toolbar draws the host's;
+  the clock's Stage pane takes the host's size), so the class's copies went with their values:
+  the viewer wiring, `cal`/`setCal`/`solveCal`/`solveCard`, `setView`/`setZoom`, the
+  calibration load at mount, the stage scroll on a view change, `stageRef`, and the `view`,
+  `zoom`, `fitPx` and `viewCal` state. `viewVals` keeps the toolbar's render choices and the
+  split. The runtime's preview and studio suites hold the view stops and the 44.45 mm wording.
+- **App updates park the dial** (firmware, `h_app_upload`): Gold refused a clock update twice
+  with "the card refused the write" (card write failed, I/O error) and took it on the third; the
+  theme and OTA doors parked the dial for their copies, the app door did not
+  (app-platform-plan §17.6's family). It now parks (scheduler stopped, home under the copying
+  overlay with progress) and unparks on every way out; the hub page holds rotation off around
+  every app install, as Update everything did. On Gold with the clock on the glass and rotation
+  on: three uploads in a row stored.
+- **Confirmed on hardware, 2026-11-09:**
+  - *Broad arrow's rate on Gold:* 14.5 to 14.75 fps on a 66 ms period, commits mostly under
+    40 ms (worst 54 ms); the editor says "~15 of 15 fps" for the same card theme (Skeleton: 5.75
+    to 6.0 against "~6 of 6", §8.13).
+  - *Rebake all for Flights, Weather and Radar:* each app's shelf theme marked stale (ABI 2,
+    header CRC recomputed) and rebaked in Chrome through the hosted editor; each came back not
+    stale, its design identical to the one it was rebaked from (only `made` moved). A rebake
+    touches no orb (it bakes in the page and files into the hub's library), so the fake orb
+    stood in for the installed apps.
+  - *Export through the Save dialog* in a headed browser, and the file imported back (owner).
+- **Open:** a theme upload and an app upload running at once would share one park record on the
+  orb (`s_upload_was`): the second unpark could return the glass to the wrong app. The hub never
+  sends both together. Release: the clock's `version.txt` bump and shelf rebake, the hub's
+  built-in firmware at v1.2.38 (two Go tests), Gold onto a release build.

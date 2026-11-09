@@ -47,7 +47,7 @@
     return h('header', { className: 'st-top' },
       h('div', { className: 'st-crumb' },
         p.back ? h('button', { className: 'ui-ghost', onClick: p.back, title: p.backTip || 'Back' }, '←') : null,
-        h('span', { className: 'ui-mut' }, p.crumb || ''), h('span', { className: 'ui-mut' }, '/'),
+        h('span', { className: 'ui-mut' }, p.crumb || ''), nm ? h('span', { className: 'ui-mut' }, '/') : null,
         nm ? h('input', { className: 'st-name', type: 'text', value: nm.value, placeholder: nm.placeholder, title: nm.title, onChange: nm.onChange }) : null),
       h('nav', { className: 'st-steps' }, list(p.steps).map(function (t, i) {
         return h('button', { key: i, className: t.cls || '', onClick: t.pick, title: t.tip || '' }, t.label);
@@ -92,7 +92,20 @@
       h('div', { className: 'st-scroll', ref: setRef, onPointerDown: p.onPointerDown },
         h('div', { className: 'st-glass', style: { width: p.size + 'px', height: p.size + 'px', borderRadius: p.round || '50%' } }, p.children)),
       p.zoomTag ? h('div', { className: 'st-ztag' }, p.zoomTag) : null,
-      p.status ? h('div', { className: 'st-toast', title: p.status }, p.status) : null);
+      p.status ? (S.noteKind(p.status) === 'error'
+        ? h('div', { className: 'st-toast st-err', title: p.status }, h('span', null, p.status),
+            p.onDismiss ? h('button', { className: 'st-x', onClick: p.onDismiss, title: 'Dismiss' }, '\u00d7') : null)
+        : h('div', { key: p.status, className: cx('st-toast', S.noteKind(p.status) === 'note' && 'st-fade'), title: p.status }, p.status)) : null);
+  };
+  /* A status note's kind (owner, 2026-11-09): an error stays until dismissed (its ×) or a new
+   * note replaces it; work in progress stays while it runs; anything else (a prompt, an
+   * acknowledgement) fades after S.NOTE_MS. Read off the words every service already uses. */
+  S.NOTE_MS = 4000;
+  S.noteKind = function (t) {
+    t = String(t || '');
+    if (/^(Not baked|Not sent|Nothing sent|Could not|Couldn\u2019t|Send failed|Import failed)|refused|did not answer|stopped drawing|\u2717/i.test(t)) return 'error';
+    if (/(\u2026|\.\.\.)\s*$|^Waiting for|\d+%/.test(t)) return 'busy';
+    return 'note';
   };
 
   /* play: {icon, label, on} · time / view / zoom / render: segmented options (zoom only while
@@ -206,46 +219,67 @@
       p.children);
   };
 
-  /* ---- the start sheet (owner, §12.5: the clock's way for every app): over the stage, the
-   * app's starting points as pictures, the library under them, and Continue. Picking a
-   * tile chooses it; only Continue moves on.
-   *   title · tiles: [{key, name, short, tip, on, cls, draw(canvas)}] · scratch: {label, short, tip, on}
-   *   · library: {openFile, accept, rows (libraryRows), empty}. Saving is the Render step's
-   *     (RenderPanel's save), under the theme's name: the sheet only opens. 
-   *   · foot: [{label, on, primary, tip}] */
+  /* ---- the start (owner, §12.5; theme-editor-kit-plan §8.10): every app's editor opens on
+   * four ways to start, each saying what it holds, and goes one way at a time, so a
+   * library or an import is never below a gallery of previews. New starts at once; Import
+   * picks a file at once; a template and the library each open their own panel, with the
+   * way back to the four.
+   *   title · pick: '' | 'template' | 'library' · setPick(p)
+   *   · fresh: {note, on}: New
+   *   · tiles: [{key, name, short, tip, on, cls, draw(canvas)}]: the templates
+   *   · library: {rows (libraryRows), empty}
+   *   · importFile: {accept, on}
+   *   · foot: [{label, on, primary, tip}]: the template panel's (Continue with …) */
   function Tile(p) {
     var R = root.React, ref = R.useRef(null), t = p.t;
     R.useEffect(function () { if (ref.current && t.draw) t.draw(ref.current); });
     return h('div', { className: cx('st-gc', t.cls), onClick: t.on, title: t.tip || '' },
       h('canvas', { ref: ref, width: 192, height: 192 }), h('b', null, t.name), h('span', null, t.short || ''));
   }
-  S.StartSheet = function (p) {
-    var L = p.library || null, fileRef = root.React.useRef(null);
+  var plural = function (n, one, many) { return n + ' ' + (n === 1 ? one : many); };
+  S.StartFlow = function (p) {
+    var fileRef = root.React.useRef(null), L = p.library || {}, I = p.importFile || {};
+    var tiles = list(p.tiles), rows = list(L.rows), pick = p.pick || '';
+    var back = h('button', { className: 'ui-ghost st-sm st-back', onClick: function () { p.setPick(''); }, title: 'Back to the four ways to start' }, '← All ways to start');
+    var file = h('input', { ref: fileRef, type: 'file', accept: I.accept || '.orbtheme,.orbdesign', style: { display: 'none' }, onChange: I.on });
+    var choice = function (key, icon, title, note, on, tip) {
+      return h('button', { key: key, className: 'st-choice', onClick: on, title: tip || '' },
+        h('span', { className: 'st-choice-i' }, icon), h('b', null, title), h('span', null, note));
+    };
+    var body;
+    if (pick === 'template') {
+      body = h(root.React.Fragment, null, back, h('h2', null, 'From a template'),
+        h('div', { className: 'ui-mut st-cap' }, 'Pick a look, then Continue: everything in it can be changed.'),
+        h('div', { className: 'st-gal' }, tiles.map(function (t) { return h(Tile, { key: t.key, t: t }); })));
+    } else if (pick === 'library') {
+      body = h(root.React.Fragment, null, back, h('h2', null, 'From my library'),
+        rows.length ? h('div', { className: 'ui-mut st-cap' }, 'Your drafts and themes on this hub: Open one to carry on with it.') : null,
+        rows.length ? null : h('div', { className: 'ui-mut st-lib-empty' }, L.empty || 'Nothing saved yet.'),
+        rows.map(function (r) {
+          return h('div', { key: r.name, className: 'st-lib-row' },
+            r.thumb ? h('img', { className: 'st-lib-pv', src: r.thumb, alt: '' }) : null,
+            h('b', null, r.name), h('span', { className: 'ui-mut', title: r.tagTip }, r.tag), h('span', { className: 'ui-mut ui-mono' }, r.meta),
+            h('button', { className: 'ui-ghost st-sm', onClick: r.load, title: r.loadTip }, 'Open'),
+            r.changed ? h('button', { className: 'ui-ghost st-sm', onClick: r.discard, title: 'Drop the unsent changes and keep the theme as it was baked' }, 'Discard changes') : null,
+            h('button', { className: 'ui-ghost st-sm', onClick: r.del, title: r.delTip }, r.delLabel));
+        }));
+    } else {
+      var fr = p.fresh || {};
+      body = h(root.React.Fragment, null, h('h2', null, p.title || 'Start a theme'),
+        h('div', { className: 'ui-mut st-cap' }, 'How do you want to start?'),
+        h('div', { className: 'st-choices' },
+          choice('new', '＋', 'New', fr.note || 'A blank design, every part present', fr.on, 'Start from a blank design and go straight to editing'),
+          choice('template', '◐', 'From a template', tiles.length ? plural(tiles.length, 'look', 'looks') + ' to start from' : 'None for this app', function () { p.setPick('template'); }, 'See the app’s looks and pick one to start from'),
+          choice('library', '▤', 'From my library', rows.length ? plural(rows.length, 'saved design', 'saved designs') : 'Nothing saved yet', function () { p.setPick('library'); }, 'Your drafts and themes on this hub'),
+          choice('import', '⇪', 'Import a file', 'An .orbtheme or a design file: it goes into your library', function () { if (fileRef.current) fileRef.current.click(); }, 'Add a theme (.orbtheme) or a design file (.orbdesign) to the library, then open it')));
+    }
     return h('div', { className: 'st-sheet' },
-      h('div', { className: 'st-sheet-in' },
-        h('h2', null, p.title || 'Start a theme'),
-        h('div', { className: 'st-gal' },
-          p.scratch ? h('button', { className: cx('st-gc', p.scratch.cls), onClick: p.scratch.on, title: p.scratch.tip || '' }, h('span', { className: 'st-blank' }, '＋'), h('b', null, p.scratch.label), h('span', null, p.scratch.short || '')) : null,
-          list(p.tiles).map(function (t) { return h(Tile, { key: t.key, t: t }); })),
-        L ? h(root.React.Fragment, null,
-          h('h2', { style: { marginTop: '18px' } }, 'Library'),
-          h('div', { className: 'st-lib-bar' },
-            h('button', { className: 'ui-ghost st-sm', onClick: function () { fileRef.current && fileRef.current.click(); }, title: 'Open a theme (.orbtheme) or a design file (.orbdesign) in the editor' }, 'Open a file…'),
-            h('input', { ref: fileRef, type: 'file', accept: L.accept || '.orbtheme,.orbdesign', style: { display: 'none' }, onChange: L.openFile })),
-          list(L.rows).length ? null : h('div', { className: 'ui-mut st-lib-empty' }, L.empty || 'Nothing in the library yet. Save to library on the Render step keeps a design on the hub as a draft; Send to orb bakes it into a theme under the same name.'),
-          list(L.rows).map(function (r) {
-            return h('div', { key: r.name, className: 'st-lib-row' },
-              r.thumb ? h('img', { className: 'st-lib-pv', src: r.thumb, alt: '' }) : null,
-              h('b', null, r.name), h('span', { className: 'ui-mut', title: r.tagTip }, r.tag), h('span', { className: 'ui-mut ui-mono' }, r.meta),
-              h('button', { className: 'ui-ghost st-sm', onClick: r.load, title: r.loadTip }, 'Open'),
-              r.changed ? h('button', { className: 'ui-ghost st-sm', onClick: r.discard, title: 'Drop the unsent changes and keep the theme as it was baked' }, 'Discard changes') : null,
-              h('button', { className: 'ui-ghost st-sm', onClick: r.del, title: r.delTip }, r.delLabel));
-          })) : null),
-      h('div', { className: 'st-sheet-foot' }, list(p.foot).map(function (f, i) {
+      h('div', { className: 'st-sheet-in' }, body, file),
+      pick === 'template' && list(p.foot).length ? h('div', { className: 'st-sheet-foot' }, list(p.foot).map(function (f, i) {
         return h('button', { key: i, className: f.primary ? 'ui-primary' : 'ui-ghost', onClick: f.on, title: f.tip || '' }, f.label);
-      })));
+      })) : null);
   };
-  /* the library's rows for StartSheet, from a session: o.version (the editor's), o.meta(entry),
+  /* the library's rows for StartFlow, from a session: o.version (the editor's), o.meta(entry),
    * o.open(name), o.forget(name, what), o.armed (the name whose Delete was pressed once), o.arm(name) */
   S.libraryRows = function (lib, o) {
     return list(lib).map(function (m) {
@@ -278,10 +312,31 @@
     if (!p.open) return null;
     return h('div', { className: 'st-modal', style: { zIndex: 60 } },
       h('div', null,
-        h('div', { className: 'st-mtitle' }, 'Sending to the orb'),
+        h('div', { className: 'st-mtitle' }, p.title || 'Sending to the orb'),
         h('div', { className: 'st-mbody' }, p.line),
         p.hint ? h('div', { className: 'st-hint' }, p.hint) : null,
-        h('div', { className: 'st-mfoot' }, h('button', { onClick: p.onCancel, disabled: !!p.noCancel }, p.cancelLabel || 'Cancel'))));
+        h('div', { className: 'st-mfoot' }, h('button', { className: p.primary ? 'primary' : '', onClick: p.onCancel, disabled: !!p.noCancel }, p.cancelLabel || 'Cancel'))));
+  };
+  /* the live size (theme-editor-kit-plan §8.8), said for every editor: a short form for the top
+   * bar and a line for Render. z: {state 'waiting'|'baking'|'done'|'error', bytes, ms, why} */
+  S.sizeWords = function (z, max) {
+    var kb = function (n) { return Math.round(n / 1024).toLocaleString('en-US') + ' KB'; };
+    if (z.state === 'error') return { short: 'not baked', line: 'Not baked: ' + z.why, over: true };
+    if (z.state !== 'done') return { short: '…', line: z.state === 'baking' ? 'Baking it to measure its size…' : 'Measuring its size when you pause…', over: false };
+    var over = max && z.bytes > max;
+    return { short: kb(z.bytes), over: !!over,
+      line: kb(z.bytes) + ' of the ' + kb(max) + ' an orb takes (' + Math.round(z.bytes / max * 100) + '%)' + (over ? ': an orb will refuse it' : '') + ' · baked in ' + (z.ms / 1000).toFixed(1) + ' s' };
+  };
+  // open, title, body, yes, on, cancel: a question with two answers (the import's replace)
+  S.Confirm = function (p) {
+    if (!p.open) return null;
+    return h('div', { className: 'st-modal', onClick: p.cancel },
+      h('div', { onClick: function (e) { e.stopPropagation(); } },
+        h('div', { className: 'st-mtitle' }, p.title),
+        h('div', { className: 'st-mbody' }, p.body),
+        h('div', { className: 'st-mfoot' },
+          h('button', { onClick: p.cancel }, 'Cancel'),
+          h('button', { className: 'ui-primary', onClick: p.on }, p.yes))));
   };
   // open, name, stem, note, onReplace, onCancel: the bake is held; Replace ships these bytes
   S.DupModal = function (p) {
@@ -297,15 +352,19 @@
           h('button', { className: 'ui-primary', onClick: p.onReplace }, 'Replace on the card'))));
   };
 
-  /* badge: the OrbTheme.fit verdict {text, note, tip, color, border, background} · send: {note,
+  /* blocks: [{title, body, tip, over}] first, each a titled box (the live size, the frame rate)
+   * · badge: the OrbTheme.fit verdict {text, note, tip, color, border, background} · send: {note,
    * tip, on} under a hub · save: {note, tip, on} under a hub, the one place a design is saved
    * to the library · downloads: [{label, note, title, on}] · note: a warning line */
   S.RenderPanel = function (p) {
     var b = p.badge || null;
     return h(root.React.Fragment, null,
+      list(p.blocks).map(function (k, i) {
+        return h('div', { key: 'b' + i, className: cx('hs-size', k.over ? 'hs-over' : ''), title: k.tip || '' }, h('b', null, k.title), k.body);
+      }),
       b ? h('div', { className: 'st-badge', title: b.tip || '', style: { borderColor: b.border, background: b.background } }, h('b', { style: { color: b.color } }, b.text), h('span', null, b.note)) : null,
-      p.send ? h('button', { className: 'st-big ui-primary', onClick: p.send.on, title: p.send.tip || '' }, h('b', null, 'Send to orb'), h('span', null, p.send.note)) : null,
       p.save ? h('button', { className: 'st-big', onClick: p.save.on, title: p.save.tip || '' }, h('b', null, 'Save to library'), h('span', null, p.save.note)) : null,
+      p.send ? h('button', { className: 'st-big ui-primary', onClick: p.send.on, title: p.send.tip || '' }, h('b', null, 'Send to orb'), h('span', null, p.send.note)) : null,
       list(p.downloads).map(function (d, i) { return h('button', { key: i, className: 'st-big', onClick: d.on, title: d.title || '' }, h('b', null, d.label), h('span', null, d.note)); }),
       p.note ? h('div', { className: 'st-hint ui-mono st-warn' }, p.note) : null);
   };
@@ -582,11 +641,19 @@
   /* ---- builders: the services' answers as the components' props ---- */
   // a sender's state (OrbTheme.sender's `sending`) and the status line as SendModal's props
   S.sendProps = function (sending, status, onCancel) {
+    // the verdict: the send is over, the line says how, and one button closes it
+    if (sending && sending.done) {
+      var o = sending.outcome;
+      return { open: true, line: status || '', title: o === 'ok' ? 'Sent to the orb' : o === 'warn' ? 'Sent — check the orb' : 'Not sent',
+        hint: '', noCancel: false, cancelLabel: o === 'fail' ? 'Close' : 'Done', primary: o !== 'fail', onCancel: onCancel };
+    }
     return { open: !!sending, line: status || 'Building the theme…',
       hint: !sending ? '' : sending.cancelling ? 'Cancelling: the send stops before anything reaches the orb.'
         : sending.canCancel ? 'Nothing has reached the orb yet, so Cancel stops it cleanly.'
         : 'The orb is storing it and rebooting onto it. That cannot be stopped part way, so this waits until the orb is back.',
-      noCancel: !(sending && sending.canCancel), cancelLabel: sending && sending.cancelling ? 'Cancelling…' : 'Cancel', onCancel: onCancel };
+      noCancel: !(sending && sending.canCancel),
+      // past the commit the button is a promise of the verdict, not a Cancel it cannot keep
+      cancelLabel: !sending ? 'Cancel' : sending.cancelling ? 'Cancelling…' : sending.canCancel ? 'Cancel' : 'Waiting for the orb…', onCancel: onCancel };
   };
   // the sender's duplicate question as DupModal's props
   S.dupProps = function (dup, onReplace, onCancel) {

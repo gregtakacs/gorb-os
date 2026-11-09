@@ -5,7 +5,7 @@
 require('./headless-stub.js');
 const E = global.WatchEngine;
 global.React = { createRef: () => ({ current: null }) };
-require('./component.js');
+require('../clock-logic.js');
 const B = require(require('./runtime-paths.js').BAKER);
 const S = require('../stack.js');
 const holePts = (h) => E._holePts(h);
@@ -104,7 +104,7 @@ const face = (comps) => E.face(Object.assign({ design: E.canonDesign({ print: 'r
 {
   const DCLogic = function () { };
   DCLogic.prototype.setState = function (p) { Object.assign(this.state, typeof p === 'function' ? p(this.state) : p); };
-  const it = new (global.COMP_CLASS(DCLogic))({});
+  const it = new (global.ClockLogic(DCLogic))({});
   it.ready = true; it.rendering = false; it.budget = () => ({ fps: 8, dev: { pace: 8, cross: 0, cov: 0, why: '' } });
   it.state.dial = 'skeleton'; it.state.playing = false; it.state.hidden = {};
   it.state.designs = { skeleton: E.canonDesign({ print: 'roman', comps: [{ id: 'w', type: 'wheel', host: 'dial', size: 150, shows: 'date' }, { id: 'k', type: 'cutout', host: 'w' }, { id: 'h', type: 'hand', host: 'dial', shows: 'hour' }] }) };
@@ -142,7 +142,7 @@ const face = (comps) => E.face(Object.assign({ design: E.canonDesign({ print: 'r
 {
   const DCLogic = function () { };
   DCLogic.prototype.setState = function (p) { Object.assign(this.state, typeof p === 'function' ? p(this.state) : p); };
-  const it = new (global.COMP_CLASS(DCLogic))({});
+  const it = new (global.ClockLogic(DCLogic))({});
   it.ready = true; it.state.dial = 'opentour'; it.state.caseStyle = 'tachy'; it.state.train = 'skeltour'; it.state.cfg = { temp: 4000 };
   const t = it.thumbOpts('modern');
   ok(t.o.caseStyle === 'polished' && t.o.train === 'classic' && it.state.caseStyle === 'tachy' && it.state.dial === 'opentour', 'a card renders its own case and train, and leaves the selected watch alone', JSON.stringify([t.o.caseStyle, t.o.train]));
@@ -174,7 +174,7 @@ const face = (comps) => E.face(Object.assign({ design: E.canonDesign({ print: 'r
   ok(cn[0].face === 'ring' && cn[0].fang === -80 && !('trot' in cn[0]) && cn[1].face === 'ring' && !('fang' in cn[1]) && !('face' in cn[2]), 'one angle to the ring, a turn folded into it; a face this editor does not know reads level', JSON.stringify(cn));
   const DCLogic = function () { };
   DCLogic.prototype.setState = function (p) { Object.assign(this.state, typeof p === 'function' ? p(this.state) : p); };
-  const it = new (global.COMP_CLASS(DCLogic))({});
+  const it = new (global.ClockLogic(DCLogic))({});
   it.ready = true; it.rendering = false; it.budget = () => ({ fps: 8, dev: { pace: 8, cross: 0, cov: 0, why: '' } });
   it.state.dial = 'skeleton'; it.state.playing = false; it.state.hidden = {};
   it.state.designs = { skeleton: E.canonDesign({ print: 'roman', comps: [{ id: 'w', type: 'wheel', host: 'dial', size: 175, form: 'ring', inner: 130, trad: 152, read: 90, shows: 'date' }] }) };
@@ -208,7 +208,7 @@ const face = (comps) => E.face(Object.assign({ design: E.canonDesign({ print: 'r
   ok(st.find((x) => x.id === 'comp:w').parent === 'dial' && st.find((x) => x.id === 'comp:r').parent === 'dial' && st.find((x) => x.id === 'comp:k').parent === 'comp:w', 'Layers nests the dial\u2019s discs under the dial, and a cutout under its wheel');
   const DCLogic = function () { };
   DCLogic.prototype.setState = function (p) { Object.assign(this.state, typeof p === 'function' ? p(this.state) : p); };
-  const it = new (global.COMP_CLASS(DCLogic))({});
+  const it = new (global.ClockLogic(DCLogic))({});
   it.ready = true; it.rendering = false; it.budget = () => ({ fps: 8, dev: { pace: 8, cross: 0, cov: 0, why: '' } });
   it.state.dial = 'skeleton'; it.state.playing = false; it.state.hidden = {};
   it.state.designs = { skeleton: E.canonDesign({ print: 'roman', comps: [{ id: 'w', type: 'wheel', host: 'dial', size: 150, shows: 'date' }, { id: 'k', type: 'cutout', host: 'w' }, { id: 'v', type: 'wheel', host: 'dial', size: 80, shows: 'day' }, { id: 'vk', type: 'cutout', host: 'v' }] }) };
@@ -239,7 +239,7 @@ const face = (comps) => E.face(Object.assign({ design: E.canonDesign({ print: 'r
 {
   const DCLogic = function () { };
   DCLogic.prototype.setState = function (p) { Object.assign(this.state, typeof p === 'function' ? p(this.state) : p); };
-  const it = new (global.COMP_CLASS(DCLogic))({});
+  const it = new (global.ClockLogic(DCLogic))({});
   it.ready = true; it.rendering = false; it.budget = () => ({ fps: 8, dev: { pace: 8, cross: 0, cov: 0, why: '' } });
   it.state.dial = 'modern'; it.state.playing = false; it.state.hidden = {};
   const rows = () => (it.renderVals().stackRows || []).filter((r) => r.isRow).map((r) => r.id);
@@ -263,7 +263,7 @@ const face = (comps) => E.face(Object.assign({ design: E.canonDesign({ print: 'r
 {
   const DCLogic = function () { };
   DCLogic.prototype.setState = function (p) { Object.assign(this.state, typeof p === 'function' ? p(this.state) : p); };
-  const it = new (global.COMP_CLASS(DCLogic))({});
+  const it = new (global.ClockLogic(DCLogic))({});
   it.ready = true; it.rendering = false; it.budget = () => ({ fps: 8, dev: { pace: 8, cross: 0, cov: 0, why: '', need: 8 } });
   it.state.dial = 'modern'; it.state.playing = false; it.state.hidden = {};
   it.setState({ sel: null, selKind: null, step: 'dial', tab: 'timing' });
@@ -306,7 +306,7 @@ const face = (comps) => E.face(Object.assign({ design: E.canonDesign({ print: 'r
   ok(E.canonDesign({ comps: [{ id: 'w', type: 'wheel', shows: 'date' }, { id: 'k', type: 'cutout', host: 'w', shape: 'moon' }] }).comps[1].shape === undefined, 'a moon shape on a wheel that is not the moon falls back to a window');
   const DCLogic = function () { };
   DCLogic.prototype.setState = function (p2) { Object.assign(this.state, typeof p2 === 'function' ? p2(this.state) : p2); };
-  const it = new (global.COMP_CLASS(DCLogic))({});
+  const it = new (global.ClockLogic(DCLogic))({});
   it.ready = true; it.rendering = false; it.budget = () => ({ fps: 8, dev: { pace: 8, cross: 0, cov: 0, why: '' } });
   it.state.dial = 'skeleton'; it.state.playing = false; it.state.hidden = {};
   it.state.designs = { skeleton: E.canonDesign({ print: 'roman', comps: [{ id: 'w', type: 'wheel', host: 'dial', size: 150, form: 'ring', inner: 110, shows: 'date' }, { id: 'k', type: 'cutout', host: 'w', shape: 'arc' }] }) };
@@ -357,7 +357,7 @@ const face = (comps) => E.face(Object.assign({ design: E.canonDesign({ print: 'r
   // the panel: a wheel offers to add its index, the index has its own pane, the markers theirs
   const DCLogic = function () { };
   DCLogic.prototype.setState = function (p2) { Object.assign(this.state, typeof p2 === 'function' ? p2(this.state) : p2); };
-  const it = new (global.COMP_CLASS(DCLogic))({});
+  const it = new (global.ClockLogic(DCLogic))({});
   it.ready = true; it.rendering = false; it.budget = () => ({ fps: 8, dev: { pace: 8, cross: 0, cov: 0, why: '' } });
   it.state.dial = 'skeleton'; it.state.playing = false; it.state.hidden = {};
   it.state.designs = { skeleton: E.canonDesign({ print: 'roman', comps: [Object.assign({}, base, { ticks: 'all', rim: 'double' })] }) };
@@ -455,7 +455,7 @@ const face = (comps) => E.face(Object.assign({ design: E.canonDesign({ print: 'r
 {
   const DCLogic = function () { };
   DCLogic.prototype.setState = function (p) { Object.assign(this.state, typeof p === 'function' ? p(this.state) : p); };
-  const it = new (global.COMP_CLASS(DCLogic))({});
+  const it = new (global.ClockLogic(DCLogic))({});
   it.ready = true; it.rendering = false; it.budget = () => ({ fps: 8, dev: { pace: 8, cross: 0, cov: 0, why: '' } });
   it.state.dial = 'skeleton'; it.state.playing = false; it.state.hidden = {};
   it.state.designs = { skeleton: E.canonDesign({ print: 'roman', comps: [] }) };
@@ -486,7 +486,7 @@ const face = (comps) => E.face(Object.assign({ design: E.canonDesign({ print: 'r
 {
   const DCLogic = function () { };
   DCLogic.prototype.setState = function (p) { Object.assign(this.state, typeof p === 'function' ? p(this.state) : p); };
-  const it = new (global.COMP_CLASS(DCLogic))({});
+  const it = new (global.ClockLogic(DCLogic))({});
   it.ready = true; it.rendering = false; it.state.dial = 'modern'; it.state.hidden = {};
   it.state.designs = { modern: E.canonDesign(JSON.parse(JSON.stringify(E.PRESETS.modern.design))) };
   const sub = it.design().comps.find((c) => c.type === 'subdial');

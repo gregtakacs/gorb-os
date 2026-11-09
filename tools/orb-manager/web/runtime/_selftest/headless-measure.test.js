@@ -84,5 +84,36 @@ const paint = (a, x0, y0, w, h, v, ch) => { for (let y = y0; y < y0 + h; y++) fo
   ok(v.from === 'none' && v.fits && v.full && v.note === '3 of 24 live rows' && v.short === 'Fits', 'with neither, it says it fits and claims no rate', JSON.stringify([v.note, v.short]));
 }
 
+// ---- E6: a frame's price from what changed, and the rate a view holds (theme-editor-kit-plan §8)
+{
+  const E = GorbBake.EST4, rgba = () => new Uint8Array(N * 4);
+  const dot = (a, x0, y0, w, h) => { for (let y = y0; y < y0 + h; y++) for (let x = x0; x < x0 + w; x++) a[(y * W + x) * 4] = 255; return a; };
+  const still = T.frameCost(rgba(), rgba(), W, W);
+  ok(still.restored === 0 && still.walk === 0 && Math.abs(still.ms - E.FIXED) < 1e-9, 'nothing changed: the fixed cost alone', still.ms);
+  // one 10×10 square moved 4 px right: per row the span is its old and new place (14 px), the walk the 8 px that changed
+  const a = dot(rgba(), 100, 50, 10, 10), b = dot(rgba(), 104, 50, 10, 10), c1 = T.frameCost(a, b, W, W);
+  ok(c1.restored === 140 && c1.walk === 80, 'a mover restores its old and new span per row, and walks what changed', JSON.stringify(c1));
+  ok(Math.abs(c1.ms - ((E.R * 140 + E.W * 80) / 1000 + E.FIXED)) < 1e-9, 'priced with estimate4’s compositor costs');
+  // two movers on the same rows, far apart: the gap between them is not restored (orb_gfx.c INK_GAP_MIN)
+  const a2 = dot(dot(rgba(), 10, 0, 4, 1), 300, 0, 4, 1), b2 = dot(dot(rgba(), 12, 0, 4, 1), 302, 0, 4, 1), c2 = T.frameCost(a2, b2, W, W);
+  ok(c2.restored === 12, 'a gap of 24 px or more between movers is left out of the span', c2.restored);
+  const a3 = dot(dot(rgba(), 10, 0, 4, 1), 30, 0, 4, 1), b3 = dot(dot(rgba(), 12, 0, 4, 1), 32, 0, 4, 1), c3 = T.frameCost(a3, b3, W, W);
+  ok(c3.restored === 26, 'a narrower one is restored with them', c3.restored);
+  // the rate: a small mover holds the grid's top; a whole-glass change every frame does not
+  const run = (n, step, size) => Array.from({ length: n }, (_, i) => dot(rgba(), 50 + i * step, 100, size, size));
+  const small = T.pace(run(31, 1, 20), { base: 60, want: 20 });
+  ok(small.est === 20 && small.want === 20 && small.plans[0].fits, 'a small mover holds 20 fps', JSON.stringify(small.plans[0]));
+  const flood = Array.from({ length: 31 }, (_, i) => { const f = rgba(); f.fill(i * 7 & 255); return f; });
+  const big = T.pace(flood, { base: 60, want: 20 });
+  ok(big.est < 20 && big.plans.every((p) => p.restored_kpx > 200), 'the whole glass changing every frame does not', JSON.stringify(big.plans.map((p) => [p.fps, p.worst_ms, p.fits])));
+  ok(big.est === (big.plans.find((p) => p.fits) || big.plans[big.plans.length - 1]).fps, 'the estimate is the fastest rate that holds');
+  ok(T.pace(run(31, 1, 20), { base: 60, want: 12 }).plans[0].fps === 12 && T.pace(run(31, 1, 20), { base: 60, want: 60 }).want === 20, 'the wanted rate caps the plans, and the grid’s top caps it');
+  // a period is whole scans: 7.5 fps is priced on its shorter 7
+  // a 185 px square jumping 184 px between frames 8 apart costs ~92.5 ms: 7.5 fps is priced
+  // as estimate4's judge prices it, on floor(60 / 7.5) = 8 scans (135.5 ms with the margin)
+  const p75 = T.pace(run(9, 23, 185), { base: 60, want: 7.5 }).plans[0];
+  ok(p75.fps === 7.5 && p75.worst_ms > 85.7 && p75.worst_ms < 100.4 && p75.fits === true, '7.5 fps is priced on estimate4’s 8 scans', JSON.stringify(p75));
+}
+
 console.log(fails ? 'RESULT: FAIL — ' + fails + ' of ' + checked + ' checks' : 'all green (' + checked + ' checks)');
 process.exit(fails ? 1 : 0);

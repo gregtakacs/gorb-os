@@ -10,14 +10,17 @@
  *     see (/api/theme/upload-status), and the store verdict;
  *   - one modal act (owner ruling, 2026-11-03): from the press to the verdict the editor
  *     tells the hub it is busy, guards the window, and allows a cancel only while the bytes
- *     are still the page's.
+ *     are still the page's; the verdict then stays up with a button that closes it (owner,
+ *     2026-11-08: no close until it is done, and done is unmistakable), unless the send was
+ *     cancelled or stopped at the duplicate question, which takes the screen.
  *
  * Plain JS, no React: the editor gives callbacks and draws the state its own way.
  *
  *   const s = OrbTheme.sender({
  *     say(text),            // the status line
  *     ask(dup),             // the duplicate question {nm, stem, note, pre}, or null to close it
- *     sending(state),       // {canCancel, cancelling} while a send runs, null when it ends
+ *     sending(state),       // {canCancel, cancelling} while a send runs; {done, outcome: 'ok'|'warn'|'fail'}
+ *                           // once it ends (the dialog stays with its verdict until cancel()); null to close
  *     orb(ip),              // optional: the orb address once found (for a label)
  *     orbIp(),              // optional: where to send; default s.findOrb()
  *   });
@@ -36,6 +39,8 @@
       cancelRequested: false,
     };
     var st = null, xhr = null, unload = null, orbCache = null, lastDup = null;
+    // how the running send ended: 'fail' until a path says otherwise ('asked': the duplicate question)
+    var outcome = 'fail';
     var say = function (s) { host.say(s); };
     var setSending = function (v) { st = v; host.sending(v); };
     var orbIp = function () { return host.orbIp ? host.orbIp() : api.findOrb(); };
@@ -74,8 +79,11 @@
         unload = null;
       }
     };
-    var begin = function () { api.cancelRequested = false; api.active = true; setSending({ canCancel: true, cancelling: false }); busy(true); };
-    var end = function () { xhr = null; api.active = false; setSending(null); busy(false); };
+    var begin = function () { api.cancelRequested = false; api.active = true; outcome = 'fail'; setSending({ canCancel: true, cancelling: false }); busy(true); };
+    var end = function () {
+      xhr = null; api.active = false; busy(false);
+      setSending(api.cancelRequested || outcome === 'asked' ? null : { done: true, outcome: outcome });
+    };
     // past this point the orb holds the job: no cancel, only the wait
     var committed = function () { if (st) setSending({ canCancel: false, cancelling: false }); };
 
@@ -86,6 +94,7 @@
       try { await fn(); } finally { end(); }
     };
     api.cancel = function () {
+      if (st && st.done) { setSending(null); return; }   // the verdict's Done or Close
       if (!st || !st.canCancel || st.cancelling) return;
       api.cancelRequested = true;
       setSending({ canCancel: false, cancelling: true });
@@ -125,7 +134,7 @@
       host.ask(null);
       say('Send cancelled — the card keeps its current "' + (lastDup && lastDup.nm || 'theme') + '"');
     };
-    var askDup = function (d) { lastDup = d; host.ask(d); };
+    var askDup = function (d) { lastDup = d; outcome = 'asked'; host.ask(d); };
 
     /* The held bake's two roads to one file on the glass. With a commit token the device
      * already verified and kept these bytes, so Replace is an empty POST; a refused or lost
@@ -142,6 +151,7 @@
             if (r.status === 200 && j && j.ok) {
               var stt = (j.data && j.data.state) || 'stored';
               var rebo = (j.data && j.data.reboot === 'automatic');
+              outcome = 'ok';
               say('Sent to ' + ip + ' as "' + a.nm + '" (' + a.stem + ') — the new build replaced the old copy on its card · ' + stt + (rebo ? ' — rebooting onto it' : ''));
               return;
             }
@@ -213,7 +223,7 @@
         if (pre && pre.ok && pre.data && pre.data.exact) {
           // §32.9: the card already holds this exact bake. Stop before the upload: a re-send
           // would re-arm an idempotent store and reboot the orb onto the face it is drawing.
-          api.held = null;
+          api.held = null; outcome = 'ok';   // the orb already draws these bytes: done, not a failure
           say('"' + nm + '" is already on the card, byte for byte — nothing sent. To reboot onto it or re-store it, use its store button on the Manage card.');
           return;
         }
@@ -273,6 +283,7 @@
         refused: 'the store refused: ' + (d.store_note || 'no reason from the orb'),
         lost: 'filed on the card, and the store outcome stayed unreported past the wait — check the Manage card'
       }[d.store] || 'stored on the card';
+      outcome = d.store === 'torn' || d.store === 'refused' ? 'fail' : d.store === 'lost' || d.back === false ? 'warn' : 'ok';
       say('Sent to ' + ip + ' as "' + (d.name || nm) + '" (' + (d.id || stem) + ') — ' + (summary ? summary + ' · ' : '') + storeLine);
     };
 

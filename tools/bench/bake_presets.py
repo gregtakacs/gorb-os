@@ -73,7 +73,7 @@ def main():
         sys.exit(__doc__)
     out = sys.argv[1]
     os.makedirs(out, exist_ok=True)
-    subprocess.run([sys.executable, os.path.join(ROOT, "apps", "clock", "editor", "deploy_test_folder.py")],
+    subprocess.run([sys.executable, os.path.join(ROOT, "apps", "clock", "editor", "_selftest", "deploy_test_folder.py")],
                    check=True, capture_output=True)
     ids = sys.argv[2:] or presets()
     bad = 0

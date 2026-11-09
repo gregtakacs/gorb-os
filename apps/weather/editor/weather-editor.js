@@ -1,22 +1,22 @@
-/* weather-editor.js — the weather app's theme editor (docs/weather-plan.md §2.6).
+/* weather-editor.js — the weather app's part of its theme editor (docs/weather-plan.md §2.6;
+ * theme-editor-kit-plan §8, E3).
  *
- * On the OS's kit (theme-editor-kit-plan) as the flights editor does it: Start (the six
- * starter themes and Blank), Ground, Icons (the theme's own pack and its colours),
- * Temperature, Words, and Render to send it. The app's places are its settings, not its
- * theme: they live on the hub's App settings page (app.json declares them, §57; owner
- * 2026-11-06), never here.
+ * Orb Manager owns the page (host@1): the start step, the library, import, the Render step,
+ * the stage with its frame clock and its controls, Reset, the fit, history and the send.
+ * What is the weather's is here, registered with OrbHost: the steps (Ground, Map, Icons,
+ * Temperature, Words, Layout) and their fields, and the preview. The app's places are its
+ * settings, not its theme: they live on the hub's App settings page (app.json declares them,
+ * §57; owner 2026-11-06), never here.
  * The preview draws the app's four screens (Now, Places, Hourly, 5 days) from the very
  * frames the bake stores, laid out as apps/weather/main.c poses them. Now moves as the
  * glass does: fx.js (fx.c's twin, held to it by tools/host_weather_fx_test.py) runs the
  * rain, snow, mist, wisps and stars, the icon bobs and the clock ticks; the toolbar's
  * weather picks the condition, so every theme's every effect can be seen before it is
- * sent. Plain React, createElement only. */
+ * sent. On the Layout step Now's elements are picked and dragged on the glass. */
 (function (root) {
   'use strict';
-  var R = root.React, h = R.createElement, S = root.OrbStudio, T = root.OrbTheme, B = root.WeatherBake, FX = root.WeatherFx;
-  var M = root.WeatherMap;
+  var B = root.WeatherBake, FX = root.WeatherFx, M = root.WeatherMap;
   var G = 466, CX = 233, ROW_CAP = (root.GorbBake && root.GorbBake.CLK_ROW_MAX) || 64;
-  var STEPS = [['start', 'Start'], ['ground', 'Ground'], ['map', 'Map'], ['icons', 'Icons'], ['temps', 'Temperature'], ['words', 'Words'], ['layout', 'Layout'], ['render', 'Render']];
   var VIEWS = [['now', 'Now', 'Home on the glass, unarmed'], ['places', 'Places', 'Armed: turning steps the places'],
     ['hours', 'Hourly', 'A press: the next twelve hours on a clock face, the cursor on one'], ['days', '5 days', 'Another press: the next five days']];
   // the preview's made-up forecast (°C), the mockups' own
@@ -31,13 +31,6 @@
   var DAYS = [['Fri', 'rain', 10, 18, 80], ['Sat', 'partly', 10, 18, 10], ['Sun', 'clear', 7, 17, 0], ['Mon', 'cloudy', 9, 15, 40], ['Tue', 'thunder', 11, 16, 90]];
 
   var clone = function (o) { return JSON.parse(JSON.stringify(o)); };
-  var getIn = function (o, path) { return path.split('.').reduce(function (x, k) { return x == null ? x : x[k]; }, o); };
-  var setIn = function (d, path, v) {
-    var n = clone(d), o = n, ks = path.split('.');
-    for (var i = 0; i < ks.length - 1; i++) o = o[ks[i]];
-    o[ks[ks.length - 1]] = v;
-    return n;
-  };
   function checkDesign(x) {
     if (!x || !x.plate || !x.words || !x.temps || !x.icons) return 'that design has no weather theme in it';
     if (!B.PACKS[x.icons.pack]) return 'that design names an icon pack this editor does not carry (' + x.icons.pack + ')';
@@ -45,26 +38,22 @@
     return null;
   }
 
-  /* ---- the preview: one screen, drawn from the bake's own frames ---- */
-  function usePart(key, make, say) {
-    var st = R.useState(null), gen = R.useRef(0);
-    R.useEffect(function () {
-      var my = ++gen.current;
-      make().then(function (v) { if (my === gen.current) st[1](v); }, function (e) { say('The preview could not draw: ' + (e && e.message ? e.message : e)); });
-    }, [key]);
-    return st[0];
-  }
-  function useParts(d, say) {
-    var plate = usePart(JSON.stringify(d.plate), function () { return B.plateCanvas(d); }, say);
-    var icons = usePart(JSON.stringify(d.icons) + d.plate.c1 + B.sizeOf(d, 'icon'), async function () {
+  /* ---- the preview: one screen, drawn from the bake's own frames, each part drawn again
+   * only when its own part of the design changes (the host keeps them, c.part) ---- */
+  // the place a screen shows: Places the place control's (none while the orb has none set),
+  // every other screen home
+  function shownPlace(c) { return c.view.show === 'places' ? c.place : c.home; }
+  function partsOf(d, c) {
+    var plate = c.part('plate', JSON.stringify(d.plate), function () { return B.plateCanvas(d); });
+    var icons = c.part('icons', JSON.stringify(d.icons) + d.plate.c1 + B.sizeOf(d, 'icon'), async function () {
       var big = await B.iconFrames(d, B.sizeOf(d, 'icon'));
       // Hourly's own, at the default size whatever Now's is (§2.10)
       return { big: big, hour: B.sizeOf(d, 'icon') === B.ICON_PX ? big : await B.iconFrames(d, B.ICON_PX), small: await B.iconFrames(d, B.SICON_PX) };
-    }, say);
-    var temps = usePart(JSON.stringify(d.temps) + JSON.stringify(d.words) + JSON.stringify(d.icons.c), async function () { return { bars: B.barFrames(d), dots: B.dotFrames(d), parts: B.partFrames(d), bolt: B.boltFrame(d) }; }, say);
+    });
+    var temps = c.part('temps', JSON.stringify(d.temps) + JSON.stringify(d.words) + JSON.stringify(d.icons.c), async function () { return { bars: B.barFrames(d), dots: B.dotFrames(d), parts: B.partFrames(d), bolt: B.boltFrame(d) }; });
     // the words at their sizes, and what is measured in them: the days' columns, the day
     // bar they leave room for, and its halo
-    var words = usePart(JSON.stringify(d.words) + JSON.stringify(d.temps) + JSON.stringify(d.size || {}), async function () {
+    var words = c.part('words', JSON.stringify(d.words) + JSON.stringify(d.temps) + JSON.stringify(d.size || {}), async function () {
       var W = d.words;
       try {
         await B.loadFace(W.text, B.sizeOf(d, 'text')); await B.loadFace(W.label, B.sizeOf(d, 'label')); await B.loadFace(W.num, B.sizeOf(d, 'num'));
@@ -72,8 +61,16 @@
       } catch (e) { /* fallback */ }
       var dl = B.dayLayout(d);
       return { dl: dl, days: B.dayFrames(d, dl.dw), halo: B.haloFrame(d, dl.dw) };
-    }, say);
-    return { plate: plate, icons: icons, temps: temps, words: words };
+    });
+    // the shown place's map at the design's area (maps@1), drawn as the orb draws it: home's
+    // on its screens, the place control's on Places
+    var at = shownPlace(c), map = null;
+    if (at && d.map && d.map.on && root.GorbMaps) {
+      var mz = M.levelOf(at.lat, d.map.area).z, lk = at.lat + '|' + at.lon + '|' + mz;
+      var bytes = c.part('level', lk, function () { return root.GorbMaps.fetchLevel(at.lat, at.lon, mz); }, { fresh: true });
+      if (bytes) map = c.part('map', JSON.stringify(d.map) + '|' + lk, function () { return M.view(d.map, bytes, at.lat); });
+    }
+    return { plate: plate, icons: icons, temps: temps, words: words, map: map };
   }
   var KIND = function (k) { return B.KINDS.indexOf(k); };
   /* The Now screen's life, as main.c's stage_life poses it: the particles (each its frame,
@@ -93,11 +90,12 @@
   }
   /* The places Now's elements were hit at, for the Layout step's picking: [{k, x0, y0, x1, y1}]. */
   var HITS = [];
-  function drawView(x, d, P, view, L, sel) {
+  // pname, poff: the place Places shows and its zone's offset now (minutes), else the made-up Lisbon
+  function drawView(x, d, P, view, L, sel, pname, poff) {
     x.clearRect(0, 0, G, G);
     if (P.plate) x.drawImage(P.plate, 0, 0); else { x.fillStyle = '#000'; x.fillRect(0, 0, G, G); }
-    // the shown place's map (flights-map-plan §5): the preview has home's; Lisbon has none
-    if (P.map && d.map && d.map.on && view !== 'places') x.drawImage(P.map, 0, 0);
+    // the shown place's map (flights-map-plan §5): home's, or on Places the chosen place's
+    if (P.map && d.map && d.map.on) x.drawImage(P.map, 0, 0);
     if (!P.icons || !P.temps || !P.words) return;
     var W = d.words, caps = function (s) { return W.caps ? s.toUpperCase() : s; };
     var tx = B.sizeOf(d, 'text'), lb = B.sizeOf(d, 'label'), nu = B.sizeOf(d, 'num'), ip = B.sizeOf(d, 'icon');
@@ -113,7 +111,7 @@
     var blit = function (c, cx, cy, op) { x.globalAlpha = op == null ? 1 : op; x.drawImage(c, cx - c.width / 2, cy - c.height / 2); x.globalAlpha = 1; };
     HITS = [];
     if (view === 'now' || view === 'places') {
-      var p = view === 'now' ? Object.assign({}, NOW, { kind: L ? L.kind : NOW.kind }) : PLACE2;
+      var p = view === 'now' ? Object.assign({}, NOW, { kind: L ? L.kind : NOW.kind }) : pname ? Object.assign({}, PLACE2, { name: pname }) : PLACE2;
       var wx = WEATHER[KIND(p.kind)] || WEATHER[2], A = B.layoutNow(d);
       if (view === 'now') drawLife(x, d, P, L);
       text(view === 'places' ? p.name : caps(p.name), A.title.y, W.label, lb, W.quiet, 'center', A.title.x, null, 'title');
@@ -126,9 +124,13 @@
       text(caps('Feels ' + p.feels + '°  Wind ' + p.wind + ' km/h'), A.detail.y - lh, W.label, lb, W.quiet, 'center', A.detail.x, null, 'detail');
       text(caps('H ' + p.hi + '°  L ' + p.lo + '°  1016 hPa \u2193'), A.detail.y, W.label, lb, W.quiet, 'center', A.detail.x, null, 'detail');   /* and the pressure's way */
       text(caps('Sunset 17:03'), A.detail.y + lh, W.label, lb, W.quiet, 'center', A.detail.x, null, 'detail');   /* the next dawn or dusk */
-      // the clock: Home's is the orb's, a place's its own local time (Lisbon's, here)
-      var lis = function () { var n = new Date(); return String(n.getUTCHours()).padStart(2, '0') + ':' + String(n.getUTCMinutes()).padStart(2, '0'); };
-      text(view === 'now' ? (L ? L.clock : '10:42') : lis(), A.clock.y, W.text, tx, W.ink, 'center', A.clock.x, null, 'clock');
+      // the clock: Home's is the orb's, a place's its own local time from its zone's offset
+      // (the orb's places carry their zones from OS v1.2.38); the made-up Lisbon keeps UTC
+      var there = function () {
+        var off = poff == null ? 0 : poff, n = new Date(Date.now() + off * 60000);
+        return String(n.getUTCHours()).padStart(2, '0') + ':' + String(n.getUTCMinutes()).padStart(2, '0');
+      };
+      text(view === 'now' ? (L ? L.clock : '10:42') : there(), A.clock.y, W.text, tx, W.ink, 'center', A.clock.x, null, 'clock');
       // the Layout step's pick: a dashed frame round the element
       var on = HITS.filter(function (q) { return q.k === sel; });
       if (on.length) {
@@ -189,190 +191,54 @@
     }
   }
 
-  var thumbs = {};
-  function drawThumb(k, c) {
-    var put = function (im) { var x = c.getContext('2d'); x.clearRect(0, 0, c.width, c.height); x.drawImage(im, 0, 0, c.width, c.height); };
-    if (thumbs[k] && thumbs[k].im) { put(thumbs[k].im); return; }
-    if (!thumbs[k]) thumbs[k] = { p: B.thumb(B.preset(k), 192).then(function (im) { thumbs[k].im = im; return im; }) };
-    thumbs[k].p.then(put, function () { /* the tile stays dark */ });
+  /* ---- Now's life: fx.js stepped against the frame clock, as the orb's stage_life does (the
+   * pool sized by the theme's own rows, re-seeded when the condition changes) ---- */
+  function lifeOf(d, c) {
+    var L = c.memo.life || (c.memo.life = { fx: FX.create(12345), t: 0, kind: '', n: -1, clock: '10:42' });
+    var n = d.fx && d.fx.on === false ? 0 : B.N_PART;
+    if (L.kind !== c.view.weather || L.n !== n) { L.kind = c.view.weather; L.n = n; FX.set(L.fx, KIND(L.kind), n); }
+    if (c.dt) FX.step(L.fx, c.dt / 1000);
+    L.t = c.t;
+    var now = new Date(); L.clock = String(now.getHours()).padStart(2, '0') + ':' + String(now.getMinutes()).padStart(2, '0');   // the OS's 24-hour form
+    return L;
   }
 
-  var Q = (function () { try { return new URLSearchParams(root.location.search); } catch (e) { return null; } })();
-  var q = function (k, ok, dflt) { var v = Q && Q.get(k); return v && ok.indexOf(v) >= 0 ? v : dflt; };
-  var col = function (pairs) { return pairs.map(function (p) { return p[0]; }); };
+  /* ---- the Layout step: Now's elements picked and dragged on the glass (the clock editor's
+   * way: a drag sets the element's Angle and Distance from its own place) ---- */
+  function placed(d, k, a, r) {
+    var n = clone(d); n.place = Object.assign({}, n.place || {});
+    n.place[k] = { a: Math.round(((a % 360) + 360) % 360), r: Math.max(0, Math.min(220, Math.round(r))) };
+    return n;
+  }
+  var homeOf = function (d, k) { var z = clone(d); z.place = {}; return B.layoutNow(z)[k]; };
+  var drag = null;
+  var pointer = {
+    down: function (pt, c) {
+      if (c.step !== 'layout' || (c.view.show !== 'now' && c.view.show !== 'places')) return false;
+      var hs = HITS.filter(function (q) { return pt[0] >= q.x0 && pt[0] <= q.x1 && pt[1] >= q.y0 && pt[1] <= q.y1; });
+      if (!hs.length) return false;
+      var k = hs[hs.length - 1].k, at = B.layoutNow(c.d)[k];
+      c.setUi({ picked: k });
+      drag = { k: k, ox: pt[0] - at.x, oy: pt[1] - at.y, home: homeOf(c.d, k) };
+      return true;
+    },
+    move: function (pt, c) {
+      if (!drag) return;
+      var dr = drag, dx = pt[0] - dr.ox - dr.home.x, dy = pt[1] - dr.oy - dr.home.y;
+      c.set(function (o) { return placed(o, dr.k, Math.atan2(dx, -dy) * 180 / Math.PI, Math.hypot(dx, dy)); });
+    },
+    up: function () { drag = null; },
+    cursor: function (c) { return c.step === 'layout' ? (drag ? 'grabbing' : 'grab') : 'default'; },
+  };
 
-  function Editor() {
-    var u = function (v) { return R.useState(v); };
-    var dS = u(function () { return B.preset(q('preset', B.PRESETS.concat(['blank']), 'scope')); }), d = dS[0], setD = dS[1];
-    var stepS = u(q('step', col(STEPS), 'start')), step = stepS[0], setStep = stepS[1];
-    var stS = u(''), status = stS[0], setStatus = stS[1];
-    var viewS = u(q('show', col(VIEWS), 'now')), view = viewS[0], setView = viewS[1];
-    var wxS = u(q('weather', col(WEATHER), 'partly')), wxKind = wxS[0], setWx = wxS[1];
-    var playS = u(true), playing = playS[0], setPlaying = playS[1];
-    var lifeRef = R.useRef(null);
-    var pickS = u('icon'), picked = pickS[0], setPicked = pickS[1], dragRef = R.useRef(null);
-    // the whole-design reset, as the clock's: a second press within 4 s, its name kept, undoable
-    var armS = u(0), resetArm = armS[0] && Date.now() - armS[0] < 4000, setArm = armS[1];
-    var resetAll = function () {
-      if (!resetArm) { setArm(Date.now()); say('Press Reset again to put ' + d.name + ' back to its preset'); return; }
-      setArm(0);
-      setD(function (o) { var n = B.complete(B.preset(o.base)); n.name = o.name; return n; });
-      say('Reset to its preset — Undo brings your version back');
-    };
-    var sendS = u(null), sending = sendS[0], setSending = sendS[1];
-    var dupS = u(null), dup = dupS[0], setDup = dupS[1];
-    var libS = u(0), setLibTick = libS[1];
-    var delS = u(null), mineDel = delS[0], setMineDel = delS[1];
-    var drafts = R.useRef({}).current, canvasRef = R.useRef(null), stateRef = R.useRef({});
-    var say = R.useCallback(function (s) { setStatus(s); }, []);
-    stateRef.current = { d: d, status: status };
-    var stepRef = R.useRef(step), pickRef = R.useRef(picked);
-    stepRef.current = step; pickRef.current = picked;
-
-    var scrRef = R.useRef(null);
-    var vw = R.useMemo(function () {
-      return S.viewer({ get: function () { return scrRef.current; }, set: function (p) { setScr(function (o) { return Object.assign({}, o, p); }); }, say: say });
-    }, []);
-    var scrS = u(function () { return vw.init(q('view', col(T.VIEWS), 'fit')); }), setScr = scrS[1];
-    scrRef.current = scrS[0];
-
-    var parts = useParts(d, say);
-    /* the owner's home map at the design's area (maps@1), drawn as the orb draws it */
-    var homeS = u(null), home = homeS[0], setHome = homeS[1], mbS = u({}), mapBytes = mbS[0], setBytes = mbS[1];
-    var mpS = u(null), mapPart = mpS[0], setMapPart = mpS[1];
-    R.useEffect(function () {
-      var o = ses.hubOrb();
-      if (!o || !root.GorbMaps) return;
-      root.GorbMaps.orbHome(o.ip).then(function (hp) { if (hp) setHome(hp); }, function () {});
-    }, []);
-    var mz = home && d.map ? M.levelOf(home.lat, d.map.area).z : 0;
-    R.useEffect(function () {
-      if (!home || !mz || mapBytes[mz]) return;
-      root.GorbMaps.fetchLevel(home.lat, home.lon, mz).then(function (b) { setBytes(function (m) { var n = Object.assign({}, m); n[mz] = b; return n; }); },
-        function (e) { say('The map preview could not be built: ' + (e && e.message ? e.message : e)); });
-    }, [home ? home.lat : 0, mz]);
-    R.useEffect(function () {
-      if (!home || !d.map || !d.map.on || !mapBytes[mz]) { setMapPart(null); return; }
-      try { setMapPart(M.view(d.map, mapBytes[mz], home.lat)); } catch (e) { say(e.message); }
-    }, [JSON.stringify(d.map), mz, Object.keys(mapBytes).join(','), home ? home.lat : 0]);
-    parts = Object.assign({}, parts, { map: mapPart });
-    var ses = R.useMemo(function () {
-      return T.session({
-        slug: 'weather', keys: function () { return ['d']; }, state: function () { return stateRef.current; },
-        set: function () { setLibTick(function (n) { return n + 1; }); }, ready: function () { return true; }, say: say,
-        restore: function (snap, text) { setD(snap.d); say(text); }, schema: function () { return B.SCHEMA; },
-        migrate: function () { return {}; },
-        content: async function () { return { design: stateRef.current.d }; },
-        apply: function (doc) { var why = checkDesign(doc.design); if (!why) { setD(B.complete(doc.design)); setStep(function (s) { return s === 'start' ? 'ground' : s; }); } return why; },
-        bake: async function () { var r = await bakeNow(); return r ? r.bytes : null; },
-      });
-    }, []);
-    var sender = R.useMemo(function () {
-      return T.sender({ say: say, ask: function (x) { setDup(x); }, sending: function (x) { setSending(x); } });
-    }, []);
-    R.useEffect(function () { ses.track(); }, [d]);
-    R.useEffect(function () { ses.boot().catch(function () {}).then(function () { return ses.openTheme(); }).catch(function () {}); }, []);
-    var upd = function (path, v) { setD(function (old) { return setIn(old, path, v); }); };
-    var base = R.useMemo(function () { return B.preset(d.base === 'blank' || B.PRESETS_DEF[d.base] ? d.base : 'scope'); }, [d.base]);
-
-    /* the bake, the send, the download */
-    async function bakeNow() {
-      var dd = stateRef.current.d;
-      try {
-        say('Baking “' + dd.name + '”…');
-        var doc = new TextEncoder().encode(JSON.stringify(await ses.doc(true)));
-        var r = await B.bake(dd, { design: doc });
-        say('Baked “' + dd.name + '”: ' + Math.round(r.bytes.length / 1024) + ' KB');
-        return r;
-      } catch (e) { say('Not baked: ' + (e && e.message ? e.message : e)); return null; }
-    }
-    async function stemOf(nm) {
-      try {
-        var dg = new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode('weather/' + nm)));
-        return root.GorbBake.cardStem('weather', nm, dg);
-      } catch (e) { return null; }
-    }
-    async function draftThumb() {
-      try {
-        var im = await B.thumb(stateRef.current.d, 192), c = document.createElement('canvas'); c.width = c.height = 96;
-        var x = c.getContext('2d'); x.fillStyle = '#000'; x.fillRect(0, 0, 96, 96); x.drawImage(im, 0, 0, 96, 96);
-        return c.toDataURL('image/jpeg', 0.82);
-      } catch (e) { return null; }
-    }
-    function send() {
-      var nm = d.name;
-      sender.send(nm, async function () {
-        await ses.saveDraft({ name: nm, doc: await ses.doc(true), thumb: await draftThumb() }, true);
-        var r = await bakeNow(); if (!r || sender.cancelled()) return;
-        await sender.post(r.bytes, { name: nm, stem: await stemOf(nm), summary: Math.round(r.bytes.length / 1024) + ' KB' });
-        ses.libraryRefresh();
-      });
-    }
-    async function download() {
-      var r = await bakeNow(); if (!r) return;
-      T.download(new Blob([r.bytes], { type: 'application/octet-stream' }), ((await stemOf(d.name)) || 'weather-theme') + '.orbtheme');
-    }
-    async function saveDraft() { await ses.saveDraft({ name: d.name, doc: await ses.doc(true), thumb: await draftThumb() }); }
-
-    R.useEffect(function () {
-      var c = canvasRef.current; if (!c) return;
-      drawView(c.getContext('2d'), d, parts, view, view === 'now' ? lifeRef.current : null, step === 'layout' ? picked : null);
-    });
-    // Now's life: fx.js stepped against the time that passed, as the orb's stage_life does
-    // (the pool sized by the theme's own rows, re-seeded when the condition changes)
-    R.useEffect(function () {
-      if (view !== 'now') return;
-      var L = lifeRef.current;
-      if (!L) L = lifeRef.current = { fx: FX.create(12345), t: 0, last: 0, kind: wxKind, clock: '10:42' };
-      L.kind = wxKind;
-      FX.set(L.fx, KIND(wxKind), d.fx && d.fx.on === false ? 0 : B.N_PART);
-      var raf = 0, live = true;
-      var frame = function (ms) {
-        if (!live) return;
-        if (playing) {
-          var dt = L.last ? (ms - L.last) / 1000 : 0;
-          L.t += dt * 1000; FX.step(L.fx, dt);
-        }
-        L.last = ms;
-        var n = new Date(); L.clock = String(n.getHours()).padStart(2, '0') + ':' + String(n.getMinutes()).padStart(2, '0');   // the OS's 24-hour form
-        var c = canvasRef.current;
-        if (c) drawView(c.getContext('2d'), d, parts, 'now', L, stepRef.current === 'layout' ? pickRef.current : null);
-        if (playing) raf = root.requestAnimationFrame(frame);
-      };
-      raf = root.requestAnimationFrame(frame);
-      return function () { live = false; root.cancelAnimationFrame(raf); L.last = 0; };
-    }, [view, wxKind, playing, d, parts]);
-    var verdict = T.fit({ rows: B.LIVE_ROWS, cap: ROW_CAP });
-
-    /* ---- the Layout step: Now's elements picked and dragged on the glass (the clock
-     * editor's way: a drag sets the element's Angle and Distance from its own place) ---- */
-    var setPlace = function (k, a, r) {
-      setD(function (o) { var n = clone(o); n.place = Object.assign({}, n.place || {}); n.place[k] = { a: Math.round(((a % 360) + 360) % 360), r: Math.max(0, Math.min(220, Math.round(r))) }; return n; });
-    };
-    var ptOf = function (e) { var c = canvasRef.current, b = c.getBoundingClientRect(); return [(e.clientX - b.left) * G / b.width, (e.clientY - b.top) * G / b.height]; };
-    var homeOf = function (k) { var z = clone(d); z.place = {}; return B.layoutNow(z)[k]; };
-    var onDown = function (e) {
-      if (step !== 'layout' || (view !== 'now' && view !== 'places')) return;
-      var pt = ptOf(e), hs = HITS.filter(function (q) { return pt[0] >= q.x0 && pt[0] <= q.x1 && pt[1] >= q.y0 && pt[1] <= q.y1; });
-      if (!hs.length) return;
-      var k = hs[hs.length - 1].k, at = B.layoutNow(d)[k];
-      setPicked(k);
-      dragRef.current = { k: k, ox: pt[0] - at.x, oy: pt[1] - at.y, home: homeOf(k) };
-      try { e.currentTarget.setPointerCapture(e.pointerId); } catch (err) { /* headless */ }
-    };
-    var onMove = function (e) {
-      var dr = dragRef.current; if (!dr) return;
-      var pt = ptOf(e), dx = pt[0] - dr.ox - dr.home.x, dy = pt[1] - dr.oy - dr.home.y;
-      setPlace(dr.k, Math.atan2(dx, -dy) * 180 / Math.PI, Math.hypot(dx, dy));
-    };
-    var onUp = function () { dragRef.current = null; };
-
-    /* ---- the fields of each step ---- */
-    var K = S.fieldKit({ drafts: drafts, refresh: function () { setLibTick(function (n) { return n + 1; }); }, scope: function () { return step; } });
+  /* ---- the fields of each step ---- */
+  function fields(step, c) {
+    var d = c.d, K = c.K, upd = c.upd, setD = c.set, base = c.base, say = c.say, getIn = c.getIn, home = c.home, picked = c.ui.picked;
     var opt = function (pairs) { return pairs.map(function (p) { return { v: p[0], label: p[1] }; }); };
     var C = function (label, path, presetPath) {
       return K.Co(label, getIn(d, path), function (nv) { upd(path, nv); }, '', path, { noAuto: true, preset: getIn(base, presetPath || path) });
     };
+    var setPlace = function (k, a, r) { setD(function (o) { return placed(o, k, a, r); }); };
     var faces = B.FACES.map(function (k) { return { v: k, label: k }; });
     var fields = [];
     var pctOf = function (v) { return Math.round(v * 100) + '%'; };
@@ -530,7 +396,7 @@
     } else if (step === 'layout') {
       var pl = B.placeOf(d, picked);
       fields.push(K.H('Now / Places elements'));
-      fields.push(K.Sl('Element', picked, opt(B.ELEMENTS), function (v) { setPicked(v); }));
+      fields.push(K.Sl('Element', picked, opt(B.ELEMENTS), function (v) { c.setUi({ picked: v }); }));
       // its size: the icon's own, or its font's (one size a font: the orb keeps one set of
       // glyphs each), and what else that font draws
       var SZK = { icon: 'icon', big: 'num', line: 'text', clock: 'text', title: 'label', detail: 'label' }[picked];
@@ -547,86 +413,54 @@
       fields.push(K.Rg('Distance', pl.r, 0, 220, 1, function (v) { setPlace(picked, pl.a, +v); }, pl.r + ' px'));
       fields.push(K.Ch('', '', [{ v: 'reset', label: 'Back to its place' }], function () { setPlace(picked, 0, 0); }));
       fields.push(K.Nt('', 'Pick an element on the glass and drag it, or set its Angle (the direction, 0 up, turning clockwise) and Distance from its own place, as the clock editor places a part. A size moves nothing else. Now and Places only: Hourly and the 5 days keep the app’s layout at their own fixed sizes, so nothing here moves them.'));
-      if (view !== 'now' && view !== 'places') fields.push(K.Nt('', 'Show Now to move the elements.'));
+      if (c.view.show !== 'now' && c.view.show !== 'places') fields.push(K.Nt('', 'Show Now to move the elements.'));
     }
 
-    var right = step === 'render'
-      ? h(R.Fragment, null, h('div', { className: 'fl-sec' }, 'Render'),
-          h('div', { className: 'fl-list' }, h(S.RenderPanel, {
-            badge: S.badgeProps(verdict, 'The live rows against the ' + ROW_CAP + ' an app seats'),
-            send: { on: send, note: 'save “' + d.name + '”, bake it and store it on the orb', tip: 'Save it to the hub library, bake it, then send it to the orb this editor was opened for.' },
-            save: ses.hubOrb() ? { on: saveDraft, note: 'keep “' + d.name + '” on the hub as a draft', tip: 'Keep this design in the hub library under its name, without baking or sending it.' } : null,
-            downloads: [{ label: 'Download .orbtheme', note: 'the baked file', on: download }, { label: 'Check the bake', note: 'bake now and check its size', on: bakeNow }],
-          })))
-      : step === 'start'
-        ? h('div', { className: 'fl-list' }, h('div', { className: 'ui-mut' }, 'Pick a starting point, or open one from the hub library, then Continue. The steps after it: Ground, Icons, Temperature, Words, Layout, and Render to send it. The places the app shows are on the hub’s App settings page.'))
-        : h('div', { className: 'fl-list' }, h(S.Fields, { fields: fields }));
-
-    var items = [['ground', 'Ground'], ['map', 'Map'], ['icons', 'Icons'], ['temps', 'Temperature'], ['words', 'Words']].map(function (x) { return { id: x[0], band: 'parts', label: x[1], movable: false }; });
-    var left = h(S.Layers, { title: 'Parts', rows: S.layerRows(items, {
-      sel: step, heads: { parts: 'The theme, bottom to top' },
-      icon: function (it) { return { ground: '◎', map: '▦', icons: '☀', temps: '▮', words: 'A' }[it.id]; },
-      note: function (it) { return { ground: B.GROUNDS[d.plate.style] || 'Plain', icons: B.PACKS[d.icons.pack].title, temps: 'cold to hot', words: d.words.text }[it.id]; },
-      hidden: function () { return false; }, move: function () { return { ok: false, reason: 'the theme’s parts keep their order' }; },
-      onMove: function () {}, pick: function (it) { setStep(it.id); }, eyeTip: function () { return ''; }, toggleEye: function () {},
-      drag: { start: function () {}, over: function () {}, drop: function () {}, end: function () {} },
-    }) });
-
-    var sheet = step === 'start' ? h(S.StartSheet, {
-      title: 'Start a weather theme',
-      scratch: { label: 'Blank', short: 'Plain greys, nothing preset', cls: d.base === 'blank' ? 'on' : '', tip: 'Every part present, in plain greys on a plain ground',
-        on: function () { setD(B.preset('blank')); ses.restart(); say('Starting from a blank theme: Continue when you are ready'); } },
-      tiles: B.PRESETS.map(function (k) {
-        var pd = B.PRESETS_DEF[k];
-        return { key: k, name: pd.name, short: B.PACKS[pd.icons.pack].title + ' icons · ' + pd.match, tip: 'Start from ' + pd.name + ': ' + B.PACKS[pd.icons.pack].note,
-          cls: d.base === k ? 'on' : '', draw: function (c) { drawThumb(k, c); },
-          on: function () { setD(B.preset(k)); ses.restart(); say('Starting from ' + pd.name + ': Continue when you are ready'); } };
-      }),
-      library: { accept: '.orbtheme,.orbdesign,.json',
-        openFile: function (e) { var fl = e.target.files[0]; if (fl) ses.openFile(fl); },
-        rows: S.libraryRows(ses.library(), { version: ses.version(), armed: mineDel, arm: setMineDel,
-          meta: function (m) { return m.design && B.PACKS[m.design.icons && m.design.icons.pack] ? B.PACKS[m.design.icons.pack].title + ' · ' : ''; },
-          open: function (nm) { ses.openEntry(nm); }, forget: function (nm, what) { ses.forgetEntry(nm, what); } }),
-        empty: ses.hubOrb() ? null : 'The library is on the hub: open this editor from the hub to save and open designs there.' },
-      foot: [{ label: 'Continue with ' + d.name, primary: true, on: function () { setStep('ground'); } }],
-    }) : null;
-
-    var g = vw.glass(), tool = vw.tool();
-    return h(S.Frame, null,
-      h(S.TopBar, {
-        back: function () { try { root.parent.postMessage({ type: 'theme.close' }, '*'); } catch (e) { /* not framed */ } },
-        backTip: 'Back to the Themes page', crumb: 'Weather',
-        name: { value: d.name, placeholder: 'Theme name', title: 'The theme’s name on the orb', onChange: function (e) { upd('name', e.target.value); } },
-        steps: STEPS.map(function (s) { return { label: s[1], cls: s[0] === step ? 'on' : '', pick: function () { setStep(s[0]); } }; }),
-        undo: { on: function () { ses.undo(); }, tip: 'Undo', op: ses.undoStack.length ? 1 : 0.35 },
-        redo: { on: function () { ses.redo(); }, tip: 'Redo', op: ses.redoStack.length ? 1 : 0.35 },
-        extra: step !== 'start' ? [{ label: resetArm ? 'Press again to reset' : 'Reset ' + (B.PRESETS_DEF[d.base] ? B.PRESETS_DEF[d.base].name : 'to Blank'),
-          title: 'Put this theme back to its preset: ground, icons, temperature, words, sizes and places', on: resetAll }] : [],
-        fit: S.fitProps(verdict, verdict.note), primary: { label: 'Send to orb', on: send, title: 'Bake and send this theme' },
-      }),
-      h(S.Pane, { side: 'left' }, left),
-      h(S.Stage, null,
-        h(S.Glass, Object.assign({ status: status }, g),
-          h('canvas', { ref: canvasRef, width: G, height: G, onPointerDown: onDown, onPointerMove: onMove, onPointerUp: onUp, onPointerCancel: onUp,
-            style: { width: g.size + 'px', height: g.size + 'px', cursor: step === 'layout' ? (dragRef.current ? 'grabbing' : 'grab') : 'default', touchAction: 'none' } })),
-        sheet,
-        h(S.ScreenPanel, vw.panel()),
-        h(S.Toolbar, {
-          view: tool.view, zoom: tool.zoom, screen: vw.toolScreen(),
-          // always there, so the view buttons never move under the pointer: live on Now only
-          play: { icon: playing ? '❚❚' : '▶', label: view === 'now' ? (playing ? 'Pause the weather' : 'Play the weather') : 'The weather plays on Now', on: function () { if (view === 'now') setPlaying(!playing); } },
-        },
-          h('select', { value: wxKind, disabled: view !== 'now', style: { width: '12em', flex: '0 0 auto', opacity: view === 'now' ? 1 : 0.45 },
-            title: view === 'now' ? 'Preview weather: the condition Now shows, its icon and its effects' : 'Preview weather: show Now to pick the condition', onChange: function (e) { setWx(e.target.value); } },
-            WEATHER.map(function (w) { return h('option', { key: w[0], value: w[0] }, w[1]); })),
-          h(S.Seg, { opts: VIEWS.map(function (v) { return { label: v[1], tip: v[2], cls: v[0] === view ? 'on' : '', pick: function () { setView(v[0]); } }; }) }))),
-      h(S.Pane, { side: 'right' }, right),
-      h(S.OpeningModal, { line: ses.opening }),
-      h(S.SendModal, S.sendProps(sending, status, function () { sender.cancel(); })),
-      h(S.DupModal, S.dupProps(dup, function () { sender.replace(); }, function () { sender.dismiss(); })));
+    return fields;
   }
 
-  root.WeatherEditor = { Editor: Editor, drawView: drawView, checkDesign: checkDesign };
-  if (typeof document !== 'undefined' && document.getElementById('root'))
-    root.ReactDOM.createRoot(document.getElementById('root')).render(h(Editor));
+  var app = {
+    slug: 'weather', title: 'Weather', schema: B.SCHEMA,
+    check: checkDesign, complete: B.complete,
+    blank: { note: 'Plain greys, nothing preset', make: function () { return B.preset('blank'); } },
+    templates: B.PRESETS.map(function (k) {
+      var pd = B.PRESETS_DEF[k];
+      return { key: k, name: pd.name, note: B.PACKS[pd.icons.pack].title + ' icons · ' + pd.match, make: function () { return B.preset(k); } };
+    }),
+    start: 'scope',
+    startNote: 'The places the app shows are on the hub’s App settings page.',
+    picture: function (d, px) { return B.thumb(d, px); },
+    steps: [['ground', 'Ground'], ['map', 'Map'], ['icons', 'Icons'], ['temps', 'Temperature'], ['words', 'Words'], ['layout', 'Layout']],
+    parts: [
+      { id: 'ground', label: 'Ground', icon: '◎', note: function (d) { return B.GROUNDS[d.plate.style] || 'Plain'; } },
+      { id: 'map', label: 'Map', icon: '▦', note: function (d) { return d.map && d.map.on ? 'behind the reading' : 'none'; } },
+      { id: 'icons', label: 'Icons', icon: '☀', note: function (d) { return B.PACKS[d.icons.pack].title; } },
+      { id: 'temps', label: 'Temperature', icon: '▮', note: function () { return 'cold to hot'; } },
+      { id: 'words', label: 'Words', icon: 'A', note: function (d) { return d.words.text; }, also: ['layout'] },
+    ],
+    eyes: false,
+    ui: { picked: 'icon' },
+    fields: fields,
+    views: [
+      { key: 'show', label: 'Screen', options: VIEWS },
+      { key: 'weather', kind: 'select', label: 'Weather', tip: 'The condition Now shows, its icon and its effects', idle: 'Show Now to pick the weather',
+        options: WEATHER.map(function (w) { return [w[0], w[1]]; }), init: 'partly', active: function (v) { return v.show === 'now'; } },
+      { key: 'place', kind: 'place', home: false, label: 'Place', tip: 'The place Places shows, from the orb’s own; with none set it shows a made-up one', idle: 'Show Places to pick the place',
+        active: function (v) { return v.show === 'places'; } },
+    ],
+    // the preview plays at 30; on the orb Now bursts at the panel's ceiling, the grid's 20
+    play: { fps: 30, want: 20, on: function (v) { return v.show === 'now'; }, what: 'the weather', idle: 'The weather plays on Now' },
+    paceBy: [{ key: 'show', label: 'Screen' }, { key: 'weather', with: { show: 'now' }, label: 'Weather, on Now' }],
+    draw: function (x, d, c) {
+      var view = c.view.show, P = partsOf(d, c);
+      var sp = view === 'places' ? shownPlace(c) : null;
+      drawView(x, d, P, view, view === 'now' ? lifeOf(d, c) : null, c.step === 'layout' ? c.ui.picked : null, sp ? sp.name : null, sp ? sp.offset_min : null);
+    },
+    pointer: pointer,
+    bake: function (d, o) { return B.bake(d, o); },
+    fit: function () { return { rows: B.LIVE_ROWS, cap: ROW_CAP }; },
+  };
+
+  root.WeatherEditor = { app: app, drawView: drawView, checkDesign: checkDesign };
+  if (root.OrbHost) root.OrbHost.register(app);
 })(typeof window !== 'undefined' ? window : globalThis);

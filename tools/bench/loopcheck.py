@@ -328,7 +328,7 @@ def source_cycle_check(html=None):
     failure it prevents is a load-time stack overflow rather than a wrong number.
     Returns the names of the checks that did not hold.
     """
-    p = html or os.path.join(EDITOR_DIR, 'Watch Composer.dc.html')
+    p = html or os.path.join(EDITOR_DIR, 'clock-logic.js')
     src = open(p, encoding='utf-8').read()
     body = src.split('_budget(forceWant) {')[-1].split('\n  preset(')[0]
     checks = [
@@ -376,12 +376,10 @@ def source_syntax_check(html=None):
     def broken(code):
         return parser.parse(code.encode('utf-8')).root_node.has_error
 
-    p = html or os.path.join(d, 'Watch Composer.dc.html')
-    src = open(p, encoding='utf-8').read()
-    tag = '<script type="text/x-dc" data-dc-script>'
-    i = src.index(tag) + len(tag)
-    inline = src[i:src.index('</script>', i)]
-    units = [('composer inline script', inline)]
+    # E7 2d: the composer's class is a module (clock-logic.js), no longer a dc page's inline script
+    p = html or os.path.join(d, 'clock-logic.js')
+    inline = open(p, encoding='utf-8').read()
+    units = [('composer class (clock-logic.js)', inline)]
     for f in ('support.js', 'watch-engine.js', 'dial-renderer.js'):
         units.append((f, open(SUPPORT_JS if f == 'support.js' else os.path.join(d, f), encoding='utf-8').read()))
     print('=== source: shipped scripts parse ===')
@@ -717,8 +715,9 @@ def seal_cull_check(engine=None, html=None, bake=None):
                disc exists) and exposes it as F.dialSealed.
 
       COMPOSER occlMask() ORs fc.dialSealed (not the holed fc.dial) so rowPrice stops
-               charging an aperture the opaque disc plainly hides, AND exportKit ships
-               layers/dial.png from that same sealed canvas. Both sides use ONE source
+               charging an aperture the opaque disc plainly hides, AND the FORMAT 3 bake
+               walks its plate with that same sealed canvas (frameCanvas's `sealed`, once
+               the layer kit retired in 825e5ee). Both sides use ONE source
                so the priced mask and the shipped art cannot drift apart.
 
       BAKE     bake_clock.py's bg_occluder still ORs any non-rotating, NORMAL-blend,
@@ -734,7 +733,7 @@ def seal_cull_check(engine=None, html=None, bake=None):
     """
     d = EDITOR_DIR
     en = open(engine or os.path.join(d, 'watch-engine.js'), encoding='utf-8').read()
-    src = open(html or os.path.join(d, 'Watch Composer.dc.html'), encoding='utf-8').read()
+    src = open(html or os.path.join(d, 'clock-logic.js'), encoding='utf-8').read()
     bk = open(bake or os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'bake_clock.py'), encoding='utf-8').read()
     print('=== date/moon seal: the aperture is an occluder, not a viewport ===')
 
@@ -745,8 +744,11 @@ def seal_cull_check(engine=None, html=None, bake=None):
          lambda e, s, b: 'function buildDial(D, lay, baseEn, pal, glow, seal,' in e),
         ('engine: seal mode drops the sealed apertures',
          lambda e, s, b: 'seal ? lay.dialHoles.filter((h) => !h.seal) : lay.dialHoles' in e),
-        ('engine: the window/moon branch is the only seal',
-         lambda e, s, b: e.count('hole.seal = true') == 1),
+        # two seals, both where the dial hides the hole: a disc whose aperture is in the dial,
+        # and a cutout on a dial-hosted wheel (D43 P5d.3, c0a8f45); no third site may seal
+        ('engine: a seal only where the dial hides the hole',
+         lambda e, s, b: e.count('hole.seal = true') == 2
+         and "if (w.host === 'dial') hole.seal = true;" in e),
         # c32244a: a disc on a TRANSPARENT sub-dial cuts its aperture in the dial too
         # (there is no sub-dial plate to punch), so it is sealed like a dial-hosted one;
         # an opaque sub-dial's disc still keeps its punch
@@ -757,9 +759,12 @@ def seal_cull_check(engine=None, html=None, bake=None):
                           .split('hole.seal', 1)[0].count('return;') >= 1)),
         ('engine: face exposes F.dialSealed',
          lambda e, s, b: 'F.dialSealed = lay.dialHoles.some((h) => h.seal)' in e),
-        # the dial bake now passes the case inset after the canvas
-        ('composer: ships layers/dial.png from the sealed canvas',
-         lambda e, s, b: 'await this.png(bake(lf.dialSealed' in s),
+        # 825e5ee retired the layer kit (layers/dial.png): the FORMAT 3 bake walks the plate
+        # with the sealed dial whenever value rows or wheels ship over it
+        ('composer: walks the plate with the sealed dial under its rows',
+         lambda e, s, b: 'sealed: rowsOff ? 1 : 0' in s),
+        ('engine: a sealed walk draws F.dialSealed',
+         lambda e, s, b: 'hidden.sealed && F.dialSealed ? F.dialSealed : F.dial' in e),
         ('composer: occlMask prices the sealed dial',
          lambda e, s, b: '[fc.dialSealed, fc.glass, fc.outer]' in s),
         ('bake: the occluder still demands one opaque layer alone at 255',
@@ -771,14 +776,15 @@ def seal_cull_check(engine=None, html=None, bake=None):
         print('  %-48s %s' % (n, 'FAIL' if n in out else 'ok'))
 
     # mutants: the two one-sided edits must be caught, or this gate passes vacuously.
-    ships_holed = src.replace('await this.png(bake(lf.dialSealed',
-                              'await this.png(bake(lf.dial')
+    ships_holed = src.replace('sealed: rowsOff ? 1 : 0', 'sealed: 0')
     prices_holed = src.replace('[fc.dialSealed, fc.glass, fc.outer]',
                                '[fc.dial, fc.glass, fc.outer]')
-    for n, msrc in (('mutant: ships a holed dial (bake still pushes the train)', ships_holed),
-                    ('mutant: prices the holed dial (over-counts the sealed disc)', prices_holed)):
-        caught = ('await this.png(bake(lf.dialSealed' not in msrc) or \
-                 ('[fc.dialSealed, fc.glass, fc.outer]' not in msrc)
+    seals_more = en.replace("if (c.type === 'opening') {", "if (c.type === 'opening') { hole.seal = true;", 1)
+    for n, men, msrc in (('mutant: ships a holed dial (bake still pushes the train)', en, ships_holed),
+                         ('mutant: prices the holed dial (over-counts the sealed disc)', en, prices_holed),
+                         ('mutant: seals a real opening (prices away a cutout)', seals_more, src)):
+        # caught only if the predicates themselves fail on the mutant
+        caught = (men, msrc) != (en, src) and not all(f(men, msrc, bk) for _, f in preds)
         print('  %-48s %s' % (n, 'ok' if caught else 'FAIL: gate cannot fail'))
         if not caught:
             out.append(n)

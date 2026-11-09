@@ -185,8 +185,16 @@ int main(void)
     const int den = orb_geo_zone_find("America/Denver");
     CHECK(den >= 0 && !strcmp(orb_geo_zone_posix(den), "STD7DST6,M3.2.0,M11.1.0") && orb_geo_zone_exact(den),
           "Denver's rule: %%s", orb_geo_zone_posix(den));
+    /* 2026-11-08: tzdata's own rules (changes past 24 h) made Jerusalem and Santiago exact;
+     * Gaza follows Ramadan, which no fixed rule can, and is flagged */
     const int jer = orb_geo_zone_find("Asia/Jerusalem");
-    CHECK(jer < 0 || !orb_geo_zone_exact(jer), "Jerusalem is flagged approximate");
+    CHECK(jer >= 0 && orb_geo_zone_exact(jer) && !strcmp(orb_geo_zone_posix(jer), "STD-2DST-3,M3.4.4/26,M10.5.0"),
+          "Jerusalem's rule is tzdata's own and exact: %%s", orb_geo_zone_posix(jer));
+    const int scl = orb_geo_zone_find("America/Santiago");
+    CHECK(scl >= 0 && orb_geo_zone_exact(scl) && !strcmp(orb_geo_zone_posix(scl), "STD4DST3,M9.1.6/24,M4.1.6/24"),
+          "Santiago changes on the Sunday on or after the 2nd: %%s", orb_geo_zone_posix(scl));
+    const int gza = orb_geo_zone_find("Asia/Gaza");
+    CHECK(gza < 0 || !orb_geo_zone_exact(gza), "Gaza is flagged approximate");
     CHECK(orb_geo_zone_find("Mars/Olympus") < 0 && !strcmp(orb_geo_zone_iana(-1), "") &&
           !strcmp(orb_geo_zone_posix(ORB_GEO_N_ZONES), ""), "bad zone indices answer empty");
     for (int z = 0; z < ORB_GEO_N_ZONES; z++) {

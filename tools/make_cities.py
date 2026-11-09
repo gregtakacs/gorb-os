@@ -29,11 +29,15 @@ newlib has no zoneinfo. The derivation is the clock page's (tabs.js tzSynth,
 host_tz_test.py _trans): bisect each month for the transitions, encode them as
 M-rules in the local wall time before the change. Every rule is then checked
 against this machine's zoneinfo through glibc (TZ=<rule>, which reads POSIX
-rules the way newlib does) at every 2025-2028 transition and daily through
-2026. A zone whose clock change follows no fixed rule (Asia/Jerusalem's
-"Friday before the last Sunday", Africa/Casablanca's Ramadan pause) fails that
-check; it ships as its standard offset with the approximate flag, and the
-orb says so when it proposes it. Identical rules are stored once.
+rules the way newlib does) either side of every change from 2026-11-01 to the end
+of 2036 and at noon every day between (owner, 2026-11-08: a 2026-2028 check called
+Santiago's "first Sunday" exact, and it first fails in 2029). A derived rule that
+fails gives way to tzdata's own rule for the future (the TZif footer, names
+rewritten to STD/DST), whose changeovers may run past 24 h (Santiago's
+"M9.1.6/24", Jerusalem's "M3.4.4/26"; newlib reads them, benched on Gold). A zone
+neither holds (Gaza and Hebron follow Ramadan) ships the candidate right most
+often, with the approximate flag, and the orb says so. Identical rules are stored
+once.
 
 The same bake writes the hub's search list, tools/orb-manager/web/cities.json,
 from its own, much larger source (owner, 2026-11-06: the 500k list gave Michigan
@@ -56,6 +60,7 @@ is nearest, and the home itself is stored at full precision elsewhere).
 import argparse
 import datetime as dt
 import json
+import re
 import os
 import sys
 import time
@@ -74,7 +79,9 @@ MIN_POP = 500_000
 FIX_POP = 100_000       # correction rows: smaller places whose zone the big ones get wrong
 FOLD_KM = 15.0
 NAME_MAX = 23           # orb_geo.h ORB_GEO_NAME_MAX - 1
-YEARS = (2026, 2027, 2028)
+# Checked a decade ahead (owner, 2026-11-08: Santiago's "first Sunday" held 2026-2028 and
+# first failed in 2029; a three-year check called it exact).
+YEARS = tuple(range(2026, 2037))
 # A home is set today, so the rules describe today onward: derived from 2027
 # (the first whole year ahead) and checked from this date. History is not the
 # orb's business, and tzdata 2026e put BC, Alberta and Manitoba on permanent
@@ -260,6 +267,42 @@ def _mrule(t, pre_east):
     return "M%d.%d.%d%s" % (d.month, wk, wd, tt)
 
 
+def footer(zname):
+    """tzdata's own rule for the zone's future: the POSIX TZ string after a TZif file's last
+    newline but one, its names rewritten to the table's STD/DST (the table stores one
+    spelling a rule, and names are not the orb's business). None when absent or unreadable."""
+    raw = None
+    try:
+        import importlib.resources as res
+        import tzdata  # noqa: F401  (the pinned package, when it is the one read)
+        raw = res.files("tzdata.zoneinfo").joinpath(*zname.split("/")).read_bytes()
+    except Exception:
+        for d in zoneinfo.TZPATH:
+            try:
+                with open(os.path.join(d, zname), "rb") as f:
+                    raw = f.read()
+                break
+            except OSError:
+                continue
+    if not raw or not raw.endswith(b"\n"):
+        return None
+    tz = raw[:-1].rsplit(b"\n", 1)[-1].decode("ascii", "replace")
+    m = re.match(r"^(<[^>]*>|[A-Za-z]{3,})([-+]?\d{1,2}(?::\d{2})?)((<[^>]*>|[A-Za-z]{3,})([-+]?\d{1,2}(?::\d{2})?)?)?(,.*)?$", tz)
+    if not m:
+        return None
+    out = "STD" + m.group(2)
+    if m.group(3):
+        # the daylight offset written out where tzdata leaves it unsaid (an hour ahead of
+        # standard), as every other rule in the table spells it
+        dst = m.group(5)
+        if not dst:
+            sg, rest = (-1, m.group(2)[1:]) if m.group(2).startswith("-") else (1, m.group(2).lstrip("+"))
+            hh, _, mm = rest.partition(":")
+            dst = _foff(-(sg * (int(hh) * 60 + int(mm or 0))) + 60)
+        out += "DST" + dst
+    return out + (m.group(6) or "")
+
+
 def derive(zname):
     """(rule, exact) for one IANA zone."""
     z = ZoneInfo(zname)
@@ -281,21 +324,34 @@ def derive(zname):
     return "STD" + _foff(offs[0]), False
 
 
-def glibc_ok(zname, rule):
-    """Does glibc, reading `rule`, agree with zoneinfo everywhere we probe?"""
-    z = ZoneInfo(zname)
-    probes = []
-    for y in YEARS:
-        for t, lo, hi in _trans(z, y):
-            if t - 60 >= VERIFY_FROM:
-                probes += [(t - 60, lo), (t, hi), (t + 3540, hi)]
-    base = VERIFY_FROM + 12 * 3600
-    probes += [(base + k * 86400, _off(z, base + k * 86400)) for k in range(800)]
+_PROBES = {}
+
+
+def probes_of(zname):
+    """The instants a zone's rule is held to, with zoneinfo's offset at each: either side of
+    every change it makes in YEARS, and noon every day through them."""
+    if zname not in _PROBES:
+        z = ZoneInfo(zname)
+        pr = []
+        for y in YEARS:
+            for t, lo, hi in _trans(z, y):
+                if t - 60 >= VERIFY_FROM:
+                    pr += [(t - 60, lo), (t, hi), (t + 3540, hi)]
+        base, end = VERIFY_FROM + 12 * 3600, int(dt.datetime(YEARS[-1] + 1, 1, 1, tzinfo=dt.timezone.utc).timestamp())
+        pr += [(t, _off(z, t)) for t in range(base, end, 86400)]
+        _PROBES[zname] = pr
+    return _PROBES[zname]
+
+
+def glibc_score(zname, rule):
+    """How many of the zone's probes glibc, reading `rule` (as newlib does), agrees with
+    zoneinfo at, and how many there are."""
+    probes = probes_of(zname)
     old = os.environ.get("TZ")
     os.environ["TZ"] = rule
     time.tzset()
     try:
-        return all(time.localtime(t).tm_gmtoff // 60 == want for t, want in probes)
+        return sum(time.localtime(t).tm_gmtoff // 60 == want for t, want in probes), len(probes)
     finally:
         if old is None:
             del os.environ["TZ"]
@@ -311,12 +367,28 @@ def bake():
     zones = sorted({r[5] for r in rows})
     rules, rule_ix, zone_rule, inexact = [], {}, [], []
     for zn in zones:
+        # The candidates, in order: the rule derived from DERIVE_YEAR's changes, tzdata's own
+        # rule for the future, and the standard offset alone. The first glibc holds to
+        # zoneinfo at every probe is exact. When none is (Gaza and Hebron follow Ramadan),
+        # the one right most often ships, marked approximate.
         rule, exact = derive(zn)
-        if exact and not glibc_ok(zn, rule):
-            exact = False
-            rule = "STD" + _foff(min(_off(ZoneInfo(zn), t) for t in
-                                     (int(dt.datetime(DERIVE_YEAR, m, 1, tzinfo=dt.timezone.utc).timestamp())
-                                      for m in (1, 7))))
+        cands = [rule] if exact else []
+        ft = footer(zn)
+        if ft and ft not in cands:
+            cands.append(ft)
+        std = "STD" + _foff(min(_off(ZoneInfo(zn), t) for t in
+                                (int(dt.datetime(DERIVE_YEAR, m, 1, tzinfo=dt.timezone.utc).timestamp())
+                                 for m in (1, 7))))
+        if not exact and rule not in cands:
+            cands.append(rule)
+        if std not in cands:
+            cands.append(std)
+        scored = [(glibc_score(zn, c), i, c) for i, c in enumerate(cands)]
+        full = [c for (a, n), i, c in scored if a == n]
+        if full:
+            rule, exact = full[0], True
+        else:
+            rule, exact = max(scored, key=lambda x: (x[0][0], -x[1]))[2], False
         if len(rule) > 64:
             sys.exit("rule for %s is %d chars, over NET_TZ_MAX" % (zn, len(rule)))
         if not exact:

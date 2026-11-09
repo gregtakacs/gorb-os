@@ -6,7 +6,7 @@
 require('./headless-stub.js');
 const E = global.WatchEngine;
 global.React = { createRef: () => ({ current: null }) };
-require('./component.js');
+require('../clock-logic.js');
 const B = require(require('./runtime-paths.js').BAKER);
 let fails = 0, checked = 0;
 const ok = (c, n, x) => { checked++; if (!c || process.env.VERBOSE) console.log((c ? 'PASS ' : 'FAIL ') + n + (x ? '  [' + x + ']' : '')); if (!c) fails++; };
@@ -99,7 +99,7 @@ const fit = (h, S) => { const f = E.faceFit(h, S); Object.keys(f).forEach((k) =>
 {
   const DCLogic = function () { };
   DCLogic.prototype.setState = function (p) { Object.assign(this.state, typeof p === 'function' ? p(this.state) : p); };
-  const Comp = global.COMP_CLASS(DCLogic), it = new Comp({});
+  const Comp = global.ClockLogic(DCLogic), it = new Comp({});
   it.ready = true; it.rendering = false; it.budget = () => ({ fps: 8, dev: { pace: 8, cross: 0, cov: 0, why: '' } });
   it.state.dial = 'skeleton'; it.state.playing = false; it.state.hidden = {};
   const SL = sub({ form: 'slider', slideLen: 120, size: 50 });
@@ -148,7 +148,7 @@ const fit = (h, S) => { const f = E.faceFit(h, S); Object.keys(f).forEach((k) =>
 {
   const DCLogic = function () { };
   DCLogic.prototype.setState = function (p) { Object.assign(this.state, typeof p === 'function' ? p(this.state) : p); };
-  const Comp = global.COMP_CLASS(DCLogic), it = new Comp({});
+  const Comp = global.ClockLogic(DCLogic), it = new Comp({});
   it.ready = true; it.rendering = false; it.state.dial = 'calendar'; it.state.hidden = {}; it.state.playing = false;
   const real = it._budget.bind(it);
   // Calendar's live price picks 15/5 pre-painted, which held on the glass; its seconds sweep crosses

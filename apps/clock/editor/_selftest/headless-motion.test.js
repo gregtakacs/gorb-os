@@ -5,7 +5,7 @@
 require('./headless-stub.js');
 const E = global.WatchEngine;
 global.React = { createRef: () => ({ current: null }) };
-require('./component.js');
+require('../clock-logic.js');
 let fails = 0, checked = 0;
 const ok = (c, n, x) => { checked++; console.log((c ? 'PASS ' : 'FAIL ') + n + (x ? '  [' + x + ']' : '')); if (!c) fails++; };
 const near = (a, b, e) => Math.abs(a - b) <= (e || 1e-9);
@@ -69,7 +69,7 @@ ok(oi.length === 1 && oi[0].style === 'lens' && near(oi[0].a, Math.PI / 2) && oi
 // ---- the bake's encoding and the Hands tab ----
 const DCLogic = function () { };
 DCLogic.prototype.setState = function (p) { Object.assign(this.state, typeof p === 'function' ? p(this.state) : p); };
-const it = new (global.COMP_CLASS(DCLogic))({});
+const it = new (global.ClockLogic(DCLogic))({});
 it.ready = true; it.rendering = false; it.budget = () => ({ fps: 8, dev: { pace: 8, cross: 0, cov: 0, why: '' } });
 it.state.dial = 'flux'; it.state.tab = 'hands'; it.state.playing = false; it.state.hidden = {};
 it.state.designs = { flux: E.canonDesign(JSON.parse(JSON.stringify(E.PRESETS.flux.design))) };

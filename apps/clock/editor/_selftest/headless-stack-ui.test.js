@@ -5,12 +5,12 @@ require('./headless-stub.js');
 const legacy3 = global.legacy3;
 const E = global.WatchEngine;
 global.React = { createRef: () => ({ current: null }) };
-require('./component.js');
+require('../clock-logic.js');
 let fails = 0, checked = 0;
 const ok = (c, n, x) => { checked++; if (!c || process.env.VERBOSE) console.log((c ? 'PASS ' : 'FAIL ') + n + (x ? '  [' + x + ']' : '')); if (!c) fails++; };
 const DCLogic = function () { };
 DCLogic.prototype.setState = function (p) { Object.assign(this.state, typeof p === 'function' ? p(this.state) : p); };
-const Comp = global.COMP_CLASS(DCLogic);
+const Comp = global.ClockLogic(DCLogic);
 const ev = { stopPropagation() {}, preventDefault() {}, dataTransfer: { setData() {} } };
 
 const it = new Comp({});

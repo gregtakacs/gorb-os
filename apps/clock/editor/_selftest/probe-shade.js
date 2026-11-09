@@ -2,7 +2,7 @@
   const E = window.WatchEngine, DCLogic = function () { };
   try {
   DCLogic.prototype.setState = function (p) { Object.assign(this.state, typeof p === 'function' ? p(this.state) : p); };
-  const inst = new (window.COMP_CLASS(DCLogic))({});
+  const inst = new (window.ClockLogic(DCLogic))({});
   inst.ready = true; inst.rendering = false;
   inst.state.dial = 'modern'; inst.state.timeMode = 'cycle'; inst.state.frame = 0; inst.state.hidden = {}; inst.state.playing = false;
   inst.budget = () => ({ fps: 8 });

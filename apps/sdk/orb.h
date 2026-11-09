@@ -194,6 +194,16 @@ ORB_IMPORT("home_gen")   uint32_t orb_home_gen(void);
 typedef orb_home_t orb_place_t;
 ORB_IMPORT("place")      int32_t orb_place(uint32_t i, orb_place_t *out);
 ORB_IMPORT("places_gen") uint32_t orb_places_gen(void);
+/* A place's zone at `t` (owner, 2026-11-08): the zone its writer named on the hub, else its
+ * nearest city's, and its offset from the zone's own rule, never the orb's zone. The
+ * place's local time is t + offset_min * 60. Answers ORB_OK, or an error for an empty
+ * slot, one with no zone, or an i past 2. Available from OS v1.2.38. */
+typedef struct {
+    int32_t offset_min;      /* east of UTC at t */
+    int32_t dst;             /* 1 while daylight time is in force */
+    char    zone[40];        /* IANA, "Europe/Lisbon" */
+} orb_place_zone_t;
+ORB_IMPORT("place_zone") int32_t orb_place_zone(uint32_t i, int64_t t, orb_place_zone_t *out);
 
 /* ---- units (free) -------------------------------------------------------------- *
  * The orb's units, one OS setting for every app (weather-plan §2.1): the owner sets

@@ -10,7 +10,7 @@ URLs to open. Since D43 the page's support.js and orbtheme-baker.js are the hub'
 OS runtime (tools/orb-manager/web/runtime/); the flat folder gets copies of them
 beside the app's own files, which is the layout the selftest pages load.
 
-    python3 apps/clock/editor/deploy_test_folder.py [target_dir]
+    python3 apps/clock/editor/_selftest/deploy_test_folder.py [target_dir]
 
 default target: /mnt/c/Users/greg/Downloads/test
 """
@@ -19,15 +19,16 @@ import os
 import shutil
 import sys
 
-HERE = os.path.dirname(os.path.abspath(__file__))
+HERE = os.path.dirname(os.path.abspath(__file__))          # _selftest/, since E7 Stage 2
+ED = os.path.dirname(HERE)                                  # the editor's own files
 DEFAULT_TARGET = "/mnt/c/Users/greg/Downloads/test"
 
-RUNTIME = os.path.join(HERE, "..", "..", "..", "tools", "orb-manager", "web", "runtime")
+RUNTIME = os.path.join(ED, "..", "..", "..", "tools", "orb-manager", "web", "runtime")
 # the page loads these siblings; _selftest/ is copied whole and reaches the engine at
 # ../watch-engine.js, so the folder depth is part of the contract. (source, name):
 # the app's own files from here, the runtime's from the hub.
-APP_FILES = [(os.path.join(HERE, f), f) for f in
-             ("Watch Composer.dc.html", "dial-renderer.js", "watch-engine.js", "sound-engine.js", "stack.js")] + [
+APP_FILES = [(os.path.join(ED, f), f) for f in
+             ("clock-logic.js", "dial-renderer.js", "watch-engine.js", "sound-engine.js", "stack.js")] + [
              (os.path.join(RUNTIME, "support@1", "support.js"), "support.js"),
              (os.path.join(RUNTIME, "baker@1", "orbtheme-baker.js"), "orbtheme-baker.js"),
              (os.path.join(RUNTIME, "ui@1", "ui.css"), "ui.css"),
@@ -54,7 +55,7 @@ def main():
         sys.exit("parent of {} does not exist; is /mnt/c mounted?".format(target))
 
     plan = [(src, os.path.join(target, name)) for src, name in APP_FILES]
-    st_src = os.path.join(HERE, SELFTEST_DIR)
+    st_src = HERE
     for name in sorted(os.listdir(st_src)):
         src = os.path.join(st_src, name)
         if os.path.isfile(src):

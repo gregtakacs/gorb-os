@@ -104,6 +104,23 @@ Object.defineProperty(global, 'fn', { get: mkfn });
   ok(!by(render(S.Calibrate, S.calProps(V, { solve })), 'div', 'st-card').length, 'and with no card handler, no card');
 }
 
+// ---- status notes (owner, 2026-11-09): prompts fade, work in progress stays, errors keep a ×
+{
+  const K = S.noteKind;
+  ok(['Starting from Skeleton: Continue when you are ready', 'Redone', 'Opened “Sea” from the library', 'Exported “Sea” as x.orbtheme', 'Not exported'].every((t) => K(t) === 'note'),
+     'a prompt or an acknowledgement is a note that fades');
+  ok(['Baking “Sea”…', 'Waiting for the movement to finish drawing (8 of 15 frames) — keep this window in front', 'Sending "Sea" to 1.2.3.4 — 40% of 3 B to the hub'].every((t) => K(t) === 'busy'),
+     'work in progress stays while it runs');
+  ok(['Not baked: the movement stopped drawing at 8 of 15 frames', 'Not sent: HTTP 500', 'Could not reopen that theme: gone', 'Send failed: reset', 'Not baked: the Tint bake did not answer in 120 s'].every((t) => K(t) === 'error'),
+     'an error is an error');
+  let gone = 0;
+  const err = render(S.Glass, { size: 466, status: 'Not baked: no hand at all', onDismiss: () => { gone++; } });
+  const x = by(err, 'button', 'st-x')[0];
+  ok(by(err, 'div', 'st-err').length === 1 && x && (x.props.onClick(), gone === 1), 'an error carries a × that dismisses it');
+  const nt = render(S.Glass, { size: 466, status: 'Redone' });
+  ok(by(nt, 'div', 'st-fade').length === 1 && !by(nt, 'button', 'st-x').length, 'a note fades and has nothing to press');
+}
+
 // ---- the send and the duplicate question, from the sender's own state
 {
   ok(render(S.SendModal, S.sendProps(null, '', fn)) === null, 'no send, no modal');
@@ -116,7 +133,13 @@ Object.defineProperty(global, 'fn', { get: mkfn });
   ok(c.cancelLabel === 'Cancelling…' && /stops before anything reaches the orb/.test(c.hint), 'a cancel in flight says so');
   const m = render(S.SendModal, a);
   ok(by(m, 'div', 'st-modal').length === 1 && /Sending to the orb/.test(text(m)) && by(m, 'button')[0].props.onClick === cancel && !by(m, 'button')[0].props.disabled, 'the modal draws the line, the hint and Cancel');
-  ok(by(render(S.SendModal, b), 'button')[0].props.disabled === true, 'and disables Cancel when it cannot stop');
+  ok(by(render(S.SendModal, b), 'button')[0].props.disabled === true && b.cancelLabel === 'Waiting for the orb…', 'and, when it cannot stop, its button waits for the orb instead of offering a Cancel it cannot keep', b.cancelLabel);
+  // owner, 2026-11-08: the verdict stays up, and a button closes it
+  const v = S.sendProps({ done: true, outcome: 'ok' }, 'Sent to 192.0.2.7 as "Scope"', cancel), vm = render(S.SendModal, v);
+  ok(v.open && /Sent to the orb/.test(text(vm)) && /as "Scope"/.test(text(vm)) && by(vm, 'button')[0].props.onClick === cancel && !by(vm, 'button')[0].props.disabled && text(by(vm, 'button')[0]) === 'Done',
+     'a sent theme ends on its verdict with Done', text(vm));
+  const vf = S.sendProps({ done: true, outcome: 'fail' }, 'Not sent: HTTP 500', cancel), vw = S.sendProps({ done: true, outcome: 'warn' }, 'x', cancel);
+  ok(vf.title === 'Not sent' && vf.cancelLabel === 'Close' && !vf.noCancel && vw.cancelLabel === 'Done' && /check the orb/.test(vw.title), 'a failure ends on Close, an unwitnessed store on a check', vf.title + ' / ' + vw.title);
   ok(render(S.DupModal, S.dupProps(null, fn, fn)) === null, 'no question, no modal');
   const rep = fn, dis = fn, d = render(S.DupModal, S.dupProps({ nm: 'Scope', stem: 'radar-scope-000000000000', note: 'a different build' }, rep, dis));
   ok(/already on the card/.test(text(d)) && /radar-scope-000000000000/.test(text(d)) && /a different build/.test(text(d)), 'the duplicate names the theme, its card stem and the hub’s note');
@@ -135,7 +158,8 @@ Object.defineProperty(global, 'fn', { get: mkfn });
   ok(/1\/1 art asset held/.test(text(r)), 'and the app’s warning line');
   ok(by(render(S.RenderPanel, { downloads: [] }), 'button').length === 0, 'off a hub there is no Send');
   const sv = fn, rs = by(render(S.RenderPanel, { send: { note: 'x', on: send }, save: { note: 'keep it', on: sv }, downloads: [] }), 'button', 'st-big');
-  ok(rs.length === 2 && rs[1].props.onClick === sv && /Save to library/.test(text(rs[1])), 'Save to library sits under Send');
+  // §8.1 ruling 6: Save to library, Send to orb, then the export
+  ok(rs.length === 2 && rs[0].props.onClick === sv && /Save to library/.test(text(rs[0])) && rs[1].props.onClick === send, 'Save to library sits above Send');
 }
 
 // ---- K7: the field kit, the fields, the layers panel
@@ -255,12 +279,32 @@ Object.defineProperty(global, 'fn', { get: mkfn });
   ok(rows[0].tag === 'theme · unsent changes' && rows[0].changed && rows[1].tag === 'theme · needs a rebake' && /^Brass · /.test(rows[0].meta), 'each entry says what it is');
   rows[0].load(); rows[0].discard(); rows[0].del(); rows[1].del();
   ok(picked.join() === 'Night' && forgot.join() === 'Night:draft,Day:all' && armed === null && rows[1].delLabel === 'Press again', 'Open, Discard changes, and Delete asked twice');
-  const go = fn, sheet = render(S.StartSheet, { title: 'Start', tiles: [{ key: 'a', name: 'Alpha', short: 's', cls: 'on', on: fn }, { key: 'b', name: 'Beta', on: fn }],
-    library: { rows, openFile: fn }, foot: [{ label: 'Continue with Alpha', primary: true, on: go }] });
-  ok(by(sheet, 'div', 'st-gc').length === 2 && by(sheet, 'div', 'st-gc')[0].props.className === 'st-gc on' && by(sheet, 'canvas').length === 2, 'the starting points as pictures, the chosen one marked');
-  ok(by(sheet, 'div', 'st-lib-row').length === 2 && by(sheet, 'button').some((b) => b.props.onClick === go && text(b) === 'Continue with Alpha' && b.props.className === 'ui-primary'), 'the library under them, and Continue');
-  ok(!by(sheet, 'input').some((i) => i.props.type === 'text') && !by(sheet, 'button').some((b) => /Save/.test(text(b))), 'the sheet opens; it never saves (that is the Render step’s)');
-  ok(!by(sheet, 'div', 'st-lib-empty').length && by(render(S.StartSheet, { library: { rows: [] } }), 'div', 'st-lib-empty').length === 1, 'an empty library says how it fills');
+  // the start (§8.10): four ways, each saying what it holds; one panel at a time
+  let picked2 = null, freshed = 0;
+  const imp = fn, go = fn, base = { title: 'Start a tint theme', setPick: (p) => { picked2 = p; }, fresh: { note: 'Plain greys', on: () => { freshed++; } },
+    tiles: [{ key: 'a', name: 'Alpha', short: 's', cls: 'on', on: fn }, { key: 'b', name: 'Beta', on: fn }],
+    library: { rows, empty: 'Nothing saved yet.' }, importFile: { accept: '.orbtheme', on: imp }, foot: [{ label: 'Continue with Alpha', primary: true, on: go }] };
+  const four = render(S.StartFlow, base), ways = by(four, 'button', 'st-choice');
+  ok(ways.map((b) => text(by(b, 'b')[0])).join('|') === 'New|From a template|From my library|Import a file', 'four ways to start, in the owner’s order', ways.map((b) => text(by(b, 'b')[0])).join('|'));
+  ok(/2 looks to start from/.test(text(ways[1])) && /2 saved designs/.test(text(ways[2])) && /\.orbtheme/.test(text(ways[3])), 'each says what it holds', ways.map(text).join(' / '));
+  ok(!by(four, 'div', 'st-gc').length && !by(four, 'div', 'st-lib-row').length && !by(four, 'div', 'st-sheet-foot').length, 'no previews, no library rows and no Continue under the four');
+  ways[0].props.onClick(); ways[1].props.onClick();
+  ok(freshed === 1 && picked2 === 'template', 'New starts at once; a template opens its panel');
+  ways[2].props.onClick(); ok(picked2 === 'library', 'the library opens its panel');
+  const file = by(four, 'input').filter((i) => i.props.type === 'file');
+  ok(file.length === 1 && file[0].props.onChange === imp && file[0].props.accept === '.orbtheme', 'Import is the one file input');
+  const tpl = render(S.StartFlow, Object.assign({}, base, { pick: 'template' }));
+  ok(by(tpl, 'h2').map(text).join() === 'From a template' && by(tpl, 'div', 'st-gc').length === 2 && by(tpl, 'canvas').length === 2 && !by(tpl, 'div', 'st-lib-row').length,
+     'the template panel: the looks as pictures, nothing else');
+  ok(by(tpl, 'button').some((b) => b.props.onClick === go && text(b) === 'Continue with Alpha' && b.props.className === 'ui-primary'), 'and Continue');
+  const backB = by(tpl, 'button', 'st-back')[0]; backB.props.onClick();
+  ok(picked2 === '' && /All ways to start/.test(text(backB)), 'a way back to the four');
+  const lib = render(S.StartFlow, Object.assign({}, base, { pick: 'library' }));
+  ok(by(lib, 'h2').map(text).join() === 'From my library' && by(lib, 'div', 'st-lib-row').length === 2 && !by(lib, 'div', 'st-gc').length && !by(lib, 'div', 'st-sheet-foot').length,
+     'the library panel: your designs, nothing else');
+  const none = render(S.StartFlow, Object.assign({}, base, { pick: 'library', library: { rows: [], empty: 'Nothing saved yet.' } }));
+  ok(by(none, 'div', 'st-lib-empty').length === 1 && /Nothing saved yet/.test(text(render(S.StartFlow, Object.assign({}, base, { library: { rows: [] } })))), 'an empty library says so, on its card and in its panel');
+  ok(!('StartSheet' in S), 'one way to start: the old sheet is gone');
 }
 {
   // layerRows: bands, depth, selection, arrows, eye, tooltip; a made-up radar stack

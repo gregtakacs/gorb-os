@@ -88,6 +88,7 @@ type editorSlot struct {
 	zr      *zip.Reader
 	err     error
 	fetched time.Time
+	lib     string // the library copy's stamp when the region came from it, else ""
 }
 
 // editorRegions memoises region reads per hub, behind the fetch lane so two browsers
@@ -215,7 +216,8 @@ func (s *Server) editorRegionDialed(ip, slug string, dial editorFetchFn) (*zip.R
 		if sl.err != nil && !errors.Is(sl.err, orbnet.ErrNoEditor) {
 			ttl = editorErrRetryTTL
 		}
-		if time.Since(sl.fetched) < ttl {
+		// a region served from the library holds only while that file is the one on disk
+		if time.Since(sl.fetched) < ttl && (sl.lib == "" || sl.lib == s.library().ContainerStamp(slug)) {
 			return sl.zr, sl.err
 		}
 	}
@@ -226,8 +228,9 @@ func (s *Server) editorRegionDialed(ip, slug string, dial editorFetchFn) (*zip.R
 	// second dial. A nil row, an unstamped pair or a library with no such file all
 	// fall through to the dial below, which is always correct.
 	row := s.installedRow(ip, slug)
+	stamp := s.library().ContainerStamp(slug)
 	if zr, err := s.libraryEditorRegion(row, slug); err == nil {
-		regions.slots[k] = &editorSlot{zr: zr, fetched: time.Now()}
+		regions.slots[k] = &editorSlot{zr: zr, fetched: time.Now(), lib: stamp}
 		return zr, nil
 	}
 	// Second, the disk: a region this hub already read off a dial running the same
@@ -413,6 +416,10 @@ func (s *Server) serveEditor(w http.ResponseWriter, r *http.Request) {
 	// the caller asked for the editor rather than a file in it.
 	if file == editorManifestName {
 		if raw, found := editorMember(zr, editorManifestName); found {
+			if hp, isHosted, why := hostedEditor(raw, zr); isHosted {
+				s.serveHostedEditor(w, r, t.IP, slug, raw, hp, why)
+				return
+			}
 			if entry := rawEntryName(raw); entry != "" {
 				file = entry
 			} else {
@@ -562,4 +569,92 @@ func rawEntryName(raw []byte) string {
 func isHTMLDoc(name string) bool {
 	low := strings.ToLower(name)
 	return strings.HasSuffix(low, ".html") || strings.HasSuffix(low, ".htm")
+}
+
+// The hosted editor (theme-editor-kit-plan §8): an editor.json with "host": 1 names no
+// page of its own. The hub serves Orb Manager's page (runtime host@1) at the editor's own
+// address, so the app's module loads beside it, and the module registers what only the app
+// knows. The page is the hub's, every part of it: an app cannot replace the start step,
+// the Render step or the stage.
+
+// hostedExtras are the runtime ids a hosted page loads only when the app lists them, and
+// the script each one is.
+var hostedExtras = []struct{ id, src string }{
+	{"maps@1", "/runtime/maps@1/orbmap.js"},
+}
+
+type hostedPage struct {
+	Title   string
+	Extras  []string
+	Modules []string
+}
+
+// hostedEditor reads a manifest for the hosted contract. isHosted is false for an editor
+// that ships its own entry page. A hosted manifest that cannot be served says why: a
+// contract this hub does not know, no host@1 in its runtime, or a module that is not a
+// plain .js file of the region.
+func hostedEditor(raw []byte, zr *zip.Reader) (hostedPage, bool, string) {
+	var m struct {
+		Host    *int     `json:"host"`
+		Module  []string `json:"module"`
+		Runtime []string `json:"runtime"`
+	}
+	if err := json.Unmarshal(raw, &m); err != nil || m.Host == nil {
+		return hostedPage{}, false, ""
+	}
+	if *m.Host != 1 {
+		return hostedPage{}, true, fmt.Sprintf("this editor asks for host contract %d; this hub serves contract 1", *m.Host)
+	}
+	listed := map[string]bool{}
+	for _, id := range m.Runtime {
+		listed[id] = true
+	}
+	if !listed["host@1"] {
+		return hostedPage{}, true, "a hosted editor lists host@1 in its runtime"
+	}
+	var p hostedPage
+	for _, x := range hostedExtras {
+		if listed[x.id] {
+			p.Extras = append(p.Extras, x.src)
+		}
+	}
+	if len(m.Module) == 0 {
+		return hostedPage{}, true, "a hosted editor names its module files"
+	}
+	for _, f := range m.Module {
+		if f == "" || strings.ContainsAny(f, "/\\") || strings.HasPrefix(f, ".") || !strings.HasSuffix(strings.ToLower(f), ".js") {
+			return hostedPage{}, true, fmt.Sprintf("the module %q is not a plain .js file of the editor", f)
+		}
+		if _, found := editorMember(zr, f); !found {
+			return hostedPage{}, true, fmt.Sprintf("the module %s is not in the editor", f)
+		}
+		p.Modules = append(p.Modules, f)
+	}
+	return p, true, ""
+}
+
+var hostedTmpl = template.Must(template.ParseFS(webFS, runtimeEmbedDir+"/host@1/page.html"))
+
+// serveHostedEditor writes Orb Manager's editor page for a hosted app, after the same
+// runtime check an app's own entry page passes.
+func (s *Server) serveHostedEditor(w http.ResponseWriter, r *http.Request, ip, slug string, raw []byte, p hostedPage, why string) {
+	if why != "" {
+		// the app's manifest is wrong, not the board: no Retry would help
+		http.Error(w, slug+"’s editor cannot open: "+why, http.StatusUnprocessableEntity)
+		return
+	}
+	if missing := editorRuntimeMissing(raw); len(missing) > 0 {
+		runtimeRefused(w, r, slug, missing, s.editorVersions(ip, slug))
+		return
+	}
+	p.Title = slug + " theme editor"
+	var buf bytes.Buffer
+	if err := hostedTmpl.Execute(&buf, p); err != nil {
+		http.Error(w, "the editor page could not be written: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	setLaunchToken(w, s.token)
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	_, _ = w.Write(buf.Bytes())
 }

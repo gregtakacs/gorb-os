@@ -29,7 +29,7 @@
 <script src="../session.js"></script>
 <script src="../preview.js"></script>
 <script src="../measure.js"></script>
-<script src="component.js"></script>
+<script src="../clock-logic.js"></script>
 <script>
 (function () {
   const out = document.getElementById('out'), L = [];
@@ -45,7 +45,7 @@
   const SHADOW = 16;
 
   // ---- the editor instance and the real export ---------------------------------------
-  const IT = new (window.COMP_CLASS(DCLogic))({});
+  const IT = new (window.ClockLogic(DCLogic))({});
   IT.forceUpdate = () => { };
   IT.state.playing = true; IT.state.hidden = {}; IT.state.tab = 'export';
   let tick = 0;
@@ -84,6 +84,7 @@
   async function bakeMounted(label) {
     let blob = null;
     IT.download = (b) => { blob = b; };
+    IT.saveFile = async (b) => { blob = b; return 'downloaded'; };   // Export's Save dialog: headless never answers it
     IT.state.themeName = 'Check ' + label;
     pump(); await wait(300);
     for (let a = 0; a < 5 && !blob; a++) {

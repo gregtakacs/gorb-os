@@ -10,12 +10,12 @@ const path = require('path');
 require('./headless-stub.js');
 const E = global.WatchEngine;
 global.React = { createRef: () => ({ current: null }) };
-require('./component.js');
+require('../clock-logic.js');
 let fails = 0, checked = 0;
 const ok = (c, n, x) => { checked++; if (!c || process.env.VERBOSE) console.log((c ? 'PASS ' : 'FAIL ') + n + (x ? '  [' + x + ']' : '')); if (!c) fails++; };
 const DCLogic = function () { };
 DCLogic.prototype.setState = function (p) { Object.assign(this.state, typeof p === 'function' ? p(this.state) : p); };
-const Comp = global.COMP_CLASS(DCLogic);
+const Comp = global.ClockLogic(DCLogic);
 const mount = (dial) => {
   const it = new Comp({});
   it.ready = true; it.rendering = false; it.budget = () => ({ fps: 8, dev: { pace: 8, cross: 0, cov: 0, why: '' } });
@@ -151,8 +151,9 @@ const stepOf = (it) => it.stepNow()[0];
   ok(V().handGrid && !V().handRows.length && V().fields.some((f) => f.label === 'Cast shadows'), 'the Dial step\u2019s Hand style shows the default-style grid and the shared settings, and no hand panels');
   ok(V().subOpts.map((t) => t.label).join() === 'Dial,Hand set,Timing', 'the Dial step offers Dial, Hand set and Timing', V().subOpts.map((t) => t.label).join());
   it.setState({ sel: null, selKind: null });
-  const html = fs.readFileSync(path.join(__dirname, '..', 'Watch Composer.dc.html'), 'utf8');
-  ok(html.indexOf('<sc-for list="{{ handRows }}"') < 0 && html.indexOf('class="wc-row') < 0, 'no hand-written hand pane is left: one kind of element, one kind of pane');
+  // E7 Stage 2: the panes are clock-host.js's React
+  const panes = fs.readFileSync(path.join(__dirname, '..', 'clock-host.js'), 'utf8');
+  ok(panes.indexOf('handRows') < 0 && panes.indexOf('wc-row') < 0, 'no hand-written hand pane is left: one kind of element, one kind of pane');
 }
 
 // ---- from a preset ------------------------------------------------------------
@@ -205,19 +206,26 @@ const stepOf = (it) => it.stepNow()[0];
     mech: 'mechCls', stackCap: 'stackCapShort', themeNameLen: 'themeNameTip',
     // owner, 2026-11-05: a hand's pane is the kit's rows, so it rides the inspector's fields
     handRows: 'studioFields', isHands: 'studioFields' };
-  const html = fs.readFileSync(path.join(__dirname, '..', 'Watch Composer.dc.html'), 'utf8');
-  const tpl = html.slice(html.indexOf('<x-dc>'), html.indexOf('</x-dc>'));
-  const bound = new Set((tpl.match(/\{\{\s*([A-Za-z_][A-Za-z0-9_]*)/g) || []).map((m) => m.replace(/\{\{\s*/, '')));
-  // K6: the chrome is the OS's shell (studio@1). A value the clock hands it through
-  // studioVals (R.<name>) is still bound; the duplicate question and the true-size caption
-  // and ruler the shell builds from the services' own answers, so they ride the studio
-  // object that carries them, which the template must bind.
+  // E7 Stage 2: what the panes read (clock-host.js's Rv.<name>) is the template's bindings now
+  const panes = fs.readFileSync(path.join(__dirname, '..', 'clock-host.js'), 'utf8');
+  const html = fs.readFileSync(path.join(__dirname, '..', 'clock-logic.js'), 'utf8');
+  const bound = new Set((panes.match(/\bRv\.([A-Za-z_][A-Za-z0-9_]*)/g) || []).map((m) => m.slice(3)));
+  // the panes also take the shell's parts (ctl.studioVals(Rv).studio<Part>) and the canvases' refs (ctl.<ref>)
+  (panes.match(/\)\.studio[A-Z][A-Za-z0-9_]*|\bctl\.[a-z][A-Za-z0-9_]*Ref\b/g) || []).forEach((m) => bound.add(m.replace(/^\)\.|^ctl\./, '')));
+  // E7: the chrome is Orb Manager's host now, drawn from the clock's own answers (the app
+  // object in clock-host.js) rather than from the class's values: the steps and Render (isStart,
+  // stepOpts, isExport, Send, Export and their notes), the template panel and New (dials,
+  // resetDesign), the name, the duplicate question, the calibration, the true-size caption and
+  // ruler, and the stage's glass and status line. Those bindings are the host's, not lost.
+  const HOSTED = new Set(['isStart', 'stepOpts', 'isExport', 'artNote', 'exportTheme', 'isHub', 'sendNote', 'sendToOrb', 'themeNote',
+    'dials', 'resetDesign', 'themeNameIn', 'themeNameLen', 'themeNamePh', 'themeNameVal',
+    'dupOpen', 'dupNm', 'dupNote', 'dupStem', 'dupStop', 'dupCancel', 'dupReplace',
+    'calDown', 'calMax', 'calMin', 'calStep', 'calUp', 'calVal', 'resetCal', 'setCal', 'solve', 'viewText', 'showRuler', 'rulerPx', 'rulerTicks', 'calText',
+    'stageCv', 'stageDown', 'stageFlow', 'stageRing', 'stageRing2', 'stageRound', 'stageWin', 'status', 'hasZoom', 'viewOpts', 'zoomOpts']);
+  // K6: a value the clock hands the shell's parts through studioVals (R.<name>) is bound
   const sv = html.slice(html.indexOf('  studioVals(R) {'), html.indexOf('\n  }\n', html.indexOf('  studioVals(R) {')));
   (sv.match(/\bR\.([A-Za-z_][A-Za-z0-9_]*)/g) || []).forEach((m) => bound.add(m.slice(2)));
-  const SHELL = { dupOpen: 'studioDup', dupNm: 'studioDup', dupNote: 'studioDup', dupStem: 'studioDup', dupStop: 'studioDup',
-    viewText: 'studioCal', showRuler: 'studioCal', rulerPx: 'studioCal', rulerTicks: 'studioCal', calText: 'studioCal' };
-  Object.keys(SHELL).forEach((k) => { if (bound.has(SHELL[k])) bound.add(k); });
-  const lost = PRE.filter((k) => !RETIRED.has(k) && !bound.has(RENAMED[k] || k));
+  const lost = PRE.filter((k) => !RETIRED.has(k) && !HOSTED.has(k) && !HOSTED.has(RENAMED[k] || k) && !bound.has(RENAMED[k] || k));
   ok(lost.length === 0, 'every binding of the pre-P5 template is still in the page', lost.join(','));
   const v = it.renderVals();
   const unbound = [...bound].filter((k) => !['a', 'c', 'd', 'f', 'g', 'h', 'o', 'r', 't', 'w', 'true', 'false'].includes(k) && v[k] === undefined);
@@ -227,35 +235,37 @@ const stepOf = (it) => it.stepNow()[0];
 // ---- P5b: the studio's stage and chrome --------------------------------------
 {
   const it = mount('skeleton'), V = () => it.renderVals();
-  ok(it.state.view === 'fit' && /^Fit/.test(V().zoomTag) && V().stageCv === 466, 'the stage opens on Fit, sized by the pane (466 off-screen)', V().zoomTag + ' ' + V().stageCv);
-  it.setState({ fitPx: 700 });
-  ok(V().stageCv === 700 && /1\.50×/.test(V().zoomTag), 'Fit follows the measured pane', V().stageCv + ' ' + V().zoomTag);
-  V().viewOpts.find((o) => o.label === 'Magnify').pick();
-  ok(V().hasZoom && V().stageRound === '50%' && V().stageCv === 932, 'Magnify is a zoom stop: the glass stays round and the pane scrolls it', V().stageCv);
+  // the stage's view, zoom and true size are the host's (theme@1/preview, in the runtime's suites)
   // a colour's name sits under its swatches, never in a column its length resizes
   it.setState({ step: 'dial', tab: 'dial', sel: null, selKind: null });
   const rowsD = V().fields.filter((f) => f.isRow);
   ok(rowsD.some((f) => f.isColor || f.isSwatch) && rowsD.every((f) => (f.rowCls === 'wide') === !f.isRange), 'only sliders keep the value column; every other row reads its value underneath',
      rowsD.filter((f) => (f.rowCls === 'wide') === !!f.isRange).map((f) => f.label).join());
-  ok(V().viewOpts.map((o) => o.label).join() === 'Fit,1:1,True size,Magnify', 'the four view stops', V().viewOpts.map((o) => o.label).join());
-  ok(V().inFrame === false && V().notHub === true && /Clock/.test(V().crumbLabel), 'standalone: no back arrow, the download in the top bar', V().crumbLabel);
-  const html = fs.readFileSync(path.join(__dirname, '..', 'Watch Composer.dc.html'), 'utf8');
-  // K6: the shell's parts carry the clock's own values: the send modal says what the clock's
-  // send lines say in every state, and the top bar holds the clock's steps and primary action
-  [null, { canCancel: true, cancelling: false }, { canCancel: false, cancelling: false }, { canCancel: false, cancelling: true }].forEach((sd) => {
-    it.setState({ sending: sd, status: sd ? 'Sending' : '' });
-    const R = V();
-    ok(R.studioSend.open === R.sendOpen && R.studioSend.hint === R.sendHint && R.studioSend.cancelLabel === R.sendCancelLabel && R.studioSend.noCancel === R.sendNoCancel && R.studioSend.line === R.sendLine,
-       'the shell’s send modal and the clock’s send lines agree: ' + JSON.stringify(sd), R.studioSend.hint + ' | ' + R.sendHint);
-  });
+  // a re-timed bake re-enters with the press's own ask (Gold, 2026-11-08: it passed the baker's
+  // options, so every re-time fell through to Export: a Send downloaded, a quiet bake opened Save)
+  {
+    const src = fs.readFileSync(path.join(__dirname, '..', 'clock-logic.js'), 'utf8');
+    ok(/return this\._export3Body\(\{ send: send, _retimed: 1 \}\)/.test(src) && /this\.t3bake\(nm, fc, M, gt, B, fps, opts\.send, !!opts\._retimed\)/.test(src) && !/Object\.assign\(\{\}, opts, \{ _retimed: 1 \}\)/.test(src),
+       'a re-timed bake keeps the press\u2019s ask: Send still sends, a quiet bake still hands back bytes');
+  }
+  // K6's parity of the shell's send modal with the clock's own send lines retired with E7: the
+  // hosted editor's dialog is the host's, drawn from its own sender (theme@1/send.js and its
+  // suite), and the class's send lines are no longer drawn anywhere
   it.setState({ sending: null, status: '' });
-  { const R = V(); ok(R.studioTop.steps === R.stepOpts && R.studioTop.primary.label === 'Download .orbtheme' && R.studioGlass.size === R.stageCv && R.studioTool.view === R.viewOpts && R.studioRender.downloads.length === 1, 'the top bar, glass, toolbar and Render panel carry the clock’s own values'); }
-  // K6: the one title bar is the shell's TopBar; the clock's page draws none of its own
+  // the three parts the hosted panes draw carry the clock's own values; its top bar, start,
+  // Render and live size retired with E7 2d (the host's own, in the runtime's host suite)
+  { const R = V(); ok(!('view' in R.studioTool) && R.studioTool.render === R.renderOpts && R.studioLayers.rows === R.stackRows && R.studioFields.fields === R.fields
+      && !R.studioTop && !R.studioStart && !R.studioRender && !R.studioSend, 'the toolbar, the layers and the inspector carry the clock\u2019s own values, and nothing else is built', Object.keys(R).filter((k) => /^studio/.test(k)).join()); }
+  // the quiet bake: a status-only update while it runs is kept, not shown; anything else goes through
+  { it.setState({ status: 'before' });
+    it._quietBake = true; it.setState({ status: 'Drawing 3 baked parts…' }); it.setState({ status: 'x', sel: null }); it._quietBake = false;
+    ok(it._quietLast === 'Drawing 3 baked parts…' && it.state.status === 'x', 'the quiet bake keeps its status lines and lets every other update through', it.state.status);
+    it.setState({ status: '' }); }
+  // K6, E7 Stage 2: the one title bar is the shell's TopBar, drawn by the host; the clock's panes draw none
   const studioJs = fs.readFileSync(require('./runtime-paths.js').STUDIO, 'utf8');
-  ok(html.indexOf('Watch composer') < 0 && !(html.match(/<header/g) || []).length && (studioJs.match(/h\('header'/g) || []).length === 1 && html.includes('OrbStudio.TopBar'),
-     'one title bar: the studio\u2019s own, no second heading');
-  ok(/<link href="ui.css" rel="stylesheet">/.test(html), 'the look is the runtime\u2019s ui@1 sheet');
-  ok(!/#c9a25a|#f0d79a|#2a2316/.test(html.slice(html.indexOf('<x-dc>'), html.indexOf('</x-dc>'))), 'no gold left in the studio\u2019s chrome');
+  const panes2 = fs.readFileSync(path.join(__dirname, '..', 'clock-host.js'), 'utf8');
+  ok(!/h\('header'/.test(panes2) && (studioJs.match(/h\('header'/g) || []).length === 1, 'one title bar: the studio\u2019s own, no second heading');
+  ok(!/#c9a25a|#f0d79a|#2a2316/.test(panes2), 'no gold left in the clock\u2019s panes');
 }
 
 // ---- a sub-dial prints nothing; the hand aligned to it prints in its own units ---------

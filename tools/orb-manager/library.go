@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/gregtakacs/gorb-os/tools/orb-manager/internal/orbnet"
@@ -371,6 +372,22 @@ func (l *Library) Container(slug string) ([]byte, error) {
 		return nil, nil
 	}
 	return body, err
+}
+
+// ContainerStamp names the library copy of one app as the disk has it now: its size and
+// modification time, or "" when there is none. The editor memo keys a library-served region
+// on it, so a rebuilt .orbapp is served the moment it lands rather than after the memo's ten
+// minutes (a bench rebuilding the clock's editor kept getting the old one, 2026-11-08). A
+// stat, not a read: the memo asks on every asset the editor page loads.
+func (l *Library) ContainerStamp(slug string) string {
+	if l == nil || l.AppsDir == "" || slug == "" {
+		return ""
+	}
+	fi, err := os.Stat(filepath.Join(l.AppsDir, slug+".orbapp"))
+	if err != nil {
+		return ""
+	}
+	return strconv.FormatInt(fi.Size(), 10) + "@" + strconv.FormatInt(fi.ModTime().UnixNano(), 10)
 }
 
 // Import (S6, plan §4): the browser file door, on the hub side.

@@ -49,6 +49,7 @@
   "net_request": "i(iiiiii)",
   "now": "i(ii)",
   "place": "i(ii)",
+  "place_zone": "i(iIi)",
   "places_gen": "i()",
   "power_request": "i(ii)",
   "set_beat": "i(i)",

@@ -2386,6 +2386,16 @@ theme-side upload (same handlers, needs a re-baked FORMAT 2 file — §16.1's
 `m5_avkit.orbtheme` is gone from /tmp), M5's two timings, D30's two numbers, and
 the power-cut-mid-install pass line (§8's still-unbenched half).
 
+
+**Addendum, 2026-11-08 (Gold, OS v1.2.38): the app door was still exposed.** The tile ring is
+lent to the card now ("tile ring borrowed by the card: 18640 B internal DMA RAM free"), and the
+theme and OTA doors park the dial for their copies, but `h_app_upload` wrote under a running
+dial: a clock.orbapp update failed twice in three with `appinstall: app upload: card write
+failed (I/O error)`, Wi-Fi receiving and the clock flushing at full rate beside the copy. The app
+door now parks the dial the same way (`orb_theme_upload_park`, progress on the overlay, unparked
+on every way out), and the hub holds rotation off around every app install; three uploads in a
+row then stored with the clock on the glass (theme-editor-kit-plan §8.14).
+
 ### 18.1 The upload is proven — orb-A, 2026-10-15, `fw v1.1.0+11076ca-dirty`, UPLOAD_PROOF PASS
 
 The owner flashed this session's bundle over the hub, and the ladder ran green on

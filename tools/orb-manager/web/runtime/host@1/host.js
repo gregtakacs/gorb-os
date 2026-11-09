@@ -46,6 +46,17 @@
  *                                    // ui, step, t, dt, layer ('all'|'under'|'live'), part, redraw, say,
  *                                    // home, unit, places, place}
  *     pointer: {down(pt, c), move(pt, c), up(c), cursor(c)},   // optional: the glass's pointer, in glass px
+ *     toDoc(d, withArt), fromDoc(doc),   // optional (§8.12): an app whose design files have a shape of
+ *                                    // their own (the clock's): the document's own fields from a
+ *                                    // design (async), and a design from a document (null: none in it)
+ *     panes: {left(c), right(c), stage(c), tool(c), overlay(c)},   // optional (§8.12): the app's own React for a
+ *                                    // slot, in place of the parts list, the fields, the canvas (then
+ *                                    // draw is optional), or after the lower toolbar's controls;
+ *                                    // c {d, step, goStep, view, env, ui, setUi, say, push, set, chosen, size};
+ *                                    // overlay: over the stage, off the start (the clock's diagnostics)
+ *     adopt(d),                      // optional (§8.12): a stateful app's design, handed to it when the
+ *                                    // host changes it (a template, an opened design, Undo, Reset, the
+ *                                    // first); what the app changes itself it hands back with c.push
  *     bake(d, {design}),             // async: {bytes}, the design baked to an .orbtheme (a throw says why not)
  *     fit(d, view),                  // {rows, cap, want, pace}: OrbTheme.fit's question
  *   })
@@ -88,15 +99,8 @@
     if (p.why) return 'not measured: ' + p.why;
     return '~' + p.est + ' of ' + p.want + ' fps';
   };
-  /* the live size, said: a short form for the top bar and a line for Render */
-  H.sizeWords = function (z, max) {
-    var kb = function (n) { return Math.round(n / 1024).toLocaleString('en-US') + ' KB'; };
-    if (z.state === 'error') return { short: 'not baked', line: 'Not baked: ' + z.why, over: true };
-    if (z.state !== 'done') return { short: '…', line: z.state === 'baking' ? 'Baking it to measure its size…' : 'Measuring its size when you pause…', over: false };
-    var over = max && z.bytes > max;
-    return { short: kb(z.bytes), over: !!over,
-      line: kb(z.bytes) + ' of the ' + kb(max) + ' an orb takes (' + Math.round(z.bytes / max * 100) + '%)' + (over ? ': an orb will refuse it' : '') + ' · baked in ' + (z.ms / 1000).toFixed(1) + ' s' };
-  };
+  // the live size, said (studio@1's, one wording for every editor)
+  H.sizeWords = function (z, max) { return S.sizeWords(z, max); };
   function q(name) { try { return new URLSearchParams(root.location.search).get(name); } catch (e) { return null; } }
   H.getIn = getIn; H.setIn = setIn;
 
@@ -147,18 +151,6 @@
     });
     return v;
   };
-
-  /* ---- the confirm a replacing import asks: {title, body, yes, on, cancel} ---- */
-  function Confirm(p) {
-    if (!p.open) return null;
-    return h('div', { className: 'st-modal', onClick: p.cancel },
-      h('div', { onClick: function (e) { e.stopPropagation(); } },
-        h('div', { className: 'st-mtitle' }, p.title),
-        h('div', { className: 'st-mbody' }, p.body),
-        h('div', { className: 'st-mfoot' },
-          h('button', { onClick: p.cancel }, 'Cancel'),
-          h('button', { className: 'ui-primary', onClick: p.on }, p.yes))));
-  }
 
   function Editor(p) {
     var A = p.app;
@@ -226,10 +218,12 @@
         set: redraw, ready: function () { return true; }, say: say,
         restore: function (snap, text) { setD(snap.d); say(text); },
         schema: function () { return A.schema; }, migrate: function () { return A.migrate || {}; },
-        content: async function () { return { design: stateRef.current.d }; },
+        // an app whose files have a shape of their own converts both ways (toDoc, fromDoc)
+        content: async function (withArt) { return A.toDoc ? A.toDoc(stateRef.current.d, withArt) : { design: stateRef.current.d }; },
         apply: function (doc) {
-          var why = !doc.design ? 'that design carries no theme' : A.check(doc.design);
-          if (!why) { setD(complete(doc.design)); setChosen(true); setStep(function (s) { return s === 'start' ? first : s; }); }
+          var dd = A.fromDoc ? A.fromDoc(doc) : doc.design;
+          var why = !dd ? 'that design carries no theme' : A.check(dd);
+          if (!why) { setD(complete(dd)); setChosen(true); setStep(function (s) { return s === 'start' ? first : s; }); }
           return why;
         },
         bake: async function () { var r = await bakeNow(); return r ? r.bytes : null; },
@@ -239,6 +233,15 @@
       return T.sender({ say: say, ask: function (x) { setDup(x); }, sending: function (x) { setSending(x); } });
     }, []);
     R.useEffect(function () { ses.track(); }, [d]);
+    /* a stateful app (§8.12): the design it changes itself it pushes here (c.push); one the
+     * host changes (a template, an opened design, Undo, Reset) it is handed (A.adopt), the
+     * first one included */
+    var fromApp = R.useRef(false);
+    var push = R.useCallback(function (nd) { fromApp.current = true; setD(nd); }, []);
+    R.useEffect(function () {
+      if (fromApp.current) { fromApp.current = false; return; }
+      if (A.adopt) A.adopt(d);
+    }, [d]);
     R.useEffect(function () { ses.boot().catch(function () {}).then(function () { return ses.openTheme(); }).catch(function () {}); }, []);
     R.useEffect(function () {
       var o = ses.hubOrb(); if (!o) return;
@@ -273,6 +276,7 @@
       var c = canvasRef.current; if (!c) return;
       var L = live.current, x = c.getContext('2d');
       try {
+        if (!A.draw) return;                 // an app with its own stage draws it itself
         A.draw(x, L.d, ctxOf(L, 'all'));
         if (!A.layers || L.rend === 'design') return;
         // Panel and Split: the still layers as the bake stores them, the moving ones blended
@@ -306,6 +310,9 @@
     var onUp = P && P.up ? function () { P.up(pc()); } : undefined;
 
     var upd = function (path, v) { setD(function (old) { return setIn(old, path, v); }); };
+    // what an app's own panes are given (A.panes, §8.12)
+    var paneCtx = function () { return Object.assign({ d: d, step: step, goStep: setStep, view: view, env: env, ui: ui, setUi: setUi, say: say, push: push, set: setD, chosen: chosen }, geoOf(geo, view)); };
+    var PN = A.panes || {};
     var base = R.useMemo(function () { return baseOf(A, d); }, [d.base]);
 
     /* ---- the bake, the send, the export ---- */
@@ -316,7 +323,7 @@
       var run = function () {
         if (baked.key === k && baked.r) return baked.r;
         return (async function () {
-          var doc = new TextEncoder().encode(JSON.stringify(Object.assign(await ses.doc(true), { design: dd })));
+          var doc = new TextEncoder().encode(JSON.stringify(A.toDoc ? await ses.doc(true) : Object.assign(await ses.doc(true), { design: dd })));
           var t0 = Date.now(), r = await A.bake(dd, { design: doc });
           baked.ms = Date.now() - t0; baked.key = k; baked.r = r;
           return r;
@@ -397,7 +404,11 @@
         if (paces[pk] && paces[pk].done) return paces[pk];
         if (keyOf(stateRef.current.d) !== k) return null;          // overtaken by an edit
         var r;
-        if (!A.play || (A.play.on && !A.play.on(v, dd))) r = { still: true };
+        // an app with a pace model of its own (the clock's _devPace) and no frame clock of the
+        // host's says its rate itself
+        var own = !A.play ? A.fit(dd, v) : null;
+        if (own && typeof own.pace === 'number' && own.want) r = { est: own.pace, want: own.want };
+        else if (!A.play || (A.play.on && !A.play.on(v, dd))) r = { still: true };
         else { try { r = T.pace(await sampleView(dd, v), { base: H.PACE_BASE, want: wantOf(dd) }); } catch (e) { r = { why: err(e) }; } }
         paces[pk] = Object.assign({ done: true }, r);
         setPaceTick(function (n) { return n + 1; });
@@ -449,8 +460,8 @@
     // import: into the library first, then open; a name already there asks before it is replaced
     function importFile(fl) {
       ses.importFile(fl, {
-        nameOf: function (doc) { return doc && doc.design && typeof doc.design.name === 'string' ? doc.design.name : ''; },
-        thumb: function (doc) { return thumbOf(complete(doc.design)); },
+        nameOf: function (doc) { var dd = A.fromDoc ? A.fromDoc(doc) : doc && doc.design; return dd && typeof dd.name === 'string' ? dd.name : ''; },
+        thumb: function (doc) { return thumbOf(complete(A.fromDoc ? A.fromDoc(doc) : doc.design)); },
         confirm: function (nm) {
           return new Promise(function (res) {
             var done = function (v) { setAsk(null); res(v); };
@@ -482,18 +493,19 @@
     var K = S.fieldKit({ drafts: drafts, refresh: redraw, scope: function () { return step; } });
     var right;
     if (step === 'render') right = h('div', { className: 'hs-list' },
-      h('div', { className: 'hs-size' + (sz.over ? ' hs-over' : ''), title: 'The theme baked again a moment after your last edit: what Send to orb and Export send.' },
-        h('b', null, 'Size'), h('span', null, sz.line)),
-      h('div', { className: 'hs-size', title: 'What each view holds on the orb, estimated from what its preview moves, priced as the orb’s compositor paints it.' },
-        h('b', null, 'Frame rate'),
-        paceRows(d).map(function (g, gi) {
-          return h('div', { key: gi, className: 'hs-pace' }, g.label ? h('span', { className: 'ui-mut' }, g.label) : null,
-            g.rows.map(function (r, i) {
-              var pz = size.state === 'done' && size.key === keyOf(d) ? paces[paceKey(size.key, r[1])] : null;
-              return h('span', { key: i }, h('i', null, r[0]), ' ', size.state === 'done' ? H.paceWords(pz) : 'when the size is measured');
-            }));
-        })),
       h(S.RenderPanel, {
+        // the live size and each paceBy view's rate lead the Render step, in every app
+        blocks: [
+          { title: 'Size', body: h('span', null, sz.line), over: sz.over, tip: 'The theme baked again a moment after your last edit: what Send to orb and Export send.' },
+          { title: 'Frame rate', tip: 'What each view holds on the orb, estimated from what its preview moves, priced as the orb’s compositor paints it.',
+            body: paceRows(d).map(function (g, gi) {
+              return h('div', { key: gi, className: 'hs-pace' }, g.label ? h('span', { className: 'ui-mut' }, g.label) : null,
+                g.rows.map(function (r, i) {
+                  var pz = size.state === 'done' && size.key === keyOf(d) ? paces[paceKey(size.key, r[1])] : null;
+                  return h('span', { key: i }, h('i', null, r[0]), ' ', size.state === 'done' ? H.paceWords(pz) : 'when the size is measured');
+                }));
+            }) },
+        ],
         badge: S.badgeProps(verdict, verdict.note),
         save: { on: saveLib, note: 'keep “' + d.name + '” in the library', tip: 'Keep this design in the hub library under its name, without baking or sending it. Under a theme’s name it is that theme’s unsent changes until Send to orb bakes them in.' },
         send: { on: send, note: 'save “' + d.name + '”, bake it and store it on the orb', tip: 'Save it to the hub library, bake it, then send it to the orb this editor was opened for.' },
@@ -506,9 +518,10 @@
       list(A.steps).map(function (s) { return s[1]; }).join(', ') + ', and Render to save, send or export it.' + (A.startNote ? ' ' + A.startNote : '')));
     else {
       var fields = [];
-      try { fields = A.fields(step, Object.assign({ d: d, K: K, upd: upd, set: setD, base: base, say: say, getIn: getIn, view: view, env: env, ui: ui, setUi: setUi }, geoOf(geo, view))) || []; }
+      if (PN.right) right = PN.right(paneCtx());
+      else try { fields = A.fields(step, Object.assign({ d: d, K: K, upd: upd, set: setD, base: base, say: say, getIn: getIn, view: view, env: env, ui: ui, setUi: setUi }, geoOf(geo, view))) || []; }
       catch (e) { fields = [K.Nt('', 'This step could not be drawn: ' + err(e))]; }
-      right = h('div', { className: 'hs-list' }, h(S.Fields, { fields: fields }));
+      if (!PN.right) right = h('div', { className: 'hs-list' }, h(S.Fields, { fields: fields }));
     }
 
     /* ---- the left pane: the app's parts ---- */
@@ -588,12 +601,14 @@
         extra: chosen && step !== 'start' ? [{ label: resetArm ? 'Press again to reset' : 'Reset to ' + baseName, title: 'Put this theme back to the start it came from, its name kept; Undo brings your version back', on: reset }] : [],
         fit: chosen ? fit : null, primary: chosen ? { label: 'Send to orb', on: send, title: 'Bake and send this theme' } : null,
       }),
-      h(S.Pane, { side: 'left' }, chosen ? left : null),
+      h(S.Pane, { side: 'left' }, chosen ? (PN.left ? PN.left(paneCtx()) : left) : null),
       h(S.Stage, null,
         h(S.Glass, Object.assign({ status: status }, g),
+          PN.stage ? PN.stage(Object.assign(paneCtx(), { size: g.size })) :
           h('canvas', { ref: canvasRef, width: G, height: G, onPointerDown: onDown, onPointerMove: onMove, onPointerUp: onUp, onPointerCancel: onUp,
             style: { width: g.size + 'px', height: g.size + 'px', cursor: cursor, touchAction: P ? 'none' : undefined } })),
         sheet,
+        PN.overlay && step !== 'start' ? PN.overlay(paneCtx()) : null,
         h(S.ScreenPanel, vw.panel()),
         // the upper row is what the preview shows: the frame clock and the app's views; it is
         // always there once an app plays, so the controls never move under the pointer
@@ -606,12 +621,12 @@
           view: tool.view, zoom: tool.zoom, screen: vw.toolScreen(),
           render: A.layers ? T.RENDERS.map(function (r) { return { label: r[1], tip: r[2], cls: r[0] === rend ? 'on' : '', pick: function () { setRend(r[0]); } }; }) : null,
           wipe: A.layers && rend === 'compare' ? { value: wipe, on: function (e) { setWipe(+e.target.value); } } : null,
-        })),
+        }, PN.tool ? PN.tool(paneCtx()) : null)),
       h(S.Pane, { side: 'right' }, right),
       h(S.OpeningModal, { line: ses.opening }),
       h(S.SendModal, S.sendProps(sending, status, function () { sender.cancel(); })),
       h(S.DupModal, S.dupProps(dup, function () { sender.replace(); }, function () { sender.dismiss(); })),
-      h(Confirm, Object.assign({ open: !!ask }, ask || {})));
+      h(S.Confirm, Object.assign({ open: !!ask }, ask || {})));
   }
 
   H.Editor = Editor;

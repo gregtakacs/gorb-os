@@ -383,6 +383,61 @@ const last = () => draws[draws.length - 1];
     H.unmount();
   }
 
+  // ---- a stateful app (§8.12): its own state the truth, its own panes; the host's design mirrors it
+  {
+    orbAnswers = { home: { home: { set: false } }, places: { places: [] }, units: {} };
+    const adopted = [];
+    let inner = null;                                   // the app's own state
+    const counter = {
+      slug: 'tint', title: 'Counter', schema: 1, check: (d) => (d && typeof d.n === 'number' ? null : 'no counter'),
+      blank: { note: 'zero', make: () => ({ name: 'Zero', n: 0 }) },
+      templates: [{ key: 'ten', name: 'Ten', note: 'ten', make: () => ({ name: 'Ten', n: 10 }) }],
+      start: 'ten', picture: async () => fakeCanvas(), steps: [['count', 'Count']],
+      adopt: (d) => { adopted.push(d.n); inner = { name: d.name, n: d.n }; },
+      panes: {
+        left: (c) => React.createElement('div', { className: 'ctr-left' }, 'count ' + (inner ? inner.n : '?')),
+        right: (c) => React.createElement('button', { className: 'ctr-inc', onClick: () => { inner = { name: inner.name, n: inner.n + 1 }; c.push(Object.assign({}, inner)); } }, 'Add one'),
+        stage: (c) => React.createElement('div', { className: 'ctr-stage', 'data-size': c.size }, String(inner ? inner.n : '')),
+        tool: (c) => React.createElement('button', { className: 'ctr-tool' }, 'Guide'),
+      },
+      bake: async (d) => ({ bytes: new Uint8Array(1024 * (d.n + 1)) }),
+      fit: () => ({ rows: 1, cap: 64 }),
+      // its files have a shape of their own: n and label at the top level
+      toDoc: async (d) => ({ n: d.n, label: d.name }),
+      fromDoc: (doc) => (typeof doc.n === 'number' ? { name: doc.label, n: doc.n } : null),
+    };
+    location.search = '?preset=ten';
+    const H = mount(HOST.Editor, { app: counter });
+    await H.settle(20);
+    ok(adopted.join() === '10', 'the app is handed the first design', adopted.join());
+    ok(by(H.tree, 'div', 'ctr-stage').length === 1 && !by(H.tree, 'canvas').filter((c) => c.props.width === 466).length, 'its own stage stands in the glass, no host canvas');
+    ok(by(H.tree, 'button', 'ctr-tool').length === 1 && by(H.tree, 'div', 'ctr-left').length === 1, 'its tool button and its left pane are in their slots');
+    await press(H, 'Count');
+    ok(by(H.tree, 'button', 'ctr-inc').length === 1, 'its right pane stands for the fields');
+    by(H.tree, 'button', 'ctr-inc')[0].props.onClick(); H.render(); await H.settle();
+    by(H.tree, 'button', 'ctr-inc')[0].props.onClick(); H.render(); await H.settle();
+    ok(adopted.join() === '10' && inner.n === 12, 'what the app changes itself it pushes: the host is not handed it back', adopted.join() + ' ' + inner.n);
+    await wait(700);
+    await press(H, '↶');
+    ok(adopted[adopted.length - 1] === 10 && inner.n === 10, 'Undo hands the app the design before', adopted.join());
+    await press(H, 'Start');
+    by(H.tree, 'button', 'st-choice').filter((b) => /New/.test(text(b)))[0].props.onClick(); H.render(); await H.settle();
+    ok(adopted[adopted.length - 1] === 0 && inner.n === 0, 'New hands it the blank', adopted.join());
+    // its own document shape, both ways: a save stores it; an import opens it
+    location.pathname = '/editor/192.0.2.7/tint/';
+    await press(H, 'Render');
+    by(H.tree, 'button', 'st-big').filter((b) => /Save to library/.test(text(b)))[0].props.onClick(); await wait(30); H.render(); await H.settle();
+    const saved = fh.drafts.get('tint') && fh.drafts.get('tint').get('Zero');
+    ok(saved && saved.n === 0 && saved.label === 'Zero' && !('design' in saved), 'a saved design is the app’s own document', JSON.stringify(saved && { n: saved.n, label: saved.label }));
+    await press(H, 'Start');
+    const file = by(H.tree, 'input').filter((i) => i.props.type === 'file')[0];
+    const doc = { format: 'wc-design', schema: 1, app: 'tint', appVersion: 'v1.0.0', n: 7, label: 'Seven' };
+    file.props.onChange({ target: { value: 'x', files: [{ name: 'seven.orbdesign', arrayBuffer: async () => new TextEncoder().encode(JSON.stringify(doc)).buffer }] } });
+    await wait(60); H.render(); await H.settle();
+    ok(adopted[adopted.length - 1] === 7 && inner.name === 'Seven' && fh.drafts.get('tint').has('Seven'), 'an imported file in its shape is opened through fromDoc and kept', adopted.join());
+    H.unmount(); location.search = '';
+  }
+
   console.log(fails ? 'RESULT: FAIL — ' + fails + ' of ' + checked + ' checks' : 'all green (' + checked + ' checks)');
   process.exit(fails ? 1 : 0);
 })().catch((e) => { console.log('FAIL threw: ' + (e && e.stack || e)); process.exit(1); });

@@ -2,7 +2,7 @@ window.COMP_CLASS = function (DCLogic) {
 
 class Component extends DCLogic {
   DEF = { tick: 'sweep', favour: 'sweep', plan: '', shSmooth: 0, balance: '1', plate: 'train', spokes: 'train', etching: 'none', pinion: 'on', center: 'jewel', finish: 'train', glow: 1, temp: 2200, innerAngle: 90, outerLight: 1, outerAngle: 315, outerTemp: 2200, trainAngle: 0, plateAngle: 0, plateScale: 1, hue: 30, hueSat: 0, outerHue: 210, outerSat: 0, wb: 6500, orbD: 128, orbTip: 194, cageD: 107, rearFinish: 'train', shAngle: -1, shDist: 1, shBlur: 1, shOp: 1, shMove: 1, shRelief: 1 };
-  state = { frame: 0, playing: true, slow: false, seam: 'Rendering…', status: '', seeds: { spokes: 1, pinion: 1, center: 1, finish: 1, etching: 1 }, dial: 'skeleton', designs: {}, sel: null, selKind: null, themeName: '', artSlot: null, pickKey: null, guide: 'auto', hands: 'auto', handFinish: 'auto', hidden: {}, timeMode: 'live', caseStyle: 'polished', caseMetal: 'auto', caseOpen: 221.5, glassStyle: 'domed', train: 'classic', tab: 'start', cfg: {}, view: 'fit', fitPx: 466, addOpen: false, zoom: 2, viewCal: 1, hubIp: null, hubCheck: false, dup: null, sounds: {}, sndSim: true, sndCut: true, sndMsg: '', render: 'design', wipe: 233, step: 'start', diag: false, more: {}, sending: null };
+  state = { frame: 0, playing: true, slow: false, seam: 'Rendering…', status: '', seeds: { spokes: 1, pinion: 1, center: 1, finish: 1, etching: 1 }, dial: 'skeleton', designs: {}, sel: null, selKind: null, themeName: '', artSlot: null, pickKey: null, guide: 'auto', hands: 'auto', handFinish: 'auto', hidden: {}, timeMode: 'live', caseStyle: 'polished', caseMetal: 'auto', caseOpen: 221.5, glassStyle: 'domed', train: 'classic', tab: 'start', cfg: {}, view: 'fit', fitPx: 466, addOpen: false, zoom: 2, viewCal: 1, hubIp: null, hubCheck: false, dup: null, sounds: {}, sndSim: true, sndCut: true, sndMsg: '', render: 'design', wipe: 233, step: 'start', diag: false, more: {}, sending: null, startPick: '', chosen: false, confirm: null, size: { state: 'waiting' } };
   KEYS = Object.keys(this.DEF);
   RND = ['spokes', 'pinion', 'center', 'finish', 'etching'];
   TABS = [['dial', 'Dial'], ['comps', 'Complications'], ['hands', 'Hand set'], ['timing', 'Timing'], ['move', 'Geartrain'], ['insides', 'Clock insides'], ['light', 'Light'], ['case', 'Case & glass'], ['sound', 'Sound'], ['export', 'Export']];
@@ -1083,7 +1083,7 @@ class Component extends DCLogic {
     if (this.hubSend3()) { try { await this.hubOrbIp(); } catch (e) {} }
     this.buildMovement(); this.startTimer(); this.forceUpdate();
   }
-  componentWillUnmount() { if (this._tick) this._tick.stop(); if (this._rmTimer) clearTimeout(this._rmTimer); if (this._onKey) window.removeEventListener('keydown', this._onKey); if (this._vis) document.removeEventListener('visibilitychange', this._vis); this.buildId = -1; }
+  componentWillUnmount() { clearTimeout(this._szT); if (this._tick) this._tick.stop(); if (this._rmTimer) clearTimeout(this._rmTimer); if (this._onKey) window.removeEventListener('keydown', this._onKey); if (this._vis) document.removeEventListener('visibilitychange', this._vis); this.buildId = -1; }
   ensureFont(k) {
     this._fl = this._fl || {}; if (!k || this._fl[k]) return; this._fl[k] = 1;
     const n = WatchEngine.FONT_NAME(k); if (!n) return;
@@ -1103,6 +1103,7 @@ class Component extends DCLogic {
     // this commit has bound them, so this is the first place the jump can be honoured.
     if (this._scrollTo) { const a = this._scrollTo; this._scrollTo = null; this.scrollToAnchor(a); }
     if (!this.ready) return;
+    this.liveSize();
     const D0 = this.design(); D0.comps.flatMap((c) => [c.font, c.wfont, ...(c.scale ? [c.scale.font, c.scale.font12, c.scale.fontQ] : [])]).forEach((k) => this.ensureFont(k));
     if (this._mk !== this.mvKey() || (!this.rendering && this.gt.length && this.gt.length !== this.B)) {
       /* The second clause is the self-heal for a superseded build: buildMovement
@@ -2171,8 +2172,51 @@ class Component extends DCLogic {
    * The hub window has no console, and before this a throw past t3bake's own
    * try left the status frozen mid-sentence with no explanation at all. */
   async exportTheme3(opts) {
+    // a press waits out a live-size bake in flight, so its own lines are never swallowed
+    while (this._sizeRun) { try { await this._sizeRun; } catch (e) { /* its own account */ } }
+    this._bakeBusy = (this._bakeBusy || 0) + 1;
     try { await this._export3Body(opts || {}); }
     catch (e) { this.setState({ status: 'Not baked: bake threw — ' + (e && e.message ? e.message : String(e)) }); }
+    finally { this._bakeBusy--; }
+  }
+  /* The live size (theme-editor-kit-plan §8.8, Stage 1 of E7): a pause after the last edit the
+   * watch is baked again, quietly, through the walk Send and Export run, and its size said in
+   * the top bar and on Render. The pause is twice the last bake (1.2 s to 6 s); the bake waits
+   * for the movement to settle and for any press's bake, as a press waits for it. While it
+   * runs, a status-only update is the bake's own account and is kept, not shown. */
+  setState(p, cb) {
+    if (this._quietBake && p && typeof p === 'object' && Object.keys(p).length === 1 && 'status' in p) { this._quietLast = p.status; return; }
+    return super.setState(p, cb);
+  }
+  sizeKey() {
+    const s = this.state, snd = (s.sounds || {})[s.dial];
+    // an upload's samples stand for themselves by length: the key is read every update
+    const skim = (k, v) => (v && typeof v === 'object' && typeof v.length === 'number' && !Array.isArray(v) ? 'pcm' + v.length : v);
+    try { return JSON.stringify([s.dial, s.designs[s.dial] || null, s.cfg, s.seeds, s.hands, s.handFinish, s.caseStyle, s.caseMetal, s.glassStyle, s.train, s.caseOpen, s.themeName, snd || null], skim); }
+    catch (e) { return String(Date.now()); }
+  }
+  liveSize() {
+    if (!this.ready || !this.chosenNow()) return;
+    const k = this.sizeKey();
+    if (k === this._szKey) return;
+    this._szKey = k;
+    clearTimeout(this._szT);
+    if (this.state.size && this.state.size.state !== 'waiting') this.setState({ size: { state: 'waiting' } });
+    const run = () => {
+      if (k !== this._szKey) return;
+      if (this._bakeBusy || this.state.sending || !this.settled3()) { this._szT = setTimeout(run, 1000); return; }
+      this._sizeRun = (async () => {
+        const t0 = Date.now();
+        this._quietBake = true; this._quietLast = ''; this._bakedBytes = null;
+        try { await this._export3Body({ send: 'bytes' }); } catch (e) { this._quietLast = 'Not baked: ' + (e && e.message ? e.message : String(e)); }
+        finally { this._quietBake = false; }
+        const bytes = this._bakedBytes, ms = Date.now() - t0; this._bakedBytes = null; this._szMs = ms;
+        if (k !== this._szKey) return;
+        this.setState({ size: bytes ? { state: 'done', bytes: bytes.length, ms } : { state: 'error', why: String(this._quietLast || 'the bake did not finish').replace(/^Not baked: /, '') } });
+      })();
+      this._sizeRun.finally(() => { this._sizeRun = null; });
+    };
+    this._szT = setTimeout(run, Math.min(6000, Math.max(1200, 2 * (this._szMs || 0))));
   }
   /* §31's last open round, §32's honest round: send the baked bundle straight to the
    * orb rather than handing the owner a file to re-upload. The bake is the SAME walk
@@ -3174,8 +3218,9 @@ class Component extends DCLogic {
         (this._wheelFrozen ? ' · the wheels\u2019 cover lies over ' + this._wheelFrozen + ' px of moving movement, which it holds still: move the wheel or its cutout off the opening' : '');
       if (send === 'bytes') { this._bakedBytes = bytes; this.setState({ status: 'Baked "' + nm + '" \u2014 ' + pol.sentence + ' \u00b7 ' + meter }); return; }
       if (send) { this._replaceArmed = null; await this.postTheme3ToOrb(bytes, nm, stem, pol, meter); return; }
-      this.download(new Blob([bytes], { type: 'application/octet-stream' }), stem + '.orbtheme');
-      this.setState({ status: 'Downloaded ' + stem + '.orbtheme — ' + pol.sentence + ' · ' + meter +
+      const how = await this.saveFile(new Blob([bytes], { type: 'application/octet-stream' }), stem + '.orbtheme');
+      if (how === 'cancelled') { this.setState({ status: 'Not exported' }); return; }
+      this.setState({ status: (how === 'saved' ? 'Exported ' : 'Downloaded ') + stem + '.orbtheme — ' + pol.sentence + ' · ' + meter +
         ' · uploading or sending this file stores it into the one slot, and the orb reboots onto it' });
     } catch (e) {
       const msg3 = (e && e.message ? e.message : String(e));
@@ -3511,6 +3556,27 @@ class Component extends DCLogic {
   }
   // Open a file: a baked .orbtheme (its design is read out of it) or a design file
   openFile(file) { return this.session.openFile(file); }
+  /* Import a file (§8.1 ruling 5): into the library first, then open; a name the library
+   * already holds asks before it is replaced */
+  importFile(file) {
+    const E = window.WatchEngine;
+    return this.session.importFile(file, {
+      nameOf: (doc) => doc.themeName || ((E && E.template(doc.dial)) || {}).name || '',
+      confirm: (nm) => new Promise((res) => {
+        const done = (v) => { this.setState({ confirm: null }); res(v); };
+        this.setState({ confirm: { title: '\u201c' + nm + '\u201d is already in the library', yes: 'Replace it',
+          body: 'Importing replaces the library\u2019s \u201c' + nm + '\u201d with this file, its unsent changes included. No orb is touched.',
+          on: () => done(true), cancel: () => done(false) } });
+      }),
+    });
+  }
+  /* Export: the browser's Save dialog where it has one (the app window's does), else the
+   * download; 'saved', 'downloaded' or 'cancelled' */
+  async saveFile(blob, name) {
+    if (typeof window.showSaveFilePicker === 'function' && window.OrbTheme && window.OrbTheme.saveFile) return window.OrbTheme.saveFile(blob, name);
+    this.download(blob, name);
+    return 'downloaded';
+  }
   // a design back into the editor: the session's envelope refusals, then the watch's own
   applyDesignDoc(o, from) { return this.session.apply(o, from); }
   applyDesignContent(o, from) {
@@ -3524,7 +3590,7 @@ class Component extends DCLogic {
       ...(o.caseStyle ? { caseStyle: o.caseStyle } : {}), ...(o.caseMetal ? { caseMetal: o.caseMetal } : {}), ...(o.glassStyle ? { glassStyle: o.glassStyle } : {}),
       ...(o.hands ? { hands: o.hands } : {}), ...(o.handFinish ? { handFinish: o.handFinish } : {}), ...(o.caseOpen ? { caseOpen: o.caseOpen } : {}),
       ...(o.sounds ? { sounds: { ...st.sounds, [o.dial]: o.sounds } } : {}), themeName: o.themeName || '',
-      sel: null, selKind: null, step: 'parts', tab: 'comps',
+      sel: null, selKind: null, step: 'parts', tab: 'comps', chosen: true,
       status: 'Reopened \u201c' + (o.themeName || E.template(o.dial).name) + '\u201d' + (from ? ' from ' + from : '') + (o.art === false ? ' (it was saved without its art' + (refs.length ? ': ' + refs.length + ' image' + (refs.length > 1 ? 's' : '') + ' to load again' : '') + ')' : r.added ? ' with ' + r.added + ' art asset' + (r.added === 1 ? '' : 's') : '') + (miss.length && o.art !== false ? ' \u2014 ' + miss.length + ' missing' : '') + '. Send replaces it on the card.',
     }));
     this.faces = {}; if (this.buildMovement) this.buildMovement();
@@ -3562,7 +3628,10 @@ class Component extends DCLogic {
     if (at && at[2].includes(tab)) return at;
     return this.STEPS.find((x) => x[0] !== 'start' && x[2].includes(tab)) || this.STEPS[2];
   }
-  goStep(id) { const st = this.STEPS.find((x) => x[0] === id); if (st) this.setState({ step: id, tab: st[2][0] }); }
+  goStep(id) { const st = this.STEPS.find((x) => x[0] === id); if (st) this.setState(id === 'start' ? { step: id, tab: st[2][0], startPick: '' } : { step: id, tab: st[2][0], chosen: true }); }
+  /* theme-editor-kit-plan §8.10: a design is chosen once the start is left (New, a template's
+   * Continue, a library entry, an import, any step); until then the start is all there is */
+  chosenNow() { return !!this.state.chosen || this.state.step !== 'start'; }
   /* D43 §4.2: under the hub the editor fills the window, and its back arrow is the way out. */
   inFrame() { try { return typeof window !== 'undefined' && !!window.parent && window.parent !== window; } catch (e) { return false; } }
   closeEditor() { if (this.state.sending) return; try { window.parent.postMessage({ type: 'theme.close' }, location.origin); } catch (e) { /* standalone: nowhere to go back to */ } }
@@ -3619,6 +3688,9 @@ class Component extends DCLogic {
       sendTip: 'Bake the .orbtheme and store it on the orb, beside the theme on the glass. Switching to it is a separate press on the Themes tab. ' + (v.sendNote || ''),
       addLabel: '\uff0b Add a part\u2026', toggleAdd: () => this.setState({ sel: null, selKind: null, step: 'parts', tab: 'comps' }),
       startGo: () => this.goStep('movement'), dialName: ready ? ((E.template(s.dial) || {}).name || '') : '',
+      chosenNow: this.chosenNow(),
+      ...(() => { const w = window.OrbStudio && window.OrbStudio.sizeWords ? window.OrbStudio.sizeWords(s.size || { state: 'waiting' }, window.GorbBake && window.GorbBake.THEME_UPLOAD_MAX) : null;
+        return w ? { sizeLine: w.line, sizeShort: w.short, sizeOver: w.over } : { sizeLine: '', sizeShort: '', sizeOver: false }; })(),
       fitShort: '', fitDot: '#5d6b78',
       fromScratch: () => this.fromScratch(),
     };
@@ -3728,15 +3800,26 @@ class Component extends DCLogic {
     const T = window.OrbStudio, O = window.OrbTheme, s = this.state;
     if (!T || !O) return {};
     return {
-      studioTop: {
+      // §8.10: before a choice the start is all there is, no steps, name, undo, readout or Send
+      studioTop: R.chosenNow ? {
         back: R.inFrame ? R.closeEditor : null, backTip: 'Back to this orb\u2019s themes', crumb: R.crumbLabel,
         name: { value: R.themeNameVal, placeholder: R.themeNamePh, title: R.themeNameTip, onChange: R.themeNameIn },
         steps: R.stepOpts,
         undo: { on: R.undo, tip: R.undoTip, op: R.undoOp }, redo: { on: R.redo, tip: R.redoTip, op: R.redoOp },
         extra: R.isEdited ? [{ label: R.resetPresetLabel, title: 'Put this watch back to its preset: its parts and their order, movement, case and light', on: R.resetDesign }] : [],
-        fit: { dot: R.fitDot, text: R.fitShort, tip: R.badgeTip },
-        primary: R.isHub ? { label: 'Send to orb', title: R.sendTip, on: R.sendToOrb } : { label: 'Download .orbtheme', title: R.themeNote, on: R.exportTheme },
+        fit: { dot: R.sizeOver ? '#f85149' : R.fitDot, text: R.fitShort + (R.sizeShort ? ' \u00b7 ' + R.sizeShort : ''), tip: R.badgeTip + (R.sizeLine ? ' \u00b7 ' + R.sizeLine : '') },
+        primary: R.isHub ? { label: 'Send to orb', title: R.sendTip, on: R.sendToOrb } : { label: 'Export .orbtheme', title: R.themeNote, on: R.exportTheme },
+      } : { back: R.inFrame ? R.closeEditor : null, backTip: 'Back to this orb\u2019s themes', crumb: R.crumbLabel, steps: [] },
+      // §8.10: four ways to start, one at a time
+      studioStart: {
+        title: 'Start a clock theme', pick: s.startPick || '', setPick: (p) => this.setState({ startPick: p }),
+        fresh: { note: 'Nothing yet: no dial, no hands, no case, no glass; you build every part', on: () => { this.fromScratch(); this.setState({ chosen: true }); } },
+        tiles: (R.dials || []).map((d) => ({ key: d.id || d.name, name: d.name, short: d.short, tip: d.blurb, cls: d.cls, on: d.pick, draw: d.draw })),
+        library: { rows: R.mine || [], empty: 'Nothing saved yet. Save to library on the Render step keeps a watch here, art included; Send to orb bakes it into a theme under the same name; Import a file adds one.' },
+        importFile: { accept: '.orbtheme,.orbdesign,.json', on: (e) => { const f = e.target.files && e.target.files[0]; e.target.value = ''; if (f) this.importFile(f); } },
+        foot: [{ label: 'Continue with ' + R.dialName, primary: true, on: R.startGo }],
       },
+      studioConfirm: Object.assign({ open: !!s.confirm }, s.confirm || {}),
       studioGlass: { size: R.stageCv, round: R.stageRound, scrollRef: R.stageRef, onPointerDown: R.stageDown, zoomTag: R.zoomTag, status: R.hasStatus ? R.status : '',
         onFit: (px) => { if (Math.abs(px - (+this.state.fitPx || 0)) >= 2) this.setState({ fitPx: px }); } },
       studioTool: { play: { icon: R.playIcon, label: R.playLabel, on: R.toggle }, time: R.timeOpts, view: R.viewOpts, zoom: R.hasZoom ? R.zoomOpts : null,
@@ -3752,11 +3835,12 @@ class Component extends DCLogic {
       studioSend: T.sendProps(s.sending, s.status, R.sendCancel),
       studioDup: T.dupProps(s.dup, R.dupReplace, R.dupCancel),
       studioRender: {
+        blocks: [{ title: 'Size', body: R.sizeLine, over: R.sizeOver, tip: 'The theme baked again a moment after your last edit: what Send to orb and Export send.' }],
         badge: { text: R.badgeText, note: R.badgeNote, tip: R.badgeTip, color: R.badgeFg, border: R.badgeBd, background: R.badgeBg },
         send: R.isHub ? { note: R.sendNote, tip: R.sendTip, on: R.sendToOrb } : null,
         save: R.isHub ? { note: 'keep \u201c' + this.themeName() + '\u201d on the hub as a draft, art included', on: () => this.saveDraft(), tip: 'Keep this watch in the hub library under its name, without baking or sending it. Under a theme\u2019s name it is that theme\u2019s unsent changes until Send to orb bakes them in. Send to orb saves it too.' } : null,
         downloads: [
-          { label: 'Download .orbtheme', note: R.themeNote, on: R.exportTheme, title: 'The same .orbtheme Send to orb bakes, downloaded: the baked dial, ready for any orb\u2019s Themes tab, with its design inside so the editor can open it again.' },
+          { label: 'Export .orbtheme', note: R.themeNote, on: R.exportTheme, title: 'The same .orbtheme Send to orb bakes, saved where you choose: the baked dial, ready for any orb\u2019s Themes tab, with its design inside so the editor can open it again.' },
         ],
         note: R.artNote,
       },
@@ -4505,7 +4589,9 @@ class Component extends DCLogic {
       fields, hasSel: !!sel, noSel: !sel, hasSelHead: !!sel && s.tab === 'comps',
       resetHands: () => this.upd((d) => { d.comps.forEach((hc) => { if (hc.type !== 'hand') return; delete hc.style; delete hc.finish; delete hc.len; delete hc.wid; delete hc.sec; delete hc.lume; delete hc.shade; }); }), selTitle: sel ? partName(sel) : '',
       dials: (ready ? Object.keys(E.PRESETS) : []).map((id) => ({
-        ...on(id === s.dial), ref: this.cb('dialEls', id, (i) => this.drawDialThumb(i)),
+        ...on(id === s.dial), ref: this.cb('dialEls', id, (i) => this.drawDialThumb(i)), id,
+        // the start flow's tile hands its own canvas (§8.10)
+        draw: (cv) => { if (this.dialEls[id] !== cv) { this.dialEls[id] = cv; this.drawDialThumb(id); } },
         name: E.template(id).name + (s.designs[id] ? ' · edited' : ''), blurb: E.template(id).blurb,
         // a template comes as designed after From scratch (whose no case, glass or light is no choice
         // of the author's to keep); otherwise the author's own case and light ride over

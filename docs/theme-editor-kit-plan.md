@@ -766,7 +766,7 @@ size and fps readouts) is the host's, done once.
 | **E4** | declared views in the centre pane, for all three | the same controls in every app; each view reaches the glass — **built 2026-11-08**, benched on the bench fake with home and two places (§8.7) |
 | **E5** | the live size readout; Check the bake goes | the clock's bake timed first; a readout that matches the bake's bytes — **built 2026-11-08** (§8.8) |
 | **E6** | frame rate per view, every app | an estimate shown for each view; checked against Gold for at least one view per app — **built 2026-11-08** (§8.9); checked on Gold for Flights and Weather (Radar has no moving view; the clock is E7's) |
-| **E7** | the clock on the host | the clock's headless suites (about 1,500 checks) green; nothing lost against the P5 checklist |
+| **E7** | the clock on the host | the clock's headless suites (about 1,500 checks) green; nothing lost against the P5 checklist — **in two stages (owner, 2026-11-08): Stage 1, the clock's own page given the shared start, import, Render and live size, built 2026-11-08 (§8.11); Stage 2, the move onto the host, not started** |
 
 The clock goes last. It is the largest editor and the one where the frame rate matters
 most, so it moves after the contract has carried the other three.
@@ -1044,4 +1044,121 @@ they're looking for/finding. This should be hub driven uniform across all apps."
   the steps, the name, "Fits, slower · 15 fps · 1,066 KB" and Send. The host suite holds
   it (66 checks), and four mutants are caught: the chrome, the layers, the frame clock and
   the bake shown or run before a choice.
+
+### 8.11 E7 Stage 1: the clock's page, uniform (2026-11-08)
+
+E7 moves a document of nearly 5,000 lines in the dc template format, a 4,700-line class and
+a 5,100-line engine, whose 5,300 lines of suites and whose region packer
+(`tools/make_clock_region.py`) read the template directly. The owner chose two stages:
+first the clock's own page gets every shared piece a user sees, then the full move.
+
+- **The start** is `studio@1`'s `StartFlow`: New (the clock's From scratch: nothing yet,
+  every part to build), From a template ("21 looks to start from", each tile the clock's
+  own thumbnail drawn into the flow's canvas), From my library (the clock's own rows, in
+  the shell's shape), Import a file. Until a design is chosen the top bar has no steps,
+  name, undo, readout or Send and the Layers pane is empty; leaving the start (Continue,
+  New, any step) or opening a design chooses one, and Start after that shows the four again.
+- **Import** goes through `session.importFile` (the theme's name is the design's
+  `themeName`, else its template's), asking with the shell's new `S.Confirm` before a
+  library name is replaced. **Export** is "Export .orbtheme" through the browser's Save
+  dialog where there is one, the download otherwise (the clock's own `download()`, which
+  its suites watch).
+- **The live size.** A pause after the last edit (twice the last bake, 1.2 s to 6 s),
+  once the movement has settled and no press is baking, the clock bakes again through
+  `_export3Body({send: 'bytes'})`, the walk Send and Export run, and says the size in the
+  top bar ("Fits · 6 fps · 3,408 KB") and as the Render step's first block. The bake is
+  quiet: while it runs the class's `setState` keeps a status-only update (the bake's
+  progress and refusals) rather than showing it; a press waits for it, and it waits for a
+  press. Send and Export still bake for themselves (the host's reuse waits for Stage 2).
+- **Shared.** `S.Confirm` (the host's, moved), `S.RenderPanel`'s `blocks` (the host's Size
+  and Frame rate now ride it), `S.sizeWords` (one wording; the host's `OrbHost.sizeWords`
+  answers it), and the blocks' styles in `studio.css`.
+- **Suites.** The clock's flow suite (92 checks; its extract `_selftest/component.js`
+  regenerated) holds the top bar's Export label, the bare top bar before a choice, the start
+  flow's templates, library and Import, Continue choosing, Start after a choice, the size in
+  both places and a refusal in both, and the quiet bake keeping status lines and passing
+  every other update. All 20 clock suites, the 12 runtime suites and the clock region suite
+  pass; `clock.orbapp` is rebuilt (v1.2.30, already bumped in this push).
+- **Benched 2026-11-08** on the bench fake in headless Chrome: the clock's editor opened on
+  the four with only "Clock theme" above them; the template panel drew all 21 looks; after
+  Continue the top bar read "Fits · 6 fps · 3,408 KB" within three seconds; Render led with
+  "3,408 KB of the 8,320 KB an orb takes (41%) · baked in 1.0 s", then Save to library,
+  Send to orb and Export .orbtheme.
+- **Stage 2, not started:** the clock as a module on the host (its panes, tiles, layers with
+  their mechanical rules, art and sound uploads, frame-stepping diagnostics and pace model
+  as host contract or app content), its suites and its region packer moved with it.
+
+### 8.12 E7 Stage 2: the clock on the host (plan, 2026-11-08)
+
+The dc runtime (`support@1`) compiles a whole template and mounts it as one page: it cannot
+render a template's parts into the host's slots. So the clock moves as two halves:
+
+- **The logic class** (`class Component extends DCLogic`, ~4,700 lines) keeps its methods
+  and leaves the `.dc.html` for a plain module, `clock-logic.js`. It runs under the host's
+  stand-in for `DCLogic` (state, `setState`, `forceUpdate`, `props`, the three lifecycle
+  calls), so its suites keep driving the same methods.
+- **The template** (~150 lines of `sc-if`, `sc-for` and `x-import`) becomes React code,
+  `clock-panes.js`, split into the host's slots: the left pane (Layers and the mechanical
+  switch), the stage (the canvas and its pointer, the diagnostics panel, the toolbar's
+  guide button), the right pane (the inspector's head, body and foot) and the modals the
+  app keeps.
+
+**The host's stateful contract.** An app may register `create(host)`, which answers a
+controller instead of the stateless functions: `content(withArt)` and `apply(doc)` (the
+design document both ways), `templates` and `pick(key)`, `blank()`, `bake()`,
+`picture(px)`, `fit()` with its own `pace`, `steps` and `goStep(id)`, `snapshot()` and
+`restore(snap)` for the host's history, and `panes: {left, stage, right, tool}` as React
+components fed the controller. The host owns what it owns for every app: the frame, the top
+bar, the start, the library, import, the Render step, Send, Export, the live size, the
+confirm. The clock's own session, history, start sheet, Render panel and top bar retire.
+
+**Steps:**
+
+| Step | Content | Gate |
+|---|---|---|
+| 2a | the stateful contract in `host@1`, proven by a made-up stateful app | the host suite drives it: create, panes, history through snapshot and restore, a library open through apply, the bake |
+| 2b | `clock-logic.js`: the class out of the `.dc.html`, the suites' extract pointed at it | the 20 clock suites green on the module; the `.dc.html` still runs it unchanged |
+| 2c | `clock-panes.js`: the template as React in the host's slots, the clock's controller | the clock's pages and UI suites ported; every binding of the template still in a pane |
+| 2d | the switch: `editor.json` hosted, `make_clock_region.py` packs the module, the `.dc.html` and its session, history and start retired | the region suite and the packer's checks; the shelf rebaked if a bake changes |
+| 2e | the bench | on Gold: start, every step, layers drag, art and sound uploads, diagnostics, Send, the size and pace readouts |
+
+### 8.13 E7 Stage 2 so far (2026-11-08)
+
+- **2a, built.** `host@1` takes a stateful app: `panes` (`left`, `right`, `stage`, `tool`,
+  `overlay`) stand in the host's slots; the app pushes the design it changes itself
+  (`c.push`) and is handed one the host changes (`adopt`: a template, an opened design,
+  Undo, Reset, the first); `toDoc` and `fromDoc` keep an app's own file shape both ways; an
+  app with its own pace model and no host frame clock fills the Frame rate block from
+  `fit`. The host suite (75 checks) drives a made-up stateful app through all of it; two
+  mutants caught (the host handing back the app's own push; never handing it anything).
+- **2b** folds into 2d: the dc runtime evaluates the class before it loads the page's
+  scripts, so the class cannot live in a module while the `.dc.html` still runs it. Until
+  the switch the module `clock-logic.js` is generated from the `.dc.html`, as the suites'
+  extract is; at the switch it becomes the source.
+- **2c, working on the bench, not yet switched.** `apps/clock/editor/clock-host.js` runs the
+  class under a `DCLogic` stand-in (setState merging at once, as the suites' stub does; the
+  panes drawing again; `componentDidUpdate` after) and registers the clock: templates and
+  New from the engine's presets and `SCRATCH`, pictures through the class's thumbnail walk,
+  `adopt` and pushes keyed in one field order (and the last hand-over remembered, so a bake
+  of the host's form of a template does not rebuild the movement), `toDoc`/`fromDoc` as
+  `designContent`, the bake as `_export3Body({send: 'bytes'})` quietly, the fit from the
+  clock's rows and `_devPace`, and the composer's panes as React: Layers with the
+  mechanical switch, the inspector (head, sub-tabs, movement cards, the parts catalogue,
+  case, glass and hand tiles, fields, Remove), the stage canvas at the host's size, the
+  diagnostics overlay, and the toolbar's play, time, render, wipe, guide and diagnostics
+  buttons. The host's step bar and the class's own walk follow each other.
+- **Benched 2026-11-08** with a hosted `clock.orbapp` built by a scratch script into the
+  bench library (the real packer is 2d), in headless Chrome on the bench fake: the four
+  ways in; Skeleton from the template panel; Movement's cards, the Layers list and a painted
+  stage; Dial from the host's bar moving the inspector; "Fits · 6 fps · 3,408 KB" and
+  Render's "3,408 KB … baked in 1.0 s" with "~6 of 6 fps · 6 of 24 live rows"; Parts' + Hand
+  taking the watch from 5 parts to 6 with the new hand's fields shown, the host's Undo back
+  to 5 and Redo to 6; Finish's Light, Case & glass and Sound; the diagnostics overlay with
+  its frame stepping and seam check; Send to orb storing 3,461 KB; no script errors.
+- **Left for 2d and 2e:** `make_clock_region.py` packing the hosted region; `clock-logic.js`
+  as the source and the `.dc.html` retired with the class's own session boot, history,
+  start sheet, Render panel and top bar; the suites that read the `.dc.html`
+  (`headless-flow`'s binding check, the region suite, `rebake_shelf.py`'s stage) moved to
+  the module; a suite for `clock-host.js`; then the bench on Gold (layers drag, art and
+  sound uploads, the Edit door, Rebake all).
 

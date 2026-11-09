@@ -151,3 +151,9 @@ html,body{height:100%;overflow:hidden}
 .st-lib-pv{width:36px;height:36px;flex:0 0 36px;border-radius:50%;background:#000;object-fit:cover}
 .st-tip{display:inline-block;margin-left:5px;color:var(--mut);font-size:11px;cursor:help;opacity:.8}
 .st-tip:hover{opacity:1;color:var(--fg)}
+.hs-size{display:flex;flex-direction:column;gap:2px;padding:8px 10px;border:1px solid var(--line);border-radius:8px}
+.hs-size>b{font-size:11px;color:var(--mut);text-transform:uppercase;letter-spacing:.06em}
+.hs-size.hs-over{border-color:#f85149;color:#f85149}
+.hs-pace{display:flex;flex-wrap:wrap;gap:2px 12px}
+.hs-pace>.ui-mut{flex-basis:100%}
+.hs-pace i{font-style:normal;color:var(--mut)}

@@ -304,6 +304,27 @@
         p.hint ? h('div', { className: 'st-hint' }, p.hint) : null,
         h('div', { className: 'st-mfoot' }, h('button', { onClick: p.onCancel, disabled: !!p.noCancel }, p.cancelLabel || 'Cancel'))));
   };
+  /* the live size (theme-editor-kit-plan §8.8), said for every editor: a short form for the top
+   * bar and a line for Render. z: {state 'waiting'|'baking'|'done'|'error', bytes, ms, why} */
+  S.sizeWords = function (z, max) {
+    var kb = function (n) { return Math.round(n / 1024).toLocaleString('en-US') + ' KB'; };
+    if (z.state === 'error') return { short: 'not baked', line: 'Not baked: ' + z.why, over: true };
+    if (z.state !== 'done') return { short: '…', line: z.state === 'baking' ? 'Baking it to measure its size…' : 'Measuring its size when you pause…', over: false };
+    var over = max && z.bytes > max;
+    return { short: kb(z.bytes), over: !!over,
+      line: kb(z.bytes) + ' of the ' + kb(max) + ' an orb takes (' + Math.round(z.bytes / max * 100) + '%)' + (over ? ': an orb will refuse it' : '') + ' · baked in ' + (z.ms / 1000).toFixed(1) + ' s' };
+  };
+  // open, title, body, yes, on, cancel: a question with two answers (the import's replace)
+  S.Confirm = function (p) {
+    if (!p.open) return null;
+    return h('div', { className: 'st-modal', onClick: p.cancel },
+      h('div', { onClick: function (e) { e.stopPropagation(); } },
+        h('div', { className: 'st-mtitle' }, p.title),
+        h('div', { className: 'st-mbody' }, p.body),
+        h('div', { className: 'st-mfoot' },
+          h('button', { onClick: p.cancel }, 'Cancel'),
+          h('button', { className: 'ui-primary', onClick: p.on }, p.yes))));
+  };
   // open, name, stem, note, onReplace, onCancel: the bake is held; Replace ships these bytes
   S.DupModal = function (p) {
     if (!p.open) return null;
@@ -318,12 +339,16 @@
           h('button', { className: 'ui-primary', onClick: p.onReplace }, 'Replace on the card'))));
   };
 
-  /* badge: the OrbTheme.fit verdict {text, note, tip, color, border, background} · send: {note,
+  /* blocks: [{title, body, tip, over}] first, each a titled box (the live size, the frame rate)
+   * · badge: the OrbTheme.fit verdict {text, note, tip, color, border, background} · send: {note,
    * tip, on} under a hub · save: {note, tip, on} under a hub, the one place a design is saved
    * to the library · downloads: [{label, note, title, on}] · note: a warning line */
   S.RenderPanel = function (p) {
     var b = p.badge || null;
     return h(root.React.Fragment, null,
+      list(p.blocks).map(function (k, i) {
+        return h('div', { key: 'b' + i, className: cx('hs-size', k.over ? 'hs-over' : ''), title: k.tip || '' }, h('b', null, k.title), k.body);
+      }),
       b ? h('div', { className: 'st-badge', title: b.tip || '', style: { borderColor: b.border, background: b.background } }, h('b', { style: { color: b.color } }, b.text), h('span', null, b.note)) : null,
       p.save ? h('button', { className: 'st-big', onClick: p.save.on, title: p.save.tip || '' }, h('b', null, 'Save to library'), h('span', null, p.save.note)) : null,
       p.send ? h('button', { className: 'st-big ui-primary', onClick: p.send.on, title: p.send.tip || '' }, h('b', null, 'Send to orb'), h('span', null, p.send.note)) : null,

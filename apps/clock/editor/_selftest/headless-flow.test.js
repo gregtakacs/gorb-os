@@ -249,7 +249,33 @@ const stepOf = (it) => it.stepNow()[0];
        'the shell’s send modal and the clock’s send lines agree: ' + JSON.stringify(sd), R.studioSend.hint + ' | ' + R.sendHint);
   });
   it.setState({ sending: null, status: '' });
-  { const R = V(); ok(R.studioTop.steps === R.stepOpts && R.studioTop.primary.label === 'Download .orbtheme' && R.studioGlass.size === R.stageCv && R.studioTool.view === R.viewOpts && R.studioRender.downloads.length === 1, 'the top bar, glass, toolbar and Render panel carry the clock’s own values'); }
+  { const R = V(); ok(R.chosenNow && R.studioTop.steps === R.stepOpts && R.studioTop.primary.label === 'Export .orbtheme' && R.studioGlass.size === R.stageCv && R.studioTool.view === R.viewOpts && R.studioRender.downloads.length === 1 && R.studioRender.downloads[0].label === 'Export .orbtheme', 'the top bar, glass, toolbar and Render panel carry the clock’s own values', JSON.stringify([R.chosenNow, R.studioTop.primary && R.studioTop.primary.label])); }
+  // §8.10: on the start, before a choice, the start is all there is
+  { const keep = { step: it.state.step, chosen: it.state.chosen, tab: it.state.tab };
+    it.setState({ step: 'start', chosen: false, startPick: '' });
+    const R = V();
+    ok(!R.chosenNow && !R.studioTop.steps.length && !R.studioTop.name && !R.studioTop.primary && !R.studioTop.fit && !R.studioTop.undo, 'before a choice the top bar has no steps, name, readout, undo or Send');
+    ok(R.studioStart && R.studioStart.tiles.length === R.dials.length && R.studioStart.tiles.every((t) => typeof t.draw === 'function' && t.key) && R.studioStart.library && R.studioStart.importFile,
+       'the start flow gets the clock’s templates (each drawing its own thumbnail), its library and Import');
+    R.studioStart.foot[0].on();
+    ok(it.state.chosen === true && it.state.step === 'movement', 'Continue chooses the template and goes to the first step', JSON.stringify([it.state.chosen, it.state.step]));
+    it.goStep('start');
+    ok(it.chosenNow() && it.state.startPick === '', 'back on Start after a choice, the design stays chosen and the four show again');
+    it.setState(keep); }
+  // the live size: said in the top bar and as the Render step's first block
+  { it.setState({ size: { state: 'done', bytes: 1048576 * 3, ms: 900 } });
+    const R = V();
+    ok(/3,072 KB/.test(R.studioTop.fit.text) && R.studioRender.blocks[0].title === 'Size' && /3,072 KB of the 8,320 KB an orb takes \(37%\) · baked in 0\.9 s/.test(R.studioRender.blocks[0].body),
+       'the live size is in the top bar and leads Render', R.studioTop.fit.text + ' | ' + R.studioRender.blocks[0].body);
+    it.setState({ size: { state: 'error', why: 'this dial has no hand at all' } });
+    const R2 = V();
+    ok(/not baked/.test(R2.studioTop.fit.text) && R2.studioTop.fit.dot === '#f85149' && /Not baked: this dial has no hand at all/.test(R2.studioRender.blocks[0].body), 'a refused bake is said in both places');
+    it.setState({ size: { state: 'waiting' } }); }
+  // the quiet bake: a status-only update while it runs is kept, not shown; anything else goes through
+  { it.setState({ status: 'before' });
+    it._quietBake = true; it.setState({ status: 'Drawing 3 baked parts…' }); it.setState({ status: 'x', sel: null }); it._quietBake = false;
+    ok(it._quietLast === 'Drawing 3 baked parts…' && it.state.status === 'x', 'the quiet bake keeps its status lines and lets every other update through', it.state.status);
+    it.setState({ status: '' }); }
   // K6: the one title bar is the shell's TopBar; the clock's page draws none of its own
   const studioJs = fs.readFileSync(require('./runtime-paths.js').STUDIO, 'utf8');
   ok(html.indexOf('Watch composer') < 0 && !(html.match(/<header/g) || []).length && (studioJs.match(/h\('header'/g) || []).length === 1 && html.includes('OrbStudio.TopBar'),

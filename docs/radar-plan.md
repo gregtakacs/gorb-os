@@ -2106,5 +2106,13 @@ a frame is drawn from (`orb_cv_png8`), and the app says which bodies it wants th
   region's largest block was 360-400 KB, and taken from the general heap regardless the PSRAM
   low water fell to 204 KB, at a 512 KB floor to 92 KB after two carousel opens. Shipped with a
   1 MB floor, so it runs only where it costs no one, which under radar today is rarely.
-- **Open, the owner's call:** room for the spare pair (radar's PSRAM window of frames, now that
-  they are on the card; the live layers' copies), or the stall as it is.
+- **One plane, not a pair** (owner: "sure, try"): the worker builds PB alone (434 KB), the rain
+  among its layers, and the swap makes each changed row's PF from it (the slow jobs over the cut
+  painted on). Bronze, Austin: a step's blip 139-148 ms (165 without, ~115 with the pair); the
+  worst gap a second mostly 122-172 ms; 92 of the first 96 swaps built ahead, 11 of 12 after a
+  carousel open, 0 of 50 after the second: the carousel frees radar's planes and radar takes them
+  again, and PSRAM is left in pieces (glass region's largest block 417 KB, general PSRAM 1.08 MB
+  against a 1.46 MB need at the floor). PSRAM's low water stayed 399 KB.
+- **Open, the owner's call:** a spare plane held for radar's whole stay rather than retaken after
+  each carousel, room made for it, or the stall as it is. The ~50 ms push of a full disc stays
+  whatever is built ahead, unless the glass changes in slices (ruled out, §6.27).

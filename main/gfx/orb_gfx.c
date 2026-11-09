@@ -997,17 +997,20 @@ static const uint16_t *s_pp_canvas;
 static uint16_t  s_pp_row[CLK_SCR_W];
 /* radar-plan §7.7: a live layer's next swap, built ahead (owner, 2026-11-09: the arm hitched
  * ~120 ms at every rain step over a storm). While the present is paced, the live worker, on
- * the other core, builds a whole pair of planes for the picture waiting in the layer's back
- * copy: its changed rows composed from a snapshot of the job list, the rest copied from the
- * front planes. The swap exchanges the plane pointers, so the glass still changes in one
- * commit and that commit composes from planes. A row the LVGL task wrote or marked stale after
+ * the other core, builds a whole PB (the slow layers under the fast jobs' cut, the rain among
+ * them) for the picture waiting in the layer's back copy: its changed rows composed from a
+ * snapshot of the job list, the rest copied from the front PB. The swap exchanges the PB
+ * pointers and makes each changed row's PF from its PB, the slow jobs over the cut painted
+ * on (the time, the cursor, the glass: pp_build_row's own second half), so the glass still
+ * changes in one commit. One plane, not a pair: 434 KB (owner, 2026-11-09: PSRAM under
+ * radar would not hold two). A row the LVGL task wrote or marked stale after
  * the snapshot (s_ah_bad: the time's label, the track's cursor) is rebuilt at the swap; a
  * rebuild of every plane (s_pp_gen) voids it all. */
 enum { AH_IDLE, AH_RUN, AH_DONE };
 #define AH_PSRAM_FLOOR (1024u * 1024u)                /* general PSRAM a spare pair leaves free */
 static volatile int  s_ah_state = AH_IDLE;
 static volatile bool s_ah_cancel;
-static uint16_t *s_ah_pb, *s_ah_pf;                   /* the spare pair (lean mode's own) */
+static uint16_t *s_ah_pb;                             /* the spare PB (lean mode's own) */
 EXT_RAM_BSS_ATTR static volatile uint8_t s_ah_bad[CLK_SCR_H];
 EXT_RAM_BSS_ATTR static int16_t s_ah_x0[CLK_SCR_H], s_ah_x1[CLK_SCR_H];
 /* the snapshot the worker builds from */
@@ -1016,7 +1019,7 @@ EXT_RAM_BSS_ATTR static bool    s_ah_fast[PP_JOBS];
 EXT_RAM_BSS_ATTR static int16_t s_ah_pzcx[PP_JOBS], s_ah_pzcy[PP_JOBS], s_ah_pzr[PP_JOBS];
 static int       s_ah_jn, s_ah_low;
 static const uint16_t *s_ah_canvas;
-static const uint16_t *s_ah_src_pb, *s_ah_src_pf;
+static const uint16_t *s_ah_src_pb;
 static const uint8_t *s_ah_alp;
 static uint32_t  s_ah_gen;
 static uint32_t  s_ah_used, s_ah_mism;                /* the bench's account */
@@ -1147,9 +1150,9 @@ void gfx_prep_mode(int mode)
     }
     if (s_ah_state == AH_RUN) s_ah_cancel = true;      /* §7.7: the worker stops at its next row */
     else s_ah_state = AH_IDLE;
-    if ((!s_pp_mode || !s_pp_lean) && (s_ah_pb || s_ah_pf) && s_ah_state == AH_IDLE) {   /* lean's alone */
-        orb_glass_free(s_ah_pb); orb_glass_free(s_ah_pf);
-        s_ah_pb = s_ah_pf = NULL;
+    if ((!s_pp_mode || !s_pp_lean) && s_ah_pb && s_ah_state == AH_IDLE) {   /* lean's alone */
+        orb_glass_free(s_ah_pb);
+        s_ah_pb = NULL;
     }
     if (s_pp_mode && s_pp_lean && s_pfn) {            /* §6.27: lean keeps the fronts alone */
         orb_glass_free(s_pfn); orb_glass_free(s_pbn);
@@ -1200,23 +1203,15 @@ bool gfx_prep_ahead(int layer, const int16_t *x0, const int16_t *x1, const uint8
     if (!s_pp_mode || !s_pp_lean || !s_pp_valid || !s_pp_jc || !x0 || !x1 || !s_pb || !s_pf) return false;
     if (s_ah_state == AH_RUN) return true;
     if (s_ah_state == AH_DONE && s_ah_alp == back_alp && s_ah_gen == s_pp_gen) return true;
-    if (!s_ah_pb || !s_ah_pf) {
+    if (!s_ah_pb) {
         const size_t n = (size_t)CLK_SCR_W * CLK_SCR_H * 2;
         /* The glass region first; else the general PSRAM heap, only while 1 MB of it stays
          * free after (Bronze: a pair taken regardless left PSRAM's low water at 204 KB). Freed
          * whenever pre-paint goes off (the carousel, another app). */
-        if (!s_ah_pb) s_ah_pb = orb_glass_alloc_only(n);
-        if (!s_ah_pf) s_ah_pf = orb_glass_alloc_only(n);
-        const size_t want = (s_ah_pb ? 0 : n) + (s_ah_pf ? 0 : n);
-        if (want && heap_caps_get_free_size(MALLOC_CAP_SPIRAM) >= want + AH_PSRAM_FLOOR) {
-            if (!s_ah_pb) s_ah_pb = heap_caps_malloc(n, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-            if (!s_ah_pf) s_ah_pf = heap_caps_malloc(n, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-        }
-        if (!s_ah_pb || !s_ah_pf) {
-            orb_glass_free(s_ah_pb); orb_glass_free(s_ah_pf);
-            s_ah_pb = s_ah_pf = NULL;
-            return false;                                 /* the swap composes as before */
-        }
+        s_ah_pb = orb_glass_alloc_only(n);
+        if (!s_ah_pb && heap_caps_get_free_size(MALLOC_CAP_SPIRAM) >= n + AH_PSRAM_FLOOR)
+            s_ah_pb = heap_caps_malloc(n, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        if (!s_ah_pb) return false;                       /* the swap composes as before */
     }
     int live = -1;
     for (int i = 0; i < s_pp_jn && i < PP_JOBS; i++) {
@@ -1235,7 +1230,6 @@ bool gfx_prep_ahead(int layer, const int16_t *x0, const int16_t *x1, const uint8
     s_ah_low = s_pp_low;
     s_ah_canvas = s_pp_canvas;
     s_ah_src_pb = s_pb;
-    s_ah_src_pf = s_pf;
     memcpy(s_ah_x0, x0, sizeof s_ah_x0);
     memcpy(s_ah_x1, x1, sizeof s_ah_x1);
     memset((void *)s_ah_bad, 0, sizeof s_ah_bad);
@@ -1261,7 +1255,6 @@ void gfx_prep_ahead_run(void)
         if (s_ah_cancel) { s_ah_state = AH_IDLE; return; }
         const size_t off = (size_t)y * CLK_SCR_W;
         memcpy(s_ah_pb + off, s_ah_src_pb + off, rb);
-        memcpy(s_ah_pf + off, s_ah_src_pf + off, rb);
         if (s_ah_x0[y] <= s_ah_x1[y]) ah_build_row(y, s_ah_x0[y], s_ah_x1[y], row);
     }
     s_ah_state = AH_DONE;
@@ -1458,8 +1451,22 @@ static void ah_build_row(int32_t y, int32_t a, int32_t b, uint16_t *row)
         const int32_t sa = sx[k], sb = sx[k + 1] - 1;
         for (int i = 0; i < lo[k]; i++) if (!s_ah_fast[i]) gfx_paint_row_ctx(&s_ah_jc[i], y, sa, sb, row);
         memcpy(s_ah_pb + (size_t)y * CLK_SCR_W + sa, &row[sa], (size_t)(sb - sa + 1) * 2);
-        for (int i = lo[k]; i < s_ah_jn; i++) if (!s_ah_fast[i]) gfx_paint_row_ctx(&s_ah_jc[i], y, sa, sb, row);
-        memcpy(s_ah_pf + (size_t)y * CLK_SCR_W + sa, &row[sa], (size_t)(sb - sa + 1) * 2);
+    }
+}
+
+/* §7.7: PF over [a, b] of row y from the new PB: the PB row, then the slow jobs over each
+ * segment's cut, as pp_build_row's second half paints them. LVGL task, at the swap. */
+static void pp_pf_from_pb(int32_t y, int32_t a, int32_t b)
+{
+    const size_t row = (size_t)y * CLK_SCR_W;
+    memcpy(&s_pp_row[a], s_pb + row + a, (size_t)(b - a + 1) * 2);
+    EXT_RAM_BSS_ATTR static int32_t sx[PP_SEG_MAX + 1];
+    EXT_RAM_BSS_ATTR static int lo[PP_SEG_MAX];
+    const int ns = pp_segs(y, a, b, sx, lo);
+    for (int k = 0; k < ns; k++) {
+        const int32_t sa = sx[k], sb = sx[k + 1] - 1;
+        for (int i = lo[k]; i < s_pp_jn; i++) if (!s_pp_fast[i]) pp_paint(&s_pp_jc[i], y, sa, sb, s_pp_row);
+        memcpy(s_pf + row + sa, &s_pp_row[sa], (size_t)(sb - sa + 1) * 2);
     }
 }
 
@@ -1626,20 +1633,23 @@ static void pp_commit(int nj, const gfx_paint_ctx_t *jc, const uint16_t *canvas,
          * planes and compared: the log's proof that the two ways agree (Bronze: 0 px). */
         const bool use = ahead_ok && s_ah_gen == s_pp_gen;
         if (use) {
-            uint16_t *t;
-            t = s_pb; s_pb = s_ah_pb; s_ah_pb = t;
-            t = s_pf; s_pf = s_ah_pf; s_ah_pf = t;
+            uint16_t *t = s_pb; s_pb = s_ah_pb; s_ah_pb = t;
             s_ah_state = AH_IDLE;
-            for (int32_t y = 0; y < CLK_SCR_H; y++)
+            for (int32_t y = 0; y < CLK_SCR_H; y++) {
                 if (s_ah_bad[y]) { pp_build_row(y, 0, CLK_SCR_W - 1, s_pb, s_pf, NULL, 0); s_pps.rows_sync++; }
+                else if (s_sw0[y] <= s_sw1[y]) pp_pf_from_pb(y, s_sw0[y], s_sw1[y]);
+            }
             if (++s_ah_used <= 3 || s_pp_mode == 2) {
+                /* the long way into the old PB (PB) and a row of scratch (PF), compared */
+                static uint16_t *tf;
+                if (!tf) tf = heap_caps_malloc(CLK_SCR_W * 2, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
                 uint32_t bad = 0;
-                for (int32_t y = 0; y < CLK_SCR_H; y++) {
+                for (int32_t y = 0; tf && y < CLK_SCR_H; y++) {
                     if (s_sw0[y] > s_sw1[y]) continue;
-                    pp_build_row(y, s_sw0[y], s_sw1[y], s_ah_pb, s_ah_pf, NULL, 0);
+                    pp_build_row(y, s_sw0[y], s_sw1[y], s_ah_pb, tf - (size_t)y * CLK_SCR_W, NULL, 0);
                     const size_t o = (size_t)y * CLK_SCR_W;
                     for (int32_t x = s_sw0[y]; x <= s_sw1[y]; x++)
-                        bad += (s_ah_pb[o + x] != s_pb[o + x]) + (s_ah_pf[o + x] != s_pf[o + x]);
+                        bad += (s_ah_pb[o + x] != s_pb[o + x]) + (tf[x] != s_pf[o + x]);
                 }
                 s_ah_mism += bad;
                 ESP_LOGI("gfx", "ahead swap %u checked: %u px differ from the long way (%u in all)",

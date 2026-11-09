@@ -397,7 +397,7 @@ async function scenario(host, pathname, themeQuery, map) {
       const site = siteFetch(Object.assign({ entries: [{ name: 'Skeleton', state: 'theme', at: 1, design: 'D7' }], bundle: bundleOf(designOf2(shared)) }, o.site || {}));
       calls = []; fetchHandler = (url, opt) => site.fetch(url, opt);
       const seq = o.names || [shared === null ? 'Skeleton' : shared];
-      global.GorbBake = o.noBaker ? null : { verifyBundle3: () => ({ name: seq[Math.min(o.i = (o.i || 0) + 1, seq.length) - 1] }) };
+      global.GorbBake = o.noBaker ? null : { verifyBundle3: () => ({ header: { name: seq[Math.min(o.i = (o.i || 0) + 1, seq.length) - 1] }, sections: [] }) };
       const a = mkArt(o.noBake ? {} : { bake: async () => { a.baked.push(a.ses.bakeName('Skeleton')); if (o.says) a.set({ status: o.says }); return o.bytes === null ? null : THEME3; } });
       return a;
     };

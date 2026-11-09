@@ -585,7 +585,7 @@
       for (var attempt = 0; attempt < 3; attempt++) {
         bytes = await host.bake();
         if (bytes === null || bytes === undefined) break;
-        got = vfy ? String((vfy(bytes) || {}).name || '') : want;
+        got = vfy ? (function (v) { v = v || {}; return String(v.name || (v.header && v.header.name) || ''); })(vfy(bytes)) : want;   // verifyBundle3 answers {header, sections}
         if (got === want || attempt === 2) break;
         await new Promise(function (r) { setTimeout(r, 1000); });
       }

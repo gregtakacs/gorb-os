@@ -242,6 +242,10 @@ void orb_theme_service(void);
 /* theme-cache-plan C6: `stem` is an app's choice (in the pool or on the card only: the row's
  * `stored` says which). */
 bool orb_theme_chosen(const char *stem);
+/* Owner, 2026-11-09 (the carousel's LED): 1 when `slug`'s theme is in the pool and opens at
+ * once, 0 when it is chosen but on the card only (it fills when the app opens), -1 when the
+ * app wears none. */
+int orb_theme_hot(const char *slug);
 /* Owner, 2026-11-09: `slug`'s chosen theme's preview, deflated, straight from its resident
  * entry's window in flash (plain memory: any task may read it), with *n its bytes and *side
  * its square's side; NULL when it has none for what it wears. Non-NULL holds the previews'

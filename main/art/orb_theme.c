@@ -992,7 +992,8 @@ size_t orb_theme_cache_json(char *b, size_t cap)
     PUT("],\"pool\":[");
     for (uint32_t k = 0; s_pool && k < s_pool->n; k++) {
         PUT("%s{\"app\":\"%s\",\"name\":\"%s\",\"kind\":\"%s\",\"off\":%lu,\"size\":%lu,\"file_crc\":%lu,\"pages\":[",
-            k ? "," : "", s_pool->e[k].slug, s_pool->e[k].name, s_pool->e[k].kind == ORB_POOL_VOICE ? "voice" : "display",
+            k ? "," : "", s_pool->e[k].slug, s_pool->e[k].name, s_pool->e[k].kind == ORB_POOL_VOICE ? "voice" :
+            s_pool->e[k].kind == ORB_POOL_PREVIEW ? "preview" : "display",
             (unsigned long)s_pool->e[k].off, (unsigned long)s_pool->e[k].size, (unsigned long)s_pool->e[k].file_crc);
         /* §4.1: its pages, as runs "first-last" (a scattered entry has several) */
         int n = 0;
@@ -3879,6 +3880,15 @@ bool orb_theme_absent(const char *slug, const char **brief, char *why, size_t wh
     }
     if (brief) *brief = b;
     return b != NULL;
+}
+
+int orb_theme_hot(const char *slug)
+{
+    if (!slug || !s_pool) return -1;
+    if (orb_pool_find(s_pool, slug) >= 0) return 1;      /* its display entry is in flash */
+    for (uint32_t c = 0; c < s_cache.n_choice; c++)
+        if (!strcmp(s_cache.c[c].slug, slug)) return 0;  /* chosen, on the card only */
+    return -1;
 }
 
 bool orb_theme_chosen(const char *stem)

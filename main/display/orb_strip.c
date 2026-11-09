@@ -58,6 +58,7 @@ typedef struct {
     const uint16_t  *px;
     int              side;
     uint16_t        *name;      /* NAME_W x NAME_H, wire order, black ground */
+    int8_t           hot;       /* orb_theme_hot: 1 in flash, 0 card only, -1 none (no LED) */
 } item_t;
 
 /* The thumbnails: one plane per app slug, built by the preview task when the carousel opens
@@ -559,6 +560,7 @@ typedef struct {
     const uint16_t *px;
     int   side;
     float cx, cy, d;            /* centre and diameter on the glass */
+    int8_t led;                 /* the theme's LED: 1 lit, 0 dark, -1 none */
 } disc_t;
 
 static disc_t s_draw[6];
@@ -586,6 +588,28 @@ static void disc_row(uint16_t *d, int y, const disc_t *c)
         uint32_t sx = fx >> 16;
         if (sx >= (uint32_t)c->side) sx = (uint32_t)c->side - 1;
         d[x] = row[sx];
+    }
+}
+
+/* Owner, 2026-11-09: a small LED on each app's disc, lower right inside its rim — lit green
+ * when its theme is in flash and opens at once, dark when it is on the card only and will
+ * load (the fill's face) — with a thin black outline so it reads over any preview. */
+static void led_row(uint16_t *d, int y, const disc_t *c)
+{
+    if (c->led < 0) return;
+    const float r = c->d * 0.5f, lr = c->d * 0.045f > 5.0f ? c->d * 0.045f : 5.0f;
+    const float lx = c->cx + r * 0.6f, ly = c->cy + r * 0.6f, out = lr + 1.5f;
+    const float dy = (y + 0.5f) - ly;
+    if (dy <= -out || dy >= out) return;
+    const float hw = sqrtf(out * out - dy * dy);
+    int x0 = (int)(lx - hw), x1 = (int)(lx + hw);
+    if (x0 < 0) x0 = 0;
+    if (x1 > W - 1) x1 = W - 1;
+    const uint16_t edge = 0, core = wire(c->led ? 0xAFF5 : 0x0160), body = wire(c->led ? 0x07E0 : 0x0100);
+    for (int x = x0; x <= x1; x++) {
+        const float dx = (x + 0.5f) - lx, dist = sqrtf(dx * dx + dy * dy);
+        if (dist > out) continue;
+        d[x] = dist > lr ? edge : dist < lr * 0.45f ? core : body;
     }
 }
 
@@ -625,7 +649,7 @@ static void face_disc(float d)
     const orb_app_t *a = s_face_app;
     disc_t *q = &s_draw[0];
     s_draw_n = 1;
-    *q = (disc_t){ .px = NULL, .side = PV, .cx = CX, .cy = CY, .d = d };
+    *q = (disc_t){ .px = NULL, .side = PV, .cx = CX, .cy = CY, .d = d, .led = -1 };
     if (a && a->slug && s_hi_ready && s_hi && strcmp(a->slug, s_hi_slug) == 0) {
         q->px = s_hi; q->side = W;
     } else {
@@ -657,7 +681,7 @@ static void compose(int y0, int rows, uint16_t *dst, void *arg)
         const int y = y0 + r;
         uint16_t *d = dst + (size_t)r * W;
         memset(d, 0, (size_t)W * 2);
-        for (int i = 0; i < s_draw_n; i++) disc_row(d, y, &s_draw[i]);
+        for (int i = 0; i < s_draw_n; i++) { disc_row(d, y, &s_draw[i]); led_row(d, y, &s_draw[i]); }
         if (s_ring >= 0) ring_row(d, y);
         if (s_label && y >= NAME_Y && y < NAME_Y + NAME_H)
             memcpy(d + (CX - NAME_W / 2), s_label + (size_t)(y - NAME_Y) * NAME_W,
@@ -715,6 +739,7 @@ static void layout(float pos, float z, float k)
         if (ad < 0.5f && z > 0.0f) q->d = PV + (float)(W - PV) * z;   /* z 1: the glass, 1:1 */
         q->px = it->px;
         q->side = it->side;
+        q->led = (ad < 0.5f && z > 0.0f) ? -1 : it->hot;   /* none on a disc zooming to the glass */
         /* §60: the centre growing toward the glass draws from its full plane once it is in */
         if (ad < 0.5f && z > 0.0f && it->app && s_hi_ready && s_hi &&
             strcmp(it->app->slug, s_hi_slug) == 0) {
@@ -953,6 +978,8 @@ static void item_face(item_t *it)
  * the preview task is asked for what is new. LVGL task. */
 static void thumbs_window(int centre)
 {
+    for (int t = 0; t < s_n; t++)                /* the LEDs, as the pool stands now */
+        s_it[t].hot = (int8_t)(s_it[t].app && s_it[t].app->slug ? orb_theme_hot(s_it[t].app->slug) : -1);
     char list[THUMBS][24];
     int n = 0;
     const int order[THUMBS] = { 0, -1, 1 };

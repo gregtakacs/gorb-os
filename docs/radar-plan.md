@@ -2144,3 +2144,39 @@ a frame is drawn from (`orb_cv_png8`), and the app says which bodies it wants th
   the less to draw and the closer it is to where it was"): `orb_frame_ms(0/1)` (OS v1.6.1, SDK)
   answers the frame period the sweep is paced to and the theme's own; radar integrates its sweep's
   angle at its theme's speed times own/now, so it moves as far a frame as at the theme's pace.
+
+### 7.9 Plan: an indexed live layer (owner, 2026-11-09: "implement the compression")
+
+**Why.** Radar's live layers are colour: the map (layer 0) and the map-and-rain merge (layer 1)
+at 2 B a pixel, front and back: 1.3 MB of PSRAM, from data that is indexed at the source (the
+map's few roles, LibreWXR's 75-89 rain values: 8 bits, not 4, or the theme's ramp bands). The
+spare planes a swap is built ahead into (§7.7, 868 KB) found no room beside them.
+
+**What.** A second live-layer format, opt-in per layer; colour layers are untouched (the clock,
+every other app):
+
+- **Indexed** (`orb_stage_live_palette(layer, pal)`, SDK, OS v1.6.1): one byte a pixel and a
+  256-entry ARGB palette that is the picture's own (the back carries its palette, so a forecast
+  frame's dimmed palette swaps with it). Buffer: the head, the palette as LVGL's I8 wants it
+  (ARGB8888, so the classic path draws it too), the palette split for the compositor (RGB565 and
+  alpha), then the indices. 218 KB, not 434-651.
+- **Opaque** (`ORB_LIVE_OPAQUE` on `orb_stage_live`): colour with no alpha plane, for a layer that
+  covers (radar's map): 434 KB, without merging.
+- Radar: the map opaque, the rain indexed over it, unmerged: 434 + 2 x 218 = 870 KB (was 1.3 MB).
+
+**Through the pipeline.**
+- Draws into an indexed target (the worker's back copy, or the live layer itself): `orb_cv_png8`
+  writes the frame's own values (its palette is the layer's), a magnified frame's values
+  interpolated (the values are ordered intensity, so smooth stays smooth), the forecast's hatch as
+  value 0 off its pattern; `orb_cv_ring`/`_line` write the palette index whose colour is the
+  draw's (an exact match, else the nearest opaque one): radar puts its scale's ink and edge in the
+  palette's top entries.
+- The worker's diff compares resolved colour and alpha (a palette swap changes the picture).
+- The compositor: a job of an indexed layer paints each pixel's palette colour at its palette
+  alpha (`gfx_paint_ctx_t` gains the palette; an indexed job is never rotated). Its key and the
+  swap's identity stay the index plane's pointer, so pre-paint, the swap and the build-ahead work
+  as they are.
+
+**Then.** Radar's PSRAM window of frames from four to two (they are on the card); the spare pair
+held for radar's stay; measured on Bronze over Austin (step cost, arm fps, PSRAM low water across
+carousel opens) and London.

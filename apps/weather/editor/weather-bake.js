@@ -129,7 +129,8 @@
     nebula: { title: 'Nebula', note: 'translucent glows; a cratered full moon, meteor rain, star snow', roles: [['gold', 'Sun'], ['core', 'Sun core'], ['orange', 'Lightning'], ['violet', 'Cloud'], ['lilac', 'Cloud light'], ['moon', 'Moon'], ['crater', 'Craters'], ['rain', 'Rain']] },
     pictogram: { title: 'Pictogram', note: 'solid railway pictograms with one accent: the sun and the bolt', roles: [['ink', 'Ink'], ['red', 'Accent']] },
   };
-  var GROUNDS = { scope: 'Phosphor scope', brass: 'Brass instrument', blueprint: 'Blueprint', paper: 'Chart paper', celestial: 'Galaxy', station: 'Station dial', sectional: 'Sectional chart' };
+  var GROUNDS = { scope: 'Phosphor scope', brass: 'Brass instrument', blueprint: 'Blueprint', paper: 'Chart paper', celestial: 'Galaxy', station: 'Station dial',
+    silver: 'Silvered metal', sectional: 'Sectional chart' };
   var MONO = 'IBM Plex Mono', PLEX = 'IBM Plex Sans', CORM = 'Cormorant Garamond', GROT = 'Space Grotesk', MICH = 'Michroma', JOST = 'Jost';
   var PRESETS_DEF = {
     scope: { name: 'Scope', match: 'Flights · Modern',
@@ -137,7 +138,7 @@
       words: { num: MONO, text: PLEX, label: MONO, caps: true, track: 2, ink: '#E6F0EA', quiet: '#8A9A90' },
       temps: { ramp: ['#2E9C88', '#3DFF8E', '#FFB23C'], rain: '#59D8C8', track: '#1C4A2E', cap: 'round' },
       icons: { pack: 'phosphor', c: { stroke: '#3DFF8E', warn: '#FFB23C' } , shade: '3d', shadow: 'strong' } },
-    brass: { name: 'Vintage brass', match: 'Flights · Vintage brass, Clock · Aviator',
+    brass: { name: 'Brass', match: 'Flights · Brass, Radar · Brass, Clock · Aviator',
       plate: { style: 'brass', c0: '#2E332E', c1: '#262A26', c2: '#1A1D1A', detail: '#C9A24E', tick: '#E9DDBF' },
       words: { num: CORM, text: CORM, label: CORM, caps: true, track: 3, ink: '#F2E6C8', quiet: '#A8946A' },
       temps: { ramp: ['#7FA3B0', '#C9A24E', '#FF9A3C'], rain: '#8FB7C9', track: '#3A3A30', cap: 'round' },
@@ -162,6 +163,14 @@
       words: { num: JOST, text: JOST, label: JOST, caps: true, track: 2, ink: '#111111', quiet: '#555555' },
       temps: { ramp: ['#111111', '#8A8A8A', '#E3000F'], rain: '#111111', track: '#DADAD6', cap: 'butt' },
       icons: { pack: 'pictogram', c: { ink: '#111111', red: '#E3000F' } , shade: '3d', shadow: 'strong' } },
+    // flights-map-plan §6 (look parity): Silver, polished metal and graphite, as the tracker's
+    // Modern silver and the radar's Silver wear it
+    silver: { name: 'Silver', match: 'Flights · Silver, Radar · Silver',
+      // graphite under a silver bezel, as the radar's and the tracker's Silver
+      plate: { style: 'silver', c0: '#3A3F46', c1: '#2C3138', c2: '#1C1F24', detail: '#C8CED6', tick: '#E4E8EC' },
+      words: { num: 'Jost', text: 'Jost', label: 'Jost', caps: true, track: 2, ink: '#F2F4F7', quiet: '#AAB2BD' },
+      temps: { ramp: ['#7FC8FF', '#C8CED6', '#FF9A5C'], rain: '#7FC8FF', track: '#3A3F46', cap: 'round' },
+      icons: { pack: 'engraved', c: { metal: '#C8CED6', hi: '#FFFFFF', deep: '#5A626C', warn: '#FF9A5C' } , shade: '3d', shadow: 'strong' } },
     // flights-map-plan §4: a flight chart's look, made up: chart paper, a blue rose, a magenta
     // band inside the rim, the station's pictograms in chart navy and magenta
     sectional: { name: 'Sectional', match: 'Flights · Sectional, Radar · Sectional, Clock · Sectional',
@@ -170,7 +179,8 @@
       temps: { ramp: ['#2A5DB0', '#2E7D32', '#C2187A'], rain: '#2A5DB0', track: '#D7DDC6', cap: 'round' },
       icons: { pack: 'pictogram', c: { ink: '#1F2A44', red: '#C2187A' } , shade: '3d', shadow: 'strong' } },
   };
-  var PRESETS = Object.keys(PRESETS_DEF);
+  // the starts in every app's order (owner, 2026-11-08: one name and one place per look)
+  var PRESETS = ['scope', 'paper', 'brass', 'blueprint', 'station', 'celestial', 'silver', 'sectional'];
   var clone = function (o) { return JSON.parse(JSON.stringify(o)); };
   function preset(k) {
     if (k === 'blank') {
@@ -451,6 +461,10 @@
       o.push(S(b[0], { fill: '#FFFFFF', op: 0.3 }), S(b[1], { fill: '#FFFFFF', op: 0.55 }), S(b[2], { fill: '#FFFFFF', op: 0.85 }));
       var dd = ''; for (var k = 0; k < 360; k += 30) { var z = pt(216, k); dd += circ(z[0], z[1], k % 90 ? 1.4 : 2.4); }
       o.push(S(dd, { fill: tk, op: 0.85 }));
+    } else if (st === 'silver') {
+      // a turned bezel: two fine rings, minute ticks and heavier fives
+      o.push(S(circ(CX, CX, 226), { stroke: det, sw: 3, op: 0.7 }), S(circ(CX, CX, 219), { stroke: det, sw: 1, op: 0.6 }));
+      o.push(S(tickPath(206, 215, 6, function (a) { return a % 30; }), { stroke: tk, sw: 1, op: 0.6 }), S(tickPath(198, 215, 30), { stroke: tk, sw: 2.4 }));
     } else if (st === 'sectional') {
       // a graticule with a chart's minute ticks, a dashed magenta isogonic line, the magenta
       // band inside the rim, a blue rose
@@ -721,6 +735,11 @@
     parts = parts || {};
     var c = canvas(G, G), x = c.getContext('2d');
     x.drawImage(parts.plate || await plateCanvas(d), 0, 0);
+    // the map behind the reading (flights-map-plan §5): the editor's home map when it has it,
+    // else maps@1's made-up place
+    var MP = root.WeatherMap;
+    if (parts.map) x.drawImage(parts.map, 0, 0);
+    else if (d.map && d.map.on && MP && root.GorbMaps) { try { x.drawImage(MP.view(d.map, root.GorbMaps.sampleMap(), null), 0, 0); } catch (e) { /* none */ } }
     var IP = sizeOf(d, 'icon'), L = layoutNow(d), nu = sizeOf(d, 'num'), lb = sizeOf(d, 'label'), tx = sizeOf(d, 'text');
     var ic = finish(d, await rast(iconSvg(d, 'partly', IP), IP, IP), IP);
     x.drawImage(ic, L.icon.x - IP / 2, L.icon.y - IP / 2);

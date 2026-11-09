@@ -47,6 +47,7 @@ idf_component_register(
         # gate-to-table path is honest.
         "gfx/orb_layers.c"
         "stage/orb_stage.c"
+        "stage/orb_live_work.c"
         "stage/orb_label.c"
         "knob/knob.c"
         # radar-plan §2.4: the map's vector renderer. Pure C, host-tested as shipped

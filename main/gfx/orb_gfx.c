@@ -1016,6 +1016,24 @@ static int       s_st_rows;                           /* rows with a stale segme
  * stale rebuild or the next build-ahead may touch either plane. */
 static int16_t   s_bk0[CLK_SCR_H], s_bk1[CLK_SCR_H];
 static int       s_bk_rows;
+/* A swap (radar-plan §6.27, gfx_prep_swap): a job's new pixels under the same pose, its
+ * changed rows stale, so the next commit composes them all at once from the new picture.
+ * s_lg_alp is the job's new alpha: the commit takes its key's change as no move (else the
+ * whole box would go stale, not the rows that changed). s_lg_wait: the last commit's job list still
+ * reads the old pixels (which the app may now draw over), so the slack waits for a commit. */
+static const uint8_t *s_lg_alp;
+EXT_RAM_BSS_ATTR static int16_t s_sw0[CLK_SCR_H], s_sw1[CLK_SCR_H];   /* the swap's rows */
+static bool      s_sw_rows;
+static bool      s_lg_wait;
+static bool      s_pp_lean;                           /* GFX_PREP_LEAN: no back planes */
+/* Fast by motion (§6.27): a slow job that moved on PP_MOVE_RUN commits in a row is a
+ * fast one from then on (an app's sweep, the tracker's arm), known by its art. The
+ * seconds rows are fast by role. */
+#define PP_MOVE_RUN 4
+#define PP_MOVED_MAX 4
+static const uint16_t *s_pp_moved[PP_MOVED_MAX];
+static int       s_pp_nmoved;
+EXT_RAM_BSS_ATTR static uint8_t s_pp_run[PP_JOBS];
 
 static void pp_stale_clear_all(void)
 {
@@ -1024,6 +1042,8 @@ static void pp_stale_clear_all(void)
         s_st1[y] = s_ps1[y] = s_bk1[y] = -1;
     }
     s_st_rows = s_bk_rows = 0;
+    s_lg_alp = NULL;
+    s_sw_rows = false;
 }
 /* Settle one back-sourced row into the front planes. */
 static void pp_bk_settle(int32_t y)
@@ -1075,7 +1095,11 @@ static void pp_stale_pose(const gfx_paint_ctx_t *pc)
 
 void gfx_prep_mode(int mode)
 {
+    s_pp_lean = (mode & GFX_PREP_LEAN) != 0;
+    mode &= ~GFX_PREP_LEAN;
     s_pp_mode = mode < 0 ? 0 : (mode > 2 ? 2 : mode);
+    s_pp_nmoved = 0;
+    memset(s_pp_run, 0, sizeof s_pp_run);
     s_pp_valid = false;
     s_pp_nj = -1;
     s_pp_nx_frame = -1;
@@ -1094,13 +1118,19 @@ void gfx_prep_mode(int mode)
         orb_glass_free(s_pfn); orb_glass_free(s_pbn);
         s_pf = s_pb = s_pfn = s_pbn = NULL;
     }
-    if (s_pp_mode && !s_pf) {
+    if (s_pp_mode && s_pp_lean && s_pfn) {            /* §6.27: lean keeps the fronts alone */
+        orb_glass_free(s_pfn); orb_glass_free(s_pbn);
+        s_pfn = s_pbn = NULL;
+    }
+    if (s_pp_mode && (!s_pf || (!s_pp_lean && !s_pfn))) {
         const size_t n = (size_t)CLK_SCR_W * CLK_SCR_H * 2;
-        s_pf  = orb_glass_alloc(n);         /* §6.21: the glass region */
-        s_pb  = orb_glass_alloc(n);
-        s_pfn = orb_glass_alloc(n);
-        s_pbn = orb_glass_alloc(n);
-        if (!s_pf || !s_pb || !s_pfn || !s_pbn) {
+        if (!s_pf)  s_pf  = orb_glass_alloc(n);         /* §6.21: the glass region */
+        if (!s_pb)  s_pb  = orb_glass_alloc(n);
+        if (!s_pp_lean) {
+            if (!s_pfn) s_pfn = orb_glass_alloc(n);
+            if (!s_pbn) s_pbn = orb_glass_alloc(n);
+        }
+        if (!s_pf || !s_pb || (!s_pp_lean && (!s_pfn || !s_pbn))) {
             orb_glass_free(s_pf);  orb_glass_free(s_pb);
             orb_glass_free(s_pfn); orb_glass_free(s_pbn);
             s_pf = s_pb = s_pfn = s_pbn = NULL;
@@ -1109,7 +1139,25 @@ void gfx_prep_mode(int mode)
         }
     }
 }
-int gfx_prep_on(void) { return s_pp_mode; }
+int gfx_prep_on(void) { return s_pp_mode ? s_pp_mode | (s_pp_lean ? GFX_PREP_LEAN : 0) : 0; }
+bool gfx_prep_swap(const int16_t *x0, const int16_t *x1, const uint8_t *alp)
+{
+    if (!s_pp_mode || !s_pp_valid) return false;
+    for (int32_t y = 0; y < CLK_SCR_H; y++) {
+        const int32_t a = x0 && x1 ? x0[y] : 0, b = x0 && x1 ? x1[y] : CLK_SCR_W - 1;
+        if (!s_sw_rows) { s_sw0[y] = INT16_MAX; s_sw1[y] = -1; }
+        if (a > b) continue;
+        if (a < s_sw0[y]) s_sw0[y] = (int16_t)a;
+        if (b > s_sw1[y]) s_sw1[y] = (int16_t)b;
+        row_add(y, a, b);                                 /* repainted by this commit */
+        display_mark_rows_clocked(y, y);
+    }
+    s_sw_rows = true;
+    s_lg_alp = alp;
+    s_lg_wait = true;
+    s_pps.swaps++;
+    return true;
+}
 void gfx_prep_stale(int32_t y0, int32_t y1, int32_t x0, int32_t x1)
 {
     if (!s_pp_mode || !s_pp_valid) return;
@@ -1134,7 +1182,10 @@ static bool pp_key_eq(const ppkey_t *a, const ppkey_t *b)
 static void pp_classify(int nj, const gfx_paint_ctx_t *jc)
 {
     s_pp_low = nj;
-    for (int i = 0; i < nj; i++) s_pp_fast[i] = jc[i].role == 2;
+    for (int i = 0; i < nj; i++) {
+        s_pp_fast[i] = jc[i].role == 2;
+        for (int m = 0; m < s_pp_nmoved && !s_pp_fast[i]; m++) s_pp_fast[i] = jc[i].col == s_pp_moved[m];
+    }
     for (int i = 0; i < nj; i++) {
         if (jc[i].role != 3 || !jc[i].rot) continue;
         for (int k = i + 1; k < nj && k <= i + 2; k++)
@@ -1255,7 +1306,7 @@ static void pp_rebuild_box(int32_t x0, int32_t y0, int32_t x1, int32_t y1)
 void gfx_prep_landed(int frame, const gfx_prep_rect_t *cur, int ncur,
                      int next, const gfx_prep_rect_t *nxt, int nnext)
 {
-    if (!s_pp_mode) return;
+    if (!s_pp_mode || !s_pfn) return;                 /* lean: nothing is built ahead */
     if (ncur > PP_RECTS) ncur = PP_RECTS;
     if (nnext > PP_RECTS) nnext = PP_RECTS;
     memcpy(s_pp_land, cur, (size_t)ncur * sizeof *cur);
@@ -1286,6 +1337,7 @@ bool gfx_prep_idle(int64_t deadline_us)
         if (esp_timer_get_time() >= deadline_us) return true;
         pp_bk_settle(y);
     }
+    if (s_lg_wait) return false;                      /* §6.27: a commit first */
     for (int32_t y = 0; y < CLK_SCR_H && s_st_rows; y++) {
         if (s_st0[y] > s_st1[y]) continue;
         if (esp_timer_get_time() >= deadline_us) return true;
@@ -1319,7 +1371,22 @@ static void pp_commit(int nj, const gfx_paint_ctx_t *jc, const uint16_t *canvas,
                       const gfx_spans_t *const *bsp)
 {
     s_pp_jc = jc; s_pp_jn = nj; s_pp_canvas = canvas;
+    s_lg_wait = false;                                /* §6.27: the job list reads the new pixels */
     pp_classify(nj, jc);
+    {
+        static int64_t s_said;
+        const int64_t now = esp_timer_get_time();
+        if (s_pp_lean && now - s_said > 10000000) {        /* §6.27: the app plan's account */
+            s_said = now;
+            int nf = 0;
+            for (int i = 0; i < nj; i++) nf += s_pp_fast[i];
+            ESP_LOGI("gfx", "pre-paint%s: %d jobs, %d fast (%d by motion) | %llu swaps, the last a %u ms blip | stale %llu rows, %d behind | %llu slow moves | live %llu px, copied %llu px",
+                     s_pp_lean ? " (lean)" : "", nj, nf, s_pp_nmoved, (unsigned long long)s_pps.swaps,
+                     (unsigned)(gfx_swap_blip_us() / 1000), (unsigned long long)s_pps.rows_sync, s_st_rows,
+                     (unsigned long long)s_pps.rebuilds,
+                     (unsigned long long)s_pps.live_px, (unsigned long long)s_pps.copy_px);
+        }
+    }
     const bool zones = pp_zones(nj, jc);
     /* Slow jobs that moved, appeared or vanished: their old and new boxes are rebuilt now,
      * and anything built ahead against the old poses is void. */
@@ -1328,7 +1395,22 @@ static void pp_commit(int nj, const gfx_paint_ctx_t *jc, const uint16_t *canvas,
         for (int i = 0; i < nj; i++) {
             if (s_pp_fast[i]) continue;
             ppkey_t k; pp_key_of(&jc[i], &k);
-            if (!pp_key_eq(&k, &s_pp_key[i])) {
+            if (s_lg_alp && k.alp == s_lg_alp) {
+                /* §6.27: a swapped job's new pixels, the pose unchanged: this commit builds its rows */
+                ppkey_t was = s_pp_key[i];
+                was.alp = k.alp;
+                if (pp_key_eq(&k, &was)) { s_pp_run[i] = 0; continue; }
+            }
+            if (pp_key_eq(&k, &s_pp_key[i])) { s_pp_run[i] = 0; continue; }
+            /* §6.27: the same art moving commit after commit is fast from now on (one whole
+             * rebuild, next commit, as its zone joins the planes' cut) */
+            if (k.alp == s_pp_key[i].alp && ++s_pp_run[i] >= PP_MOVE_RUN && s_pp_nmoved < PP_MOVED_MAX) {
+                s_pp_moved[s_pp_nmoved++] = jc[i].col;
+                s_pp_run[i] = 0;
+                s_pps.promoted++;
+                ESP_LOGI("gfx", "pre-paint: job %d (role %u) moves every frame: fast from now on", i, jc[i].role);
+            }
+            {
                 static int64_t s_pp_said;
                 if (esp_timer_get_time() - s_pp_said > 2000000) {
                     s_pp_said = esp_timer_get_time();
@@ -1351,6 +1433,7 @@ static void pp_commit(int nj, const gfx_paint_ctx_t *jc, const uint16_t *canvas,
         }
     } else {
         pp_stale_clear_all();
+        memset(s_pp_run, 0, sizeof s_pp_run);
         pp_rebuild_box(0, 0, CLK_SCR_W - 1, CLK_SCR_H - 1);
         s_pp_valid = true;
         s_pp_gen++; s_pps.rebuilds++;
@@ -1358,6 +1441,15 @@ static void pp_commit(int nj, const gfx_paint_ctx_t *jc, const uint16_t *canvas,
     }
     s_pp_nj = nj;
     for (int i = 0; i < nj; i++) pp_key_of(&jc[i], &s_pp_key[i]);
+    s_lg_alp = NULL;                                  /* the keys hold the new alpha now */
+    /* §6.27: the swap's rows built into the planes here, from the new picture: the blip is
+     * the whole of it, and no row is left stale for the frames after to compose the long way
+     * (a storm's ~300 stale rows held the sweep at 13 fps between steps, Bronze 2026-11-08) */
+    if (s_sw_rows) {
+        for (int32_t y = 0; y < CLK_SCR_H; y++)
+            if (s_sw0[y] <= s_sw1[y]) { pp_build_row(y, s_sw0[y], s_sw1[y], s_pb, s_pf, NULL, 0); s_pps.rows_sync++; }
+        s_sw_rows = false;
+    }
     /* The frame that landed on the canvas this tick: swap in its rows if they were built
      * ahead against these same slow poses, or build them now. */
     if (s_pp_land_pending) {
@@ -1399,6 +1491,15 @@ static void pp_commit(int nj, const gfx_paint_ctx_t *jc, const uint16_t *canvas,
         if (!rowstate.need[y]) continue;
         const int32_t xa = rowstate.x0[y], xb = rowstate.x1[y];
         uint16_t *band = s_band[0];
+        if (s_st0[y] <= s_st1[y]) {
+            /* §6.27: a stale row this commit repaints is rebuilt into the planes now, at the
+             * long way's own cost, rather than composed the long way every frame until the
+             * slack rebuilds it: a frame over budget leaves no slack, and the whole disc
+             * stale held a storm's sweep at 13 fps with all 466 rows behind (Bronze). */
+            pp_build_row(y, s_st0[y], s_st1[y], s_pb, s_pf, NULL, 0);
+            s_st0[y] = INT16_MAX; s_st1[y] = -1; s_st_rows--;
+            s_pps.rows_sync++;
+        }
         pp_row_src(band, s_pf, s_pfn, y, xa, xb);
         s_pps.copy_px += (uint64_t)(xb - xa + 1);
         /* The fast spans on this row, inside the restored extent: live from PB upward, each
@@ -1494,7 +1595,26 @@ static void pp_commit(int nj, const gfx_paint_ctx_t *jc, const uint16_t *canvas,
  * hands vanish over freshly pushed background and leave a ghost at the pose the
  * first LVGL render had drawn. Rows that never get a commit stay marked until one
  * does. */
+/* §6.27: a live layer's swap is one blip, its changed rows composed and sent in one commit.
+ * Its cost, the commit's own time and its pixels' push (~0.35 us a pixel on this panel,
+ * Bronze 2026-11-08), paces the next swap (stage_live_present). */
+static volatile bool s_blip_ask;
+static volatile uint32_t s_blip_us;
+void gfx_swap_note(void) { s_blip_ask = true; }
+uint32_t gfx_swap_blip_us(void) { return s_blip_us; }
+static void gfx_commit_rows(int nj, const gfx_paint_ctx_t *jc, const uint16_t *canvas);
 void gfx_commit(int nj, const gfx_paint_ctx_t *jc, const uint16_t *canvas)
+{
+    if (!s_blip_ask) { gfx_commit_rows(nj, jc, canvas); return; }
+    s_blip_ask = false;
+    uint64_t px = 0;
+    for (int32_t y = 0; y < CLK_SCR_H; y++)
+        if (rowstate.need[y] && rowstate.x1[y] >= rowstate.x0[y]) px += (uint64_t)(rowstate.x1[y] - rowstate.x0[y] + 1);
+    const int64_t t0 = esp_timer_get_time();
+    gfx_commit_rows(nj, jc, canvas);
+    s_blip_us = (uint32_t)(esp_timer_get_time() - t0) + (uint32_t)(px * 35 / 100);
+}
+static void gfx_commit_rows(int nj, const gfx_paint_ctx_t *jc, const uint16_t *canvas)
 {
     uint16_t *fb = display_fb_mirror();
     if (!fb) return;

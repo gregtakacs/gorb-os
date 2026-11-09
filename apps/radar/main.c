@@ -22,12 +22,13 @@
 #define DEFAULT_SOURCE "https://api.librewxr.net"
 
 /* the theme's slots (apps/radar/editor/radar-bake.js) */
-enum { T_DOT = 0, T_HAND = 1, T_TIME = 8, T_PLACE = 9, T_RANGE = 10, T_STATUS = 11, T_NAME0 = 12, T_ZOOM = 18 };
+enum { T_DOT = 0, T_HAND = 1, T_SWEEP = 2, T_TIME = 8, T_PLACE = 9, T_RANGE = 10, T_STATUS = 11, T_NAME0 = 12, T_ZOOM = 18 };
 #define N_NAMES 6
 #define N_ROWS 64
 
 static orb_stage_info_t s_stage;
 static bool  s_themed;
+static int32_t R_sweep = -1;
 static int32_t R_dot = -1, R_hand = -1, R_time = -1, R_place = -1, R_range = -1, R_status = -1, R_zoom = -1;
 static int32_t R_name[N_NAMES];
 static rd_values_t V;
@@ -105,6 +106,7 @@ typedef struct {
 } frame_t;
 
 static frame_t  F[RD_FRAMES];
+static uint32_t s_rain_gen;     /* bumped when the rain's pictures are void (RAIN_AGAIN) */
 static int      s_npast, s_nnow;
 static int64_t  s_list_at;                      /* wall s of the last good list */
 static rd_list_t s_rd;
@@ -165,6 +167,7 @@ static void list_adopt(const rd_list_t *l)
         }
     }
     for (int k = 0; k < RD_FRAMES; k++) if (old[k].slot >= 0) orb_blob_free((uint32_t)old[k].slot);
+    s_rain_gen++;                       /* the indices name other frames now */
 }
 
 /* The next frame to ask for: the newest past one, the nowcast, then the older past ones
@@ -302,6 +305,7 @@ static void net_step(bool visible)
     if (tn > 0 && tn < (int32_t)sizeof tag) memcpy(f->etag, tag, (size_t)tn + 1); else f->etag[0] = 0;
     s_backoff_ms = 0;
     s_rain_dirty = s_ui_dirty = true;
+    s_rain_gen++;                                        /* a picture drawn ahead of it is void */
     net_done();
 }
 
@@ -311,6 +315,9 @@ static int32_t s_view = 0, s_view_next = 0;     /* handles; 0 = none */
 static bool    s_map_dirty, s_map_absent;
 static int64_t s_map_retry_ms;                  /* a map that failed for want of memory: again */
 static int     s_shown = -2;                   /* the frame on the glass, -1 none */
+/* What drew the rain moved (a view, a zoom, the palette, the units, the place, the list, a
+ * frame's body): the glass's rain is drawn again, and a picture drawn ahead is void. */
+#define RAIN_AGAIN(v) (s_shown = (v), s_rain_gen++)
 
 /* No map on the card (or no card) is "No map yet", asked again every 20 s (a card busy
  * under a hub store reads as absent too); anything else (memory, a read) is tried again
@@ -357,7 +364,7 @@ static void view_step(void)
         s_map_absent = false;
     }
     s_map_dirty = s_ui_dirty = s_rain_dirty = true;
-    s_shown = -2;                      /* the rain again, at the new view's magnification */
+    RAIN_AGAIN(-2);                    /* the rain again, at the new view's magnification */
 }
 
 /* ---- the glass ----------------------------------------------------------------------- */
@@ -408,9 +415,19 @@ static int frame_wanted(void)
     return i >= 0 && i < s_npast + s_nnow ? i : idx_newest();
 }
 
+static bool s_back_open;
+/* §6.28: the back's picture is drawn ahead (the next frame the dial turns toward), shown only
+ * if asked for; the frame and the rain generation it was drawn for, and what it drew (-1 none) */
+static bool     s_back_spec;
+static int      s_back_frame = -1, s_back_drawn = -1;
+static uint32_t s_back_gen;
+static int      s_scrub_dir = -1;                /* the way the dial last turned: -1 back in time */
+static int32_t  s_scrub_pos;                     /* the dial's position the last frame (0 playing) */
+static void back_close(void) { s_back_open = s_back_spec = false; s_back_frame = -1; }
 static void layers_open(void)
 {
     if (!s_themed) return;
+    back_close();                      /* a merge reallocates the layers and drops their backs */
     const int32_t a = orb_stage_live(0, V.map_order, 0), b = orb_stage_live(1, V.rain_order, 0);
     s_layers = a == ORB_OK && b == ORB_OK;
     if (!s_layers) orb_logf("radar: the live layers refused (%d, %d)", (int)a, (int)b);
@@ -420,7 +437,7 @@ static void layers_open(void)
     s_merged = s_layers && (V.map_pal[0] >> 24) == 0xFF && (V.map_pal[1] >> 24) == 0xFF &&
                orb_stage_live_merge(1) == ORB_OK;
     s_map_dirty = s_rain_dirty = s_ui_dirty = true;
-    s_shown = -2;
+    RAIN_AGAIN(-2);
 }
 
 /* What the theme wants under the rain, drawn onto the map once a view (§6.19). */
@@ -446,22 +463,28 @@ static void draw_map(void)
     orb_stage_live(0, V.map_order, 0);                   /* clear: the plate shows */
     if (s_view > 0) orb_map_draw(ORB_CV_LIVE0, s_view, V.map_pal, 0, 0);
     draw_under();
-    if (s_merged) { s_shown = -2; s_rain_dirty = true; }  /* the rain's layer is the map's copy */
+    if (s_merged) { RAIN_AGAIN(-2); s_rain_dirty = true; }  /* the rain's layer is the map's copy */
 }
 
 /* The scale bar under its length (owner, 2026-11-08), on the rain's layer so no rain
  * covers it: ink on a dark edge, end ticks up. */
 #define SCALE_Y   440               /* the bar's top */
+static int32_t s_tgt = ORB_CV_LIVE1;  /* where the bar goes: the rain's layer, or the bare canvas */
 static void band(int x0, int x1, int y0, int y1, uint32_t argb)   /* rows y0..y1, the 2 px pen */
 {
     if (!(argb >> 24)) return;
-    for (int y = y0; y <= y1; y += 2) orb_cv_line(ORB_CV_LIVE1, x0, y > y1 - 1 ? y1 - 1 : y, x1, y > y1 - 1 ? y1 - 1 : y, argb & 0xFFFFFF);
+    for (int y = y0; y <= y1; y += 2) orb_cv_line(s_tgt, x0, y > y1 - 1 ? y1 - 1 : y, x1, y > y1 - 1 ? y1 - 1 : y, argb & 0xFFFFFF);
 }
 static void draw_scale(void)
 {
     const where_t *w = here();
     if (!w) return;
     int px;
+    if (V.scale_ring) {                  /* the mock-up's: a ring at the round length, labelled by draw_ui */
+        (void)rd_scale(rd_radius_m(s_zoom, w->lat_e6), s_units.dist, 200, &px);
+        orb_cv_ring(s_tgt, CX, CY, px, V.scale_ink & 0xFFFFFF);
+        return;
+    }
     (void)rd_scale(rd_radius_m(s_zoom, w->lat_e6), s_units.dist, V.scale_max, &px);
     const int x0 = CX - px / 2, x1 = x0 + px, t = V.scale_tick, h = V.scale_w;
     /* the edge a pixel round the bar and the ticks, then the ink over it */
@@ -472,38 +495,98 @@ static void draw_scale(void)
     }
     band(x0, x1 - 1, SCALE_Y, SCALE_Y + h - 1, V.scale_ink);
     if (t) {
-        orb_cv_line(ORB_CV_LIVE1, x0, SCALE_Y - t, x0, SCALE_Y, V.scale_ink & 0xFFFFFF);
-        orb_cv_line(ORB_CV_LIVE1, x1 - 2, SCALE_Y - t, x1 - 2, SCALE_Y, V.scale_ink & 0xFFFFFF);
+        orb_cv_line(s_tgt, x0, SCALE_Y - t, x0, SCALE_Y, V.scale_ink & 0xFFFFFF);
+        orb_cv_line(s_tgt, x1 - 2, SCALE_Y - t, x1 - 2, SCALE_Y, V.scale_ink & 0xFFFFFF);
     }
 }
 
 /* The theme's rain colours with the owner's floor: values under it draw nothing. */
-static uint32_t s_pal[256];
+static uint32_t s_pal[256], s_pal_fc[256];      /* observed, and a nowcast frame's (V.forecast) */
 static void pal_build(void)
 {
     const int v0 = rd_floor_value(s_floor);
-    for (int i = 0; i < 256; i++) s_pal[i] = i < v0 ? 0 : V.rain[i];
+    for (int i = 0; i < 256; i++) {
+        const uint32_t c = i < v0 ? 0 : V.rain[i];
+        s_pal[i] = c;
+        if (V.forecast == RD_FC_DIM) s_pal_fc[i] = ((c >> 25) << 24) | (c & 0xFFFFFF);   /* half the opacity */
+        else if (V.forecast == RD_FC_DESAT) {                                             /* seven parts grey */
+            const uint32_t r = c >> 16 & 0xFF, g = c >> 8 & 0xFF, b = c & 0xFF, l = (r * 77 + g * 150 + b * 29) >> 8;
+            s_pal_fc[i] = (c & 0xFF000000u) | ((r + 7 * l) >> 3) << 16 | ((g + 7 * l) >> 3) << 8 | ((b + 7 * l) >> 3);
+        } else s_pal_fc[i] = c;
+    }
+}
+
+/* radar-plan §6.27 (OS v1.2.38): the next rain picture is drawn into the layer's back copy
+ * by the OS's worker, off the frame, and presented whole when it is done, so the sweep keeps
+ * its pace (Bronze: a decode in the call held the tick ~117 ms, the sweep fell to 9 fps). */
+/* s_back_open: a back picture is being drawn (declared by layers_open). One begins with the
+ * map copied in and the frame drawn over it, queued on the OS's worker. */
+static bool back_begin(int i, bool spec)
+{
+    if (orb_stage_live_back(1, s_merged ? 0 : -1, 0) != ORB_OK) return false;   /* the worker is busy */
+    s_back_open = true;
+    s_back_spec = spec;
+    s_back_frame = i;
+    s_back_gen = s_rain_gen;
+    s_back_drawn = -1;
+    s_tgt = ORB_CV_BACK1;
+    const frame_t *f = i >= 0 ? &F[i] : NULL;
+    if (!f || f->slot < 0 || !orb_blob_len((uint32_t)f->slot)) { draw_scale(); return true; }
+    const int k = rd_img_k(s_zoom);
+    orb_png_draw_t d = { .slot = (uint32_t)f->slot, .sx = s_sx, .sy = s_sy, .dx = s_dx, .dy = s_dy,
+                         .w = RD_GLASS, .h = RD_GLASS, .scale = k > 1 ? (k | ORB_PNG_SMOOTH) : 1, .pal = f->now ? s_pal_fc : s_pal };
+    if (f->now && V.forecast == RD_FC_HATCH) d.scale |= ORB_PNG_HATCH;   /* a forecast never looks observed */
+    const int32_t rc = orb_cv_png8(ORB_CV_BACK1, &d);
+    draw_scale();
+    if (rc == ORB_OK) s_back_drawn = i;
+    else orb_logf("radar: frame %d (slot %d, %u B) did not draw: %d", i, (int)f->slot, (unsigned)orb_blob_len((uint32_t)f->slot), (int)rc);
+    return true;
+}
+
+static void back_step(void)
+{
+    if (!s_back_open) return;
+    if (s_back_spec) {                                   /* drawn ahead: compared, never shown unasked */
+        (void)orb_stage_live_present(1 | ORB_LIVE_PREPARE);
+        return;
+    }
+    /* §6.28: a scrub's step is the owner's, and goes at once; the loop is paced by its blips */
+    const int32_t r = orb_stage_live_present(1 | (s_play ? 0 : ORB_LIVE_NOW));
+    if (r == 0) return;                                  /* still being drawn, compared or paced */
+    s_back_open = false;
+    if (r < 0) { orb_logf("radar: the rain's back picture did not present (%d)", (int)r); RAIN_AGAIN(-2); s_rain_dirty = true; return; }
+    s_shown = s_back_drawn;
+    /* §6.28: scrubbing, the next frame the way the dial turns is drawn ahead into the idle back,
+     * so the next detent that way is one blip (the decode and the compare already made) */
+    const int n = s_shown + s_scrub_dir;
+    if (!s_play && s_shown >= 0 && n >= 0 && n < s_npast + s_nnow && F[n].slot >= 0 && orb_blob_len((uint32_t)F[n].slot))
+        (void)back_begin(n, true);
 }
 
 static void draw_rain(void)
 {
     if (s_view_next > 0) return;       /* a new view is rendering: the old map and rain stay up */
-    s_rain_dirty = false;
-    if (!s_layers) return;
+    if (!s_layers) { s_rain_dirty = false; return; }
     const int i = frame_wanted();
     const frame_t *f = i >= 0 ? &F[i] : NULL;
-    if (s_shown == i && f && f->slot >= 0) return;
-    if (s_merged) orb_stage_live_copy(1, 0);             /* the map, then the rain over it */
-    else orb_stage_live(1, V.rain_order, 0);
-    s_shown = -1;
-    if (!f || f->slot < 0 || !orb_blob_len((uint32_t)f->slot)) { draw_scale(); return; }
-    const int k = rd_img_k(s_zoom);
-    orb_png_draw_t d = { .slot = (uint32_t)f->slot, .sx = s_sx, .sy = s_sy, .dx = s_dx, .dy = s_dy,
-                         .w = RD_GLASS, .h = RD_GLASS, .scale = k > 1 ? (k | ORB_PNG_SMOOTH) : 1, .pal = s_pal };
-    const int32_t rc = orb_cv_png8(ORB_CV_LIVE1, &d);
-    draw_scale();
-    if (rc == ORB_OK) s_shown = i;
-    else orb_logf("radar: frame %d (slot %d, %u B) did not draw: %d", i, (int)f->slot, (unsigned)orb_blob_len((uint32_t)f->slot), (int)rc);
+    /* the way the dial turns, from the dial itself: out of the loop, the jump from the loop's
+     * frame to the dial's says nothing about the direction */
+    if (s_play) s_scrub_pos = 0;
+    else if (s_dial.pos != s_scrub_pos) { s_scrub_dir = s_dial.pos > s_scrub_pos ? 1 : -1; s_scrub_pos = s_dial.pos; }
+    if (s_back_open && s_back_frame == i && s_back_gen == s_rain_gen) {
+        s_back_spec = false;           /* drawn ahead, or being drawn: back_step shows it */
+        s_rain_dirty = false;
+        return;
+    }
+    if (s_shown == i && f && f->slot >= 0) {
+        s_rain_dirty = false;
+        if (s_back_open) s_back_spec = true;   /* the dial came back: what is in flight is not asked for */
+        return;
+    }
+    /* the map, then the rain over it (merged), or a clear layer: begun in the back copy, over
+     * whatever it held; refused while the worker still draws, so asked again next frame */
+    if (!back_begin(i, false)) { s_rain_dirty = true; return; }
+    s_rain_dirty = false;
 }
 
 /* The landmarks' names, best rank first, kept off the place's dot, off each other and
@@ -538,19 +621,26 @@ static void draw_ui(void)
     const where_t *w = here();
     char b[48];
     pose(R_dot, CX, CY);
-    say(R_place, CX, 58, w ? w->name : "", 0);
-    if (w) {                                              /* the scale bar's length */
-        int px;
-        const int len = rd_scale(rd_radius_m(s_zoom, w->lat_e6), s_units.dist, V.scale_max, &px);
+    char pl[40];
+    snprintf(pl, sizeof pl, "%s", w ? w->name : "");
+    if (V.caps) for (char *c = pl; *c; c++) if (*c >= 'a' && *c <= 'z') *c = (char)(*c - 32);   /* ASCII alone */
+    say(R_place, CX, V.place_y, pl, 0);
+    int rpx = 0;
+    if (w) {                                              /* the scale's round length */
+        const int len = rd_scale(rd_radius_m(s_zoom, w->lat_e6), s_units.dist, V.scale_ring ? 200 : V.scale_max, &rpx);
         snprintf(b, sizeof b, "%d %s", len, s_units.dist == 1 ? "mi" : s_units.dist == 2 ? "nm" : "km");
     } else b[0] = 0;
-    say(R_range, CX, 414, b, 0);
+    /* the bar's length under it; the ring's on the ring, up and to the right */
+    if (V.scale_ring) say(R_range, CX + rpx * 7071 / 10000 + 30, CY - rpx * 7071 / 10000 - 6, b, 0);
+    else say(R_range, CX, 414, b, 0);
     const int i = frame_wanted();
     if (i >= 0) {
         const int min = (int)((F[i].t - F[idx_newest()].t) / 60);
         rd_time_text(b, sizeof b, min);
-        say(R_time, CX, 98, b, F[i].now ? 1 : 0);                  /* a forecast reads as one */
-        if (R_hand >= 0) orb_stage_pose(R_hand, min * 15, 0, 0);   /* 1.5 degrees a minute */
+        say(R_time, CX, V.time_y, b, F[i].now ? 1 : 0);           /* a forecast reads as one */
+        /* the cursor: round, Now at the top and 1.5 degrees a minute; bottom (the mock-up's),
+         * Now at the bottom and half a degree a minute, the past to its left */
+        if (R_hand >= 0) orb_stage_pose(R_hand, V.track_bottom ? 1800 - min * 5 : min * 15, 0, 0);
     } else {
         hide(R_time);
         hide(R_hand);
@@ -583,7 +673,8 @@ static void draw_ui(void)
         snprintf(b, sizeof b, "updated %d min ago", (int)((now_s() - s_list_at) / 60));
         st = b;
     }
-    say(R_status, CX, 362, st, 0);
+    else if (want >= 0 && F[want].now && V.track_bottom) st = "forecast";   /* the mock-up's word under the time */
+    say(R_status, CX, V.status_y, st, 0);
     if (s_flip_ms) for (int k = 0; k < N_NAMES; k++) hide(R_name[k]);   /* the old map's */
     else draw_names();
 }
@@ -610,7 +701,7 @@ static void view_changed(bool frames)
         s_loop = 0;
         orb_dial_home(&s_dial);
     }
-    s_shown = -2;
+    RAIN_AGAIN(-2);
     window_set();
     s_map_absent = false;
     s_map_retry_ms = 0;
@@ -623,13 +714,16 @@ static void place_changed(void)
     view_changed(true);
     if (s_merged) orb_stage_live_copy(1, 0);             /* the old place's rain goes at once */
     else if (s_layers) orb_stage_live(1, V.rain_order, 0);
-    s_shown = -1;
+    RAIN_AGAIN(-1);
 }
 
 /* The loop (§2.5): oldest held past frame to Now, 250 ms a step, Now held 2 s. */
 static void loop_step(void)
 {
     if (!s_play || !s_npast || s_zoom_want >= 0) return;   /* choosing a zoom: it holds */
+    /* the last step's rain is not on the glass yet: the loop waits for it, so a storm's heavy
+     * frames step it more slowly rather than skip (the OS paces each swap by its blip) */
+    if (s_back_open && !s_back_spec) return;
     orb_burst(1000);               /* a theme with no moving rows ticks once a second: keep 4 */
     const int64_t t = up_ms();
     const int hold = s_loop == idx_newest() ? 2000 : 250;
@@ -640,20 +734,130 @@ static void loop_step(void)
     if (next != s_loop) { s_loop = next; s_rain_dirty = s_ui_dirty = true; }
 }
 
+/* ---- the bare form: no theme bound (app-platform-plan §26: every app draws its base
+ * form from the OS's primitives) ---------------------------------------------------------
+ * One canvas, composed whole whenever anything moved: the ground, the OS's map in the
+ * radar's own colours (rd_values_default), the rain frame through the same ramp and floor,
+ * a ring and the rim, home's dot, the scale bar, and the words in the system fonts (18 px,
+ * 48 px for the time and the zoom), names folded to ASCII (the system fonts carry no
+ * accents). Same knob, same loop, same fetches as on a theme. */
+#define BARE_GROUND 0x06140C            /* Scope's phosphor, as the default values' map is */
+#define BARE_INK    0xB4FFD2
+#define BARE_QUIET  0x5FBF8A
+#define BARE_NEXT   0xE0B040            /* a forecast frame's time */
+#define BARE_RING   0x299057
+static int32_t s_cv;                    /* the bare canvas; 0 on a theme */
+static void bare_text(int y, int w, int font, uint32_t rgb, const char *s)
+{
+    char a[64];
+    rd_ascii(a, sizeof a, s);
+    orb_cv_text(s_cv, CX - w / 2, y, w, font | ORB_CV_CENTER, rgb, a);
+}
+
+static void bare_names(void)
+{
+    int n = 0;
+    int16_t bx[N_NAMES], by[N_NAMES], bw[N_NAMES];
+    for (uint32_t k = 0; s_view > 0 && n < V.names && n < N_NAMES && k < 32; k++) {
+        orb_map_mark_t m;
+        if (orb_map_mark(s_view, k, &m) != 1) break;
+        char a[32];
+        const int len = (int)rd_ascii(a, sizeof a, m.name);
+        const int w = 11 * len + 12, x = m.x, y = m.y + 6;      /* 18 px words, under the mark */
+        const int dx = x - CX, dy = y - CY;
+        if (dx * dx + dy * dy > 185 * 185 || dx * dx + dy * dy < 40 * 40) continue;
+        if (y < 130 || y > 330) continue;                         /* the time, the status, the scale */
+        bool hit = false;
+        for (int j = 0; j < n && !hit; j++)
+            hit = (x - bx[j] < (w + bw[j]) / 2 && bx[j] - x < (w + bw[j]) / 2) && (y - by[j] < 24 && by[j] - y < 24);
+        if (hit) continue;
+        bx[n] = (int16_t)x; by[n] = (int16_t)y; bw[n] = (int16_t)w;
+        orb_cv_text(s_cv, x - w / 2, y, w, ORB_FONT_18 | ORB_CV_CENTER, BARE_QUIET, a);
+        n++;
+    }
+}
+
+static void bare_draw(void)
+{
+    s_map_dirty = s_rain_dirty = s_ui_dirty = false;
+    const where_t *w = here();
+    char b[48];
+    orb_cv_fill(s_cv, BARE_GROUND);
+    if (s_view > 0) orb_map_draw(s_cv, s_view, V.map_pal, 0, 0);
+    const int i = frame_wanted();
+    const frame_t *f = i >= 0 ? &F[i] : NULL;
+    s_shown = -1;
+    if (f && f->slot >= 0 && orb_blob_len((uint32_t)f->slot)) {
+        const int k = rd_img_k(s_zoom);
+        orb_png_draw_t d = { .slot = (uint32_t)f->slot, .sx = s_sx, .sy = s_sy, .dx = s_dx, .dy = s_dy,
+                             .w = RD_GLASS, .h = RD_GLASS, .scale = k > 1 ? (k | ORB_PNG_SMOOTH) : 1, .pal = s_pal };
+        if (orb_cv_png8(s_cv, &d) == ORB_OK) s_shown = i;
+    }
+    orb_cv_ring(s_cv, CX, CY, 116, BARE_RING);
+    orb_cv_ring(s_cv, CX, CY, 231, BARE_RING);
+    orb_cv_ring(s_cv, CX, CY, 230, BARE_RING);
+    if (!s_flip_ms) bare_names();
+    orb_cv_disc(s_cv, CX, CY, 6, BARE_NEXT);
+    orb_cv_disc(s_cv, CX, CY, 4, 0xFFFFFF);
+    s_tgt = s_cv;
+    draw_scale();
+    if (w) {
+        int px;
+        const int len = rd_scale(rd_radius_m(s_zoom, w->lat_e6), s_units.dist, V.scale_max, &px);
+        snprintf(b, sizeof b, "%d %s", len, s_units.dist == 1 ? "mi" : s_units.dist == 2 ? "nm" : "km");
+        bare_text(410, 160, ORB_FONT_18, BARE_INK, b);
+        bare_text(36, 300, ORB_FONT_18, BARE_QUIET, w->name);
+    }
+    if (i >= 0) {
+        rd_time_text(b, sizeof b, (int)((F[i].t - F[idx_newest()].t) / 60));
+        bare_text(62, 320, ORB_FONT_48, F[i].now ? BARE_NEXT : BARE_INK, b);
+    }
+    /* the zoom while it changes, or a press's new place: large, on a dark band */
+    const bool zooming = s_zoom_want >= 0 || up_ms() - s_zoom_said_ms < 2000;
+    const int zs = s_zoom_want >= 0 ? s_zoom_want : s_zoom;
+    s_pill_up = w && (zooming || s_flip_ms);
+    if (s_pill_up) {
+        if (s_flip_ms && !zooming) snprintf(b, sizeof b, "%s", w->name);
+        else snprintf(b, sizeof b, "%s", ZOOM[zs]);
+        for (int y = CY + 36; y < CY + 92; y += 2) orb_cv_line(s_cv, CX - 190, y, CX + 190, y, 0x05090D);
+        bare_text(CY + 40, 370, ORB_FONT_48, BARE_INK, b);
+    }
+    const char *st = "";
+    if (!w) st = "Set home on the hub";
+    else if (s_map_absent) st = "No map yet";
+    else if (s_view_next > 0 || s_map_retry_ms) st = "Loading map";
+    else if (!s_npast) st = s_net != NET_IDLE ? "Loading radar" : "No radar yet";
+    else if (i >= 0 && F[i].slot < 0 && !F[i].failed) st = "Loading radar";
+    else if (s_list_at && now_s() - s_list_at > STALE_S) {
+        snprintf(b, sizeof b, "updated %d min ago", (int)((now_s() - s_list_at) / 60));
+        st = b;
+    }
+    if (st[0]) bare_text(352, 300, ORB_FONT_18, BARE_QUIET, st);
+    orb_cv_flush(s_cv);
+}
+
 static void redraw(void)
 {
-    if (!s_visible || !s_themed) return;
+    if (!s_visible) return;
+    if (!s_themed) {
+        if (s_cv && (s_map_dirty || s_rain_dirty || s_ui_dirty)) bare_draw();
+        return;
+    }
     if (!s_layers) layers_open();
+    back_step();
     if (s_map_dirty) draw_map();
     if (s_rain_dirty) draw_rain();
-    if (s_ui_dirty) draw_ui();
+    if (s_back_open && !s_back_spec) back_step();   /* §6.28: a picture drawn ahead goes this frame */
+    /* the words and the track's cursor change with the rain they name, in the swap's own
+     * frame, never ahead of it (owner, 2026-11-08: the time read half -40, half -50) */
+    if (s_ui_dirty && !(s_back_open && !s_back_spec)) draw_ui();
 }
 
 /* ---- entry points -------------------------------------------------------------------- */
 
 static void find_rows(void)
 {
-    R_dot = R_hand = R_time = R_place = R_range = R_status = R_zoom = -1;
+    R_dot = R_hand = R_time = R_place = R_range = R_status = R_zoom = R_sweep = -1;
     for (int k = 0; k < N_NAMES; k++) R_name[k] = -1;
     for (int32_t i = 0; i < (int32_t)s_stage.n_rows && i < N_ROWS; i++) {
         clk_row_t r;
@@ -661,6 +865,7 @@ static void find_rows(void)
         const int t = r.tag;
         if (t == T_DOT) R_dot = i;
         else if (t == T_HAND) R_hand = i;
+        else if (t == T_SWEEP) R_sweep = i;
         else if (t == T_TIME) R_time = i;
         else if (t == T_PLACE) R_place = i;
         else if (t == T_RANGE) R_range = i;
@@ -677,9 +882,17 @@ static void read_values(void)
     rd_values_t got;
     const uint32_t n = s_themed ? orb_stage_values(&got, sizeof got, &ver) : 0;
     if (n == sizeof got && ver == RD_VALUES_VER) memcpy(&V, &got, sizeof V);
+    else if (n == RD_VALUES_V4_B && ver == 4) memcpy(&V, &got, RD_VALUES_V4_B);
     else if (n == RD_VALUES_V3_B && ver == 3) memcpy(&V, &got, RD_VALUES_V3_B);   /* nothing under the rain */
     else if (n == RD_VALUES_V2_B && ver == 2) memcpy(&V, &got, RD_VALUES_V2_B);   /* the scale's defaults stay */
     else if (n) orb_logf("radar: the theme's values are layout %u, %u B: the defaults draw", (unsigned)ver, (unsigned)n);
+    if (n && ver < 5 && (n == RD_VALUES_V4_B || n == RD_VALUES_V3_B || n == RD_VALUES_V2_B)) {
+        /* a theme from before the mock-up's look: its glass has the round track and no ring */
+        V.track_bottom = 0; V.forecast = RD_FC_NONE; V.scale_ring = 0; V.caps = 0;
+        V.place_y = 58; V.time_y = 98; V.status_y = 362; V.sweep_s = 0;
+    }
+    if (V.place_y > 440 || V.time_y > 440 || V.status_y > 440) { V.place_y = 58; V.time_y = 98; V.status_y = 362; }
+    if (V.sweep_s > 30) V.sweep_s = 30;
     if (V.names > N_NAMES) V.names = N_NAMES;
     if (V.scale_w < 2) V.scale_w = 2;
     if (V.scale_w > 8) V.scale_w = 8;
@@ -698,23 +911,36 @@ static void read_values(void)
  * for it: a widget on the page, hidden or not, took the dial off its fast path for good
  * (orb_stage.c's veto), and the hub installs the shelf's theme with the app. */
 static int64_t s_stage_retry_ms;
-static void stage_read(void)
+static void stage_read(bool may_bare)
 {
     const bool was = s_themed;
     s_themed = orb_stage_open(&s_stage) == ORB_OK && !s_stage.base;
     if (s_themed) find_rows();
     if (s_themed && R_time < 0) s_themed = false;      /* not this app's layout */
     read_values();
-    orb_set_beat(s_themed ? 0 : 2000);
+    /* no theme: the bare form, for good (a theme's store reboots the orb, which starts the
+     * app again on it); its loop steps every 250 ms. Never at orb_init or an arrival: the OS
+     * binds the stage after them, and the canvas, a widget, keeps the stage off for good
+     * (Bronze, 2026-11-08: after a reboot the radar stood bare over its Scope theme). The
+     * service's next ask decides. */
+    if (!s_themed && !s_cv && may_bare) {
+        s_cv = orb_cv_create(0, CX * 2, CY * 2);
+        orb_logf("radar: no theme: the bare form%s", s_cv ? "" : ", but its canvas was refused");
+    }
+    /* Bare, the loop steps from orb_service, which runs many times a second: a beat is
+     * never under the manifest's 1000 ms floor (D16), and a 250 ms one, refused, left the
+     * loop standing on its first frame (owner, 2026-11-08). The beat keeps the age line. */
+    const uint32_t beat = s_themed ? 0 : s_cv ? 1000 : 2000;
+    if (orb_set_beat(beat) != ORB_OK) orb_logf("radar: the OS refused a %u ms beat", (unsigned)beat);
     if (was != s_themed) orb_logf("radar: %s", s_themed ? "on its theme" : "no theme bound yet: asking again");
-    s_stage_retry_ms = up_ms() + 2000;
+    s_stage_retry_ms = up_ms() + (may_bare ? 2000 : 300);
 }
 
 ORB_EXPORT("orb_init") int32_t orb_init(void)
 {
     orb_knob_dial();
     for (int i = 0; i < RD_FRAMES; i++) F[i].slot = -1;
-    stage_read();
+    stage_read(false);
     load_settings();
     load_places();
     orb_units(&s_units);
@@ -728,7 +954,9 @@ static void on_glass(void)
 {
     s_visible = true;
     s_layers = false;                  /* the stage frees the layers when another app binds */
-    stage_read();
+    back_close();                      /* and their back copies with them */
+    if (!s_cv) stage_read(false);      /* the bare form stays bare */
+    s_map_dirty = s_rain_dirty = s_ui_dirty = true;
     /* the OS closed the map's views when the app left (no display buffers off the glass,
      * OS v1.2.27): a new one, the frames kept unless nothing has been shown yet */
     for (int i = 0; i < RD_FRAMES; i++)              /* the OS frees kept bodies 15 min off the glass */
@@ -745,11 +973,15 @@ static void on_glass(void)
 ORB_EXPORT("orb_activate") void orb_activate(void) { orb_dial_home(&s_dial); s_play = true; on_glass(); }
 ORB_EXPORT("orb_resume") void orb_resume(void) { on_glass(); }
 ORB_EXPORT("orb_show") void orb_show(void) { on_glass(); }
-ORB_EXPORT("orb_suspend") void orb_suspend(void) { s_visible = false; s_layers = false; }
+ORB_EXPORT("orb_suspend") void orb_suspend(void) { s_visible = false; s_layers = false; back_close(); }
 
 ORB_EXPORT("orb_tick") void orb_tick(uint32_t now)
 {
     (void)now;
+    if (R_sweep >= 0 && V.sweep_s && s_themed && s_visible) {      /* Scope's sweep: one turn a sweep_s */
+        const int64_t per = (int64_t)V.sweep_s * 1000;
+        orb_stage_pose(R_sweep, (int32_t)((up_ms() % per) * 3600 / per), 0, 0);
+    }
     zoom_step();
     loop_step();
     redraw();
@@ -764,7 +996,7 @@ ORB_EXPORT("orb_service") void orb_service(void)
         memcpy(src, s_source, sizeof src);
         const int fl = s_floor;
         load_settings();
-        if (fl != s_floor) { pal_build(); s_rain_dirty = true; s_shown = -2; }
+        if (fl != s_floor) { pal_build(); s_rain_dirty = true; RAIN_AGAIN(-2); }
         if (strcmp(src, s_source)) { s_next_list_ms = 0; moved = true; }
         if (z != s_zoom && !s_visible) moved = true;   /* on the glass the push owns the zoom */
         else s_zoom = z;
@@ -778,7 +1010,7 @@ ORB_EXPORT("orb_service") void orb_service(void)
     if (orb_maps_gen() != s_maps_gen && here()) { view_open(); }
     if (orb_units_gen() != s_units_gen) {               /* the scale's unit: the bar too */
         orb_units(&s_units); s_units_gen = orb_units_gen();
-        s_ui_dirty = s_rain_dirty = true; s_shown = -2;
+        s_ui_dirty = s_rain_dirty = true; RAIN_AGAIN(-2);
     }
     if (moved) place_changed();
     /* The scrub reaches back only as far as frames the loop can show: past ones given up
@@ -796,7 +1028,8 @@ ORB_EXPORT("orb_service") void orb_service(void)
         s_ui_dirty = s_rain_dirty = true;
     }
     zoom_step();
-    if (s_visible && !s_themed && up_ms() >= s_stage_retry_ms) { stage_read(); s_layers = false; s_map_dirty = s_rain_dirty = s_ui_dirty = true; }
+    if (s_visible && s_cv) loop_step();                  /* bare: the loop's clock is the service */
+    if (s_visible && !s_themed && !s_cv && up_ms() >= s_stage_retry_ms) { stage_read(true); s_layers = false; s_map_dirty = s_rain_dirty = s_ui_dirty = true; }
     if (s_map_retry_ms && up_ms() >= s_map_retry_ms) { s_map_retry_ms = 0; view_open(); }
     view_step();
     /* The zoom's pill goes 2 s after it lands. Playing, the loop's next frame redrew it away;

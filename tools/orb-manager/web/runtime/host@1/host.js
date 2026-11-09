@@ -16,6 +16,8 @@
  *     start,                         // optional: the template the editor opens on (else the first)
  *     startNote,                     // optional: a line for the start step's pane
  *     picture(d, px),                // async: the design drawn small, for tiles and the library
+ *     pictureKey(),                  // optional: what the pictures are drawn over now; a new key
+ *                                    // draws the start's tiles again (Radar's, once home's map comes)
  *     steps: [[key, label]],         // the editing steps, between Start and Render
  *     parts: [{id, label, icon, note(d), also: [step]}],   // the left pane, bottom to top; picking
  *                                    // one opens its step (also: other steps it stays lit for)
@@ -31,8 +33,8 @@
  *                                    // acts (idle: its tip when not). ?<key>= in the address
  *                                    // leads, then init, then the first option
  *     ui,                            // optional: the app's own preview state (a selection), outside history
- *     play: {fps(d), want(d), on(view), what},   // optional: a frame clock at fps, running while
- *                                    // on(view); want: the rate the orb is asked for (else fps);
+ *     play: {fps(d), want(d), on(view, d), what},   // optional: a frame clock at fps, running while
+ *                                    // on(view, d); want: the rate the orb is asked for (else fps);
  *                                    // what: 'the weather', for the button's tip
  *     paceBy: [viewKey | {key, with, label}],   // optional: the views whose options change what
  *                                    // moves; Render lists the estimated frame rate of each option,
@@ -278,7 +280,7 @@
       } catch (e) { say('The preview could not be drawn: ' + err(e)); }
     }
     R.useEffect(function () { drawNow(); });
-    var playOn = !!(A.play && (!A.play.on || A.play.on(view)));
+    var playOn = !!(A.play && (!A.play.on || A.play.on(view, d)));
     var fps = A.play ? Math.max(1, +(typeof A.play.fps === 'function' ? A.play.fps(d) : A.play.fps) || 30) : 0;
     R.useEffect(function () {
       if (!playOn || !playing) { clock.dt = 0; return; }
@@ -389,7 +391,7 @@
         if (paces[pk] && paces[pk].done) return paces[pk];
         if (keyOf(stateRef.current.d) !== k) return null;          // overtaken by an edit
         var r;
-        if (!A.play || (A.play.on && !A.play.on(v))) r = { still: true };
+        if (!A.play || (A.play.on && !A.play.on(v, dd))) r = { still: true };
         else { try { r = T.pace(await sampleView(dd, v), { base: H.PACE_BASE, want: wantOf(dd) }); } catch (e) { r = { why: err(e) }; } }
         paces[pk] = Object.assign({ done: true }, r);
         setPaceTick(function (n) { return n + 1; });
@@ -523,9 +525,10 @@
     var drawThumb = function (k, c) {
       if (!c) return;
       var paint = function (im) { var x = c.getContext('2d'); x.clearRect(0, 0, c.width, c.height); x.drawImage(im, 0, 0, c.width, c.height); };
-      if (thumbs[k] && thumbs[k].im) { paint(thumbs[k].im); return; }
-      if (!thumbs[k]) thumbs[k] = { p: A.picture(made(A, k), 192).then(function (im) { thumbs[k].im = im; return im; }) };
-      thumbs[k].p.then(paint, function () { /* the tile stays dark */ });
+      var tk = k + '|' + (A.pictureKey ? A.pictureKey() : '');
+      if (thumbs[tk] && thumbs[tk].im) { paint(thumbs[tk].im); return; }
+      if (!thumbs[tk]) thumbs[tk] = { p: A.picture(made(A, k), 192).then(function (im) { thumbs[tk].im = im; return im; }) };
+      thumbs[tk].p.then(paint, function () { /* the tile stays dark */ });
     };
     var pick = function (k, what) { setD(made(A, k)); ses.restart(); say('Starting from ' + what + ': Continue when you are ready'); };
     var sheet = step === 'start' ? h(S.StartSheet, {

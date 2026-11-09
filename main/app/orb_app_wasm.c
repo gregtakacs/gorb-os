@@ -67,6 +67,7 @@
 #include "orb_jobs.h"           /* settings writes leave the guest's stack for the worker */
 #include "lvgl.h"               /* the beat timer; LVGL task only, like every hook */
 #include "wasm3.h"
+#include "orb_live_work.h" /* OS v1.2.38: the back copies' worker */
 #include "orb_glass.h"   /* §6.21 */
 
 static const char *TAG = "appwasm";
@@ -790,6 +791,12 @@ m3ApiRawFunction(imp_cv_pixel)               /* void cv_pixel(i32 h, i32 x, i32 
 }
 
 static bool live_tgt_of(const wasm_slot_t *s, int32_t cv, orb_ui_tgt_t *t);   /* below */
+static bool stage_on(const wasm_slot_t *s);                                  /* below */
+/* OS v1.2.38 (radar-plan §6.27): a layer's back copy, drawn by the live worker in order */
+#define ORB_CV_BACK0 (-17)
+#define CV_IS_BACK(cv) ((cv) <= ORB_CV_BACK0 && (cv) > ORB_CV_BACK0 - STAGE_LIVE_N)
+#define CV_BACK_LAYER(cv) (ORB_CV_BACK0 - (cv))
+
 m3ApiRawFunction(imp_cv_ring)                /* void cv_ring(h, cx, cy, r, rgb) */
 {
     CALLER();
@@ -800,6 +807,13 @@ m3ApiRawFunction(imp_cv_ring)                /* void cv_ring(h, cx, cy, r, rgb) 
     m3ApiGetArg(uint32_t, rgb);
     UI_GATE();
     orb_ui_tgt_t t;
+    if (CV_IS_BACK(h)) {                     /* OS v1.2.38: queued onto the layer's back copy */
+        if (stage_on(s) && r >= 0) {
+            lw_job_t j = { .op = LW_RING, .layer = (uint8_t)CV_BACK_LAYER(h), .argb = rgb, .a = { cx, cy, r } };
+            (void)orb_live_work_post(&j);
+        }
+        m3ApiSuccess();
+    }
     if (h < 0) {                             /* OS v1.2.33: onto a live layer (ORB_CV_LIVE0/1) */
         if (live_tgt_of(s, h, &t) && r >= 0) {
             orb_ui_tgt_ring(&t, cx, cy, r, rgb);
@@ -835,6 +849,13 @@ m3ApiRawFunction(imp_cv_line)                /* void cv_line(h, x0, y0, x1, y1, 
     m3ApiGetArg(uint32_t, rgb);
     UI_GATE();
     orb_ui_tgt_t t;
+    if (CV_IS_BACK(h)) {                     /* OS v1.2.38: queued onto the layer's back copy */
+        if (stage_on(s)) {
+            lw_job_t j = { .op = LW_LINE, .layer = (uint8_t)CV_BACK_LAYER(h), .argb = rgb, .a = { x0, y0, x1, y1 } };
+            (void)orb_live_work_post(&j);
+        }
+        m3ApiSuccess();
+    }
     if (h < 0) {                             /* OS v1.2.32: onto a live layer (ORB_CV_LIVE0/1) */
         if (live_tgt_of(s, h, &t)) {
             orb_ui_tgt_line(&t, x0, y0, x1, y1, rgb);
@@ -1211,6 +1232,18 @@ m3ApiRawFunction(imp_cv_png8)
     uint32_t len = 0;
     const uint8_t *png = orb_blob_get(slot_index(s), (int)v[0], &len);
     if (!png) m3ApiReturn(ESP_ERR_NOT_FOUND);
+    if (CV_IS_BACK(h)) {                     /* OS v1.2.38: decoded on the live worker, off the frame */
+        if (!stage_on(s)) m3ApiReturn(ESP_ERR_INVALID_STATE);
+        /* the job's own copies: a fetch may replace the body, and the app's palette is its memory */
+        lw_job_t j = { .op = LW_PNG8, .layer = (uint8_t)CV_BACK_LAYER(h), .len = len,
+                       .a = { (int32_t)v[1], (int32_t)v[2], (int32_t)v[3], (int32_t)v[4], (int32_t)v[5], (int32_t)v[6], (int32_t)v[7] } };
+        j.png = heap_caps_malloc(len, MALLOC_CAP_SPIRAM);
+        j.pal = heap_caps_malloc(1024, MALLOC_CAP_SPIRAM);
+        if (!j.png || !j.pal) { heap_caps_free(j.png); heap_caps_free(j.pal); m3ApiReturn(ESP_ERR_NO_MEM); }
+        memcpy(j.png, png, len);
+        memcpy(j.pal, pal, 1024);
+        m3ApiReturn(orb_live_work_post(&j));
+    }
     if (CV_IS_LIVE(h)) {
         orb_ui_tgt_t t;
         if (!live_tgt(s, h, &t)) m3ApiReturn(ESP_ERR_INVALID_STATE);
@@ -1376,6 +1409,57 @@ m3ApiRawFunction(imp_stage_live_merge)
     m3ApiGetArg(int32_t, on);
     STAGE_GATE(ESP_ERR_INVALID_STATE);
     m3ApiReturn(stage_live_merge(on != 0));
+}
+
+/* OS v1.2.38 (radar-plan §6.27): i32 stage_live_back(i32 layer, i32 src, u32 argb) — begin
+ * the layer's next picture in its back copy: layer src's front copied in (src >= 0), or a
+ * fill of argb. Draws to ORB_CV_BACK0 - layer follow, queued in order; refused while the
+ * last one is still being drawn. */
+m3ApiRawFunction(imp_stage_live_back)
+{
+    m3ApiReturnType(int32_t);
+    CALLER();
+    m3ApiGetArg(int32_t, layer);
+    m3ApiGetArg(int32_t, src);
+    m3ApiGetArg(uint32_t, argb);
+    STAGE_GATE(ESP_ERR_INVALID_STATE);
+    if (layer < 0 || layer >= STAGE_LIVE_N || src >= STAGE_LIVE_N) m3ApiReturn(ESP_ERR_INVALID_ARG);
+    if (orb_live_work_pending(layer)) m3ApiReturn(ESP_ERR_INVALID_STATE);
+    const esp_err_t e = stage_live_back_ensure(layer);
+    if (e != ESP_OK) m3ApiReturn(e);
+    lw_job_t j = { .op = LW_BEGIN, .layer = (uint8_t)layer, .src = (int8_t)(src < 0 ? -1 : src), .argb = argb };
+    m3ApiReturn(orb_live_work_post(&j));
+}
+
+/* i32 stage_live_present(i32 layer) — 1: the back is the layer now; 0: still being drawn,
+ * compared, or paced, ask again next tick; < 0 an error. The first ask after the draws
+ * queues the worker's comparison of back and front (LW_DIFF); the swap takes its rows, so
+ * only what the new picture changed is composed, in one blip, and the next swap waits on
+ * that blip's cost (stage_live_swap_due). Or'd into layer (§6.28): ORB_LIVE_NOW (0x100)
+ * skips that wait, for a step the owner asked for (a scrub); ORB_LIVE_PREPARE (0x200)
+ * makes the comparison and never swaps (a picture drawn ahead, shown only if asked). */
+#define LIVE_NOW     0x100
+#define LIVE_PREPARE 0x200
+m3ApiRawFunction(imp_stage_live_present)
+{
+    m3ApiReturnType(int32_t);
+    CALLER();
+    m3ApiGetArg(int32_t, arg);
+    STAGE_GATE(ESP_ERR_INVALID_STATE);
+    const int32_t layer = arg & 0xFF;
+    if ((arg & ~(0xFF | LIVE_NOW | LIVE_PREPARE)) || layer >= STAGE_LIVE_N) m3ApiReturn(ESP_ERR_INVALID_ARG);
+    if (orb_live_work_pending(layer)) m3ApiReturn(0);
+    if (!orb_live_work_diff_ready(layer)) {
+        lw_job_t j = { .op = LW_DIFF, .layer = (uint8_t)layer };
+        const esp_err_t e = orb_live_work_post(&j);
+        m3ApiReturn(e == ESP_OK ? 0 : e);
+    }
+    if (arg & LIVE_PREPARE) m3ApiReturn(0);       /* compared and held (§6.28) */
+    if (!(arg & LIVE_NOW) && !stage_live_swap_due()) m3ApiReturn(0);  /* paced by the last blip (§6.27) */
+    const int16_t *x0 = NULL, *x1 = NULL;
+    (void)orb_live_work_diff(layer, &x0, &x1);
+    const esp_err_t e = stage_live_present(layer, x0, x1);
+    m3ApiReturn(e == ESP_OK ? 1 : e);
 }
 
 m3ApiRawFunction(imp_stage_live_copy)
@@ -1751,6 +1835,8 @@ static const wasm_bind_t s_binds[] = {
     { "orb", "stage_live",     "i(iii)",    imp_stage_live },
     { "orb", "stage_live_merge", "i(i)",    imp_stage_live_merge },
     { "orb", "stage_live_copy",  "i(ii)",   imp_stage_live_copy },
+    { "orb", "stage_live_back",  "i(iii)",  imp_stage_live_back },
+    { "orb", "stage_live_present", "i(i)",  imp_stage_live_present },
     { "orb", "stage_row",      "i(ii)",     imp_stage_row },
     { "orb", "stage_comp",     "i(ii)",     imp_stage_comp },
     { "orb", "stage_sound",    "i(ii)",     imp_stage_sound },

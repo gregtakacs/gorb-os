@@ -36,8 +36,8 @@ CHROME = "/mnt/c/Program Files/Google/Chrome/Application/chrome.exe"
 CLOCK_STAGE, CLOCK_STAGE_WIN = "/mnt/c/Temp/rebake-shelf-clock", "C:/Temp/rebake-shelf-clock"
 
 # app slug -> the shelf file of its default theme
-DEFAULTS = {"clock": "skeleton.orbtheme", "flights": "modern.orbtheme", "weather": "scope.orbtheme",
-            "radar": "radarscope.orbtheme"}
+DEFAULTS = {"clock": "skeleton.orbtheme", "flights": "flights-scope.orbtheme", "weather": "weather-scope.orbtheme",
+            "radar": "radar-scope.orbtheme"}
 
 
 def app_version(slug):

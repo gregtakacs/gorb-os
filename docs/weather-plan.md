@@ -534,7 +534,7 @@ main display's setting."
   Ground, Icons, Temperature, Words, Render; the preview draws all four screens from the
   bake's own frames. `_selftest/bake_check.py` bakes the six and four variants in Chrome and
   checks each against `theme_schema`, `orbbundle` and the shipped `orb_clock3.c`; Scope is on
-  the shelf as `scope.orbtheme` (a shipped theme's file is its own name; `rebake_shelf.py` knows it).
+  the shelf as `scope.orbtheme` (now `weather-scope.orbtheme`, flights-map-plan §6; `rebake_shelf.py` knows it).
 
 ### 6.2 Where the build differs from §2
 

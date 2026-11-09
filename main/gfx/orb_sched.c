@@ -685,13 +685,15 @@ static int      s_plan_pace10;
 static uint32_t s_plan_every;
 static bool     s_plan_prep;
 static bool     s_plan_live;                  /* the stage is on the glass: the plan may pace */
+static bool     s_plan_app;                   /* §6.27: the stage is an app's, not the clock's */
+static bool     s_plan_lean;                  /* §6.27: pre-painted with no gear frame ahead */
 static uint32_t s_plan_tickc;
 static void sched_plan_apply(void)
 {
     const bool on = s_plan_live && !s_bench_pace10;
     display_bench_pace(s_bench_pace10 ? s_bench_pace10 : on ? s_plan_pace10 : 0);
     if (!s_bench_pace10 && !s_bench_gif_every) {
-        const int prep = on && s_plan_prep ? 1 : 0;
+        const int prep = on && s_plan_prep ? (s_plan_lean ? 1 | GFX_PREP_LEAN : 1) : 0;
         if (prep != gfx_prep_on()) gfx_prep_mode(prep);
         display_set_idle_hook(prep ? gfx_prep_idle : NULL);
     }
@@ -699,6 +701,7 @@ static void sched_plan_apply(void)
 static void sched_plan_from_theme(void)
 {
     s_plan_valid = true; s_plan_pace10 = 0; s_plan_every = 0; s_plan_prep = false; s_plan_tickc = 0;
+    s_plan_lean = false;
     const uint32_t gt = orb_bg_gif_mode() ? orb_bg_gif_tick_ms() : 0;
     if (gt) {
         const int g2r = (int)((2000u + gt / 2) / gt);                     /* twice the gear rate */
@@ -713,10 +716,28 @@ static void sched_plan_from_theme(void)
                      g2 / 2, g2 % 2 ? 5 : 0, h2 / 2, h2 % 2 ? 5 : 0, (unsigned)(s_plan_pace10 / 10),
                      (unsigned)s_plan_every, s_plan_prep ? ", pre-painted" : "");
         }
+    } else if (s_plan_app && clk_theme.second_sweep && clk_theme.tick_rate) {
+        /* radar-plan §6.27: an app's sweep (the radar's, the tracker's arm) paced to its own
+         * rate, every layer under and over it pre-painted: a live layer's new picture costs
+         * one blip over the rows it changed (gfx_prep_swap), paced by that cost, and every
+         * other frame costs the sweep alone. */
+        const int tr = (int)clk_theme.tick_rate, h2 = tr == 8 ? 15 : tr * 2;
+        if (h2 > 0 && 120 % h2 == 0) {
+            s_plan_pace10 = 1200 / h2;
+            s_plan_prep = s_plan_lean = true;
+            ESP_LOGI(TAG, "plan: an app's sweep on %d.%d fps (%u scans a frame), pre-painted lean",
+                     h2 / 2, h2 % 2 ? 5 : 0, (unsigned)(s_plan_pace10 / 10));
+        }
     }
     sched_plan_apply();
 }
 void orb_sched_plan_restore(void) { s_plan_valid = false; sched_plan_from_theme(); }
+void orb_sched_plan_app(bool app)
+{
+    if (app == s_plan_app) return;
+    s_plan_app = app;
+    s_plan_valid = false;                     /* derived again on the next beat */
+}
 
 void orb_sched_bench_grid(int pace10, uint32_t gif_every)
 {

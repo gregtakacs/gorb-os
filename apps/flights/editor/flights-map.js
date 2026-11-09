@@ -64,6 +64,7 @@
     paper: { on: true, look: 'chart', p: { ink: '#2F5C8C', water: '#8FB0C6', accent: '#B85C00', names: '#14202C' } },
     celestial: { on: true, look: 'hint', p: { ink: '#8C7BFF', water: '#5A6BD8', accent: '#FFD27A' } },
     sectional: { on: true, look: 'chart', p: { ink: '#1F4E8C', water: '#8CC4EA', accent: '#C2187A', names: '#1F2A44' } },
+    station: { on: true, look: 'hint', p: { ink: '#555555', water: '#6A8AA8', accent: '#E3000F', names: '#333333' } },
     blank: { on: false, look: 'hint', p: { ink: '#9A9A9A', water: '#6A7A8A', accent: '#D0D0D0' } },
   };
   function paletteOf(base) { return (FAMILY[base] || FAMILY.modern).p; }
@@ -163,7 +164,7 @@
   function levelOf(lat, rangeKm) { return root.GorbMaps.pickLevel(Math.round(lat * 1e6), radiusM(rangeKm)); }
   // one range's map: a canvas of the layer as the orb blends it, and the names main.c would place
   function view(m, bytes, lat, rangeKm, k) {
-    var GM = root.GorbMaps, lv = levelOf(lat, rangeKm), Rg = ranges(m)[k], S = strokes(m);
+    var GM = root.GorbMaps, lv = lat == null ? { scale: 1 } : levelOf(lat, rangeKm), Rg = ranges(m)[k], S = strokes(m);   // null: a made-up place at its own scale
     var r = GM.render(bytes, { scale: lv.scale, rot_rad: 0, role_on: Rg.role_on, mark_on: Rg.mark_on, width: S.width, dash: S.dash, clip: CLIP });
     if (r.err) throw new Error('the map could not be drawn (' + r.err + ')');
     var c = document.createElement('canvas'); c.width = c.height = G;

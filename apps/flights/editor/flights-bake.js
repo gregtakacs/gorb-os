@@ -128,10 +128,18 @@
   };
   // the starts beyond the plane families: Sectional (flights-map-plan §4) flies the Modern
   // silhouettes in a flight chart's inks
-  var STARTS = PRESETS.concat(['sectional']);
-  var START_INFO = { sectional: { title: 'Sectional', band: 'Flat silhouettes in a flight chart’s inks on chart paper: magenta, blue and yellow.' } };
+  // one name per look in every app (owner, 2026-11-08), in the radar's and the weather's order;
+  // Station joins the tracker for parity (flights-map-plan §6)
+  var STARTS = ['modern', 'paper', 'brass', 'blueprint', 'station', 'celestial', 'silver', 'sectional'];
+  var LOOK_TITLES = { modern: 'Scope', paper: 'Paper', brass: 'Brass', blueprint: 'Blueprint', station: 'Station', celestial: 'Celestial',
+    silver: 'Silver', sectional: 'Sectional' };
+  var START_INFO = { sectional: { band: 'Flat silhouettes in a flight chart’s inks on chart paper: magenta, blue and yellow.' },
+    station: { band: 'The railway clock’s look: black silhouettes on white, a red arm.' } };
   var SECTIONAL_BANDS = ['#8A8A8A', '#A0A4AA', '#C2187A', '#D9480F', '#2E7D32', '#2A5DB0', '#1F2A44'];
-  function startInfo(k) { return START_INFO[k] || A().families[k] || A().families.modern; }
+  function startInfo(k) {
+    var f = A().families[k] || {}, x = START_INFO[k] || {};
+    return { title: LOOK_TITLES[k] || f.title || k, band: x.band || f.band || '', single: f.single };
+  }
   var clone = function (o) { return JSON.parse(JSON.stringify(o)); };
   function scopeOf(ground) { return clone(SCOPES[ground] || SCOPES.scope); }
   function armOf(kind, period) { return Object.assign({ kind: kind, period: period || 8, length: 1 }, clone(ARM_LOOKS[kind] || ARM_LOOKS.wedge)); }
@@ -171,12 +179,32 @@
     d.map = M().preset('sectional', d.words.face, d.words.size);
     return d;
   }
+  function station() {
+    var d = preset('modern');
+    d.name = 'Station'; d.base = 'station';
+    d.scope = { ground: 'colour', face: '#F4F4F2', detail: '#111111', grid: false, gridWidth: 0.8, image: null,
+      cross: { on: false, style: 'solid', colour: '#111111', opacity: 0.4 },
+      ticks: { on: true, colour: '#111111', r: 199, len: 14, width: 3, minor: 6, major: 30, style: 'line', edge: false },
+      labels: { kind: 'none', every: 30, face: 'Jost', size: 17, colour: '#111111', turn: 'upright', skip: true, r: 212 },
+      lubber: { on: true, colour: '#E3000F' }, rings: { n: 2, colour: '#111111', opacity: 0.35, width: 1.5, dash: 'solid' },
+      home: { colour: '#E3000F', size: 4 } };
+    d.arm = Object.assign(armOf('line', 8), { colour: '#E3000F', tailColour: '#E3000F', lead: '#E3000F', tail: 0, halo: 0,
+      shadow: { on: false, opacity: 0.6, blur: 2.5 }, layer: 'under', length: 1 });
+    Object.assign(d.planes, { family: 'modern', colour: true, bands: ['#8A8A8A', '#B0B0B0', '#E3000F', '#D9480F', '#2E7D32', '#1F4E8C', '#111111'],
+      ground: 0.7, groundGrey: false, sel: '#111111', em: '#E3000F', dots: { show: 'bands', colour: '#111111', size: 6 } });
+    d.words = { face: 'Jost', size: 18, body: '#111111', accent: '#E3000F', accent2: null, quiet: '#555555', warning: '#E3000F' };
+    d.frames = { style: 'square', edge: 1.5, pad: 8, fill: '#FFFFFF', opacity: 0.94, line: '#111111', image: null, corner: 4,
+      card: { width: 240, place: 'auto' }, shadow: { on: false, blur: 3, opacity: 0.3, drop: 2 } };
+    d.map = M().preset('station', d.words.face, d.words.size);
+    return d;
+  }
   function preset(fam) {
     if (fam === 'blank') return blank();
     if (fam === 'sectional') return sectional();
+    if (fam === 'station') return station();
     var a = A(), f = a.families[fam], bg = f.pair[0], look = a.backgrounds[bg].look, X = FAMILY[fam] || {};
     var d = {
-      name: f.title, base: fam,
+      name: LOOK_TITLES[fam] || f.title, base: fam,
       scope: scopeOf(bg),
       arm: armOf(f.pair[1], 8),
       planes: { family: fam, form: 'types', size: a.plane_px, colour: true, bands: a.bands.map(function (b) { return b[1]; }),
@@ -191,13 +219,19 @@
     d.arm.layer = 'under';   // §12.9: under the planes, or over them (still under the rings and words)
     if (X.arm) Object.assign(d.arm, X.arm);
     if (X.frame) d.frames.style = X.frame;
+    if (fam === 'silver') {                     // look parity: graphite under a silver bezel, as the radar's and the weather's Silver
+      d.scope = Object.assign(scopeOf('brass'), { face: '#2C3138', detail: '#C8CED6', image: null });
+      d.scope.ticks.colour = '#E4E8EC'; d.scope.labels.colour = '#E4E8EC'; d.scope.labels.face = 'Jost';
+      d.scope.lubber.colour = '#FFFFFF'; d.scope.rings.colour = '#C8CED6'; d.scope.home.colour = '#FFFFFF';
+      d.words = { face: 'Jost', size: 17, body: '#F2F4F7', accent: '#7FC8FF', accent2: null, quiet: '#AAB2BD', warning: '#FF9A5C' };
+    }
     d.map = M().preset(fam, d.words.face, d.words.size);
     return d;
   }
   // a design saved before a field existed takes that field from its preset (§12.6: added
   // fields, no new schema); what it has is kept
   function complete(x) {
-    var fam = x.base === 'blank' || x.base === 'sectional' || A().families[x.base] ? x.base : A().families[x.planes && x.planes.family] ? x.planes.family : 'modern';
+    var fam = x.base === 'blank' || x.base === 'sectional' || x.base === 'station' || A().families[x.base] ? x.base : A().families[x.planes && x.planes.family] ? x.planes.family : 'modern';
     var fill = function (o, dflt) {
       Object.keys(dflt).forEach(function (k) {
         if (o[k] === undefined) o[k] = clone(dflt[k]);
@@ -816,16 +850,28 @@
   }
   // the picker's picture (and the start sheet's): the plate, the arm and a few contacts
   var THUMB = [[3, 6, 70, -90, 220], [4, 5, -110, -20, 95], [0, 2, 40, 60, 330], [2, 4, -60, 100, 15], [5, 3, 110, 40, 120]];
-  async function picture(plateC, armC, armPiv, frames, px, size) {
+  async function picture(plateC, armC, armPiv, frames, px, size, mapC) {
     var a = A(), c = canvas(a.glass, a.glass), x = c.getContext('2d');
     x.drawImage(plateC, 0, 0);
+    if (mapC) x.drawImage(mapC, 0, 0);
     x.drawImage(armC, a.cx - armPiv[0], a.cx - armPiv[1]);
     THUMB.forEach(function (p) {
       x.save(); x.translate(a.cx + p[2], a.cx + p[3]); x.rotate(p[4] * Math.PI / 180);
       x.drawImage(frames[p[0] * 7 + p[1]], -px / 2, -px / 2); x.restore();
     });
-    var o = canvas(size, size);
-    o.getContext('2d').drawImage(c, 0, 0, size, size);
+    return size === a.glass ? c : shrink(c, size);
+  }
+  // a picture made smaller in halving steps, smoothed, so the 1-2 px lines of a map, a ring or a
+  // word survive a thumbnail (one step from 466 px drops most of them)
+  function shrink(c, size) {
+    var cur = c;
+    while (cur.width / 2 >= size) {
+      var h = canvas(cur.width >> 1, cur.height >> 1), hx = h.getContext('2d');
+      hx.imageSmoothingEnabled = true; hx.imageSmoothingQuality = 'high'; hx.drawImage(cur, 0, 0, h.width, h.height);
+      cur = h;
+    }
+    var o = canvas(size, size), ox = o.getContext('2d');
+    ox.imageSmoothingEnabled = true; ox.imageSmoothingQuality = 'high'; ox.drawImage(cur, 0, 0, size, size);
     return o;
   }
   // a design's picture, drawing only the frames the picture shows
@@ -836,7 +882,21 @@
       var used = THUMB.some(function (p) { return p[0] === si && p[1] === bi; });
       frames.push(all ? all[si * 7 + bi] : used ? shadowed(await rast(planeSvg(d, si, bi), planePx(d), planePx(d)), d) : null);
     }
-    return picture(await plateCanvas(d), await rast(ar.svg, ar.size[0], ar.size[1]), ar.pivot, frames, px, size);
+    return picture(await plateCanvas(d), await rast(ar.svg, ar.size[0], ar.size[1]), ar.pivot, frames, px, size, await mapPicture(d));
+  }
+  // the map under the picture (flights-map-plan §6): maps@1's made-up place, as the orb draws
+  // it at the third range, its names in the map's face
+  async function mapPicture(d) {
+    if (!d.map || !d.map.on || !root.GorbMaps) return null;
+    try {
+      var v = M().view(d.map, root.GorbMaps.sampleMap(), null, 80, 2), m = d.map;
+      try { await document.fonts.load((m.nameSize | 0) + 'px "' + (m.nameFace || d.words.face) + '"'); } catch (e) { /* the fallback */ }
+      var x = v.canvas.getContext('2d');
+      x.globalAlpha = M().alphaOf(m, 'names'); x.fillStyle = m.ink.names;
+      x.font = (m.nameSize | 0) + 'px "' + (m.nameFace || d.words.face) + '", sans-serif'; x.textAlign = 'center'; x.textBaseline = 'middle';
+      v.names.forEach(function (n) { x.fillText(n.text, n.x, n.y); });
+      return v.canvas;
+    } catch (e) { return null; }
   }
   var toneStr = function (t) { return t.reduce(function (s, f, k) { return s + (f << (4 * k)); }, 0); };
 
@@ -902,7 +962,7 @@
         digit: 1, end: 1 }, plane(await panelCanvas(d, lab.name)), true, false);
     }
     // §60: the whole glass, deflated by the baker and inflated by the orb (owner, 2026-11-07)
-    S.preview({ plane: plane(await picture(plateC, armC, ar.pivot, frames, px, 466)), x: 0, y: 0, order: 3 });
+    S.preview({ plane: plane(await picture(plateC, armC, ar.pivot, frames, px, 466, await mapPicture(d))), x: 0, y: 0, order: 3 });
     // the bake time rides the header (word 10) so the hub can tell a newer copy from an older one;
     // it is not content, so the serial above stays the design's own
     var out = S.finish({ name: d.name || 'Flights', slug: 'flights', serial: o.serial || serialOf(d, o.design), abi: GB.GEOM_ABI6, design: o.design || null,

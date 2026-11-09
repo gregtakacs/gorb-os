@@ -177,6 +177,13 @@ int main(int argc, char **argv)
     rd_time_text(b, sizeof b, -40);   const bool t1 = !strcmp(b, "-40 min");
     rd_time_text(b, sizeof b, 30);    const bool t2 = !strcmp(b, "+30 min");
     CK(t0 && t1 && t2, "the time: Now, -40 min, +30 min");
+    char fa[32], fb[32], fc[8], fd[32];
+    rd_ascii(fa, sizeof fa, "M\xC3\xBC" "nchen");                 /* München */
+    rd_ascii(fb, sizeof fb, "Gy\xC5\x91r \xC5\x81\xC3\xB3" "d\xC5\xBA");  /* Győr Łódź */
+    const size_t nc = rd_ascii(fc, sizeof fc, "Z\xC3\xBC" "rich-long");  /* cut at the cap */
+    rd_ascii(fd, sizeof fd, "a\xE2\x86\x91" "b\xC3" "c\xE2" "zz");  /* an arrow, broken bytes */
+    CK(!strcmp(fa, "Munchen") && !strcmp(fb, "Gyor Lodz") && nc == 7 && !strcmp(fc, "Zurich-") && !strcmp(fd, "a?b?c?zz"),
+       "names for the system fonts: Munchen, Gyor Lodz; cut at the cap; an arrow and each broken sequence are one '?', what follows kept");
     rd_range_text(b, sizeof b, 120000, 0); const bool r0 = !strcmp(b, "120 km");
     rd_range_text(b, sizeof b, 120000, 1); const bool r1 = !strcmp(b, "75 mi");
     rd_range_text(b, sizeof b, 120000, 2); const bool r2 = !strcmp(b, "65 nm");
@@ -196,9 +203,11 @@ int main(int argc, char **argv)
 
     static rd_values_t v;
     rd_values_default(&v);
-    CK(sizeof v == 1176 && RD_VALUES_V2_B == 1144 && offsetof(rd_values_t, scale_ink) == 1144 &&
-       RD_VALUES_V3_B == 1160 && offsetof(rd_values_t, under_argb) == 1160,
-       "rd_values_t is 1,176 B (layout 4: the under-rain 16 B after layout 3's scale, after layout 2's 1,144)");
+    CK(sizeof v == 1192 && RD_VALUES_V2_B == 1144 && offsetof(rd_values_t, scale_ink) == 1144 &&
+       RD_VALUES_V3_B == 1160 && offsetof(rd_values_t, under_argb) == 1160 &&
+       RD_VALUES_V4_B == 1176 && offsetof(rd_values_t, track_bottom) == 1176 && offsetof(rd_values_t, place_y) == 1180 &&
+       offsetof(rd_values_t, sweep_s) == 1186,
+       "rd_values_t is 1,192 B (layout 5: the mock-up's look after layout 4's 1,176, after the scale and 1,144)");
     CK(rd_floor_value(0) == 84 && rd_floor_value(1) == 94 && rd_floor_value(2) == 104 && rd_floor_value(3) == 114,
        "the rain floor: 10, 15, 20 or 25 dBZ, as raw values (dBZ + 32) x 2");
     CK(rd_roles_at(&v, 2) == (0x7FFF & ~((1u << 5) | (1u << 13) | (1u << 14))) && rd_roles_at(&v, 3) == (0x7FFF & ~((1u << 13) | (1u << 14))) &&
@@ -290,6 +299,8 @@ def suite(src_text, quiet=False):
 
 
 MUTATIONS = [
+    ("dst[n++] = cp < 0x80 ? (char)cp : cp >= 0xC0 && cp <= 0x17F ? FOLD[cp - 0xC0] : '?';", "dst[n++] = cp < 0x80 ? (char)cp : '?';"),
+    ("for (unsigned k = 1; k < len; k++) if ((p[k] & 0xC0) != 0x80) { len = k; break; }", ";"),
     ("if (t->depth == 3 && l->in && l->cur.t > 0 && l->cur.path[0]) {", "if (t->depth == 3 && l->in) {"),
     ("for (int i = 1; i < l->n_past; i++) if (l->past[i].t <= l->past[i - 1].t) return false;", ""),
     ("if (t->str_trunc || strlen(t->str) >= RD_PATH_MAX || t->str[0] != '/') { l->error = true; return false; }", ""),

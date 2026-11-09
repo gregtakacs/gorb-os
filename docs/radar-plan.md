@@ -400,7 +400,7 @@ The place's local time is `t + offset_min * 60`. `orb_place_t` keeps its 52 B: a
 against it read it unchanged. GET `/api/v1/places` answers each set place's `zone`,
 `zone_named`, its rule (`tz`), `tz_offset` now, `dst`, and `exact` (false where the
 table's rule only approximates the zone). POST takes an optional `"zone"` the table holds,
-and refuses any other. As built 2026-11-08 (§6.25).
+and refuses any other. As built 2026-11-08 (§6.29).
 
 **Where they are set:** only from the hub (§1.1: the dial has no location UI, by ruling).
 `GET /api/v1/places` and `POST /api/v1/places` with
@@ -1321,7 +1321,7 @@ The owner's call after §6.4: keep the map parked and redraw only the rain.
   (two range rings, a dotted crosshair, the time track's 18 ticks, the nowcast's in the
   forecast colour), the dot (white with an amber ring: the airports are amber), the cursor,
   three fonts, ten labels, the values and the preview. The shelf's starter is
-  **Radarscope** (`radarscope.orbtheme`, 1.13 MB; a shelf file is its theme's name, and
+  **Radarscope** (`radarscope.orbtheme`, now `radar-scope.orbtheme`, flights-map-plan §6; 1.13 MB; a shelf file is its theme's name, and
   Weather's is Scope), checked by `apps/radar/editor/_selftest/bake_check.py` in Chrome
   and re-baked by `tools/rebake_shelf.py radar`.
 - **Tests.** `tools/host_radar_test.py` compiles `radar.c` beside the OS's tokenizer: the
@@ -1765,7 +1765,188 @@ under the last zoom (fixed: `const`); and the hub memoises an app's editor files
 version, so a bench reinstall at the same version serves the old editor until the hub
 restarts.
 
-### 6.25 Places carry their zones (2026-11-08, Gold, OS v1.2.38)
+### 6.25 The bare form: the radar with no theme (2026-11-08, Bronze, OS v1.2.38, radar v1.2.2)
+
+The owner: every app draws its base form with no theme at all (app-platform-plan §26), and
+everything the radar needs is the OS's (the map, the places), so it must run bare. It drew
+nothing and asked for a theme every 2 s.
+
+- **The form:** one 466 px canvas (`orb_cv_create`), composed whole whenever anything moved:
+  the ground, the OS's map in the radar's default colours (`rd_values_default`), the rain
+  frame through the same ramp and floor, a ring and the rim, home's dot, the scale bar, the
+  place (18 px) and the time (48 px, amber for a forecast), up to four names (18 px), the
+  status line, and the zoom or a press's new place in 48 px on a dark band. Same knob, loop
+  and fetches as on a theme; the loop steps at a 250 ms beat. Bare is for good: a theme's
+  store reboots the orb, which starts the app on it.
+- **Names in the system fonts:** they carry ASCII alone, so `rd_ascii` folds Latin-1 and
+  Latin Extended-A to the base letter ("Munchen", "Gyor"), anything else one `?`
+  (`host_radar_test.py`, 2 mutants).
+- **The OS, v1.2.38:** `orb_cv_text` takes `ORB_CV_CENTER` / `ORB_CV_RIGHT` in the font's high
+  bits; a canvas's pixels come from the glass region. Two bare apps' canvases (radar,
+  flights: 868 KB) had left the general heap 666 KB; from the glass region it stays 3.2 MB.
+- **Bronze, every theme removed** (card and pool empty): the radar cold-started, fetched its
+  18 frames (89-791 ms each), looped, scrubbed to -30 min on a turn, said "Austin" at once on
+  a press and drew Austin's map, and zoomed to Area (20 mi: Round Rock, Pflugerville, AUS).
+- **Owed, the OS's:** with no theme anywhere, every app's bare form leaves internal RAM at
+  ~11.3 KB free, largest block 4.8 KB (clock, weather, flights, the picker and the radar
+  alike, measured 24 s each); on a theme it was 25-31 KB. Under the ~7 KB block a send has
+  starved before (gorb-os-internal-ram-under-clock). Not the radar's: to be found in the
+  display path the stage does not use.
+
+### 6.26 The approved look, real previews, and one look set (2026-11-08, Bronze, OS v1.2.38, radar v1.2.2)
+
+The owner: the editor's previews were "total garbage, not reflective of what each premade
+theme looks like", and the looks had lost the mock-up's design (§0 ruling 13). Ruled the same
+day: **all eight looks in every app** (Scope, Paper, Brass, Blueprint, Station, Celestial,
+Silver, Sectional), **the mock-up's layout** for the radar, **one name per look**.
+
+- **The mock-up's look (values layout 5, 1,192 B):** the place at the top (capitals where the
+  look says), the time low over a **time track on the bottom rim** (a tick a frame, past in
+  quiet ink left of Now, forecast in the accent to its right, the cursor half a degree a
+  minute), the "forecast" word under a nowcast's time, a **range ring at the scale's round
+  length** labelled on the ring (the bar stays a choice), **the forecast marked** (dimmed,
+  desaturated, or hatched: `ORB_PNG_HATCH`, OS v1.2.38, 45-degree stripes 5 px on, 3 off), and
+  **Scope's sweep** (a 20 fps row with a fading trail the app turns, its box the wedge's own:
+  116 KB). A layout-2/3/4 theme keeps the old look; a design saved before keeps it on a re-bake.
+- **Kept from later rulings over the mock-up:** the zoom's large pill (§6.12), not rim steps.
+  **Station** is the railway clock's white, black and red in every app (the mock-up's TV map
+  gave way to parity; its broadcast rain ramp stays). **Owed:** the no-coverage dim (the
+  source gives no coverage).
+- **The looks:** Scope phosphor through and through (a green map, rain glowing to white, the
+  sweep); Brass dark enamel with a turned brass rim; Silver graphite with a silver rim;
+  Celestial violet with stars and its own sweep; Paper, Blueprint and Sectional as before.
+- **Previews:** `frame()` in radar-bake.js draws the look as the orb does, and both the
+  editor and the bake use it: the baked preview is the whole 466 px glass, over the owner's
+  own map at Region when the editor has it, else over maps@1's `sampleMap()` (a made-up place:
+  lakes, two rivers, a city and towns, roads, a state line, an airport; never real data).
+- **Size:** the fonts' glyphs are drawn white and coloured on the orb, so one face and size is
+  baked once (~250 KB a theme); every starter fits the pool beside the shelf's others
+  (Scope 1.76 MB with its sweep).
+- **Bronze:** Scope (dimmed forecast, sweep, 16-17 fps) and Paper (hatched forecast) as
+  previewed.
+
+### 6.27 The rain through the sweep's slack: the clock's engine for every app (2026-11-08, Bronze, OS v1.2.38, radar v1.2.2)
+
+The owner: with the rain drawn, the sweep's fps "severely degrades … the exact same problem the
+clock solved. Can we use the same engine … is it built into the OS or does the clock do it
+itself … can it be generalised so other apps can take advantage?" The engine is the OS's: the
+compositor's pre-paint (`orb_gfx.c`, plan §49.8/§49.15) and the scheduler's plan
+(`orb_sched.c`). The clock app has none of it. It was switched on only for the clock's gear
+plan, and a live layer's new picture was the one change it could not hold.
+
+**Measured first** (Bronze, Scope over DFW rain): loop playing 4-9 fps (median 9), held 20.
+Three costs fell on the frame a rain step took:
+
+1. the frame's decode, inside the radar's guest call (~117 ms);
+2. the present: `lv_image_set_src` on the layer's classic image, which LVGL then drew in
+   software, the whole disc, under L4's own composite (~150 ms; `mirror` 32 ms/s playing, 0
+   held);
+3. the new picture composed the long way over the whole disc in one frame (~120 ms, mostly the
+   panel's push: ~76 ms a full page).
+
+**What the OS does now** (any app with a live layer; nothing radar-specific):
+
+- **Back copies and the live worker** (`orb_live_work.c`): `orb_stage_live_back(layer, src,
+  argb)` begins the next picture in the layer's back copy; draws to `ORB_CV_BACK0/1`
+  (`orb_cv_png8`, `_ring`, `_line`) queue onto a task under the LVGL task (PSRAM stack and
+  queue); `orb_stage_live_present(layer)` has the worker compare back and front (`LW_DIFF`, on
+  its own core), then swaps the pointers and repaints only the rows that changed. A rain step
+  changes ~185 rows × ~200 px, not the disc. The swap repoints the row's plane in place
+  (`clock_layers_refresh`), never a rebuild of the rows, and the classic image's data alone
+  (LVGL keeps no image cache).
+- **The lean plan for an app's sweep:** a stage bound for an app (`orb_sched_plan_app`) whose
+  theme sweeps (`second_sweep`, `tick_rate` on the 60 Hz grid) is paced to its rate and
+  pre-painted with the two front planes only (`GFX_PREP_LEAN`: 868 KB, not the clock's
+  1.7 MB, since nothing is built ahead).
+- **One hard blip a step** (`gfx_prep_swap`): a present's changed rows are built into the
+  planes and sent in one commit, never a slice at a time. The first build laid them in a
+  slice a frame; on the glass the time read half -40, half -50, and the owner ruled "slower
+  hard blips may be better than faster partial mess". The OS times each blip (its commit
+  and its pixels' push), and a layer's next swap waits until the sweep has had four times
+  that to itself (`stage_live_swap_due`). The radar's loop waits for its rain, so a storm
+  steps more slowly instead of skipping, and its words and the track's cursor change in
+  the swap's own frame (`draw_ui` waits while a picture is in flight).
+- **A label's new string goes stale:** a theme label's glyphs are redrawn in the same plane
+  under the same pose, which pre-paint took for no change. Its planes kept the old string,
+  and only rows rebuilt for something else showed the new one. Its box is now composed
+  whole from the new string.
+- **A stale row a commit repaints is rebuilt then**, at the long way's own cost, rather than
+  composed the long way every frame until the slack catches up. A frame over budget leaves
+  no slack, so a whole disc gone stale (the map layer redrawn) had held a storm's sweep at
+  13 fps with all 466 rows behind, for good.
+- **Fast by motion:** a slow job that moves on four commits in a row joins the fast set, keyed
+  by its art, so a sweep posed by an app needs no role. Scope's sweep is already a seconds row
+  (role 2); nothing was promoted on Bronze.
+
+**And two radar fixes found on the way:** after a reboot the radar asked for its stage before
+the OS had bound the theme, went bare, and stayed bare over its own theme (the bare canvas is a
+widget, which keeps the stage off for good). `orb_init` and an arrival now only ask, and the
+service's next ask, 300 ms later, decides. The radar draws its rain through the back copy and
+presents it from `redraw`.
+
+**Measured after** (Bronze, Scope; DFW's light rain, ~17% of the glass changing a step,
+and a real storm: Brittany, 47.5 N 3.5 W, 61% of the glass wet and 65% changing a frame,
+found by scanning the source's frames for the wettest radar-sized window):
+
+| | before | DFW | storm |
+|---|---|---|---|
+| loop playing | min 4, median 9 | min 14, median 17 | min 12, median 16 (20 between steps) |
+| loop held | 20 | 20 | 20 |
+| a step's blip | | ~65 ms | ~140-165 ms, a step every ~1.3 s |
+| worst guest call | ~117 ms | ~12 ms | ~12 ms |
+
+With the slices (before the blips) DFW ran a median of 18 and pre-paint off a median of 15.
+
+Flights (Blueprint, its arm on the same plan): 20 fps (min 19); its aircraft step a pixel at a
+time, slow jobs with small stale boxes. With the radar up: the glass heap 34 KB free and one
+plane from the general PSRAM (800 KB left), internal 25 KB (largest 7 KB).
+
+**Owed:** the owner has not judged the blips on the glass yet; a loop step's own tick (~10 ms)
+still costs a frame now and then; a place with no map keeps the last place's map and names
+under its rain (seen benching Brittany; older than this work); Gold has not run it; weather
+has no sweep and is untouched.
+
+### 6.28 The scrub goes at once, and the next frame is drawn ahead (2026-11-08, Bronze, OS v1.2.38, radar v1.2.2)
+
+The owner: from turning to the new frame on the glass "is a bit long. Can we make it better via
+some buffering?" A detent paid the whole path: the map copied into the back, the frame drawn
+on the worker (~100 ms, mostly the smoothed per-pixel draw), the compare, and then §6.27's
+blip pace (up to ~600 ms over a storm), which is the loop's and was never meant for a hand.
+
+- **No pace on a scrub:** `stage_live_present` takes flags in its layer argument, so the ABI
+  is unchanged. `ORB_LIVE_NOW` (0x100) skips the wait on the last blip for a step the owner
+  asked for; the loop is still paced by its blips.
+- **The next frame drawn ahead, in the back the radar already has** (no memory added): when a
+  scrubbed frame lands, the radar begins the next one the way the dial turns (the direction
+  read off the dial, not off the jump from the loop's frame) and has the worker compare it
+  with `ORB_LIVE_PREPARE` (0x200), which never swaps. A detent that way presents it in the
+  same frame; a detent elsewhere draws over it. Anything that voids the rain's pictures (a
+  view, a zoom, the palette, the units, the place, a new list, a frame's body) bumps
+  `s_rain_gen`, and a picture drawn ahead for an older one is never shown.
+- **Bronze, DFW, Region:** a detent drawn ahead reaches the glass 0-2 ms after the turn (then
+  its blip), at 1.5 s a detent and at 0.4 s; a cold one (the first, or the first after the
+  dial reverses) 160-220 ms. The loop playing is unchanged (median 17).
+
+**Kept for after the flash-resident theme work** (each needs PSRAM it will free, or is
+measured against what it changes):
+
+1. **The clock's build-ahead planes for app stages** (+868 KB): a new rain picture prepared in
+   the slack and landed with no blip at all, in place of the paced blip.
+2. **A larger kept-body cap, or frames kept more compactly:** Region and Wide still need the
+   512 px images (50-70 KB on a rainy day), and the 768 KB fill at 5-6 frames (Austin read
+   -50 min); all 12 past frames want ~1 MB there.
+3. **More than one frame drawn ahead** (434 KB each): both directions, or two deep, for a fast
+   spin.
+4. **Pace the blips by the core's share, not 4x their cost:** a cheaper sweep (15 fps frees
+   ~190 ms/s of the LVGL core) would then turn into faster rain steps; at a fixed 4x it does not.
+5. **A faster first load:** the frames come one request at a time over one connection (the
+   list ~2 s with its TLS handshake, then 18 frames at 120-620 ms each); two or three at once,
+   and Now and its neighbours first.
+6. **Re-measure the sweep's 38 ms frame and the blips** once the theme's art is read through
+   the flash cache: pre-painted slow layers live in PSRAM planes, but the sweep's art is read
+   every frame.
+
+### 6.29 Places carry their zones (2026-11-08, Gold, OS v1.2.38)
 
 - **Firmware.** `orb_tzrule.c` evaluates a zone-table rule at any instant (the standard
   and daylight offsets and the two `M` changeovers, a southern rule across the new year),
@@ -1818,3 +1999,4 @@ restarts.
   `CONFIG_LV_FONT_MONTSERRAT_18=y` in `sdkconfig.defaults`, and the build stopped at
   `orb_ui.c`; the local file was brought into line.
 
+||||||| 45165cd

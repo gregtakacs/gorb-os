@@ -280,8 +280,10 @@ func TestLibraryListingMatchesTheShippedArtifacts(t *testing.T) {
 		// ignores the filename entirely, so a seed whose two disagree was a library row
 		// no Themes face could match to an installed row. Asserting the relationship
 		// instead of the string means the next theme added to the shelf is held to it too.
+		// The app may lead it: one name per look (flights-map-plan §6) gives three apps a
+		// Scope, and the shelf is one directory.
 		stem := strings.TrimSuffix(th.File, ".orbtheme")
-		if !strings.EqualFold(stem, th.Title) {
+		if !strings.EqualFold(stem, th.Title) && !strings.EqualFold(stem, th.App+"-"+th.Title) {
 			t.Errorf("%s is titled %q; a shipped theme's filename must match its own name, "+
 				"or the Themes face can never line the row up with the card stem the device derives",
 				th.File, th.Title)

@@ -20,6 +20,7 @@
 #include "orb_app.h"       /* ORB_APP_CAP: the slot count the table is sized by */
 #include "orb_png8.h"      /* orb_ui_cv_png8: radar-plan §2.3 */
 #include "orb_map_raster.h" /* orb_ui_cv_roles: radar-plan §2.4 */
+#include "orb_glass.h"      /* a canvas is a display buffer: the glass region's */
 #include "orb_disc.h"       /* the glass's disc: draws onto a full glass skip its corners */
 
 static const char *TAG = "appui";
@@ -199,14 +200,19 @@ int32_t orb_ui_cv_create(int slot, int32_t parent, int32_t w, int32_t h)
     cv_t *c = &u->cv[u->n_cv];
     c->stride = (int32_t)lv_draw_buf_width_to_stride((uint32_t)w, LV_COLOR_FORMAT_RGB565) / 2;
     const size_t bytes = (size_t)c->stride * 2u * (size_t)h;
-    c->px = heap_caps_aligned_alloc(LV_DRAW_BUF_ALIGN, bytes, MALLOC_CAP_SPIRAM);
+    /* A canvas is a display buffer (a no-theme app's whole glass is 434 KB): the glass
+     * region's, so it never cuts the general heap TLS and the apps share (OS v1.2.38;
+     * Bronze, 2026-11-08: two bare canvases left the heap 666 KB and a download starved).
+     * The region answers 8-byte aligned blocks, past LV_DRAW_BUF_ALIGN. */
+    _Static_assert(LV_DRAW_BUF_ALIGN <= 8, "the glass region aligns to 8");
+    c->px = orb_glass_alloc(bytes);
     if (!c->px) return 0;
     memset(c->px, 0, bytes);
     c->w = w; c->h = h;
     lv_draw_buf_init(&c->dbuf, (uint32_t)w, (uint32_t)h, LV_COLOR_FORMAT_RGB565,
                      (uint32_t)c->stride * 2u, c->px, bytes);
     lv_obj_t *o = lv_canvas_create(p);
-    if (!o) { heap_caps_free(c->px); memset(c, 0, sizeof *c); return 0; }
+    if (!o) { orb_glass_free(c->px); memset(c, 0, sizeof *c); return 0; }
     lv_canvas_set_draw_buf(o, &c->dbuf);
     lv_obj_set_pos(o, 0, 0);
     u->obj[hd] = o;
@@ -292,7 +298,10 @@ void orb_ui_cv_text(int slot, int32_t h, int32_t x, int32_t y, int32_t w, int32_
     ui_slot_t *u = slot_get(slot, false);
     cv_t *c = cv_of(u, h);
     if (!c || !s || w < 1) return;
-    const lv_font_t *f = font_of(font);
+    /* OS v1.2.38: ORB_CV_CENTER and ORB_CV_RIGHT ride the font's high bits; the box is
+     * x .. x + w - 1, and the words are placed in it */
+    const lv_text_align_t al = (font & 0x100) ? LV_TEXT_ALIGN_CENTER : (font & 0x200) ? LV_TEXT_ALIGN_RIGHT : LV_TEXT_ALIGN_LEFT;
+    const lv_font_t *f = font_of(font & 0xFF);
     lv_layer_t layer;
     lv_canvas_init_layer(u->obj[h], &layer);
     lv_draw_label_dsc_t d;
@@ -301,6 +310,7 @@ void orb_ui_cv_text(int slot, int32_t h, int32_t x, int32_t y, int32_t w, int32_
     d.color = lv_color_hex(rgb);
     d.text = s;
     d.text_local = 1;               /* the guest's buffer is copied, not kept */
+    d.align = al;
     lv_area_t a = { x, y, x + w - 1, y + lv_font_get_line_height(f) - 1 };
     lv_draw_label(&layer, &d, &a);
     lv_canvas_finish_layer(u->obj[h], &layer);
@@ -377,7 +387,10 @@ typedef struct {
     const pal565_t *pal;
     int32_t sx, sy, dx, dy, w, h, scale;
     const uint16_t *disc;          /* the glass's disc for a full-glass target, else NULL */
+    bool hatch;                    /* ORB_UI_PNG_HATCH: diagonal stripes, the rest left as it was */
 } png_ctx_t;
+/* A hatched draw (OS v1.2.38, the radar's forecast): 45-degree stripes 5 px on, 3 off. */
+static inline bool hatched_out(int32_t X, int32_t Y) { return ((X + Y) & 7) >= 5; }
 
 static int png_row(void *ctx, int y, const uint8_t *idx, int w)
 {
@@ -401,7 +414,7 @@ static int png_row(void *ctx, int y, const uint8_t *idx, int w)
         for (int32_t ky = 0; ky < p->scale && oy + ky < p->h; ky++)
             for (int32_t kx = 0; kx < p->scale && x * p->scale + kx < p->w; kx++) {
                 const int32_t X = p->dx + x * p->scale + kx, Y = p->dy + oy + ky;
-                if ((uint32_t)X < (uint32_t)p->t->w && (uint32_t)Y < (uint32_t)p->t->h)
+                if ((uint32_t)X < (uint32_t)p->t->w && (uint32_t)Y < (uint32_t)p->t->h && !(p->hatch && hatched_out(X, Y)))
                     over(p->t, Y * p->t->stride + X, e.c, e.a);
             }
     }
@@ -423,6 +436,7 @@ typedef struct {
     int32_t sx, sy, dx, dy, w, h, k;
     int32_t prev_y, shift;         /* shift: log2(4k^2) when k is a power of two, else -1 */
     const uint16_t *disc;          /* the glass's disc for a full-glass target, else NULL */
+    bool hatch;                    /* ORB_UI_PNG_HATCH */
     uint8_t prev[ORB_PNG8_MAX_W], cur[ORB_PNG8_MAX_W];
     int16_t x0[ORB_PNG8_MAX_W];    /* per glass column: its left source column, -1 off the image */
     uint8_t fx[ORB_PNG8_MAX_W];    /* and its weight toward the right one, 0 .. 2k-1 */
@@ -475,7 +489,7 @@ static int smooth_row(void *ctx, int y, const uint8_t *idx, int w)
                 if (sum0 && !(a | b)) continue;
                 const int32_t fx = p->fx[X], n = a * (k2 - fx) + b * fx + half;
                 const pal565_t e = p->pal[p->shift >= 0 ? n >> p->shift : n / (k2 * k2)];
-                if (e.a) over(p->t, base + X, e.c, e.a);
+                if (e.a && !(p->hatch && hatched_out(X, Y))) over(p->t, base + X, e.c, e.a);
             }
         }
         if (floordiv(y * k2 - c + 1, 2) >= p->h) return 1;  /* past the window: stop decoding */
@@ -525,13 +539,20 @@ void orb_ui_tgt_line(const orb_ui_tgt_t *t, int32_t x0, int32_t y0, int32_t x1, 
 int32_t orb_ui_tgt_png8(const orb_ui_tgt_t *t, const uint8_t *png, uint32_t len, int32_t sx, int32_t sy,
                         int32_t dx, int32_t dy, int32_t w, int32_t hh, int32_t scale, const uint32_t *argb)
 {
-    const bool smooth = (scale & ORB_UI_PNG_SMOOTH) != 0;
-    scale &= 0xFF;
-    if (!t || !png || !argb || scale < 1 || scale > (smooth ? 16 : 4)) return ORB_PNG8_E_FORMAT;
-    /* One scratch for every draw: they all run on the LVGL task, one at a time. */
+    /* One scratch for every draw on the LVGL task, one at a time; the live worker brings
+     * its own (orb_ui_tgt_png8_s). */
     static void *scratch;
     if (!scratch) scratch = heap_caps_malloc(orb_png8_scratch_size(), MALLOC_CAP_SPIRAM);
     if (!scratch) return ORB_PNG8_E_SCRATCH;
+    return orb_ui_tgt_png8_s(t, scratch, png, len, sx, sy, dx, dy, w, hh, scale, argb);
+}
+
+int32_t orb_ui_tgt_png8_s(const orb_ui_tgt_t *t, void *scratch, const uint8_t *png, uint32_t len, int32_t sx, int32_t sy,
+                          int32_t dx, int32_t dy, int32_t w, int32_t hh, int32_t scale, const uint32_t *argb)
+{
+    const bool smooth = (scale & ORB_UI_PNG_SMOOTH) != 0, hatch = (scale & ORB_UI_PNG_HATCH) != 0;
+    scale &= 0xFF;
+    if (!t || !png || !argb || !scratch || scale < 1 || scale > (smooth ? 16 : 4)) return ORB_PNG8_E_FORMAT;
     /* The app colours values, not indices: a grey PNG's index is its encoder's choice
      * (LibreWXR's raw frames number their greys afresh in every frame), so each index
      * takes the colour of its palette entry's grey. A file without a palette is its own. */
@@ -549,13 +570,13 @@ int32_t orb_ui_tgt_png8(const orb_ui_tgt_t *t, const uint8_t *png, uint32_t len,
         if (!sc || !vmap) { heap_caps_free(sc); heap_caps_free(vmap); heap_caps_free(pal); return ORB_PNG8_E_SCRATCH; }
         for (int i = 0; i < 256; i++) vmap[i] = np ? value[i] : (uint8_t)i;
         *sc = (smooth_ctx_t){ .t = t, .pal = pal + 256, .vmap = vmap, .sx = sx, .sy = sy, .dx = dx, .dy = dy,
-                              .w = w, .h = hh, .k = scale, .prev_y = -2, .disc = disc_of(t) };
+                              .w = w, .h = hh, .k = scale, .prev_y = -2, .disc = disc_of(t), .hatch = hatch };
         smooth_prep(sc);
         r = orb_png8_decode(png, len, scratch, orb_png8_scratch_size(), smooth_row, sc);
         heap_caps_free(sc);
         heap_caps_free(vmap);
     } else {
-        png_ctx_t ctx = { t, pal, sx, sy, dx, dy, w, hh, scale, disc_of(t) };
+        png_ctx_t ctx = { t, pal, sx, sy, dx, dy, w, hh, scale, disc_of(t), hatch };
         r = orb_png8_decode(png, len, scratch, orb_png8_scratch_size(), png_row, &ctx);
     }
     if (r == ORB_PNG8_E_STOP) r = ORB_PNG8_OK;        /* the window ended before the image */
@@ -622,7 +643,7 @@ void orb_ui_release(int slot)
     }
     if (u->scr) lv_obj_delete(u->scr);           /* takes every child with it */
     for (int i = 0; i < u->n_cv; i++)
-        if (u->cv[i].px) heap_caps_free(u->cv[i].px);
+        if (u->cv[i].px) orb_glass_free(u->cv[i].px);
     heap_caps_free(u);
     s_ui[slot] = NULL;
 }

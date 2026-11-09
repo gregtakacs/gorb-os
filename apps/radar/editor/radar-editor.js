@@ -31,110 +31,19 @@
 
   // one level of a place's map, built on the hub from the Map tiles source (maps@1)
   function level(pl, z) { return root.GorbMaps.fetchLevel(pl.lat, pl.lon, z); }
-  // the radar's view radius at a zoom (radar.c rd_radius_m) and the scale bar there (rd_scale)
-  function radiusM(step, lat) { return Math.floor(156543.03392 * Math.cos(lat * Math.PI / 180) / Math.pow(2, 6 + step) * 233 + 0.5); }
-  function scaleOf(radius, unit, max) {
-    var u = unit === 'mi' ? 1609.344 : unit === 'nm' ? 1852 : 1000, mpp = radius / 233, best = 1;
-    [1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000].forEach(function (n) { if (n * u / mpp <= max) best = n; });
-    return { len: best, px: Math.floor(best * u / mpp + 0.5) };
+  // the look, drawn as the orb draws it: radar-bake.js frame() (the baked picture's drawing too)
+  var MINUTES = { now: 0, past: -40, next: 30 };
+  function drawFrame(x, d, P, hidden, time, step, home, unit, sweepDeg) {
+    B.frame(x, d, { plate: P.plate, map: P.map && P.map[step], rain: P.rain && P.rain[time], glass: P.glass, dot: P.dot, sweep: P.sweep },
+      { minutes: MINUTES[time], place: home ? home.name : 'Home', unit: unit, radius: B.radiusM(step, home ? home.lat : 33),
+        sweepDeg: sweepDeg || 0, hidden: hidden });
   }
 
-  /* ---- the preview's rain: a squall line and showers, the same every time, in dBZ ---- */
-  var RAIN_CELLS = [[150, 300, 70, 52], [210, 270, 55, 44], [280, 250, 60, 38], [340, 230, 45, 30], [120, 160, 40, 26],
-                    [330, 120, 35, 22], [250, 330, 30, 48], [190, 220, 25, 58], [380, 330, 38, 20]];
-  var rainField = (function () {
-    var f = new Float32Array(G * G);
-    for (var y = 0; y < G; y++) for (var x = 0; x < G; x++) {
-      var v = 0;
-      RAIN_CELLS.forEach(function (c) {
-        var dx = (x - c[0]) / c[2], dy = (y - c[1]) / (c[2] * 0.7), e = Math.exp(-(dx * dx + dy * dy));
-        v = Math.max(v, c[3] * e + 6 * e * Math.sin(x * 0.07 + y * 0.05));
-      });
-      f[y * G + x] = v;
-    }
-    return f;
-  })();
-  function rainCanvas(d, shift) {
-    var c = document.createElement('canvas'); c.width = c.height = G;
-    var x = c.getContext('2d'), im = x.createImageData(G, G), lut = B.rainLut(d, 15);   // the app's default floor
-    for (var i = 0; i < G * G; i++) {
-      var px = i % G, src = rainField[i - Math.max(0, Math.min(px, shift | 0))] || 0;
-      var v = Math.max(0, Math.min(255, Math.round((src + 32) * 2))), o = 4 * v;
-      im.data[4 * i] = lut[o]; im.data[4 * i + 1] = lut[o + 1]; im.data[4 * i + 2] = lut[o + 2]; im.data[4 * i + 3] = lut[o + 3];
-    }
-    x.putImageData(im, 0, 0);
-    return c;
-  }
-
-  /* ---- the map, drawn in the design: what the orb's map service draws ---- */
-  function rolesAt(d, step) {
-    var on = 0;
-    B.ROLES.forEach(function (r, k) {
-      if ((d.map.off || []).indexOf(r) >= 0) return;
-      if (((d.map.from || {})[r] | 0) > step) return;
-      on |= 1 << k;
-    });
-    return on;
-  }
-  function mapCanvas(d, bytes, step) {
-    var GM = root.GorbMaps, M = d.map;
-    var width = B.ROLES.map(function (r) { return Math.max(0, Math.min(4, (M.width && M.width[r]) | 0)); });
-    var dash = B.ROLES.map(function (r) { return B.DASH[(M.dash && M.dash[r]) || 'solid'] | 0; });
-    var marks = { city: 1, town: 2, village: 4, airport: 8 }, mo = 0;
-    (M.marks || []).forEach(function (k) { mo |= marks[k] | 0; });
-    var lv = GM.pickLevel(Math.round((d.__lat || 0) * 1e6), radiusM(step, d.__lat || 0));   // millionths
-    var r = GM.render(bytes, { scale: lv.scale, rot_rad: 0, role_on: rolesAt(d, step), mark_on: mo, width: width.concat([0]), dash: dash.concat([0]) });
-    var pal = B.ROLES.map(function (k) { return B.argb(M[k], 1); }).concat([0]);
-    var c = document.createElement('canvas'); c.width = c.height = GM.W;
-    var x = c.getContext('2d'), im = x.createImageData(GM.W, GM.W);
-    GM.paint(r.raster, pal, im.data);
-    x.putImageData(im, 0, 0);
-    return { c: c, marks: r.marks };
-  }
-
-  // one frame of the preview: plate, map, what goes under the rain, rain, glass, dot, words
-  function drawFrame(x, d, P, hidden, time, step, home, unit) {
-    x.clearRect(0, 0, G, G);
-    if (P.plate && !hidden.ground) x.drawImage(P.plate, 0, 0);
-    var mp = P.map && P.map[step];
-    if (mp && !hidden.map) x.drawImage(mp.c, 0, 0);
-    var U = d.under || {};
-    if (!hidden.overlay && U.colour && (U.rings || U.cross)) {
-      x.strokeStyle = U.colour; x.lineWidth = U.width || 1;
-      for (var k = 1; k <= (U.rings | 0); k++) { x.beginPath(); x.arc(CX, CX, 232 * k / U.rings, 0, 2 * Math.PI); x.stroke(); }
-      if (U.cross) { x.beginPath(); x.moveTo(1, CX); x.lineTo(G - 1, CX); x.moveTo(CX, 1); x.lineTo(CX, G - 1); x.stroke(); }
-    }
-    if (P.rain && !hidden.rain) x.drawImage(P.rain[time], 0, 0);
-    if (!hidden.overlay) {
-      if (P.glass) x.drawImage(P.glass, 0, 0);
-      if (P.dot) x.drawImage(P.dot, CX - 8, CX - 8);
-    }
-    if (hidden.words) return;
-    var W = d.words, SW = W.scale || { face: W.nameFace, px: W.namePx, colour: W.quiet };
-    var say = function (s, cx, cy, face, px, colour) {
-      x.font = px + 'px "' + face + '", sans-serif'; x.textAlign = 'center'; x.textBaseline = 'middle';
-      x.fillStyle = colour; x.fillText(s, cx, cy);
-    };
-    // the landmarks' names, as main.c draw_names places them: off the dot, inside the rim
-    var n = 0, boxes = [];
-    (mp ? mp.marks : []).some(function (m) {
-      if (n >= Math.min(6, d.map.names | 0)) return true;
-      var nm = m.name, w = 13 * nm.length + 12, X = Math.round(m.x), Y = Math.round(m.y) + 22, dx = X - CX, dy = Y - CX;
-      if (dx * dx + dy * dy > 185 * 185 || dx * dx + dy * dy < 40 * 40 || Y < 130 || Y > 330) return false;
-      if (boxes.some(function (b) { return Math.abs(X - b[0]) < (w + b[2]) / 2 && Math.abs(Y - b[1]) < 32; })) return false;
-      boxes.push([X, Y, w]); n++;
-      say(nm, X, Y, W.nameFace, W.namePx, W.quiet);
-      return false;
-    });
-    say(home ? home.name : 'Home', CX, 58, W.face, W.px, W.ink);
-    var t = TIMES.filter(function (q) { return q[0] === time; })[0][1].replace('−', '-');
-    say(t, CX, 98, W.face, W.px, time === 'next' ? W.forecast : W.ink);
-    // the scale bar and its length (main.c draw_scale), in the theme's scale
-    var sc = d.scale, sb = scaleOf(radiusM(step, home ? home.lat : 33), unit, sc.max), x0 = CX - sb.px / 2;
-    if (sc.edge) { x.fillStyle = sc.edge; x.fillRect(x0 - 2, 439, sb.px + 4, sc.width + 2); x.fillRect(x0 - 2, 440 - sc.tick - 1, 4, sc.tick + 2); x.fillRect(x0 + sb.px - 2, 440 - sc.tick - 1, 4, sc.tick + 2); }
-    x.fillStyle = sc.ink; x.fillRect(x0, 440, sb.px, sc.width);
-    if (sc.tick) { x.fillRect(x0, 440 - sc.tick, 2, sc.tick); x.fillRect(x0 + sb.px - 2, 440 - sc.tick, 2, sc.tick); }
-    say(sb.len + ' ' + unit, CX, 414, SW.face, SW.px, SW.colour);
+  // home's map at Region, once the editor has read it: the baked picture and the start's
+  // pictures are drawn over it (the made-up place stands in until then)
+  var seen = { home: null, bytes: null, unit: 'km' };
+  function pictureOpts() {
+    return seen.home && seen.bytes ? { map: { bytes: seen.bytes, lat: seen.home.lat, step: 1 }, place: seen.home.name, unit: seen.unit } : { unit: seen.unit };
   }
 
   /* ---- the preview's parts, each drawn again only when its own part of the design changes ---- */
@@ -148,13 +57,17 @@
       if (!bytes && P.building !== lk) { P.building = lk; c.say('Building the map of ' + pl.name + ' for the preview…'); }
       if (bytes) {
         if (P.building === lk) { P.building = null; c.say(''); }
-        P.map[st] = c.part('map' + st, JSON.stringify(d.map) + '|' + lk, function () { return mapCanvas(Object.assign({}, d, { __lat: pl.lat }), bytes, st); });
+        P.map[st] = c.part('map' + st, JSON.stringify(d.map) + '|' + lk, function () { return B.mapCanvas(d, bytes, st, pl.lat); });
+        if (st === 1 && c.home && pl.key === c.home.key) { seen.home = c.home; seen.bytes = bytes; }
       }
     } else if (c.placesRead && !pl && !P.homeless) { P.homeless = true; c.say('Set home on the Orb tab to preview the map'); }
-    var kRain = JSON.stringify(d.rain);
-    if (P.kRain !== kRain) { P.kRain = kRain; P.rain = { now: rainCanvas(d, 0), past: rainCanvas(d, 40), next: rainCanvas(d, -30) }; }
-    var kArt = JSON.stringify(d.ground) + JSON.stringify(d.glass) + JSON.stringify(d.dot);
-    if (P.kArt !== kArt) { P.kArt = kArt; P.plate = B.plateCanvas(d); P.glass = B.glassCanvas(d); P.dot = B.dotCanvas(d); }
+    var kRain = JSON.stringify(d.rain) + d.forecast;
+    if (P.kRain !== kRain) { P.kRain = kRain; P.rain = { now: B.rainCanvas(d, 0, false), past: B.rainCanvas(d, 40, false), next: B.rainCanvas(d, -30, true) }; }
+    var kArt = JSON.stringify(d.ground) + JSON.stringify(d.glass) + JSON.stringify(d.dot) + JSON.stringify(d.sweep) + JSON.stringify(d.layout);
+    if (P.kArt !== kArt) {
+      P.kArt = kArt; P.plate = B.plateCanvas(d); P.glass = B.glassCanvas(d); P.dot = B.dotCanvas(d);
+      P.sweep = d.sweep && d.sweep.on ? B.sweepCanvas(d) : null;
+    }
     // the faces the words draw in, loaded before they draw
     var W = d.words, SW = W.scale || {}, kF = [W.face, W.nameFace, SW.face].join('|');
     if (P.kF !== kF) {
@@ -235,7 +148,26 @@
         ? close + ' neighbouring colour' + (close === 1 ? ' is' : 's are') + ' close in lightness to the one before: a colour-blind eye, or a dim glass, may not tell them apart. Spread them in lightness, not only hue.'
         : 'Each colour starts at its strength and runs to the next. Light rain is 15-30 dBZ, heavy 40-50, hail and severe storms 55 and up. The app’s Lightest rain setting hides the weakest.'));
     } else if (step === 'overlay') {
-      var gl = d.glass, U = d.under || {};
+      var gl = d.glass, U = d.under || {}, Ly = d.layout || {};
+      out.push(K.H('Layout'));
+      out.push(K.Ch('Time track', Ly.track || 'round', opt([['bottom', 'On the bottom rim'], ['round', 'Round the rim']]), function (v) {
+        setD(function (o) { var n = clone(o); n.layout = Object.assign({}, o.layout, v === 'bottom' ? { track: v, timeY: 346, statusY: 392, placeY: 52 } : { track: v, timeY: 98, statusY: 362, placeY: 58 }); return n; });
+      }));
+      out.push(K.Ch('Scale', Ly.scale || 'bar', opt([['ring', 'A ring at a round distance'], ['bar', 'A bar']]), function (v) { upd('layout.scale', v); }));
+      out.push(K.Ch('Place', Ly.caps ? 'caps' : 'as', opt([['caps', 'In capitals'], ['as', 'As written']]), function (v) { upd('layout.caps', v === 'caps'); }));
+      out.push(K.Nt('', 'On the bottom rim (the approved look): the time sits low over a track of the frames, past to the left of Now, forecast to the right. The ring is drawn at the scale’s round length and labelled on it.'));
+      out.push(K.H('Forecast'));
+      out.push(K.Ch('Marked', d.forecast || 'none', opt(B.FORECAST_TITLES), function (v) { upd('forecast', v); }));
+      out.push(K.Nt('', 'How the next hour’s frames are drawn, so a forecast never looks observed. The toolbar’s +30 min shows it.'));
+      var Sw = d.sweep || { on: false };
+      out.push(K.H('Sweep'));
+      out.push(K.Ch('Sweep', Sw.on ? 'on' : 'off', opt([['on', 'Turning'], ['off', 'None']]), function (v) { upd('sweep.on', v === 'on'); }));
+      if (Sw.on) {
+        out.push(C('Colour', 'sweep.colour'));
+        out.push(num('Trail', 'sweep.tail', 0, 90, 5, function (v) { return v + '°'; }));
+        out.push(num('One turn', 'sweep.period', 2, 30, 1, function (v) { return v + ' s'; }));
+        out.push(K.Nt('', 'A line turning round the glass with a fading trail: Scope’s signature. It is a moving row, so it costs a little each frame.'));
+      }
       out.push(K.H('Range rings over the rain'));
       out.push(K.Rg('Rings', gl.rings.length, 0, 4, 1, function (v) { var r = []; for (var k = 1; k <= v; k++) r.push(k / v); upd('glass.rings', r); }, gl.rings.length ? String(gl.rings.length) : 'none'));
       out.push(C('Colour', 'glass.ring'));
@@ -253,13 +185,13 @@
       out.push(C('Past', 'glass.track'));
       out.push(C('Forecast', 'glass.forecast'));
       out.push(num('Opacity', 'glass.trackA', 0.1, 1, 0.05, pct));
-      out.push(K.Nt('', 'A tick on the rim for each frame, Now at the top, the past anticlockwise and the forecast clockwise; the cursor rides it as you turn the knob.'));
+      out.push(K.Nt('', (Ly.track === 'bottom' ? 'A tick on the bottom rim for each frame, Now at the bottom, the past to its left and the forecast to its right' : 'A tick on the rim for each frame, Now at the top, the past anticlockwise and the forecast clockwise') + '; the cursor rides it as you turn the knob.'));
       out.push(K.H('Place dot'));
       out.push(C('Colour', 'dot.colour'));
       out.push(C('Ring', 'dot.ring'));
       out.push(num('Size', 'dot.r', 2, 7, 0.5, px));
-      out.push(K.H('Scale bar'));
-      out.push(C('Bar', 'scale.ink'));
+      out.push(K.H(Ly.scale === 'ring' ? 'Scale' : 'Scale bar'));
+      if (Ly.scale !== 'ring') out.push(C('Bar', 'scale.ink'));
       out.push(C('Edge', 'scale.edge', { none: true }));
       out.push(num('Thickness', 'scale.width', 2, 8, 1, px));
       out.push(num('End ticks', 'scale.tick', 0, 24, 1, function (v) { return v ? v + ' px' : 'none'; }));
@@ -284,8 +216,9 @@
       out.push(C('Colour', 'words.scale.colour'));
       out.push(K.H('Zoom and status'));
       out.push(num('Zoom size', 'words.zoomPx', 34, 48, 1, px));
-      out.push(K.Tx('Backing', W.backing, function (v) { upd('words.backing', v); }));
-      out.push(K.Nt('', 'The zoom’s name while you choose it, and the status line, stand on this backing (a CSS colour, e.g. rgba(4,10,14,0.78)) so they read over map and rain.'));
+      out.push(C('Backing', 'words.backing'));
+      out.push(num('Opacity', 'words.backingA', 0, 1, 0.02, pct));
+      out.push(K.Nt('', 'The zoom’s name while you choose it, and the status line, stand on this backing so they read over the map and the rain.'));
     }
     return out;
   }
@@ -295,7 +228,9 @@
     check: checkDesign, complete: B.complete,
     blank: { note: B.STARTER_NOTES.blank, make: function () { return B.preset('blank'); } },
     templates: B.STARTERS.map(function (k) { return { key: k, name: B.STARTER_TITLES[k], note: B.STARTER_NOTES[k], make: function () { return B.preset(k); } }; }),
-    picture: function (d, px) { return B.picture(d, px); },
+    picture: function (d, px) { return B.picture(d, px, pictureOpts()); },
+    // the start's pictures drawn again once home's map has come
+    pictureKey: function () { return seen.home && seen.bytes ? 'home' : 'sample'; },
     steps: [['ground', 'Ground'], ['map', 'Map'], ['rain', 'Rain'], ['overlay', 'Overlay'], ['words', 'Words']],
     parts: [
       { id: 'ground', label: 'Ground', icon: '◍' },
@@ -310,13 +245,17 @@
       { key: 'zoom', label: 'Zoom', options: ZOOMS.map(function (z) { return [z[0], z[1], 'The map at ' + z[1]]; }) },
       { key: 'time', label: 'Time', options: TIMES },
     ],
+    // the sweep turns as on the orb, while the design has one
+    play: { fps: 20, on: function (v, d) { return !!(d && d.sweep && d.sweep.on); }, what: 'the sweep', idle: 'Nothing turns: this design has no sweep' },
     draw: function (x, d, c) {
-      drawFrame(x, d, partsOf(d, c), c.hidden, c.view.time, c.view.zoom, c.place, c.unit);
+      seen.unit = c.unit;
+      var per = Math.max(2, (d.sweep && d.sweep.period) | 0) * 1000;
+      drawFrame(x, d, partsOf(d, c), c.hidden, c.view.time, c.view.zoom, c.place, c.unit, d.sweep && d.sweep.on ? (c.t % per) * 360 / per : 0);
     },
-    bake: function (d, o) { return B.bake(d, o); },
+    bake: function (d, o) { return B.bake(d, Object.assign({}, o, { picture: pictureOpts() })); },
     fit: function () { return { rows: LIVE_ROWS, cap: 64 }; },
   };
 
-  root.RadarEditor = { app: app, drawFrame: drawFrame, checkDesign: checkDesign, rolesAt: rolesAt, scaleOf: scaleOf, radiusM: radiusM };
+  root.RadarEditor = { app: app, drawFrame: drawFrame, checkDesign: checkDesign };
   if (root.OrbHost) root.OrbHost.register(app);
 })(typeof window !== 'undefined' ? window : globalThis);

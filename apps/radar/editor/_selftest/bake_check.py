@@ -34,19 +34,19 @@ STAGE = "/mnt/c/Temp/radar-bake-check"
 RUNTIME = os.path.join(ROOT, "tools", "orb-manager", "web", "runtime")
 EDITOR = os.path.dirname(HERE)
 APPV = open(os.path.join(EDITOR, "..", "version.txt")).read().strip()
-VALUES_B = 64 + 16 + 16 + 4 + 4 + 1024 + 16 + 16 + 16    # radar.h rd_values_t, layout 4
+VALUES_B = 64 + 16 + 16 + 4 + 4 + 1024 + 16 + 16 + 16 + 16    # radar.h rd_values_t, layout 5
 # The pool's room beside the shelf's other defaults (8 MB less those, the two table
 # sectors and 512 KB of slack), read off the shelf so it follows them.
 SHELF = os.path.join(ROOT, "tools", "orb-manager", "themes")
 BUDGET = (8 << 20) - sum(os.path.getsize(os.path.join(SHELF, f)) for f in
-                         ("skeleton.orbtheme", "modern.orbtheme", "scope.orbtheme")) - 2 * 4096 - (512 << 10)
+                         ("skeleton.orbtheme", "flights-scope.orbtheme", "weather-scope.orbtheme")) - 2 * 4096 - (512 << 10)
 
 
 def stage():
     if os.path.isdir(STAGE):
         shutil.rmtree(STAGE)
     os.makedirs(STAGE)
-    for src in (os.path.join(HERE, "bake.html"), os.path.join(EDITOR, "radar-bake.js"),
+    for src in (os.path.join(HERE, "bake.html"), os.path.join(EDITOR, "radar-bake.js"), os.path.join(RUNTIME, "maps@1", "orbmap.js"),
                 os.path.join(RUNTIME, "baker@1", "orbtheme-baker.js"), os.path.join(RUNTIME, "vendor", "fonts.css")):
         shutil.copy(src, STAGE)
     shutil.copytree(os.path.join(RUNTIME, "vendor", "fonts"), os.path.join(STAGE, "fonts"))
@@ -83,6 +83,12 @@ def check(name, raw, exe):
     h = aux.get(1)
     if not h or int(h["x"]) + int(h["pivot_x"]) != 233 or int(h["y"]) + int(h["pivot_y"]) != 233:
         bad.append("the time cursor at 1 does not turn about the glass's centre")
+    sw = aux.get(2)                                # the sweep (§6.26): turns about the centre, when the look has one
+    if sw and (int(sw["x"]) + int(sw["pivot_x"]) != 233 or int(sw["y"]) + int(sw["pivot_y"]) != 233):
+        bad.append("the sweep at 2 does not turn about the glass's centre")
+    want_sweep = name in ("scope", "celestial", "sweep-station")
+    if want_sweep != bool(sw) and name in ("scope", "celestial", "sweep-station", "no-sweep", "paper", "saved-before-look"):
+        bad.append("the sweep is %s" % ("missing" if not sw else "there unasked"))
     fonts = sorted(int(e["slot"]) for e in els if int(e["class"]) == ts.CLASS_TEXT)
     if fonts != [0, 1, 2, 3, 4]:                   # 4: the scale bar's length (layout 3)
         bad.append("fonts: %s" % fonts)
@@ -90,8 +96,8 @@ def check(name, raw, exe):
     if labs != list(range(8, 19)):
         bad.append("labels at %s, not 8..18" % labs)
     vals = [e for e in els if int(e["class"]) == ts.CLASS_VALUES]
-    if len(vals) != 1 or int(vals[0]["src"]) != 4:
-        bad.append("no values of layout 4")
+    if len(vals) != 1 or int(vals[0]["src"]) != 5:
+        bad.append("no values of layout 5")
     else:
         b = sec["blob"]["sprites"][int(vals[0]["frame0"])]
         w = int(b["w"]) if b else None

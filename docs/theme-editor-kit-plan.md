@@ -911,7 +911,7 @@ most, so it moves after the contract has carried the other three.
 - **Weather's Places screen** shows the place control's choice from the orb's own places,
   with that place's map; with none set it still shows the made-up Lisbon. Its Place
   control acts on Places only. Its `setup` is gone. The place's clock read Lisbon's UTC until the
-  places carried their zones (radar-plan §6.25, 2026-11-08); it now reads the place's own
+  places carried their zones (radar-plan §6.29, 2026-11-08); it now reads the place's own
   local time.
 - **Flights** reads home and the unit from the host. Its levels are read per range on
   demand (a step back is at once), and its `setup` is gone. Its views read Shows and Range.

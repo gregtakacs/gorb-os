@@ -182,6 +182,9 @@ void orb_sched_bench_grid(int pace10, uint32_t gif_every);
 /* §49.15: re-derive the live theme's plan (pace, gear every-N, pre-paint) and play it; the
  * bench's reset calls it so a bench run leaves the dial on its shipped behaviour. */
 void orb_sched_plan_restore(void);
+/* radar-plan §6.27: the stage is bound for an app (true) or the clock or nothing (false);
+ * an app's sweep earns the lean pre-painted plan. */
+void orb_sched_plan_app(bool app);
 #endif
 /* Re-anchor the gif due clock and the beat ladder to now after a park; re-zero
  * the per-second report's baselines. Two calls, in the shipped order, so the

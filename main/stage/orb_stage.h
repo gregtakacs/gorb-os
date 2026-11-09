@@ -91,6 +91,17 @@ esp_err_t stage_live_merge(bool on);
 esp_err_t stage_live_copy(int dst, int src);
 /* The box the app's draw changed: the stage repaints it on the next flush. */
 void stage_live_damage(int32_t x, int32_t y, int32_t w, int32_t h);
+/* OS v1.2.38 (radar-plan §6.27): a layer's back copy, drawn off the frame path by the live
+ * worker and swapped in whole. ensure: allocate it (the front must be open); lock: the back's
+ * pixels (and, src >= 0, layer src's front) held against a free until unlock, false when there
+ * is no back; present: the back becomes the front and the old front the back, the rows that
+ * changed [x0[y], x1[y]] (none where x0 > x1) repainted, or the whole disc when x0 is NULL. */
+esp_err_t stage_live_back_ensure(int l);
+bool stage_live_back_lock(int l, uint16_t **px, uint8_t **a, uint16_t **src_px, uint8_t **src_a, int src);
+void stage_live_back_unlock(void);
+esp_err_t stage_live_present(int l, const int16_t *x0, const int16_t *x1);
+/* The last swap's blip has been paid for: the next may go (stage_live_present's pace). */
+bool stage_live_swap_due(void);
 #if CONFIG_ORB_DEBUG_HTTP
 /* radar-plan R3c's bench: what an app does with the live layer, done on the stage's next
  * frame — open at order with argb, the raster through pal (when ras), the PNG window from

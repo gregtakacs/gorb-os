@@ -250,22 +250,15 @@ static const pv_t *pv_for(const orb_app_t *a)
  * posted while this read held it was refused with ESP_ERR_INVALID_STATE — the hub's
  * Weather install stores Scope right after the orb's reboot, exactly when this ran
  * (owner, 2026-11-07). Each read also waits out a store or an upload in flight. */
-static void pv_load(void)
+/* One app's preview into *p (its slug set): its chosen theme's, read off the card. */
+static void pv_fill(pv_t *p)
 {
-    if (!orb_sd_mounted()) {
-        ESP_LOGW(TAG, "no card: the carousel waits for its previews, the text list stays");
-        return;
-    }
-    const size_t cap = (size_t)PV * PV * 2;
-    for (size_t i = 0; i < orb_app_count() && s_pv_n < MAX_ITEMS; i++) {
-        const orb_app_t *a = orb_app_at(i);
-        if (!a || a->kind == ORB_APP_KIND_SHELL || !a->slug) continue;
-        pv_t *p = &s_pv[s_pv_n];
-        snprintf(p->slug, sizeof p->slug, "%s", a->slug);
-        p->px = NULL; p->z = NULL; p->zn = 0; p->zside = 0;
-        char stem[64];
-        while (orb_jobs_busy() || orb_theme_upload_busy()) vTaskDelay(pdMS_TO_TICKS(500));
-        if (orb_theme_pool_stem(a->slug, stem, sizeof stem)) {
+    p->px = NULL; p->z = NULL; p->zn = 0; p->zside = 0;
+    char stem[64];
+    while (orb_jobs_busy() || orb_theme_upload_busy()) vTaskDelay(pdMS_TO_TICKS(500));
+    {
+        const char *slug = p->slug;
+        if (orb_theme_pool_stem(slug, stem, sizeof stem)) {
             const int64_t t0 = esp_timer_get_time();
             uint16_t w = 0;
             uint16_t *buf = NULL;
@@ -276,7 +269,7 @@ static void pv_load(void)
                 buf = (uint16_t *)orb_preview_inflate(p->z, p->zn, p->zside);
                 w = p->zside;
             } else {
-                buf = pv_read(stem, &w, a->slug);         /* a raw preview, an older bake */
+                buf = pv_read(stem, &w, slug);            /* a raw preview, an older bake */
             }
             if (buf && w > PV) {                 /* §60: a full-glass preview, boxed down */
                 uint16_t *sm = heap_caps_malloc((size_t)PV * PV * 2, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
@@ -289,13 +282,64 @@ static void pv_load(void)
                 for (size_t k = 0; k < (size_t)w * w; k++) buf[k] = wire(buf[k]);
                 p->px = buf;
                 p->side = w;
-                ESP_LOGI(TAG, "preview %s (%s): %d ms, %lu B kept", a->slug, stem,
+                ESP_LOGI(TAG, "preview %s (%s): %d ms, %lu B kept", slug, stem,
                          (int)((esp_timer_get_time() - t0) / 1000), (unsigned long)p->zn);
             }
         }
+    }
+}
+
+static void pv_load(void)
+{
+    if (!orb_sd_mounted()) {
+        ESP_LOGW(TAG, "no card: the carousel waits for its previews, the text list stays");
+        return;
+    }
+    for (size_t i = 0; i < orb_app_count() && s_pv_n < MAX_ITEMS; i++) {
+        const orb_app_t *a = orb_app_at(i);
+        if (!a || a->kind == ORB_APP_KIND_SHELL || !a->slug) continue;
+        pv_t *p = &s_pv[s_pv_n];
+        snprintf(p->slug, sizeof p->slug, "%s", a->slug);
+        pv_fill(p);
         s_pv_n++;
     }
     s_pv_ready = true;
+}
+
+/* A store chose another theme for an app without a reboot (theme-cache-plan, 2026-11-09):
+ * its preview is read again, and swapped in while the carousel is shut — never under a frame
+ * that draws the old one. The shut carousel's release wakes the task, so a deferred swap
+ * lands then. Preview task only. */
+static volatile uint32_t s_pv_stale;            /* bit i: s_pv[i] wants reading again */
+static void pv_refresh(void)
+{
+    for (int i = 0; i < s_pv_n; i++) {
+        if (!(s_pv_stale & (1u << i)) || orb_strip_active()) continue;
+        pv_t fresh;
+        memcpy(fresh.slug, s_pv[i].slug, sizeof fresh.slug);
+        fresh.side = 0;
+        pv_fill(&fresh);
+        if (orb_strip_active()) continue;                /* opened meanwhile: next wake */
+        s_pv_stale &= ~(1u << i);
+        uint16_t *old_px = s_pv[i].px;
+        uint8_t  *old_z  = s_pv[i].z;
+        s_pv[i] = fresh;
+        if (s_hi && !strcmp(s_hi_slug, fresh.slug)) {   /* its full plane was the old theme's */
+            s_hi_ready = false;
+            heap_caps_free(s_hi);
+            s_hi = NULL;
+            s_hi_slug[0] = '\0';
+        }
+        heap_caps_free(old_px);
+        heap_caps_free(old_z);
+    }
+}
+
+void orb_strip_preview_changed(const char *slug)
+{
+    for (int i = 0; slug && s_pv_ready && i < s_pv_n; i++)
+        if (!strcmp(s_pv[i].slug, slug)) s_pv_stale |= 1u << i;
+    if (s_pv_th) xTaskNotifyGive(s_pv_th);
 }
 
 /* Let the boot settle first: the card mounts and the first dial binds before the cache
@@ -311,6 +355,7 @@ static void pv_task(void *arg)
     /* §60: then the centre app's full-glass plane, each time the strip asks */
     for (;;) {
         ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+        if (s_pv_stale) pv_refresh();
         if (s_hi_drop) {
             s_hi_drop = false;
             uint16_t *old = s_hi;

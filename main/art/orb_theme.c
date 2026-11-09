@@ -42,7 +42,8 @@
 #include "orb_theme.h"
 #include "orb_bundle.h"
 #include "orb_pool.h"
-#include "orb_pagemap.h"     /* §4.1: an entry's pages as one window */
+#include "orb_pagemap.h"
+#include "orb_strip.h"       /* a chosen theme's preview, read again */     /* §4.1: an entry's pages as one window */
 #include "orb_elems.h"      /* orb_elems_at(), and the answers read_one_plane maps onto the registry's */
 #include "orb_clock3.h"          /* the FORMAT 3 clock section's projection (P6.5) */
 #include "orb_sound.h"           /* D39: silence the old bank's voices before a remap */
@@ -2447,6 +2448,7 @@ static esp_err_t store_choose(const char *slug, const char *id, const char *name
         voice_add(slug);
     s_hide_slug[0] = '\0';
     strlcpy(s_refill_slug, slug, sizeof s_refill_slug);   /* on the glass: it fills there */
+    orb_strip_preview_changed(slug);                      /* the carousel's picture of it */
     staged_clear();
     ESP_LOGI(TAG, "stored \"%s\" (%s) for %s: chosen, no reboot; it fills from the card when "
                   "%s is on the glass", name, id, slug, slug);

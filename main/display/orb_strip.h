@@ -44,6 +44,10 @@ void orb_strip_poll(int32_t delta, bool pressed, bool lpress, int64_t now_us);
  *  from the carousel stops its own zoom at the face), or when no fill runs for it. */
 void orb_strip_fill_face(const orb_app_t *app);
 
+/** theme-cache-plan (2026-11-09): `slug`'s chosen theme changed without a reboot; its
+ *  preview is read again from the card and swapped in while the carousel is shut. Any task. */
+void orb_strip_preview_changed(const char *slug);
+
 /** Hand the glass back at once, the app under the carousel as it was (a screen the
  *  router was asked for over HTTP outranks the carousel). */
 void orb_strip_abort(void);

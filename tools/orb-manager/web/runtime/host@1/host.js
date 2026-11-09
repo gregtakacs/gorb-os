@@ -281,6 +281,8 @@
     R.useEffect(function () { ses.boot().catch(function () {}).then(function () { return ses.openTheme(); }).catch(function () {}); }, []);
     R.useEffect(function () {
       var o = ses.hubOrb(); if (!o) return;
+      // a site's editor (GorbHost web) has no orb behind it: no home or places to read
+      if (!o.ip) { setGeo({ places: [], unit: 'km', read: true }); return; }
       H.places(o.ip).then(function (g) { setGeo(Object.assign({ read: true }, g)); },
         function (e) { setGeo({ places: [], unit: 'km', read: true }); say('The orb’s home and places could not be read: ' + err(e)); });
     }, []);

@@ -248,7 +248,10 @@ async function smoke(row) {
     const folder = c.base + row.slug + '/';
     const bad = load.requests.filter((q) => {
       const p = q.split(' ')[1].split('?')[0];
+      // the hub's own orb routes (host@1 reads the orb's home and places) are the hub's API;
+      // a site's editor has no orb, so under the web host they are outside it
       return !(p.startsWith('/runtime/') || p.startsWith(folder) || p.startsWith('/api/') ||
+        (c.name !== 'web' && /^\/orb\/\d{1,3}(\.\d{1,3}){3}\/api\//.test(p)) ||
         p.startsWith('/studio-api/') || p === '/__smoke' || p === '/favicon.ico');
     });
     ok(bad.length === 0, at + ': asked for nothing outside its own editor, the runtime and the API', bad.join(' '));

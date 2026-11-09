@@ -264,6 +264,41 @@ happens only when they are not. No first fit, no compaction, no MOVING state.
 
 ## 6. As built
 
+### The card has DMA memory of its own (2026-11-09, owner's ruling, Bronze)
+
+- **The owner's concern:** every card lock freed the display's tile ring (2 x 18,640 B of
+  internal DMA RAM) into the shared pool for the SD driver, and the unlock allocated it again.
+  Anything that took a piece of the hole meanwhile (the radio, lwIP) left no 18,640 B block:
+  the ring came back short or not at all, and the glass stops refreshing. It had happened:
+  the morning's `/status` on Bronze read 39.6 KB internal free with the clock on the glass,
+  ~18 KB (one tile) above a funded ring, and the radar bench had logged "re-funded short: 1
+  of 2". The owner: "basically we would put our own heap manager on top of the hardware."
+- **The arena** (`main/sd/orb_sd_dma.c`): a 3 KB IDF `multi_heap` of the card's own,
+  allocated from the shared pool at the first card lock and kept for the boot (not .bss: an
+  unprovisioned boot ends with that pool near zero, and a refused run-time ask falls back
+  where a .bss line would break something else). The linker wraps `heap_caps_malloc`,
+  `_calloc`, `_aligned_alloc`, `_aligned_calloc`, `_free`, `_realloc`, `_realloc_default`
+  and `_get_allocated_size`; a DMA-capable, non-PSRAM ask of 1 KB or less made by the task
+  holding the card lock is served from the arena, everything else passes through, and a
+  free or realloc of an arena block is recognised by its address. The asks it serves: the
+  sector bounce of every read and write into a PSRAM buffer (`sdmmc_cmd.c`), the SPI
+  master's bounce for each command block on a PSRAM task stack (`spi_master.c`), the SDSPI
+  slot's block buffer, the mount's response buffers. The wrappers are IRAM (`free` is
+  called with the cache off). A full arena falls through to the shared pool, counted.
+- **The card lock no longer lends the ring** (`orb_sd_lock`): the glass draws while the card
+  is held. Only a boot whose pool could not spare the 3 KB at any lock so far lends it as
+  before. The provisioning start, the boot overlay and USB disk mode keep their own loans.
+- **`/api/v1/status`:** `sd.dma_free`, `sd.dma_min`, `sd.dma_falls` (the arena), and
+  `glass.tiles`: the tile buffers driving the panel now (2 healthy, 1 short, 0 parked).
+- **Bronze:** the arena at rest 2,092 B free (the slot's block buffer and the bus's
+  descriptors live in it), low water 1,536 B; 0 falls. Through 25 theme listings, a radar
+  fill (1.8 MB off the card into the pool) and a 1.5 MB card write, `glass.tiles` read 2 at
+  every sample and no ring loan was logged. Internal free with radar on the glass 21.4 KB,
+  largest 7.2 KB, the ring funded.
+- **Left as it was:** the fill still lets the card go at a 4 KB chunk when the strip owes a
+  frame (C5b). With no loan a held card no longer refuses frames, so that now only happens
+  for a moving carousel.
+
 ### The carousel keeps nothing while shut (2026-11-09, owner's rulings, Bronze)
 
 - **Previews resident in flash:** a third entry kind, `ORB_POOL_PREVIEW`, one per chosen app,
@@ -508,8 +543,9 @@ held (20 fps), 1 s windows from the dial bench:
 - **The preview of an evicted app** comes from its choice's card file
   (`orb_theme_pool_stem` falls back to the choice): before, the carousel read previews only
   for apps in the pool, so the face of an evicted app was a bare ring.
-- **The glass and the fill share the card** (`orb_theme_fill_glass`). The card lock lends
-  the display's DMA ring for as long as it is held, and a fill holds it from open to close, so
+- **The glass and the fill share the card** (`orb_theme_fill_glass`). The card lock lent
+  the display's DMA ring for as long as it was held (until the card had its own DMA memory,
+  §6 above), and a fill holds it from open to close, so
   the face drew 12 frames in a 9 s fill and the carousel opened over a running fill drew none.
   While the strip has the glass and owes a frame (a moving carousel, or a frame the held
   card refused), the fill lets the card go at its next 4 KB chunk until the frame is out

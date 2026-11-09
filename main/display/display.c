@@ -1803,6 +1803,11 @@ size_t display_dma_borrow(void)
 /* The ring is out (lent, or back but not yet re-funded): frames are dropped. */
 bool display_dma_parked(void) { return s_ring_parked; }
 
+/* The tile buffers the flush path is driving now (0 while parked). /api/v1/status
+ * shows it, because a ring that came back short (1) or not at all (0, parked) is
+ * the glass's whole health and nothing on the panel says so. */
+int display_tiles(void) { return s_ring_parked ? 0 : s_tiles_n; }
+
 bool display_dma_lent(void)
 {
     return s_ring_loan > 0;

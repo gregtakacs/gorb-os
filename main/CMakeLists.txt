@@ -113,6 +113,7 @@ idf_component_register(
         "net/orb_tls_mem.c"   # mbedTLS allocator: PSRAM for the task that asks
         "net/orb_mdns.c"      # _orb._tcp advertiser (docs/history/orb-manager-plan.md §5 item 4)
         "sd/orb_sd.c"
+        "sd/orb_sd_dma.c"     # the card's own DMA arena (heap_caps wraps below)
         "sd/orb_files.c"
         # D38: the MTP file-share mode, in its own file because the SD layer it
         # borrows the card from is not its owner. MSC is out of the tree, not out
@@ -189,6 +190,17 @@ idf_component_register(
 # orb_panic.c records every panic before ESP-IDF's handler prints and resets: the
 # wrap is the only hook that sees faults, abort() and both watchdogs alike.
 target_link_libraries(${COMPONENT_LIB} INTERFACE "-Wl,--wrap=esp_panic_handler")
+
+# The card's own DMA arena (main/sd/orb_sd_dma.c): the SD stack's small internal-DMA
+# asks, made by the card lock's holder, come from a private multi_heap instead of the
+# shared pool, so the card never borrows the display's tile ring. These are the heap
+# entry points the SD stack reaches from outside heap_caps.c (free() and realloc()
+# arrive through heap_caps_free and heap_caps_realloc_default).
+target_link_libraries(${COMPONENT_LIB} INTERFACE
+    "-Wl,--wrap=heap_caps_malloc" "-Wl,--wrap=heap_caps_calloc"
+    "-Wl,--wrap=heap_caps_aligned_alloc" "-Wl,--wrap=heap_caps_aligned_calloc"
+    "-Wl,--wrap=heap_caps_free" "-Wl,--wrap=heap_caps_realloc"
+    "-Wl,--wrap=heap_caps_realloc_default" "-Wl,--wrap=heap_caps_get_allocated_size")
 
 # D43 §5.4: LVGL calls these three blend hooks (main/lvhook/orb_lv_blend.h), but the
 # linker scans this component's archive before LVGL's, so nothing would pull

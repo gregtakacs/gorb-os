@@ -154,7 +154,8 @@ is wired.
   on first enable: a dial that never tracks pays nothing at boot.
 - **Gates (a poll becomes a counted skip):** network down; a job running
   (install, store); the card lock held within the last 2 s (the display
-  refunds its tile ring up to 1.5 s after the card is released); internal
+  refunded its tile ring up to 1.5 s after the card was released, until the
+  card got DMA memory of its own: theme-cache-plan §6); internal
   largest block under 1,536 B.
 - **Poll:** GET, stream through `orb_readsb`, keep the nearest 24 by
   equirectangular distance, then swap the working table into the published

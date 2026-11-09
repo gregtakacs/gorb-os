@@ -28,8 +28,8 @@
 #include "orb_sd.h"
 #include "orb_io_window.h"
 #include "board_config.h"
-#include "display.h"              // tile-ring loan: the SD driver's DMA asks and the display's
-                                  // ring come from one internal pool (see orb_sd_lock)
+#include "orb_sd_dma.h"           // the card's own DMA arena (see orb_sd_lock)
+#include "display.h"              // the tile-ring loan, only while that arena is unfunded
 
 static const char *TAG = "orb_sd";
 
@@ -44,6 +44,7 @@ static SemaphoreHandle_t  s_lock;
  * holder or the current one — never a torn value — which is enough to name a suspect. */
 static TaskHandle_t       s_lock_holder;
 static int64_t            s_lock_taken_us;
+static bool               s_ring_lent;     /* this hold borrowed the tile ring (no arena yet) */
 /* Stamp of the most recent release, for orb_sd_lock_idle_ms(). One writer (the
  * holder giving the lock), one reader that tolerates a slightly-stale age, so
  * a plain volatile int64 is the whole protocol. */
@@ -594,38 +595,25 @@ void orb_sd_lock(void)
     s_lock_holder = me;
     s_lock_taken_us = esp_timer_get_time();
 
-    /* The display's tile ring travels with the card lock.
-     *
-     * Why here, and not at each writer: the SD driver asks the internal DMA
-     * pool for small blocks at mount (sdmmc_common.c:401) and on every unaligned
-     * write (sdmmc_cmd.c:477), and with the radio associated that pool is
-     * fragmented below the ask -- measured 125 B refused with 4,315 B free. The
-     * ring is the largest freeable block on the board (2 x 18,640 B of
-     * MALLOC_CAP_INTERNAL|MALLOC_CAP_DMA), and the lock's own lifetime is
-     * exactly the window that needs it: held for one mount, one upload, one
-     * install. Putting the loan here means a card path cannot forget it.
-     *
-     * What it costs: the flush path drops frames while the ring is out (see
-     * display_dma_borrow), so the glass is a still image for as long as the
-     * card is held. That is already the deal this mutex makes -- the clock's
-     * tick skips while the card is locked precisely because a fatfs read is a
-     * 4-second business -- and the CO5300 holds its own GRAM, so "still" is not
-     * "blank". The whole page is re-sent from the mirror on the return.
-     *
-     * Bounded and safe against the LVGL task: the loan's in-flight drain is
-     * capped, and a drain that does not settle REFUSES the loan rather than
-     * waiting, so a card path that somehow runs ahead of a flush cannot hang. */
-    display_dma_borrow();
+    /* The SD driver's internal-DMA asks (a sector bounce per read or write, the SPI
+     * master's bounce for each command on a PSRAM stack, the slot's block buffer) are
+     * this task's from here to the unlock, and orb_sd_dma.c serves them from the
+     * card's own arena. Until 2026-11-09 the lock lent the card the display's tile
+     * ring instead: freed into the shared pool here, allocated again at the unlock,
+     * and a pool the radio had fragmented in between could not give 18,640 B back,
+     * which stopped the glass (owner's ruling: the card gets memory of its own). The
+     * glass now keeps drawing while the card is held. Only a boot whose pool could not
+     * spare the arena's 3 KB at any lock so far still lends the ring, as before. */
+    s_ring_lent = !orb_sd_dma_ready();
+    if (s_ring_lent) display_dma_borrow();
+    orb_sd_dma_owner(me);
     orb_io_heavy_begin();       /* card I/O starves the LVGL task's guests */
 }
 
 void orb_sd_unlock(void)
 {
-    /* Give the ring back BEFORE releasing the mutex, so the next holder never
-     * sees the card without its DMA. If the memory did not come back (the card
-     * kept it), display_dma_return clears the loan anyway and the flush path
-     * re-funds the ring on its own next frame. */
-    display_dma_return();
+    orb_sd_dma_owner(NULL);     /* before the give: the next holder sets its own */
+    if (s_ring_lent) { s_ring_lent = false; display_dma_return(); }
     orb_io_heavy_end();
     if (s_lock) {
         s_lock_last_release_us = esp_timer_get_time();

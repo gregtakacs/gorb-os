@@ -81,6 +81,7 @@ static uint8_t s_ap_last_mac[6];    /* DIAGNOSTIC: the client we are watching */
 #include "orb_stage.h"
 #include "board_config.h"   /* h_fb: SCREEN_WIDTH/HEIGHT, the row scratch's size */
 #include "orb_sd.h"
+#include "orb_sd_dma.h"
 #include "orb_theme.h"
 #if CONFIG_ORB_USB_MTP || CONFIG_ORB_USB_MSC
 #include "orb_usb_mtp.h"   /* §13.3: the share window has no console, so status is its only witness */
@@ -2641,6 +2642,8 @@ static esp_err_t h_status(httpd_req_t *req)
     heap_caps_get_info(&ps_info, MALLOC_CAP_SPIRAM);
     orb_glass_info_t gl;
     orb_glass_info(&gl);
+    uint32_t sd_dma_free, sd_dma_min, sd_dma_falls;   /* the card's own DMA arena */
+    orb_sd_dma_stats(&sd_dma_free, &sd_dma_min, &sd_dma_falls);
     const int n = snprintf(json, sizeof(json),
         "{\"state\":\"%s\",\"ip\":\"%s\",\"mac\":\"%s\",\"rssi\":%d,\"fw\":\"%s\",\"idf\":\"%s\","
         "\"heap_internal\":%u,\"heap_internal_largest\":%u,\"heap_psram\":%u,"
@@ -2649,7 +2652,7 @@ static esp_err_t h_status(httpd_req_t *req)
          * a 312 KB map refused) */
         "\"psram\":{\"largest\":%u,\"free_blocks\":%u,\"used_blocks\":%u,\"min_free\":%u},"
         /* §6.21: the glass buffers' own region; fallbacks counts asks it could not meet */
-        "\"glass\":{\"size\":%u,\"free\":%u,\"largest\":%u,\"fallbacks\":%u},"
+        "\"glass\":{\"size\":%u,\"free\":%u,\"largest\":%u,\"fallbacks\":%u,\"tiles\":%d},"
         /* §43: the deepest the wasm apps' shared native stack has run, in bytes of
          * its ORB_WASM_NATIVE_STACK. The interpreter's depth is measured, not assumed. */
         "\"wasm_stack_peak\":%u,"
@@ -2676,7 +2679,8 @@ static esp_err_t h_status(httpd_req_t *req)
          * apart. mounted is the answer to "is there anything to serve", and share
          * is the answer to "why will a rescan refuse right now". Both are cache
          * reads (orb_sd.c:255, :290), so the few-Hz poll costs no flash traffic. */
-        "\"sd\":{\"mounted\":%s,\"share\":%s,\"card\":\"%s\",\"why\":\"%s\",\"tried\":\"%s\"},"
+        "\"sd\":{\"mounted\":%s,\"share\":%s,\"card\":\"%s\",\"why\":\"%s\",\"tried\":\"%s\","
+        "\"dma_free\":%u,\"dma_min\":%u,\"dma_falls\":%u},"
         "\"art_ready\":%s,\"art_bytes\":%u,\"art_pages\":%u,\"art_banks\":%u,\"art_refusals\":%u,\"slot\":\"%s\",\"img\":\"%s\","
         "\"synced\":%s,\"epoch\":%lld,\"tz\":\"%s\",\"tz_offset\":%d,\"name\":\"%s\",\"ap\":%s,"
         "\"assoc_fails\":%u,\"wifi_reason\":%u,\"wifi_reason_name\":\"%s\","
@@ -2732,6 +2736,7 @@ static esp_err_t h_status(httpd_req_t *req)
         (unsigned)ps_info.largest_free_block, (unsigned)ps_info.free_blocks,
         (unsigned)ps_info.allocated_blocks, (unsigned)ps_info.minimum_free_bytes,
         (unsigned)gl.size, (unsigned)gl.free, (unsigned)gl.largest, (unsigned)gl.fallbacks,
+        display_tiles(),
         (unsigned)orb_wasm_stack_peak(),
         (unsigned)orb_wasm_budget_slips(),
         (unsigned)lvm_total, (unsigned)lvm_free, (unsigned)lvm_biggest, (unsigned)lvm_peak,
@@ -2742,6 +2747,7 @@ static esp_err_t h_status(httpd_req_t *req)
 #endif
         orb_sd_mounted() ? "true" : "false", orb_sd_share_held() ? "true" : "false",
         orb_sd_card_id(), orb_sd_why(), orb_sd_tried(),
+        (unsigned)sd_dma_free, (unsigned)sd_dma_min, (unsigned)sd_dma_falls,
         art_bank_ready() ? "true" : "false", (unsigned)art_bank_bytes(),
         (unsigned)art_bank_mmu_pages(), (unsigned)orb_art_resident_count(),
         (unsigned)orb_art_refusals(),

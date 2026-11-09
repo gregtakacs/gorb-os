@@ -21,6 +21,7 @@ global.React = window.React = {
 require(require('./runtime-paths.js').STUDIO);   // the shell's parts (fieldKit, Layers) the panes hand the class's values to
 let app = null;
 window.OrbHost = { register: (a) => { app = a; } };
+window.__keys = []; window.addEventListener = (t, f) => { if (t === 'keydown') window.__keys.push(f); };
 require('../clock-logic.js');
 require('../clock-host.js');
 
@@ -152,6 +153,15 @@ require('../clock-host.js');
   }
   ok(window.ClockHost.ctl().REBAKE_SETTLE_MS === 30000, 'a re-timed bake waits 30 s for the rebuilt movement, not 2 minutes');
 
+  // Escape deselects on the hosted page too (the composer bound it in a mount the host skips)
+  {
+    const keys = window.__keys || [];
+    ctl.setState({ sel: 'dial', selKind: 'dial' });
+    keys.forEach((f) => f({ key: 'Escape', target: { tagName: 'CANVAS' } }));
+    ok(keys.length > 0 && ctl.state.sel == null && ctl.state.selKind == null, 'Escape on the page deselects', keys.length + ' listeners');
+    keys.forEach((f) => f({ key: 'z', ctrlKey: true, target: { tagName: 'CANVAS' }, preventDefault() {} }));
+    ok(ctl.state.sel == null, 'and Ctrl+Z is not the class\u2019s to take: the host owns undo');
+  }
   const f = app.fit();
   ok(f.rows > 0 && f.cap >= f.rows && f.pace > 0, 'the fit: the rows against the cap, and the pace', JSON.stringify(f));
 

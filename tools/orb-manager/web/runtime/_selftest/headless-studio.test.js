@@ -104,6 +104,23 @@ Object.defineProperty(global, 'fn', { get: mkfn });
   ok(!by(render(S.Calibrate, S.calProps(V, { solve })), 'div', 'st-card').length, 'and with no card handler, no card');
 }
 
+// ---- status notes (owner, 2026-11-09): prompts fade, work in progress stays, errors keep a ×
+{
+  const K = S.noteKind;
+  ok(['Starting from Skeleton: Continue when you are ready', 'Redone', 'Opened “Sea” from the library', 'Exported “Sea” as x.orbtheme', 'Not exported'].every((t) => K(t) === 'note'),
+     'a prompt or an acknowledgement is a note that fades');
+  ok(['Baking “Sea”…', 'Waiting for the movement to finish drawing (8 of 15 frames) — keep this window in front', 'Sending "Sea" to 1.2.3.4 — 40% of 3 B to the hub'].every((t) => K(t) === 'busy'),
+     'work in progress stays while it runs');
+  ok(['Not baked: the movement stopped drawing at 8 of 15 frames', 'Not sent: HTTP 500', 'Could not reopen that theme: gone', 'Send failed: reset', 'Not baked: the Tint bake did not answer in 120 s'].every((t) => K(t) === 'error'),
+     'an error is an error');
+  let gone = 0;
+  const err = render(S.Glass, { size: 466, status: 'Not baked: no hand at all', onDismiss: () => { gone++; } });
+  const x = by(err, 'button', 'st-x')[0];
+  ok(by(err, 'div', 'st-err').length === 1 && x && (x.props.onClick(), gone === 1), 'an error carries a × that dismisses it');
+  const nt = render(S.Glass, { size: 466, status: 'Redone' });
+  ok(by(nt, 'div', 'st-fade').length === 1 && !by(nt, 'button', 'st-x').length, 'a note fades and has nothing to press');
+}
+
 // ---- the send and the duplicate question, from the sender's own state
 {
   ok(render(S.SendModal, S.sendProps(null, '', fn)) === null, 'no send, no modal');

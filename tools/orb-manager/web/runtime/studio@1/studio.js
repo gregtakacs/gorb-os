@@ -92,7 +92,20 @@
       h('div', { className: 'st-scroll', ref: setRef, onPointerDown: p.onPointerDown },
         h('div', { className: 'st-glass', style: { width: p.size + 'px', height: p.size + 'px', borderRadius: p.round || '50%' } }, p.children)),
       p.zoomTag ? h('div', { className: 'st-ztag' }, p.zoomTag) : null,
-      p.status ? h('div', { className: 'st-toast', title: p.status }, p.status) : null);
+      p.status ? (S.noteKind(p.status) === 'error'
+        ? h('div', { className: 'st-toast st-err', title: p.status }, h('span', null, p.status),
+            p.onDismiss ? h('button', { className: 'st-x', onClick: p.onDismiss, title: 'Dismiss' }, '\u00d7') : null)
+        : h('div', { key: p.status, className: cx('st-toast', S.noteKind(p.status) === 'note' && 'st-fade'), title: p.status }, p.status)) : null);
+  };
+  /* A status note's kind (owner, 2026-11-09): an error stays until dismissed (its ×) or a new
+   * note replaces it; work in progress stays while it runs; anything else (a prompt, an
+   * acknowledgement) fades after S.NOTE_MS. Read off the words every service already uses. */
+  S.NOTE_MS = 4000;
+  S.noteKind = function (t) {
+    t = String(t || '');
+    if (/^(Not baked|Not sent|Nothing sent|Could not|Couldn\u2019t|Send failed|Import failed)|refused|did not answer|stopped drawing|\u2717/i.test(t)) return 'error';
+    if (/(\u2026|\.\.\.)\s*$|^Waiting for|\d+%/.test(t)) return 'busy';
+    return 'note';
   };
 
   /* play: {icon, label, on} · time / view / zoom / render: segmented options (zoom only while

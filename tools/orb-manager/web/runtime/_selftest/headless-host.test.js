@@ -22,6 +22,8 @@ const FRAG = Symbol('fragment');
 const same = (a, b) => !!a && !!b && a.length === b.length && a.every((x, i) => Object.is(x, b[i]));
 let cur = null;
 global.window = globalThis;
+global.__keys = []; global.addEventListener = (t, f) => { if (t === 'keydown') global.__keys.push(f); };
+global.removeEventListener = (t, f) => { if (t === 'keydown') global.__keys = global.__keys.filter((x) => x !== f); };
 global.React = {
   Fragment: FRAG,
   createElement: (type, props, ...kids) => ({ type, props: props || {}, kids: kids.flat(Infinity).filter((k) => k !== null && k !== undefined && k !== false) }),
@@ -313,7 +315,17 @@ const last = () => draws[draws.length - 1];
     ok(!/Over/.test(text(by(H.tree, 'header')[0])) && /Reset to Sea/.test(text(by(H.tree, 'div', 'st-toast')[0])), 'and puts the design back to its start', text(by(H.tree, 'div', 'st-toast')[0]));
     await press(H, '↶');
     ok(/Over/.test(text(by(H.tree, 'header')[0])), 'Undo brings the edit back');
+    // the keys (owner review, 2026-11-09): Ctrl+Z and Ctrl+Shift+Z on the page, a text box's own
+    const keys = (global.__keys || []).slice(-1);
+    const key = (k, shift, target) => keys.forEach((f) => f({ key: k, ctrlKey: true, shiftKey: !!shift, target: target || { tagName: 'CANVAS' }, preventDefault() {} }));
+    key('Z', true); H.render(); await H.settle();
+    ok(keys.length === 1 && !/Over/.test(text(by(H.tree, 'header')[0])), 'Ctrl+Shift+Z redoes the reset', keys.length);
+    key('z'); H.render(); await H.settle();
+    ok(/Over/.test(text(by(H.tree, 'header')[0])), 'Ctrl+Z undoes it again');
+    key('Z', true, { tagName: 'INPUT', type: 'text' }); H.render(); await H.settle();
+    ok(/Over/.test(text(by(H.tree, 'header')[0])), 'and in a text box the keys are the box\u2019s own');
     H.unmount(); location.search = '';
+    ok(!(global.__keys || []).includes(keys[0]), 'a closed editor lets go of the keys');
   }
 
   // ---- the Render step and the live size: baked a pause after the last edit, kept for Send and
@@ -461,6 +473,31 @@ const last = () => draws[draws.length - 1];
     ok(saidSeen === 'Waiting for the test', 'the app\u2019s wait is said on the status line while it bakes', saidSeen);
     ok(/Not exported|Exported/.test(toast(Hb)), 'and the next bake runs: the stuck one no longer holds the queue', toast(Hb));
     HOST.BAKE_CAP_MS = cap0; Hb.unmount(); location.search = '';
+  }
+
+  // ---- status notes (owner, 2026-11-09): a prompt fades, an error stays until its × or a new note
+  {
+    const toast = (H) => text(by(H.tree, 'div', 'st-toast')[0] || null);
+    const S = OrbStudio, ms0 = S.NOTE_MS; S.NOTE_MS = 60;
+    location.search = '';
+    const Hn = mount(HOST.Editor, { app });
+    await Hn.settle(20);
+    const way = (t) => by(Hn.tree, 'button', 'st-choice').filter((b) => text(b).indexOf(t) >= 0)[0];
+    way('From a template').props.onClick(); Hn.render(); await Hn.settle(10);
+    by(Hn.tree, 'div', 'st-gc')[0].props.onClick(); Hn.render(); await Hn.settle(5);
+    ok(/Starting from .*: Continue when you are ready/.test(toast(Hn)), 'a template pick says its prompt', toast(Hn));
+    await wait(150); Hn.render(); await Hn.settle(5);
+    ok(toast(Hn) === '', 'and the prompt fades', toast(Hn));
+    await press(Hn, 'Continue with Sea');
+    app.__bakeWhy = bakeWhy; bakeWhy = 'no hand at all';
+    await press(Hn, 'Render');
+    by(Hn.tree, 'button', 'st-big')[2].props.onClick(); await wait(40); Hn.render(); await Hn.settle(5);
+    ok(/^Not baked: no hand at all/.test(toast(Hn)), 'a refusal is said', toast(Hn));
+    await wait(150); Hn.render(); await Hn.settle(5);
+    ok(/^Not baked/.test(toast(Hn)), 'and stays: an error does not fade', toast(Hn));
+    by(Hn.tree, 'button', 'st-x')[0].props.onClick(); Hn.render(); await Hn.settle(5);
+    ok(toast(Hn) === '', 'until its × dismisses it');
+    bakeWhy = app.__bakeWhy; S.NOTE_MS = ms0; Hn.unmount();
   }
 
   // ---- Rebake all on the real host (Gold, 2026-11-08): it opens each stale theme and bakes

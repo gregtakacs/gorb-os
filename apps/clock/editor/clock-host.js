@@ -67,13 +67,12 @@
   DCLogic.prototype.componentWillUnmount = function () {};
   DCLogic.prototype.renderVals = function () { return {}; };
 
-  /* the class, hosted: the host keeps history, so the class's own steps aside */
+  /* the class, hosted: the history, the library and the start are the host's; the class keeps the watch */
   var Base = root.ClockLogic(DCLogic);
   class Hosted extends Base {
     // a re-timed bake waits for the rebuilt movement 30 s, not the class's 2 minutes (a class
     // field is the instance's own, so it is set here rather than shadowed by an accessor)
     constructor(props) { super(props); this.REBAKE_SETTLE_MS = 30000; }
-    trackHistory() { /* the host's history (snapshots of the snapshot) */ }
   }
 
   // lastKey: the watch the class holds; handedKey: the host's form of the one it was last handed
@@ -192,6 +191,11 @@
       // plan learned in a bake changes the movement's key without any. Then nothing rebuilt it:
       // the bank sat half-built (8 of 15 frames), the balance stopped and the readout said 4 fps
       // for Broad arrow's 15 (Gold, 2026-11-08). So the controller keeps the class's own loop.
+      // Escape deselects (or cancels setting a guide from the art), as on the composer's own
+      // page, which bound it in a mount the hosted editor does not run; Ctrl+Z is the host's now,
+      // so only Escape is handed to the class (its own undo is the history the host replaced)
+      if (typeof root.addEventListener === 'function')
+        root.addEventListener('keydown', function (e) { if (e && e.key === 'Escape' && ctl.ready) ctl.onKey(e); });
       ctl.__pump = setInterval(function () {
         if (!ctl.ready) return;
         try { ctl.componentDidUpdate(); } catch (e) { /* the class says so on its status line */ }

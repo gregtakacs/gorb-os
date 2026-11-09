@@ -1264,3 +1264,74 @@ confirm. The clock's own session, history, start sheet, Render panel and top bar
     (`Library.ContainerStamp`), so a rebuilt `.orbapp` is served on the next request rather
     than after `editorFetchTTL`; benched with a marker rebuilt into the bench library.
 
+
+### 8.14 After the move: the owner's review on Gold (2026-11-08/09)
+
+Found by the owner using the hosted editor on Gold, decided and fixed after E7 closed.
+
+- **A bake never holds the queue, and says what it waits for.** Export once sat on
+  "Baking “Broad arrow”…" with no end. Bakes run one at a time (`baked.chain`), so a bake that
+  never answered held every later one. Now:
+  - the host caps any app's bake at `OrbHost.BAKE_CAP_MS` (2 minutes): it fails in those words
+    and the next bake runs;
+  - a press's bake hands the app a `say`, so a wait the app knows about is said; the live
+    size's bake stays quiet;
+  - the clock says "Waiting for the movement to finish drawing (n of N frames) — keep this
+    window in front" after 2 s, and gives up in words after 15 s with no new frame
+    (`ClockHost.STALL_MS`); a re-time waits 30 s for the rebuilt movement, not two minutes.
+- **The clock keeps its own update loop.** The cause behind the hang, a "4 fps" readout for
+  Broad arrow's 15 and a balance that stopped: the class rebuilds its movement only from
+  `componentDidUpdate`, which the dc page ran after every render and the hosted editor ran only
+  when a pane redrew. A re-time learned in a bake changed the movement's key with no redraw, so
+  the bank sat at 8 of 15 frames. `clock-host.js` now runs the update every 100 ms while the
+  editor is open and every 40 ms through a bake, as the shelf's driver page always has. Measured
+  in Chrome on Broad arrow with play running: 0.18 s of script per 10 s (under 2 % of a core),
+  1.24 ms an update.
+- **Status notes have a kind** (owner, 2026-11-09: prompts and acknowledgements fade, errors are
+  dismissed or replaced). `OrbStudio.noteKind` reads the words the services already use:
+  - an **error** ("Not baked", "Not sent", "Could not", "Send failed", "refused", "did not
+    answer", "stopped drawing") stays with a × until dismissed or replaced;
+  - **work in progress** (ending in "…", "Waiting for", a percentage) stays while it runs;
+  - **anything else** fades after `OrbStudio.NOTE_MS` (4 s), but never under an open send
+    dialog, which shows the same line as its verdict; the fade waits for it to close.
+  Before, "Starting from Skeleton: Continue when you are ready", "Redone" and "Opening…" stayed
+  through every step.
+- **Undo and redo.** The host keeps the history for every app: the ↶ ↷ buttons, 100 steps, a
+  burst of edits inside 600 ms one step. The review found the keys missing: the clock's page
+  had Ctrl+Z, Ctrl+Shift+Z and Ctrl+Y (and Escape to deselect) on its own handler, which the
+  hosted editor never bound. The host now binds Ctrl/⌘+Z, Ctrl/⌘+Shift+Z and Ctrl/⌘+Y for every
+  app, a text box keeping its own; `clock-host.js` hands the clock only Escape (its own undo is
+  the history the host replaced). In the clock, an upload's bytes are not in the history: a
+  snapshot carries a sound upload's fingerprint and an image's asset id, never samples or
+  pixels, and the bytes stay held by the editor, so Undo past an upload puts the design back
+  (the voice, the dial's art reference) and Redo finds the bytes still there.
+- **The clock class's own history and library are gone** (owner, 2026-11-09). They were thin
+  wiring into the same session service the host runs, unused once hosted (`trackHistory` was
+  overridden to nothing, only Escape reached its key handler): `trackHistory`, `undo`, `redo`,
+  `restoreSnap`, the snapshot keys, burst and depth, the Ctrl+Z branch, the library list,
+  Save, Open, Delete, Discard, Rebake all's `bakeBytes`, the session's boot and the class's
+  Edit door. The class keeps the session for the design document's envelope, schema walk and
+  opening a design file. The clock's session suite retired with them (it tested that service a
+  second time, through the class); the runtime's session and host suites cover the history,
+  the library and the Edit door for every app.
+- **App updates park the dial** (firmware, `h_app_upload`): Gold refused a clock update twice
+  with "the card refused the write" (card write failed, I/O error) and took it on the third; the
+  theme and OTA doors parked the dial for their copies, the app door did not
+  (app-platform-plan §17.6's family). It now parks (scheduler stopped, home under the copying
+  overlay with progress) and unparks on every way out; the hub page holds rotation off around
+  every app install, as Update everything did. On Gold with the clock on the glass and rotation
+  on: three uploads in a row stored.
+- **Confirmed on hardware, 2026-11-09:**
+  - *Broad arrow's rate on Gold:* 14.5 to 14.75 fps on a 66 ms period, commits mostly under
+    40 ms (worst 54 ms); the editor says "~15 of 15 fps" for the same card theme (Skeleton: 5.75
+    to 6.0 against "~6 of 6", §8.13).
+  - *Rebake all for Flights, Weather and Radar:* each app's shelf theme marked stale (ABI 2,
+    header CRC recomputed) and rebaked in Chrome through the hosted editor; each came back not
+    stale, its design identical to the one it was rebaked from (only `made` moved). A rebake
+    touches no orb (it bakes in the page and files into the hub's library), so the fake orb
+    stood in for the installed apps.
+  - *Export through the Save dialog* in a headed browser, and the file imported back (owner).
+- **Open:** a theme upload and an app upload running at once would share one park record on the
+  orb (`s_upload_was`): the second unpark could return the glass to the wrong app. The hub never
+  sends both together. Release: the clock's `version.txt` bump and shelf rebake, the hub's
+  built-in firmware at v1.2.38 (two Go tests), Gold onto a release build.

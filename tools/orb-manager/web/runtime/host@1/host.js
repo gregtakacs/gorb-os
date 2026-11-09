@@ -191,10 +191,23 @@
     var drafts = R.useRef({}).current, memo = R.useRef({}).current, thumbs = R.useRef({}).current, parts = R.useRef({}).current;
     var clock = R.useRef({ t: 0, dt: 0 }).current;
     var canvasRef = R.useRef(null), stateRef = R.useRef({}), live = R.useRef({});
-    var say = R.useCallback(function (s) { setStatus(s); }, []);
+    // a prompt or an acknowledgement fades (S.noteKind); an error and work in progress stay until
+    // the next note. The send dialog shows the same line as its verdict, so a note does not fade
+    // under an open dialog: the timer waits for it to close.
+    var fadeT = R.useRef(0);
+    var say = R.useCallback(function (s) {
+      setStatus(s); clearTimeout(fadeT.current);
+      if (!s || S.noteKind(s) !== 'note') return;
+      var fade = function () {
+        if (stateRef.current.sending) { fadeT.current = setTimeout(fade, S.NOTE_MS); return; }
+        setStatus(function (cur) { return cur === s ? '' : cur; });
+      };
+      fadeT.current = setTimeout(fade, S.NOTE_MS);
+    }, []);
+    R.useEffect(function () { return function () { clearTimeout(fadeT.current); }; }, []);
     var redraw = R.useCallback(function () { setTick(function (n) { return n + 1; }); }, []);
     var setUi = R.useCallback(function (x) { setUiS(function (o) { return Object.assign({}, o, typeof x === 'function' ? x(o) : x); }); }, []);
-    stateRef.current = { d: d, status: status };
+    stateRef.current = { d: d, status: status, sending: sending };
     live.current = { d: d, view: view, env: env, geo: geo, hidden: hidden, ui: ui, step: step, rend: rend, wipe: wipe };
 
     var scrRef = R.useRef(null);
@@ -242,6 +255,20 @@
       return T.sender({ say: say, ask: function (x) { setDup(x); }, sending: function (x) { setSending(x); } });
     }, []);
     R.useEffect(function () { ses.track(); }, [d]);
+    // Ctrl+Z / Ctrl+Shift+Z / Ctrl+Y (⌘ on a Mac): the design's undo and redo, every app's, as
+    // the clock's own page had them; a text box keeps its own (owner review, 2026-11-09)
+    R.useEffect(function () {
+      if (!chosen || typeof root.addEventListener !== 'function') return;
+      var on = function (e) {
+        if (!(e.ctrlKey || e.metaKey) || e.altKey || !/^[zy]$/i.test(e.key || '')) return;
+        var t = e.target || {}, tag = String(t.tagName || '').toLowerCase(), ty = String(t.type || '').toLowerCase();
+        if (tag === 'textarea' || t.isContentEditable || (tag === 'input' && !/^(range|checkbox|radio|color|button)$/.test(ty))) return;
+        if (e.preventDefault) e.preventDefault();
+        if (/y/i.test(e.key) || e.shiftKey) ses.redo(); else ses.undo();
+      };
+      root.addEventListener('keydown', on);
+      return function () { root.removeEventListener('keydown', on); };
+    }, [chosen]);
     /* a stateful app (§8.12): the design it changes itself it pushes here (c.push); one the
      * host changes (a template, an opened design, Undo, Reset) it is handed (A.adopt), the
      * first one included */
@@ -619,7 +646,7 @@
       }),
       h(S.Pane, { side: 'left' }, chosen ? (PN.left ? PN.left(paneCtx()) : left) : null),
       h(S.Stage, null,
-        h(S.Glass, Object.assign({ status: status }, g),
+        h(S.Glass, Object.assign({ status: status, onDismiss: function () { say(''); } }, g),
           PN.stage ? PN.stage(Object.assign(paneCtx(), { size: g.size })) :
           h('canvas', { ref: canvasRef, width: G, height: G, onPointerDown: onDown, onPointerMove: onMove, onPointerUp: onUp, onPointerCancel: onUp,
             style: { width: g.size + 'px', height: g.size + 'px', cursor: cursor, touchAction: P ? 'none' : undefined } })),

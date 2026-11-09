@@ -91,24 +91,7 @@ const mk = () => {
   const c = mk(); const rv = c.renderVals();
   ok(!('designShipOpts' in rv) && !('exportDesign' in rv), 'the design always rides, with its art: there is nothing to choose, and no design file to download (K10)');
 
-  // the Edit door: ?theme= through the hub, card by default, the shelf on request
-  const seen = [];
-  global.fetch = async (u) => { seen.push(u); return { ok: true, arrayBuffer: async () => new TextEncoder().encode(JSON.stringify(back)).buffer }; };
-  global.location = { search: '?orb=192.168.2.34&app=clock&theme=a1b2c3d4e5f6', protocol: 'http:' };
-  const d = mk(); d.state.dial = 'skeleton';
-  ok(await d.openThemeParam() && d.state.dial === 'modern' && seen[0] === '/api/theme/design?ip=192.168.2.34&id=a1b2c3d4e5f6', 'Edit from the card asks the hub for that orb’s theme', seen[0]);
-  ok(d._snap === null && !d._undo.length, 'and the reopened theme starts the session’s history');
-  global.location = { search: '?theme=Night&src=shelf', protocol: 'http:' };
-  await mk().openThemeParam();
-  ok(seen[1] === '/api/theme/design?name=Night', 'Edit from the shelf names the shelf file', seen[1]);
-  global.fetch = async () => ({ ok: false, status: 404, json: async () => ({ error: 'this theme carries no design, so it cannot be reopened' }) });
-  global.location = { search: '?orb=1.2.3.4&theme=abc', protocol: 'http:' };
-  const e = mk();
-  ok(!(await e.openThemeParam()) && /carries no design/.test(e.state.status), 'a theme without a design says so in the hub’s words', e.state.status);
-  global.location = { search: '?theme=../etc', protocol: 'http:' };
-  ok(!(await mk().openThemeParam()), 'a theme id that is not one is not fetched');
-  global.location = { search: '', protocol: 'http:' };
-  ok(!(await mk().openThemeParam()), 'and with no ?theme= nothing is asked');
+  // the Edit door is the host's (theme@1/session.js openTheme, in the runtime's session suite)
 
   console.log(fails ? 'RESULT: FAIL — ' + fails + ' of ' + checked + ' checks' : 'all green (' + checked + ' checks)');
   process.exit(fails ? 1 : 0);

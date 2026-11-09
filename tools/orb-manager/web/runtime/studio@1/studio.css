@@ -26,6 +26,9 @@ html,body{height:100%;overflow:hidden}
 .st-glass{margin:auto;flex:none;background:#000;box-shadow:0 0 0 5px #10151c,0 0 0 6px #2a333e,0 24px 70px rgba(0,0,0,.6);overflow:hidden}
 .st-glass canvas{display:block;touch-action:none}
 .st-ztag{position:absolute;top:10px;left:12px;color:var(--dim);font:11px var(--mono);pointer-events:none}
+.st-toast.st-err{border-color:#f85149;color:var(--fg);pointer-events:auto;display:flex;gap:10px;align-items:center;white-space:normal}
+.st-toast .st-x{background:none;border:0;color:var(--mut);font-size:16px;line-height:1;padding:0 2px;cursor:pointer}.st-toast .st-x:hover{color:var(--fg)}
+.st-fade{animation:st-note 4s forwards}@keyframes st-note{0%,85%{opacity:1}100%{opacity:0}}
 .st-toast{position:absolute;top:10px;left:50%;transform:translateX(-50%);max-width:min(80%,640px);background:rgba(28,35,48,.94);border:1px solid var(--line);padding:5px 12px;border-radius:6px;color:var(--mut);font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;pointer-events:none}
 .st-tool{display:flex;align-items:center;justify-content:center;gap:8px;padding:8px 10px 10px;flex-wrap:wrap}
 .st-play{width:30px;height:30px;padding:0;border-radius:50%;font-size:11px}

@@ -3647,6 +3647,9 @@ async function loadThemes(ip) {
            : ", drawing \"" + (d.active || "?") + "\"")
     + (d.free_mb ? ", " + d.free_mb + " MB free" : "")
     + (themeAppsErr ? " (" + themeAppsErr + ")" : "");
+  // theme-cache-plan: why this app's theme is missing, in the orb's own sentence
+  const absent = scope && Array.isArray(d.absent) ? d.absent.find((a) => a.app === scope) : null;
+  if (absent && absent.why) state.textContent += " \u00b7 " + absent.why;
   // K10: the face is two lists, what this orb's card holds and what the hub's library holds
   if (shown.length) list.appendChild(themeSection("On " + (current.name || ip), null));
   for (const t of shown) list.appendChild(themeRow(t, state, d));

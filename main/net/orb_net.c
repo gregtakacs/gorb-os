@@ -5835,6 +5835,7 @@ static void json_put(char *dst, size_t dsz, const char *src)
 #define THEME_LIST_MAX ORB_THEME_LIST_MAX
 #define SD_JSON_ROW_B  672
 #define SD_JSON_BASE_B 1152   /* + the store stage (job_stage/done/total), ~70 B */
+#define SD_JSON_ABSENT_B (8 * 360)   /* the apps whose theme is missing, each a sentence */
 
 static esp_err_t send_paced(httpd_req_t *req, const void *buf, size_t len,
                             size_t *left_out, bool *budgeted_out);
@@ -5864,7 +5865,7 @@ static esp_err_t h_sd(httpd_req_t *req)
      * of composer presets answered 3,357 B on orb-B (2026-11-01) — and it goes out
      * one segment at a time (send_paced), so the ceiling is PSRAM, not one write.
      * PSRAM (EXT_RAM_BSS_ATTR): CPU-only, copied into lwIP by the send. */
-    EXT_RAM_BSS_ATTR static char json[SD_JSON_BASE_B + THEME_LIST_MAX * SD_JSON_ROW_B];
+    EXT_RAM_BSS_ATTR static char json[SD_JSON_BASE_B + SD_JSON_ABSENT_B + THEME_LIST_MAX * SD_JSON_ROW_B];
     /* The last install refused, if any, travels with the list: the dial's row and
      * this page read the same two strings out of orb_theme, so a pick the firmware
      * said no to cannot come back as a silent no-op on the glass that pressed it
@@ -5952,8 +5953,23 @@ static esp_err_t h_sd(httpd_req_t *req)
             ent[i].stored ? "true" : "false",
             orb_theme_chosen(ent[i].id) ? "true" : "false");   /* chosen: theme-cache-plan C6 */
     }
-    if (!too_big)
-        off += snprintf(json + off, sizeof json - (size_t)off, "]}");
+    if (!too_big) {
+        /* theme-cache-plan: each app whose theme is missing, and why, for its Themes page */
+        off += snprintf(json + off, sizeof json - (size_t)off, "],\"absent\":[");
+        int na = 0;
+        for (size_t k = 0; k < orb_app_count() && off > 0 && (size_t)off < sizeof json; k++) {
+            const orb_app_t *a = orb_app_at(k);
+            const char *brief = NULL;
+            char why[200], e_why[2 * sizeof why + 3];
+            if (!a || !a->slug || !orb_theme_absent(a->slug, &brief, why, sizeof why)) continue;
+            json_put(e_why, sizeof e_why, why);
+            off += snprintf(json + off, sizeof json - (size_t)off,
+                            "%s{\"app\":\"%s\",\"brief\":\"%s\",\"why\":\"%s\"}",
+                            na++ ? "," : "", a->slug, brief ? brief : "", e_why);
+        }
+        if (off > 0 && (size_t)off < sizeof json)
+            off += snprintf(json + off, sizeof json - (size_t)off, "]}");
+    }
     if (too_big || off < 0 || (size_t)off >= sizeof json) {
         ESP_LOGE(TAG, "sd status overflow (%d B) — raise the json[] bound", off);
         return httpd_resp_sendstr(req, "{\"error\":\"sd status too large\"}");

@@ -242,6 +242,11 @@ void orb_theme_service(void);
 /* theme-cache-plan C6: `stem` is an app's choice (in the pool or on the card only: the row's
  * `stored` says which). */
 bool orb_theme_chosen(const char *stem);
+/* Why `slug` has no theme on the glass when it should: true with a few words for its dial
+ * row (*brief: "no card", "file deleted", "copy failed", "send it again") and a sentence
+ * for the hub (why, may be NULL); false when there is nothing to explain (it wears its theme,
+ * it is on the card only and will come back, or it never had one). */
+bool orb_theme_absent(const char *slug, const char **brief, char *why, size_t whysz);
 /* True when opening `slug` would post a fill (its theme is chosen, on the card only, and no
  * fill runs): the carousel zooms it to the fill's face, not the glass. */
 bool orb_theme_fill_wanted(const char *slug);

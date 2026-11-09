@@ -126,6 +126,18 @@ type ThemeList struct {
 	StagedID  string       `json:"staged_id"`
 	StagedWhy string       `json:"staged_why"`
 	Themes    []ThemeEntry `json:"themes"`
+	// Absent names each app whose theme is missing and why (theme-cache-plan, 2026-11-09):
+	// no card, its file deleted from the card, a copy back that failed, or a theme stored by
+	// older firmware that must be sent again. Empty on older firmware.
+	Absent []ThemeAbsent `json:"absent"`
+}
+
+// ThemeAbsent is one app's missing theme: Brief is the dial row's few words, Why the
+// sentence the Themes page shows.
+type ThemeAbsent struct {
+	App   string `json:"app"`
+	Brief string `json:"brief"`
+	Why   string `json:"why"`
 }
 
 // ThemeIDHex is ORB_THEME_ID_HEX: the length of the identity tail of a card stem.

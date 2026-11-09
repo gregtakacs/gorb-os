@@ -47,6 +47,7 @@
 #include "orb_sd.h"
 #include "orb_app.h"
 #include "themes_page.h"
+#include "orb_theme.h"     /* theme-cache-plan: why an app's theme is missing */
 #include "theme_strip.h"   /* §61: the Themes row opens the theme carousel */     /* §58: an app's Themes sub-menu */
 #include "orb_rotation.h"     /* §59: the owner's rotation */
 #include "orb_app_install.h"   /* APPS: the uninstall and fault-clear doors (P5.3) */
@@ -1295,7 +1296,11 @@ static int own_caps_n(const orb_app_t *a)
 
 /* The page's own rows after the settings, in order: Themes when the card holds any
  * of the app's, Permissions when it declared or reached for a cap, then the doors. */
-static bool own_has_themes(const orb_app_t *a) { return themes_page_count_for(a->slug) > 0; }
+static bool own_has_themes(const orb_app_t *a)
+{
+    /* or none on the card and a reason to say so (theme-cache-plan: why it is missing) */
+    return themes_page_count_for(a->slug) > 0 || orb_theme_absent(a->slug, NULL, NULL, 0);
+}
 /* §59: the In rotation row stands only while the rotation is on. */
 static bool own_rotating(void) { orb_rotation_t r; orb_rotation_get(&r); return r.on; }
 static int own_at(int i)                     /* OWN_* or a door id, -1 past the end */
@@ -1327,7 +1332,10 @@ static void label_own(int i, char *out, size_t outsz, bool *sel_hi)
     if (what == OWN_THEMES) {
         const char *on = themes_page_active_for(s_app->slug);
         const int n = themes_page_count_for(s_app->slug);
-        if (on) snprintf(out, outsz, "Themes  (%.30s)", on);
+        const char *why = NULL;
+        if (orb_theme_absent(s_app->slug, &why, NULL, 0) && why)
+            snprintf(out, outsz, "Themes  (%s)", why);       /* what is missing, not a count */
+        else if (on) snprintf(out, outsz, "Themes  (%.30s)", on);
         else    snprintf(out, outsz, "Themes  (%d)", n);
         return;
     }
@@ -1358,6 +1366,7 @@ static void act_own(int i)
     const int what = own_at(i);
     if (what == OWN_THEMES) {
         const orb_app_t *a = s_app;
+        if (themes_page_count_for(a->slug) == 0) { repaint(); return; }   /* only a reason */
         /* §61: the themes as a carousel over the page, which stays as it is under the
          * held glass and is where a Back or a hold returns. The text list stays the
          * answer when the carousel cannot run. */

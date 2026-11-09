@@ -841,6 +841,9 @@ static void cache_load(void)
     }
 }
 
+static void gone_set(const char *slug, const char *stem);
+static void note_set(const char *slug, uint8_t kind, const char *why);
+
 /* `slug` wears card file `stem`, whose geometry CRC is file_crc; NULL stem lets the choice go. */
 static void choice_set(const char *slug, const char *stem, uint32_t file_crc)
 {
@@ -860,6 +863,7 @@ static void choice_set(const char *slug, const char *stem, uint32_t file_crc)
         s_cache.c[k].file_crc = file_crc;
     }
     cache_save();
+    if (stem) { note_set(slug, 0, NULL); gone_set(slug, NULL); }   /* it has a theme again */
 }
 
 /* `slug` is on the glass now: the end of the order (the most recent). */
@@ -886,6 +890,78 @@ static uint32_t order_list(const char *out[CACHE_APPS])
 {
     for (uint32_t i = 0; i < s_cache.n_order; i++) out[i] = s_cache.order[i];
     return s_cache.n_order;
+}
+
+/* ---- why an app's theme is missing (owner, 2026-11-09: its theme page says why) ----------
+ * A file the reconcile found gone is kept in NVS (its removal reboots, and the page must
+ * still say so after); a copy that failed and a theme refused by ruling 8 are this boot's,
+ * in RAM; a card that is out is read live. Each clears when the app is stored a theme. */
+#define THEME_NVS_GONE "theme_gone"
+typedef struct {
+    uint32_t n;
+    struct { char slug[ORB_POOL_SLUG_MAX]; char stem[ORB_THEME_HANDLE_MAX + 1]; } g[CACHE_APPS];
+} gone_rec_t;
+EXT_RAM_BSS_ATTR static gone_rec_t s_gone;
+enum { NOTE_FAILED = 1, NOTE_RESEND = 2 };
+static struct { char slug[ORB_POOL_SLUG_MAX]; uint8_t kind; char why[72]; } s_note[CACHE_APPS];
+
+static void gone_save(void)
+{
+    const nvs_handle_t h = theme_nvs();
+    if (h && (nvs_set_blob(h, THEME_NVS_GONE, &s_gone, sizeof s_gone) != ESP_OK || nvs_commit(h) != ESP_OK))
+        ESP_LOGW(TAG, "the deleted-theme notes would not save");
+}
+
+static void gone_load(void)
+{
+    memset(&s_gone, 0, sizeof s_gone);
+    const nvs_handle_t h = theme_nvs();
+    size_t sz = sizeof s_gone;
+    if (!h || nvs_get_blob(h, THEME_NVS_GONE, &s_gone, &sz) != ESP_OK || sz != sizeof s_gone ||
+        s_gone.n > CACHE_APPS) {
+        memset(&s_gone, 0, sizeof s_gone);
+        return;
+    }
+    for (uint32_t i = 0; i < CACHE_APPS; i++) {
+        s_gone.g[i].slug[sizeof s_gone.g[i].slug - 1] = '\0';
+        s_gone.g[i].stem[sizeof s_gone.g[i].stem - 1] = '\0';
+    }
+}
+
+/* `slug`'s file `stem` was deleted from the card; NULL stem: it has a theme again. */
+static void gone_set(const char *slug, const char *stem)
+{
+    uint32_t k = 0;
+    while (k < s_gone.n && strcmp(s_gone.g[k].slug, slug)) k++;
+    if (!stem) {
+        if (k == s_gone.n) return;
+        memmove(&s_gone.g[k], &s_gone.g[k + 1], (s_gone.n - k - 1) * sizeof s_gone.g[0]);
+        memset(&s_gone.g[--s_gone.n], 0, sizeof s_gone.g[0]);
+    } else {
+        if (k == s_gone.n) {
+            if (k >= CACHE_APPS) return;
+            s_gone.n++;
+        }
+        strlcpy(s_gone.g[k].slug, slug, sizeof s_gone.g[k].slug);
+        strlcpy(s_gone.g[k].stem, stem, sizeof s_gone.g[k].stem);
+    }
+    gone_save();
+}
+
+/* This boot's note on `slug`: kind 0 clears it. */
+static void note_set(const char *slug, uint8_t kind, const char *why)
+{
+    int k = -1, free_k = -1;
+    for (int i = 0; i < (int)CACHE_APPS; i++) {
+        if (s_note[i].slug[0] && !strcmp(s_note[i].slug, slug)) k = i;
+        if (!s_note[i].slug[0] && free_k < 0) free_k = i;
+    }
+    if (!kind) { if (k >= 0) memset(&s_note[k], 0, sizeof s_note[k]); return; }
+    if (k < 0) k = free_k;
+    if (k < 0) return;
+    strlcpy(s_note[k].slug, slug, sizeof s_note[k].slug);
+    s_note[k].kind = kind;
+    strlcpy(s_note[k].why, why ? why : "", sizeof s_note[k].why);
 }
 
 /* theme-cache-plan §2.4: a fill is the store's own body, copying an evicted app's display
@@ -3162,6 +3238,7 @@ esp_err_t orb_theme_bind(const char *slug)
     if (voice_missing(slug, s_pool->e[k].file_crc)) {
         ESP_LOGE(TAG, "bind: %s's theme \"%s\" has sounds and was stored before voice banks "
                       "(theme-cache-plan ruling 8) — send it again", slug, s_active_name);
+        note_set(slug, NOTE_RESEND, s_active_name);
         use_no_art();
         return ESP_ERR_INVALID_STATE;
     }
@@ -3243,6 +3320,7 @@ esp_err_t orb_theme_boot(void)
         s_pool_io.progress = NULL;
     }
     cache_load();                                      /* theme-cache-plan §2.1 */
+    gone_load();                                       /* why a theme is missing */
     if (!pr) {
         /* a theme stored before the choices were kept: its entry says what it wears, so
          * the choice is seeded from it while the entry is still here to say it */
@@ -3444,9 +3522,11 @@ static void fill_job(void *arg)
     }
     if (e != ESP_OK) {
         ESP_LOGW(TAG, "fill: %s's theme stays on the card: %s", r->slug, why[0] ? why : "the copy failed");
+        if (!s_fill_changed) note_set(r->slug, NOTE_FAILED, why[0] ? why : "the copy failed");
         s_fill_slug[0] = '\0';
         return;
     }
+    note_set(r->slug, 0, NULL);
     static char landed[ORB_POOL_SLUG_MAX];
     strlcpy(landed, r->slug, sizeof landed);
     s_fill_slug[0] = '\0';
@@ -3584,6 +3664,7 @@ static void reconcile_job(void *arg)
                               orb_pool_find_kind(s_pool, slug, ORB_POOL_VOICE) >= 0;
             ESP_LOGW(TAG, "reconcile: %s's theme file \"%s\" is gone from the card: %s", slug, stem,
                      held ? "its copies go with it" : "it had no copies; the choice goes");
+            gone_set(slug, stem);        /* its page says so, after the reboot too */
             if (held) { clear_job((void *)slug); return; }
             choice_set(slug, NULL, 0);
             continue;
@@ -3611,6 +3692,43 @@ static void reconcile_job(void *arg)
             ESP_LOGE(TAG, "reconcile: stored but the reboot could not be armed");
         return;
     }
+}
+
+bool orb_theme_absent(const char *slug, const char **brief, char *why, size_t whysz)
+{
+    if (brief) *brief = NULL;
+    if (why && whysz) why[0] = '\0';
+    if (!slug) return false;
+    bool chosen = false;
+    for (uint32_t c = 0; c < s_cache.n_choice; c++)
+        if (!strcmp(s_cache.c[c].slug, slug)) chosen = true;
+    const char *b = NULL;
+    for (uint32_t k = 0; !chosen && k < s_gone.n; k++)
+        if (!strcmp(s_gone.g[k].slug, slug)) {
+            b = "file deleted";
+            if (why) snprintf(why, whysz, "Its theme file \"%s\" was deleted from the card, so the "
+                              "orb let its copy go. Send it a theme again.", s_gone.g[k].stem);
+        }
+    for (int i = 0; chosen && !b && i < (int)CACHE_APPS; i++) {
+        if (!s_note[i].slug[0] || strcmp(s_note[i].slug, slug)) continue;
+        if (s_note[i].kind == NOTE_RESEND) {
+            b = "send it again";
+            if (why) snprintf(why, whysz, "Its theme \"%s\" was stored by older firmware without "
+                              "its sounds. Send it again from the hub.", s_note[i].why);
+        } else if (s_pool && orb_pool_find_kind(s_pool, slug, ORB_POOL_DISPLAY) < 0) {
+            b = "copy failed";
+            if (why) snprintf(why, whysz, "Its theme could not be copied back from the card: %s.",
+                              s_note[i].why);
+        }
+    }
+    if (chosen && !b && s_pool && orb_pool_find_kind(s_pool, slug, ORB_POOL_DISPLAY) < 0 &&
+        !orb_sd_mounted()) {
+        b = "no card";
+        if (why) snprintf(why, whysz, "Its theme is on the SD card, and no card is in. Put the "
+                          "card back and open the app.");
+    }
+    if (brief) *brief = b;
+    return b != NULL;
 }
 
 bool orb_theme_chosen(const char *stem)

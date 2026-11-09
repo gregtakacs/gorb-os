@@ -18,6 +18,14 @@ shelf's four defaults together must fit in 8 MB (Skeleton 3.48, Scope flights 1.
    **then the zoom into the real app** (the app carousel's, orb_strip.c).
 3. **Least recently on the glass goes first; nothing is pinned.**
 4. **Skeleton stays the factory clock.**
+5. **A fill pauses when the owner leaves the app**, and resumes when the app comes back
+   (2026-11-08, after C0).
+6. **Sound plays off the glass.** The owner, 2026-11-08: Gold, set to alternate between the
+   clock and weather, swapped to weather in the middle of a chime and cut it off. "Background
+   sound should be allowed while an app is not on the display. I think yes." So a theme has
+   **two tiers**: what an app needs off the glass (its sounds), **always resident**, and what
+   it needs only on the glass (its art), which the cache may drop (§2.6). Settled before the
+   cache is built, because it changes what an eviction may take.
 
 ## 1. What is there today (read 2026-11-08)
 
@@ -96,6 +104,45 @@ editor already takes: the app re-reads its stage at the first frame after an arr
 
 Unchanged, except that the app the orb opens may have no entry: it opens bare and fills.
 
+### 2.6 Two tiers: the voice bank and the display entry (ruling 6)
+
+**Why the chime stopped** (read 2026-11-08): three things end a sound when its app leaves
+the glass.
+1. The stage's release calls `orb_sound_stop_all()`: voices read their PCM out of the bound
+   theme's mapping, which the next bind replaces (D39).
+2. Every voice is `ORB_SOUND_LEASED`, and only the stage's tick renews the lease: 1.5 s
+   after the app leaves, its voices lapse.
+3. A sound starts only through the stage (`orb_stage_snd_*`), gated on the stage being bound
+   to the app: an app off the glass cannot start one. (It does run: every app gets
+   `orb_service` on and off the glass.)
+
+**What a theme holds, by tier** (the shelf, 2026-11-08): Skeleton 3.4 MB, of which its six
+sounds are **844 KB**; flights, weather and the radar ship no sounds. Nothing else a theme
+carries is read off the glass (its values blob draws; the preview is the card's).
+
+**The design:**
+- **Tier 1, the voice bank:** at a store, the OS copies the theme's SOUND elements and their
+  table into a **second pool entry for the app**, its voice bank. It is never evicted while
+  the theme is the app's choice; it goes when the choice changes, the file is deleted or
+  the app is uninstalled. The pool keeps every voice bank first, packed, and the display
+  entries after them, so evictions and fills never move a voice bank; only a store does,
+  and a store parks and reboots.
+- **The voice banks stay mapped** from boot (Skeleton's is 14 of the 64 KB MMU pages), so a
+  voice reads its PCM wherever the stage is. A bind no longer stops voices (D39 is about
+  the display entry only).
+- **Tier 2, the display entry:** everything else, the cache's to keep or drop (§2.1-2.4). A
+  fill copies the display tier alone, so Skeleton fills 2.6 MB, not 3.4.
+- **Sounds start off the stage:** a sound import that answers by the app's own voice bank,
+  bound or not, under the `sound` cap, the OS volume and quiet hours as today. The clock's
+  chime decision moves from its tick to its service, so it chimes on the hour whatever is
+  on the glass.
+- **Leases by kind:** a one-shot (a chime, a strike, an alert) plays to its end and may start
+  off the glass; a loop (the clock's ticking) lives only while its app is on the glass.
+- **The table** grows a kind per entry (voice, display) and room for both per app: format
+  2, sixteen entries (32 B head + 16 × 128 B, still one sector), with a carry from format 1.
+- **The budget:** the voice banks are permanent pool residents, so each is capped (proposed
+  1 MB an app); a display entry must fit the pool beside every voice bank.
+
 ## 3. Costs
 
 - **A fill:** ~6.5 s/MB, so ~2-4 s for a 1 MB theme, ~20 s for Skeleton, plus the
@@ -120,12 +167,8 @@ Unchanged, except that the app the orb opens may have no entry: it opens bare an
 
 - **A store still reboots** (it may move the bound entry). Ruling 1 names fills; whether a
   store goes reboot-free too (unbind, store, rebind) is the owner's call after C3.
-- **Pause or pace when the owner leaves mid-fill** (§2.4 proposes pause; C0's numbers).
-- **Flash auto-suspend** (`CONFIG_SPI_FLASH_AUTO_SUSPEND`) would let reads run during an
-  erase or a program, the one thing that would keep a live dial at its rate through a fill.
-  Bronze's flash is XMC `0x204018` (16 MB); whether that part suspends is not known from
-  its ID, and a wrong flash setting can leave a board that will not boot an OTA. Only to be
-  tried with USB recovery at hand.
+- **Ruling 6's details:** that loops (the clock's ticking) stop off the glass while one-shots
+  play on; the voice bank's cap (proposed 1 MB an app).
 - **A trap not reproduced:** on the C0 bench day the radar failed with two faults, "wasm
   trapped in orb_input", at the first knob turns after a reboot, before any fill; three
   repeats of the same sequence did not trap. The fault record now names m3's trap message
@@ -154,6 +197,15 @@ held (20 fps), 1 s windows from the dial bench:
   costs that app half its frames for as long as it runs, so it pauses (§2.4).
 - The read-back matched every run; the table was never touched; the copies sit in space the
   pool calls free.
+- **Flash auto-suspend, tried and dropped** (the owner: "you have an orb on usb, try away").
+  Bronze's flash qualifies by ESP-IDF's own test: esptool's `read-flash-sfdp` read a valid
+  table ("SFDP", revision 1.6) with byte 0x32 = 0xF9, bit 3 set, the XMC D-series mark
+  `spi_flash_chip_generic_get_caps` grants suspend on. With `CONFIG_SPI_FLASH_AUTO_SUSPEND`
+  the board booted and every copy read back right, but the dial did worse: the full-speed
+  erase took 7.7 s at 0-1 fps (a 1 s commit), and a sector cost ~60 ms of flash time instead
+  of ~33, the paced fills at 5-9 fps (20 ms) and 3-6 fps (1 ms). Each cache miss suspends
+  and resumes the operation, so the operation stretches and the frame waits on it.
+  Reverted; Bronze is back on the build without it.
 
 ### C1 — the eviction (2026-11-08)
 

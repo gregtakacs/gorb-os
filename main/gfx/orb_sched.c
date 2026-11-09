@@ -688,10 +688,11 @@ static bool     s_plan_live;                  /* the stage is on the glass: the 
 static bool     s_plan_app;                   /* §6.27: the stage is an app's, not the clock's */
 static bool     s_plan_lean;                  /* §6.27: pre-painted with no gear frame ahead */
 static uint32_t s_plan_tickc;
+static int      s_dyn_pace10;                 /* §7.8: the pace in force; 0: the plan's own */
 static void sched_plan_apply(void)
 {
     const bool on = s_plan_live && !s_bench_pace10;
-    display_bench_pace(s_bench_pace10 ? s_bench_pace10 : on ? s_plan_pace10 : 0);
+    display_bench_pace(s_bench_pace10 ? s_bench_pace10 : on ? (s_dyn_pace10 ? s_dyn_pace10 : s_plan_pace10) : 0);
     if (!s_bench_pace10 && !s_bench_gif_every) {
         const int prep = on && s_plan_prep ? (s_plan_lean ? 1 | GFX_PREP_LEAN : 1) : 0;
         if (prep != gfx_prep_on()) gfx_prep_mode(prep);
@@ -732,6 +733,39 @@ static void sched_plan_from_theme(void)
     sched_plan_apply();
 }
 void orb_sched_plan_restore(void) { s_plan_valid = false; sched_plan_from_theme(); }
+
+/* radar-plan §7.8 (owner, 2026-11-09): an app's sweep is paced no faster than its live layer's
+ * steps cost. A rain step is one blip (§6.27): ~165 ms over a storm, against the 66 ms of a
+ * 15 fps frame, so the arm stood still one long frame at every step. Paced to the step's cost
+ * instead, every frame is as long as the step, and the arm turns evenly at a lower rate: no
+ * rain 15 fps, light rain ~12, a storm ~6. The arm's angle is the app's clock, so it turns at
+ * its speed whatever the rate; only its steps are coarser. The cost is the biggest step in the
+ * last DYN_HOLD_MS, so the rate holds through a loop's held Now rather than bouncing, and goes
+ * back to the theme's own after a quiet DYN_HOLD_MS. */
+#define DYN_HOLD_MS   10000u
+#define DYN_MIN_FPS   5u
+static uint64_t s_dyn_swaps;
+static uint32_t s_dyn_blip_us, s_dyn_at_ms, s_dyn_last_ms;   /* the max, its time, the last step's */
+static int sched_dyn_pace10(int base)
+{
+    if (!s_plan_app || !s_plan_lean || !base || !display_te_period_us()) return base;
+    gfx_prep_stats_t st;
+    gfx_prep_stats(&st);
+    const uint32_t now = lv_tick_get();
+    if (st.swaps != s_dyn_swaps) {                /* a step since: its cost */
+        s_dyn_swaps = st.swaps;
+        s_dyn_last_ms = now;
+        const uint32_t b = gfx_swap_blip_us();
+        /* the biggest of the last DYN_HOLD_MS: a max older than that gives way to this step */
+        if (b >= s_dyn_blip_us || now - s_dyn_at_ms >= DYN_HOLD_MS) { s_dyn_blip_us = b; s_dyn_at_ms = now; }
+    }
+    if (now - s_dyn_last_ms >= DYN_HOLD_MS) s_dyn_blip_us = 0;   /* no steps for that long: the plan's own */
+    const uint32_t te = display_te_period_us();
+    int p = (int)((s_dyn_blip_us + te - 1) / te) * 10;          /* whole scans */
+    const int pmax = (int)(10000000u / (DYN_MIN_FPS * te)) * 10 / 10;
+    if (p > pmax) p = pmax;
+    return p > base ? p : base;
+}
 void orb_sched_plan_app(bool app)
 {
     if (app == s_plan_app) return;
@@ -761,7 +795,16 @@ static uint32_t sched_tick_period_ms(void)
     if (!s_plan_valid) sched_plan_from_theme();
     /* A paced beat asks a hair under its frame time: the present waits for the exact
      * edge, so a tick that lands early costs nothing and one that lands late is a miss. */
-    const int pace10 = s_bench_pace10 ? s_bench_pace10 : s_plan_live ? s_plan_pace10 : 0;
+    const int pace10 = s_bench_pace10 ? s_bench_pace10 : s_plan_live ? sched_dyn_pace10(s_plan_pace10) : 0;
+    if (!s_bench_pace10 && s_plan_live && pace10 != (s_dyn_pace10 ? s_dyn_pace10 : s_plan_pace10)) {
+        /* §7.8: the present paces to the new beat too */
+        display_bench_pace(pace10);
+        ESP_LOGI(TAG, "an app's sweep paced to %u.%u fps (its live layer's steps cost %u ms)",
+                 (unsigned)(10000000u / ((uint32_t)pace10 * display_te_period_us() / 10u) / 10),
+                 (unsigned)(10000000u / ((uint32_t)pace10 * display_te_period_us() / 10u) % 10),
+                 (unsigned)(s_dyn_blip_us / 1000));
+        s_dyn_pace10 = pace10 == s_plan_pace10 ? 0 : pace10;
+    }
     if (pace10 && display_te_period_us()) {
         const uint32_t ms = (uint32_t)((uint64_t)pace10 * display_te_period_us() / 10000u);
         return ms > 2 ? ms - 1 : 1;

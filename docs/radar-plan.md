@@ -2116,3 +2116,20 @@ a frame is drawn from (`orb_cv_png8`), and the app says which bodies it wants th
 - **Open, the owner's call:** a spare plane held for radar's whole stay rather than retaken after
   each carousel, room made for it, or the stall as it is. The ~50 ms push of a full disc stays
   whatever is built ahead, unless the glass changes in slices (ruled out, §6.27).
+
+### 7.8 The arm paced to the rain's steps (2026-11-09, Bronze, OS v1.6.1)
+
+- **The owner:** "can we slow down the arm to that pace instead and basically make the arm speed
+  dynamic depending on rain and what the rain processing takes? no rain? 15fps, light rain 12,
+  heavy rain 9fps?" A step is one blip (§6.27) and every other frame the sweep's alone, so the arm
+  stood still one long frame at each step. Paced to the step's cost, every frame is as long as a
+  step and the arm turns evenly; its angle is the app's clock, so it turns at its speed whatever
+  the rate, in coarser steps.
+- **Built** (`orb_sched.c`, `sched_dyn_pace10`): an app's lean sweep plan (§6.27) is paced to no
+  fewer whole panel scans than the biggest step of the last 10 s costs (`gfx_swap_blip_us`: the
+  commit and its pixels' push), down to 5 fps at the most; 10 s with no step and it is the theme's
+  own rate again. A move is logged ("an app's sweep paced to N fps").
+- **Bronze:** DFW's rain ~9 fps (8-11), Austin's storm a steady 6.1 fps (6-7), the worst gap a
+  second now the frame itself (~120-140 ms DFW, ~170-190 ms Austin), the same every frame. The
+  rates are what today's step costs give; the indexed live layers (owed, the owner's next) are to
+  bring a storm's step to ~115 ms, ~9 fps.

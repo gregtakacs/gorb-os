@@ -253,6 +253,11 @@ esp_err_t display_dma_return(void);
 /** True while the ring is lent and the flush path drops frames on purpose —
  *  the explanation a stall probe must take before it believes the silence. */
 bool    display_dma_lent(void);
+/** One tile of the ring by pointer, for a large card read's bounce: nothing is
+ *  freed, and the glass draws on the other tile meanwhile. NULL when none can be
+ *  spared. Give it back with display_tile_return before releasing the card. */
+void   *display_tile_lend(size_t *out_bytes);
+void    display_tile_return(void *tile);
 /** True while the ring is lent OR returned but not yet re-funded: every frame drops. */
 bool    display_dma_parked(void);
 /** Tile buffers in use now: 2 healthy, 1 short, 0 parked. */

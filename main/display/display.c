@@ -397,6 +397,10 @@ static size_t            s_ring_freed;     /* bytes the current loan returned  *
 /* When the last loan closed. The ring is re-funded by the flush path, not by the
  * return: see ring_refund_due(). 0 = no deferred refund pending. */
 static int64_t           s_ring_returned_us;
+/* One tile handed to the card by pointer (display_tile_lend), or NULL. While it is out
+ * the ring runs on the other tile alone (s_tiles_n == 1, the depth-1 mode a short
+ * refund already uses) and nothing is freed: the heap never sees the hole. */
+static uint16_t         *s_tile_lent;
 
 /* Rows the clock's commit-time painter marks between commits (display_mark_rows
  * while no LVGL frame is in flight). The commit-time frame-start snapshot in
@@ -1746,6 +1750,10 @@ size_t display_dma_borrow(void)
 {
     if (!s_ring_mux) return 0;
     xSemaphoreTake(s_ring_mux, portMAX_DELAY);
+    if (s_tile_lent) {                       /* a tile is out by pointer: freeing */
+        xSemaphoreGive(s_ring_mux);          /* the ring would free the card's buffer */
+        return 0;
+    }
     if (s_ring_loan++ > 0) {                 /* nested: the outer loan covers it */
         xSemaphoreGive(s_ring_mux);
         return 0;
@@ -1807,6 +1815,62 @@ bool display_dma_parked(void) { return s_ring_parked; }
  * shows it, because a ring that came back short (1) or not at all (0, parked) is
  * the glass's whole health and nothing on the panel says so. */
 int display_tiles(void) { return s_ring_parked ? 0 : s_tiles_n; }
+
+/* A tile of the ring, by pointer, for the card's large reads (orb_theme.c rd_at_bounced:
+ * multi-block reads into PSRAM go through internal DMA memory). Owner, 2026-11-09: the
+ * card had borrowed the whole ring by freeing it into the heap and allocating it back,
+ * which a fragmented pool can refuse; then it asked the heap for 16 KB of its own on
+ * every big read, which churned the same pool. This hands over one tile that stays
+ * allocated, so the heap is not involved at all, and the glass keeps drawing on the
+ * other tile at depth 1 meanwhile (a frame's tiles serialize; ~1 ms each at 80 MHz).
+ * NULL when there is no second tile to spare (short ring, parked, or a loan open):
+ * the caller reads the slow way. */
+void *display_tile_lend(size_t *out_bytes)
+{
+#if USE_DMA_TILES
+    if (!s_ring_mux) return NULL;
+    xSemaphoreTake(s_ring_mux, portMAX_DELAY);
+    if (s_tile_lent || s_ring_loan > 0 || s_ring_parked || s_tiles_n < 2 ||
+        !s_tile[TILE_BUFS - 1]) {
+        xSemaphoreGive(s_ring_mux);
+        return NULL;
+    }
+    /* The tile may still be the source of a transfer in flight: drain as the
+     * borrow does, and refuse rather than hand out memory the SPI master reads. */
+    const int64_t t0 = esp_timer_get_time();
+    while (s_band_inflight > 0 && esp_timer_get_time() - t0 < 100000)
+        vTaskDelay(1);
+    if (s_band_inflight > 0) {
+        xSemaphoreGive(s_ring_mux);
+        return NULL;
+    }
+    s_tile_lent = s_tile[TILE_BUFS - 1];
+    s_tile[TILE_BUFS - 1] = NULL;
+    s_tiles_n = TILE_BUFS - 1;
+    xSemaphoreGive(s_ring_mux);
+    *out_bytes = s_ring_bytes;
+    return s_tile_lent;
+#else
+    (void)out_bytes;
+    return NULL;
+#endif
+}
+
+void display_tile_return(void *tile)
+{
+#if USE_DMA_TILES
+    if (!tile || !s_ring_mux) return;
+    xSemaphoreTake(s_ring_mux, portMAX_DELAY);
+    if (tile == s_tile_lent) {
+        s_tile[TILE_BUFS - 1] = s_tile_lent;
+        s_tile_lent = NULL;
+        s_tiles_n = TILE_BUFS;
+    }
+    xSemaphoreGive(s_ring_mux);
+#else
+    (void)tile;
+#endif
+}
 
 bool display_dma_lent(void)
 {

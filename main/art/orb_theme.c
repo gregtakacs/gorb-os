@@ -674,20 +674,20 @@ static bool theme_file(const char *stem, char *out, size_t outsz)
  * every 512 B sector through its own buffer as a command of its own (Gold, 2026-11-07: a
  * 160-190 KB preview held the card, and so the glass, for ~300 ms). A big read into memory
  * the card cannot reach goes through an internal buffer instead, whole sectors from a sector
- * boundary, so FatFs hands the driver multi-block reads. The buffer is taken and given back
- * inside the one call: the caller holds the card, so the display's ring is lent and this is
- * the memory the loan freed — nothing outlives the loan to leave the ring short. A refused
- * buffer is the old way, slower and still correct. */
-#define RD_BOUNCE_MAX  16384u
+ * boundary, so FatFs hands the driver multi-block reads. The buffer is one tile of the
+ * display's ring, lent by pointer for the one call (display_tile_lend): the card used to
+ * free the whole ring into the heap and this asked the heap for 16 KB of the hole, which
+ * the card's own DMA arena ended (owner, 2026-11-09) — after it, the ask churned the
+ * shared pool on every big read (Bronze: largest DMA block 2,176 B mid-fill). The tile
+ * stays allocated, and the glass draws on the other one meanwhile. No tile to spare is
+ * the old way, slower and still correct. */
 #define RD_BOUNCE_MIN  4096u
 static ssize_t rd_at_bounced(int fd, size_t *io_pos, uint8_t *dst, size_t n)
 {
-    uint8_t *b = NULL;
-    size_t bsz = RD_BOUNCE_MAX;
-    for (; bsz >= RD_BOUNCE_MIN && !b; bsz /= 2)
-        b = heap_caps_malloc(bsz, MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA | MALLOC_CAP_8BIT);
+    size_t bsz = 0;
+    uint8_t *b = display_tile_lend(&bsz);
     if (!b) return -2;                            /* the caller reads the plain way */
-    bsz *= 2;                                     /* undo the loop's last halving */
+    bsz &= ~(size_t)511u;                         /* whole sectors: 18,640 -> 18,432 */
     size_t done = 0;
     while (done < n) {
         const size_t at = *io_pos + done;
@@ -695,14 +695,14 @@ static ssize_t rd_at_bounced(int fd, size_t *io_pos, uint8_t *dst, size_t n)
         size_t ask = lead + (n - done);
         if (ask > bsz) ask = bsz;
         const ssize_t got = pread(fd, b, ask, (off_t)(at - lead));
-        if (got < 0) { heap_caps_free(b); return -1; }
+        if (got < 0) { display_tile_return(b); return -1; }
         if ((size_t)got <= lead) break;           /* short file */
         const size_t use = (size_t)got - lead;
         memcpy(dst + done, b + lead, use);
         done += use;
         if ((size_t)got < ask) break;
     }
-    heap_caps_free(b);
+    display_tile_return(b);
     *io_pos += done;
     return (ssize_t)done;
 }

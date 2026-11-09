@@ -2642,11 +2642,19 @@ static esp_err_t h_status(httpd_req_t *req)
     heap_caps_get_info(&ps_info, MALLOC_CAP_SPIRAM);
     orb_glass_info_t gl;
     orb_glass_info(&gl);
+    /* The internal pool's low water since boot, and the DMA-capable part's own: free now
+     * says nothing about the moment that nearly failed, and a boot or a night is judged
+     * by its worst instant (owner, 2026-11-09). free_blocks counts the pieces. */
+    multi_heap_info_t in_info, dma_info;
+    heap_caps_get_info(&in_info, MALLOC_CAP_INTERNAL);
+    heap_caps_get_info(&dma_info, MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA);
     uint32_t sd_dma_free, sd_dma_min, sd_dma_falls;   /* the card's own DMA arena */
     orb_sd_dma_stats(&sd_dma_free, &sd_dma_min, &sd_dma_falls);
     const int n = snprintf(json, sizeof(json),
         "{\"state\":\"%s\",\"ip\":\"%s\",\"mac\":\"%s\",\"rssi\":%d,\"fw\":\"%s\",\"idf\":\"%s\","
         "\"heap_internal\":%u,\"heap_internal_largest\":%u,\"heap_psram\":%u,"
+        "\"internal\":{\"min_free\":%u,\"free_blocks\":%u,\"dma_free\":%u,"
+        "\"dma_largest\":%u,\"dma_min_free\":%u},"
         /* radar-plan §6.21: free is not enough. A big ask needs one block, and PSRAM
          * cut into pieces refuses it with plenty free (Gold, 2026-11-08: 919 KB free,
          * a 312 KB map refused) */
@@ -2733,6 +2741,9 @@ static esp_err_t h_status(httpd_req_t *req)
         (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
         (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL),
         (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM),
+        (unsigned)in_info.minimum_free_bytes, (unsigned)in_info.free_blocks,
+        (unsigned)dma_info.total_free_bytes, (unsigned)dma_info.largest_free_block,
+        (unsigned)dma_info.minimum_free_bytes,
         (unsigned)ps_info.largest_free_block, (unsigned)ps_info.free_blocks,
         (unsigned)ps_info.allocated_blocks, (unsigned)ps_info.minimum_free_bytes,
         (unsigned)gl.size, (unsigned)gl.free, (unsigned)gl.largest, (unsigned)gl.fallbacks,

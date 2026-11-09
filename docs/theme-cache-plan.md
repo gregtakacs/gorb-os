@@ -298,6 +298,21 @@ happens only when they are not. No first fit, no compaction, no MOVING state.
 - **Left as it was:** the fill still lets the card go at a 4 KB chunk when the strip owes a
   frame (C5b). With no loan a held card no longer refuses frames, so that now only happens
   for a moving carousel.
+- **A large read borrows one tile by pointer** (`display_tile_lend`, `rd_at_bounced`): the
+  card-to-PSRAM fast path had asked the heap for 16 KB "from the memory the loan freed". With
+  no loan, that came out of the shared pool on every big read (Bronze, a radar fill: largest
+  DMA block 2,176 B). The read now takes the ring's second tile itself, never freed; the glass
+  draws on the first at depth 1 meanwhile, and `glass.tiles` reads 1 for that read's length.
+  No tile to spare (short, parked, a loan open) is the old plain read. A borrow is refused
+  while a tile is out. Bronze, the same switch to radar after it: largest DMA block steady.
+- **`/api/v1/status` `internal`:** `min_free` and `dma_min_free` (the low water since boot),
+  `free_blocks`, `dma_free`, `dma_largest`. The bench (six 652 KB `/fb` captures, 20 card
+  listings, a 1.5 MB write, four app switches) found that **the radio is the pool's low
+  point, not the card**: the captures took internal free to 623-1,875 B and DMA to 303-1,555 B
+  on every run (three runs, two builds, one with 6 dynamic TX buffers instead of 12), and one
+  run stalled every reply ("headers, then nothing") while flights' TLS logged
+  `esp-aes: Failed to allocate memory`. Open: the radio's dynamic RX/TX buffers
+  (`SPIRAM_TRY_ALLOCATE_WIFI_LWIP` was tried in v1.1.41 and backed out, see sdkconfig.defaults).
 
 ### The carousel keeps nothing while shut (2026-11-09, owner's rulings, Bronze)
 

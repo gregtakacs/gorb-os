@@ -67,6 +67,7 @@
   "stage_live": "i(iii)",
   "stage_live_back": "i(iii)",
   "stage_live_copy": "i(ii)",
+  "stage_live_format": "i(ii)",
   "stage_live_merge": "i(i)",
   "stage_live_present": "i(i)",
   "stage_now": "v(iii)",

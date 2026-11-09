@@ -2180,3 +2180,21 @@ every other app):
 **Then.** Radar's PSRAM window of frames from four to two (they are on the card); the spare pair
 held for radar's stay; measured on Bronze over Austin (step cost, arm fps, PSRAM low water across
 carousel opens) and London.
+
+### 7.9.1 As built (2026-11-09, Bronze, OS v1.6.1, radar v1.6.2)
+
+- **Built as planned** (`orb_stage.c` `s_live_fmt`, `stage_live_format`; `orb_ui` indexed targets
+  and `orb_ui_pal_index`; the worker's begin and resolved-colour diff; `gfx_paint_ctx_t.indexed`
+  painted through the palette; the build-ahead's back palette). Radar asks for the map opaque and
+  the rain indexed, and merges as before on an OS that refuses. A ring or a line on an indexed
+  layer takes a palette entry no pixel uses: the rain's values under the floor are never
+  written, so the scale's colours find room without the app reserving any.
+- **The classic path** (no L4) draws an indexed layer as LVGL's I8, which its decoder expands to
+  a transient 868 KB of ARGB: an allocation that can fail and leave the layer undrawn a frame.
+  Radar runs on L4.
+- **Bronze:** Austin's and London's glass read right through it (map, the rain's ramp, the sweep,
+  names, the ring, the time). Austin's storm: steps ~127 ms, the arm paced ~6 fps (as before);
+  London 17.2 fps. PSRAM's general heap 1.30 MB free (low water 1.20 MB, was ~0.4-1.1 MB); the
+  glass region full (51 KB free): the spare PB is held there now.
+- **What it did not do:** the storm's rate. A step is the push (~50 ms), the sweep and the rest,
+  and PF composed at the swap; the room went to holding the spare plane, not to a second one.

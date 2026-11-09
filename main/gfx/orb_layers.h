@@ -94,6 +94,9 @@ typedef struct orb_layer_desc {
      * the stage owns it, so the table never frees it. NULL for every other row. An
      * OS-side field: no app builds a descriptor (the stage is the one caller). */
     const uint8_t *plane;
+    /* radar-plan §7.9: 1 = the plane is a value a pixel (art.off its values), its palette behind
+     * them (GFX_I8_*_BACK): an indexed live layer. OS-side, as plane is. */
+    uint8_t indexed;
 } orb_layer_desc_t;
 
 /* Rows per app. Sixteen, since Migration 2 commit 3. Eight was "a hand, a ring,

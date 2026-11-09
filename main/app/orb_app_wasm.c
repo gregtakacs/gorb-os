@@ -1239,11 +1239,10 @@ m3ApiRawFunction(imp_blob_free)               /* void blob_free(u32 slot) */
 static bool stage_on(const wasm_slot_t *s);
 static bool live_tgt(const wasm_slot_t *s, int32_t cv, orb_ui_tgt_t *t)
 {
-    uint16_t *px;
-    uint8_t *a;
-    if (!stage_on(s) || !stage_live_target(ORB_CV_LIVE0 - cv, &px, &a)) return false;
-    *t = (orb_ui_tgt_t){ px, a, CLK_SCR_W, CLK_SCR_H, CLK_SCR_W };
-    return true;
+    /* radar-plan §7.9: an indexed layer's palette, held for the draw that asked (LVGL task) */
+    static orb_ui_pal_t pal[STAGE_LIVE_N];
+    const int l = ORB_CV_LIVE0 - cv;
+    return stage_on(s) && l >= 0 && l < STAGE_LIVE_N && stage_live_tgt(l, t, &pal[l]);
 }
 static bool live_tgt_of(const wasm_slot_t *s, int32_t cv, orb_ui_tgt_t *t)
 {
@@ -1439,6 +1438,21 @@ m3ApiRawFunction(imp_stage_live)
 }
 
 /* radar-plan §6.19: i32 stage_live_merge(i32 on), i32 stage_live_copy(i32 dst, i32 src) */
+/* radar-plan §7.9 (OS v1.6.1): i32 stage_live_format(i32 layer, i32 fmt): 0 colour and alpha,
+ * 1 opaque colour, 2 indexed; the layer's picture cleared. */
+m3ApiRawFunction(imp_stage_live_format)
+{
+    m3ApiReturnType(int32_t);
+    CALLER();
+    m3ApiGetArg(int32_t, layer);
+    m3ApiGetArg(int32_t, fmt);
+    STAGE_GATE(ESP_ERR_INVALID_STATE);
+    if (layer < 0 || layer >= STAGE_LIVE_N) m3ApiReturn(ESP_ERR_INVALID_ARG);
+    if (orb_live_work_pending(layer)) m3ApiReturn(ESP_ERR_INVALID_STATE);   /* the back is being drawn */
+    stage_live_ahead_drop(-1);
+    m3ApiReturn(stage_live_format(layer, fmt));
+}
+
 m3ApiRawFunction(imp_stage_live_merge)
 {
     m3ApiReturnType(int32_t);
@@ -1892,6 +1906,7 @@ static const wasm_bind_t s_binds[] = {
     { "orb", "stage_values",   "i(iii)",    imp_stage_values },
     { "orb", "stage_live",     "i(iii)",    imp_stage_live },
     { "orb", "stage_live_merge", "i(i)",    imp_stage_live_merge },
+    { "orb", "stage_live_format", "i(ii)",  imp_stage_live_format },
     { "orb", "stage_live_copy",  "i(ii)",   imp_stage_live_copy },
     { "orb", "stage_live_back",  "i(iii)",  imp_stage_live_back },
     { "orb", "stage_live_present", "i(i)",  imp_stage_live_present },

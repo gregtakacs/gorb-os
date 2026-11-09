@@ -195,6 +195,7 @@ static int next_frame(void)
 
 static bool s_rain_dirty, s_ui_dirty;
 static bool s_merged;              /* the two layers composed as one (§6.19) */
+static bool s_indexed;             /* §7.9: the map opaque, the rain indexed over it */
 
 /* §7.4: the PSRAM the frames hold (a load counts from its ask, a park until it is written),
  * the biggest frame yet, and whether every frame in PSRAM is one the window keeps. */
@@ -474,8 +475,15 @@ static void layers_open(void)
     /* §6.19: one covering layer, the map's copy with the rain on it, is a copy for the
      * compositor where two were a blend. Only a map that covers (its water and land
      * opaque) can stand alone; else the two layers stay as they were. */
-    s_merged = s_layers && (V.map_pal[0] >> 24) == 0xFF && (V.map_pal[1] >> 24) == 0xFF &&
-               orb_stage_live_merge(1) == ORB_OK;
+    /* radar-plan §7.9 (OS v1.6.1): a map that covers is opaque colour (434 KB) and the rain over
+     * it a value a pixel through its frame's palette (218 KB), not two colour layers merged
+     * (1.3 MB with the back): the room the swap's planes are built ahead into. An OS that will
+     * not take the formats merges as before. */
+    const bool covers = (V.map_pal[0] >> 24) == 0xFF && (V.map_pal[1] >> 24) == 0xFF;
+    s_indexed = s_layers && covers && orb_stage_live_format(0, ORB_LIVE_OPAQUE) == ORB_OK &&
+                orb_stage_live_format(1, ORB_LIVE_INDEXED) == ORB_OK;
+    if (!s_indexed && s_layers) { (void)orb_stage_live_format(0, ORB_LIVE_RGBA); (void)orb_stage_live_format(1, ORB_LIVE_RGBA); }
+    s_merged = s_layers && !s_indexed && covers && orb_stage_live_merge(1) == ORB_OK;
     s_map_dirty = s_rain_dirty = s_ui_dirty = true;
     RAIN_AGAIN(-2);
 }
@@ -790,7 +798,7 @@ static void loop_step(void)
  * the way it turns) will show, and the newest. */
 static bool in_window(int k, int cur, int ahead)
 {
-    if (k == cur || (ahead > 1 && k == idx_newest())) return true;
+    if (k == cur) return true;                      /* §7.9: the newest is no longer held besides */
     const int n = s_npast + s_nnow;
     for (int a = 1, j = cur; a <= ahead && j >= 0; a++) {
         j = s_play ? (j >= idx_newest() ? 0 : j + 1) : j + s_scrub_dir;
@@ -814,7 +822,7 @@ static void frames_tend(void)
     uint32_t win = 0;
     for (int k = 0; k < s_npast + s_nnow; k++)
         if (F[k].slot >= 0 && in_window(k, cur, 2)) win += orb_blob_len((uint32_t)F[k].slot);
-    const int ahead = win + (s_biggest ? s_biggest : FRAME_MAX) > BLOB_BUDGET ? 1 : 2;
+    const int ahead = win + (s_biggest ? s_biggest : FRAME_MAX) > BLOB_BUDGET ? 1 : 2;   /* 2-3 frames in PSRAM */
     int calls = 0;
     for (int k = 0; k < s_npast + s_nnow && calls < 4; k++) {
         const int st = fstate(&F[k]);

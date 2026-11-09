@@ -46,16 +46,36 @@ static void job_free(lw_job_t *j)
 
 static void run(lw_job_t *j)
 {
-    uint16_t *px, *spx = NULL;
-    uint8_t *al, *sa = NULL;
     const int src = j->op == LW_BEGIN ? j->src : j->op == LW_DIFF ? j->layer : -1;
-    if (!stage_live_back_lock(j->layer, &px, &al, &spx, &sa, src)) return;
-    const orb_ui_tgt_t t = { px, al, CLK_SCR_W, CLK_SCR_H, CLK_SCR_W };
+    orb_ui_tgt_t t, st;
+    orb_ui_pal_t tp, sp;
+    if (!stage_live_back_lock(j->layer, &t, &tp, &st, &sp, src)) return;
+    uint16_t *px = t.px, *spx = st.px;
+    uint8_t *al = t.a, *sa = st.a;
     switch (j->op) {
     case LW_BEGIN: {
         atomic_store(&s_diff_ready[j->layer], false);  /* a diff of an abandoned picture */
         /* the disc alone, as stage_live_copy and live_fill (§6.19): the corners are never seen */
         const uint16_t *x0 = orb_ui_disc_left();
+        if (t.ix) {
+            /* radar-plan §7.9: an indexed picture begins as the front's (values and palette) or
+             * cleared to the value of argb, its palette and the values in use reset */
+            if (st.ix) {
+                memcpy(tp.c565, sp.c565, 512); memcpy(tp.a, sp.a, 256);
+                memcpy(tp.argb, sp.argb, 1024); memcpy(tp.used, sp.used, 32);
+                for (int y = 0; y < CLK_SCR_H; y++) {
+                    const size_t i = (size_t)y * CLK_SCR_W + x0[y];
+                    memcpy(t.ix + i, st.ix + i, (size_t)(CLK_SCR_W - 2 * x0[y]));
+                }
+            } else {
+                memset(tp.used, 0, 32);
+                for (int i = 0; i < 256; i++) orb_ui_pal_set(&tp, i, 0);
+                const int v = orb_ui_pal_index(&tp, (j->argb >> 24) ? j->argb : 0);
+                for (int y = 0; y < CLK_SCR_H; y++)
+                    memset(t.ix + (size_t)y * CLK_SCR_W + x0[y], v, (size_t)(CLK_SCR_W - 2 * x0[y]));
+            }
+            break;
+        }
         const uint32_t c = j->argb & 0xFFFFFFu;
         const uint16_t c565 = (uint16_t)(((c >> 8) & 0xF800u) | ((c >> 5) & 0x07E0u) | ((c >> 3) & 0x001Fu));
         for (int y = 0; y < CLK_SCR_H; y++) {
@@ -88,7 +108,15 @@ static void run(lw_job_t *j)
             const int a = x0[y], b = CLK_SCR_W - 1 - x0[y];
             const size_t i = (size_t)y * CLK_SCR_W;
             int lo = a, hi = b;
-            if (spx) {
+            if (t.ix && st.ix) {
+                /* §7.9: values through each picture's palette: a pixel is the same when both are
+                 * clear, or both are the same colour at the same alpha */
+#define I8_SAME(q) ((!tp.a[t.ix[q]] && !sp.a[st.ix[q]]) || \
+                    (tp.a[t.ix[q]] == sp.a[st.ix[q]] && tp.c565[t.ix[q]] == sp.c565[st.ix[q]]))
+                while (lo <= b && I8_SAME(i + lo)) lo++;
+                while (hi >= lo && I8_SAME(i + hi)) hi--;
+#undef I8_SAME
+            } else if (spx) {
                 /* first and last pixel that differ, colour or (unmerged) alpha */
                 while (lo <= b && px[i + lo] == spx[i + lo] && (!al || !sa || al[i + lo] == sa[i + lo])) lo++;
                 while (hi >= lo && px[i + hi] == spx[i + hi] && (!al || !sa || al[i + hi] == sa[i + hi])) hi--;

@@ -340,6 +340,35 @@ static inline uint16_t blend565(uint16_t dst, uint16_t src, uint8_t a)
     return (uint16_t)(r << 11 | g << 5 | b);
 }
 
+/* ---- radar-plan §7.9: an indexed target's palette ------------------------------------- */
+static inline void pal_mark(const orb_ui_pal_t *p, int v) { p->used[v >> 3] |= (uint8_t)(1u << (v & 7)); }
+static inline bool pal_in(const orb_ui_pal_t *p, int v) { return (p->used[v >> 3] >> (v & 7)) & 1u; }
+
+void orb_ui_pal_set(const orb_ui_pal_t *p, int i, uint32_t argb)
+{
+    if (!p || i < 0 || i > 255) return;
+    p->argb[i] = argb;
+    p->c565[i] = c16(argb & 0xFFFFFF);
+    p->a[i] = (uint8_t)(argb >> 24);
+}
+
+int orb_ui_pal_index(const orb_ui_pal_t *p, uint32_t argb)
+{
+    for (int i = 0; i < 256; i++) if (pal_in(p, i) && p->argb[i] == argb) return i;
+    for (int i = 0; i < 256; i++)
+        if (!pal_in(p, i)) { orb_ui_pal_set(p, i, argb); pal_mark(p, i); return i; }
+    int best = 0;                                        /* every value in use: the nearest */
+    uint32_t bd = UINT32_MAX;
+    for (int i = 0; i < 256; i++) {
+        const int dr = (int)((p->argb[i] >> 16) & 0xFF) - (int)((argb >> 16) & 0xFF);
+        const int dg = (int)((p->argb[i] >> 8) & 0xFF) - (int)((argb >> 8) & 0xFF);
+        const int db = (int)(p->argb[i] & 0xFF) - (int)(argb & 0xFF);
+        const uint32_t d = (uint32_t)(dr * dr + dg * dg + db * db);
+        if (p->a[i] && d < bd) { bd = d; best = i; }
+    }
+    return best;
+}
+
 /* src over a target pixel: a canvas is opaque; the live layer keeps an alpha plane, and
  * src over a pixel it only partly covers weights the colours by what each contributes. */
 static inline void over(const orb_ui_tgt_t *t, int32_t i, uint16_t c, uint8_t a)
@@ -356,7 +385,7 @@ static bool tgt_of_cv(int slot, int32_t h, orb_ui_tgt_t *t)
 {
     cv_t *c = cv_of(slot_get(slot, false), h);
     if (!c) return false;
-    *t = (orb_ui_tgt_t){ c->px, NULL, c->w, c->h, c->stride };
+    *t = (orb_ui_tgt_t){ c->px, NULL, c->w, c->h, c->stride, NULL, NULL };
     return true;
 }
 
@@ -388,6 +417,7 @@ typedef struct {
     int32_t sx, sy, dx, dy, w, h, scale;
     const uint16_t *disc;          /* the glass's disc for a full-glass target, else NULL */
     bool hatch;                    /* ORB_UI_PNG_HATCH: diagonal stripes, the rest left as it was */
+    const uint8_t *vmap;           /* §7.9, an indexed target: index -> value */
 } png_ctx_t;
 /* A hatched draw (OS v1.2.38, the radar's forecast): 45-degree stripes 5 px on, 3 off. */
 static inline bool hatched_out(int32_t X, int32_t Y) { return ((X + Y) & 7) >= 5; }
@@ -411,11 +441,15 @@ static int png_row(void *ctx, int y, const uint8_t *idx, int w)
         if (s < 0 || s >= w) continue;
         const pal565_t e = p->pal[idx[s]];
         if (!e.a) continue;
+        const uint8_t v = p->vmap ? p->vmap[idx[s]] : 0;
+        if (p->t->ix) pal_mark(p->t->pal, v);
         for (int32_t ky = 0; ky < p->scale && oy + ky < p->h; ky++)
             for (int32_t kx = 0; kx < p->scale && x * p->scale + kx < p->w; kx++) {
                 const int32_t X = p->dx + x * p->scale + kx, Y = p->dy + oy + ky;
-                if ((uint32_t)X < (uint32_t)p->t->w && (uint32_t)Y < (uint32_t)p->t->h && !(p->hatch && hatched_out(X, Y)))
-                    over(p->t, Y * p->t->stride + X, e.c, e.a);
+                if ((uint32_t)X < (uint32_t)p->t->w && (uint32_t)Y < (uint32_t)p->t->h && !(p->hatch && hatched_out(X, Y))) {
+                    if (p->t->ix) p->t->ix[Y * p->t->stride + X] = v;   /* §7.9: the value itself */
+                    else over(p->t, Y * p->t->stride + X, e.c, e.a);
+                }
             }
     }
     return 0;
@@ -488,8 +522,11 @@ static int smooth_row(void *ctx, int y, const uint8_t *idx, int w)
                 const int32_t a = p->col[x0], b = p->col[x0 + 1];
                 if (sum0 && !(a | b)) continue;
                 const int32_t fx = p->fx[X], n = a * (k2 - fx) + b * fx + half;
-                const pal565_t e = p->pal[p->shift >= 0 ? n >> p->shift : n / (k2 * k2)];
-                if (e.a && !(p->hatch && hatched_out(X, Y))) over(p->t, base + X, e.c, e.a);
+                const int32_t vi = p->shift >= 0 ? n >> p->shift : n / (k2 * k2);
+                const pal565_t e = p->pal[vi];
+                if (!e.a || (p->hatch && hatched_out(X, Y))) continue;
+                if (p->t->ix) { p->t->ix[base + X] = (uint8_t)vi; pal_mark(p->t->pal, vi); }   /* §7.9 */
+                else over(p->t, base + X, e.c, e.a);
             }
         }
         if (floordiv(y * k2 - c + 1, 2) >= p->h) return 1;  /* past the window: stop decoding */
@@ -504,13 +541,16 @@ void orb_ui_tgt_ring(const orb_ui_tgt_t *t, int32_t cx, int32_t cy, int32_t r, u
 {
     if (!t || r < 0) return;
     const uint16_t col = c16(rgb);
+    const int iv = t->ix ? orb_ui_pal_index(t->pal, 0xFF000000u | rgb) : 0;   /* §7.9 */
     int32_t x = r, y = 0, err = 1 - r;
     while (x >= y) {
         const int32_t px[8] = { cx + x, cx + y, cx - y, cx - x, cx - x, cx - y, cx + y, cx + x };
         const int32_t py[8] = { cy + y, cy + x, cy + x, cy + y, cy - y, cy - x, cy - x, cy - y };
         for (int k = 0; k < 8; k++)
-            if ((uint32_t)px[k] < (uint32_t)t->w && (uint32_t)py[k] < (uint32_t)t->h)
-                over(t, py[k] * t->stride + px[k], col, 255);
+            if ((uint32_t)px[k] < (uint32_t)t->w && (uint32_t)py[k] < (uint32_t)t->h) {
+                if (t->ix) t->ix[py[k] * t->stride + px[k]] = (uint8_t)iv;
+                else over(t, py[k] * t->stride + px[k], col, 255);
+            }
         y++;
         if (err < 0) err += 2 * y + 1;
         else { x--; err += 2 * (y - x) + 1; }
@@ -521,13 +561,17 @@ void orb_ui_tgt_line(const orb_ui_tgt_t *t, int32_t x0, int32_t y0, int32_t x1, 
 {
     if (!t) return;
     const uint16_t col = c16(rgb);
+    const int iv = t->ix ? orb_ui_pal_index(t->pal, 0xFF000000u | rgb) : 0;   /* §7.9 */
     const int32_t dx = abs(x1 - x0), sx = x0 < x1 ? 1 : -1;
     const int32_t dy = -abs(y1 - y0), sy = y0 < y1 ? 1 : -1;
     int32_t err = dx + dy;
     for (int guard = 0; guard < 4096; guard++) {
         for (int k = 0; k < 3; k++) {          /* the canvas line's 2 px pen */
             const int32_t X = x0 + (k == 1), Y = y0 + (k == 2);
-            if ((uint32_t)X < (uint32_t)t->w && (uint32_t)Y < (uint32_t)t->h) over(t, Y * t->stride + X, col, 255);
+            if ((uint32_t)X < (uint32_t)t->w && (uint32_t)Y < (uint32_t)t->h) {
+                if (t->ix) t->ix[Y * t->stride + X] = (uint8_t)iv;
+                else over(t, Y * t->stride + X, col, 255);
+            }
         }
         if (x0 == x1 && y0 == y1) break;
         const int32_t e2 = 2 * err;
@@ -563,6 +607,11 @@ int32_t orb_ui_tgt_png8_s(const orb_ui_tgt_t *t, void *scratch, const uint8_t *p
     const int np = orb_png8_plte(png, len, value);
     if (np < 0) { heap_caps_free(pal); return np; }
     for (int i = 0; i < 256; i++) pal[i] = pal[256 + (np ? value[i] : i)];
+    /* §7.9: onto an indexed target the draw's palette is the picture's, by value, and each pixel
+     * keeps its value; what was marked used before (a clear's fill) stays marked */
+    if (t->ix) for (int i = 0; i < 256; i++) orb_ui_pal_set(t->pal, i, argb[i]);
+    uint8_t vmap_flat[256];
+    for (int i = 0; i < 256; i++) vmap_flat[i] = np ? value[i] : (uint8_t)i;
     int r;
     if (smooth) {
         smooth_ctx_t *sc = heap_caps_malloc(sizeof *sc, MALLOC_CAP_SPIRAM);
@@ -576,7 +625,7 @@ int32_t orb_ui_tgt_png8_s(const orb_ui_tgt_t *t, void *scratch, const uint8_t *p
         heap_caps_free(sc);
         heap_caps_free(vmap);
     } else {
-        png_ctx_t ctx = { t, pal, sx, sy, dx, dy, w, hh, scale, disc_of(t), hatch };
+        png_ctx_t ctx = { t, pal, sx, sy, dx, dy, w, hh, scale, disc_of(t), hatch, vmap_flat };
         r = orb_png8_decode(png, len, scratch, orb_png8_scratch_size(), png_row, &ctx);
     }
     if (r == ORB_PNG8_E_STOP) r = ORB_PNG8_OK;        /* the window ended before the image */
@@ -597,6 +646,8 @@ void orb_ui_tgt_roles(const orb_ui_tgt_t *t, const uint8_t *raster, const uint32
     if (!t || !raster || !argb16) return;
     pal565_t pal[16];
     pal_prep(pal, argb16, 16);
+    int iv[16];                                       /* §7.9: an indexed target's values */
+    for (int k = 0; k < 16 && t->ix; k++) iv[k] = pal[k].a ? orb_ui_pal_index(t->pal, argb16[k]) : -1;
     const uint16_t *disc = disc_of(t);
     for (int y = 0; y < ORB_MAP_W; y++) {
         const int32_t Y = dy + y;
@@ -609,8 +660,11 @@ void orb_ui_tgt_roles(const orb_ui_tgt_t *t, const uint8_t *raster, const uint32
         for (int x = xa; x <= xb; x++) {
             const int32_t X = dx + x;
             if ((uint32_t)X >= (uint32_t)t->w) continue;
-            const pal565_t e = pal[orb_map_role_at(raster, x, y)];
-            if (e.a) over(t, Y * t->stride + X, e.c, e.a);
+            const int role = orb_map_role_at(raster, x, y);
+            const pal565_t e = pal[role];
+            if (!e.a) continue;
+            if (t->ix) t->ix[Y * t->stride + X] = (uint8_t)iv[role];
+            else over(t, Y * t->stride + X, e.c, e.a);
         }
     }
 }

@@ -328,6 +328,13 @@ int orb_layers_jobs(const orb_layer_tab_t *t, const uint8_t *theme_base,
                                t->row[i].role)) {
             jc[n].smooth = t->row[i].smooth != 0;
             jc[n].solid = t->row[i].solid != 0 && !t->row[i].drum;
+            if (t->row[i].indexed) {                  /* §7.9: values through their palette */
+                jc[n].indexed = true;
+                jc[n].alp = base + t->spr[i].color_off;
+                jc[n].col = (const uint16_t *)(const void *)(jc[n].alp - GFX_I8_C565_BACK);
+                jc[n].pal_a = jc[n].alp - GFX_I8_A_BACK;
+                jc[n].solid = false;
+            }
             /* A theme row's alpha is its opacity (theme-text-plan T2); a bake's
              * plane already carries its own. */
             if (!t->plane[i]) jc[n].opa = t->row[i].alpha;

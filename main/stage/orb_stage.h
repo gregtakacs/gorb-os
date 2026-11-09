@@ -1,4 +1,5 @@
 #pragma once
+#include "orb_ui.h"   /* orb_ui_tgt_t, the live layers' draw targets */
 /**
  * Analog clock view — renders the baked theme dial (Steam Punk et al.) with
  * hour/minute/second hands as trimmed, pivot-rotated RGB565A8 LVGL images over
@@ -82,7 +83,10 @@ uint32_t stage_values(void *buf, uint32_t cap, uint16_t *ver);
 #define STAGE_LIVE_N 2
 esp_err_t stage_live_open(int32_t layer, int32_t order, uint32_t argb);
 /* A layer's planes: colour (RGB565, stride CLK_SCR_W) then alpha; false when it is not open. */
-bool stage_live_target(int layer, uint16_t **px, uint8_t **a);
+/* A draw target over layer `layer` in its format (an indexed one's palette in *pal). */
+bool stage_live_tgt(int layer, orb_ui_tgt_t *t, orb_ui_pal_t *pal);
+/* radar-plan §7.9: layer `layer` in format fmt (0 colour and alpha, 1 opaque, 2 indexed). */
+esp_err_t stage_live_format(int32_t layer, int32_t fmt);
 /* radar-plan §6.19: merge the two layers. On, layer 0 is hidden (still drawn into: the
  * backing) and layer 1 is composed as covering everywhere, a copy, not a blend; the app
  * builds layer 1 from stage_live_copy(1, 0) and draws over it. Off whenever the layers go. */
@@ -97,7 +101,8 @@ void stage_live_damage(int32_t x, int32_t y, int32_t w, int32_t h);
  * is no back; present: the back becomes the front and the old front the back, the rows that
  * changed [x0[y], x1[y]] (none where x0 > x1) repainted, or the whole disc when x0 is NULL. */
 esp_err_t stage_live_back_ensure(int l);
-bool stage_live_back_lock(int l, uint16_t **px, uint8_t **a, uint16_t **src_px, uint8_t **src_a, int src);
+bool stage_live_back_lock(int l, orb_ui_tgt_t *t, orb_ui_pal_t *pal, orb_ui_tgt_t *src_t,
+                          orb_ui_pal_t *src_pal, int src);
 void stage_live_back_unlock(void);
 esp_err_t stage_live_present(int l, const int16_t *x0, const int16_t *x1);
 /* radar-plan §7.7: build the waiting swap's rows ahead in the slack; drop that when the back

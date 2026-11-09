@@ -73,6 +73,9 @@ typedef struct gfx_paint_ctx {
     bool     drum;                    /* D43: a drum row (gfx_paint_ctx_drum)           */
     bool     solid;                   /* radar-plan §6.19: an unturned row whose every pixel
                                        * covers (a merged live layer): copied, not blended */
+    bool     indexed;                 /* radar-plan §7.9: alp is a value a pixel, col the palette's
+                                       * RGB565 (256), pal_a its alpha; never turned */
+    const uint8_t *pal_a;
     int32_t  drum_cy, drum_r, drum_phase;   /* window centre row, radius, strip scroll px */
     float    drum_c;                  /* strip px per radian of the drum: h / 2pi       */
     int32_t  ang_10;                  /* the pose, kept for the span bench (forward map) */
@@ -147,6 +150,10 @@ void     gfx_fill_sprite_dsc(lv_image_dsc_t *d, const clk_sprite_t *s,
 /* Fill a paint context for `spr` at ang_10 over the art bank at `base`.
  * False = nothing drawable, so the caller drops the job rather than painting
  * garbage. */
+/* radar-plan §7.9: an indexed live layer's palette behind its values, in bytes (orb_stage.c lays
+ * the buffer out so): RGB565 at values - GFX_I8_C565_BACK, alpha at values - GFX_I8_A_BACK. */
+#define GFX_I8_C565_BACK 1824u
+#define GFX_I8_A_BACK    1312u
 bool gfx_paint_ctx_init(gfx_paint_ctx_t *pc, const clk_sprite_t *spr,
                         const uint8_t *base, int32_t ang_10, uint8_t role);
 
@@ -270,7 +277,7 @@ bool gfx_prep_swap(const int16_t *x0, const int16_t *x1, const uint8_t *alp);
  * slack (gfx_prep_idle) so that swap copies them. False when it cannot be (pre-paint off or
  * not lean, the job not found, no PSRAM for the planes): the swap composes as before. */
 bool gfx_prep_ahead(int layer, const int16_t *x0, const int16_t *x1, const uint8_t *front_alp,
-                    const uint16_t *back_col, const uint8_t *back_alp);
+                    const uint16_t *back_col, const uint8_t *back_alp, const uint8_t *back_pal_a);
 /* The live worker's half of gfx_prep_ahead (its LW_AHEAD job). */
 void gfx_prep_ahead_run(void);
 /* Whether the planes for the swap from that back copy are built. */

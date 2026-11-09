@@ -332,6 +332,8 @@ bool gfx_paint_ctx_init(gfx_paint_ctx_t *pc, const clk_sprite_t *spr,
     pc->smooth = false;               /* nearest unless the job builder says the row smooths */
     pc->drum = false;                 /* a drum only when the job builder makes it one */
     pc->solid = false;                /* solid only when the job builder says the row covers */
+    pc->indexed = false;              /* §7.9: indexed only when the job builder says so */
+    pc->pal_a = NULL;
 
     pc->col = (const uint16_t *)(base + spr->color_off);
     pc->alp = base + spr->color_off
@@ -450,6 +452,7 @@ void gfx_paint_row_ctx(const gfx_paint_ctx_t *pc, int32_t y,
     if (xa > xb) return;
     if (pc->drum) { paint_drum_row(pc, y, xa, xb, row); return; }
 
+    if (pc->indexed && pc->rot) return;   /* §7.9: an indexed layer is never turned */
     if (!pc->rot) {
         /* ---- static path (ang == 0): dial, glass, hub ----
          * A layer that never turns maps screen px to texel by a constant
@@ -470,6 +473,19 @@ void gfx_paint_row_ctx(const gfx_paint_ctx_t *pc, int32_t y,
         const uint16_t *col = pc->col;
         const uint8_t *alp = pc->alp;
         uint32_t si = (uint32_t)sy * pc->w + (uint32_t)(xa - pc->posx);
+        if (pc->indexed) {
+            /* radar-plan §7.9: a value a pixel, through the picture's palette */
+            const uint8_t *pa = pc->pal_a;
+            for (int32_t x = xa; x <= xb; x++, si++) {
+                const uint8_t v = alp[si];
+                const uint8_t a = opa_mix(pa[v], pc->opa);
+                if (!a) continue;
+                blend_px(&row[x], col[v], a, pc->bmode);
+                n++;
+            }
+            if (pc->role < CLK_PAINT_ROLES) s_hk_role_blend[pc->role] += n;
+            return;
+        }
         if (pc->solid && pc->opa >= LV_OPA_MAX && pc->bmode == 0) {
             /* radar-plan §6.19: a row that covers is a copy into mirror order, the restore's
              * own cost, not a blend (the radar's map and rain, merged: 125 ms a full glass
@@ -1208,7 +1224,7 @@ static int ah_segs(int32_t y, int32_t a, int32_t b, int32_t *sx, int *lo, int32_
 static void ah_build_row(int32_t y, int32_t a, int32_t b, uint16_t *row);
 
 bool gfx_prep_ahead(int layer, const int16_t *x0, const int16_t *x1, const uint8_t *front_alp,
-                    const uint16_t *back_col, const uint8_t *back_alp)
+                    const uint16_t *back_col, const uint8_t *back_alp, const uint8_t *back_pal_a)
 {
     if (!s_pp_mode || !s_pp_lean || !s_pp_valid || !s_pp_jc || !x0 || !x1 || !s_pb || !s_pf) return false;
     if (s_ah_state == AH_RUN) return true;
@@ -1232,6 +1248,7 @@ bool gfx_prep_ahead(int layer, const int16_t *x0, const int16_t *x1, const uint8
     memcpy(s_ah_jc, s_pp_jc, (size_t)s_pp_jn * sizeof *s_ah_jc);
     s_ah_jc[live].col = back_col;
     s_ah_jc[live].alp = back_alp;
+    if (s_ah_jc[live].indexed) s_ah_jc[live].pal_a = back_pal_a;   /* §7.9: the back's own palette */
     memcpy(s_ah_fast, s_pp_fast, sizeof s_ah_fast);
     memcpy(s_ah_pzcx, s_pz_cx, sizeof s_ah_pzcx);
     memcpy(s_ah_pzcy, s_pz_cy, sizeof s_ah_pzcy);

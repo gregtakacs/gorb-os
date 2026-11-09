@@ -47,7 +47,23 @@ int32_t orb_ui_cv_create(int slot, int32_t parent, int32_t w, int32_t h);
 /** radar-plan §2.9: a draw target that is not one of the page's canvases (the stage's live
  *  layer): RGB565 pixels at `stride`, and an alpha plane at the same stride, or NULL for an
  *  opaque one. The _tgt_ draws are the canvas draws below, onto it. */
-typedef struct { uint16_t *px; uint8_t *a; int32_t w, h, stride; } orb_ui_tgt_t;
+/* radar-plan §7.9 (OS v1.6.1): an indexed target's palette, in the three forms its readers want
+ * (the compositor's RGB565 and alpha, LVGL's I8 ARGB8888), and the values written into it. */
+typedef struct {
+    uint16_t *c565;          /* 256, native RGB565 */
+    uint8_t  *a;             /* 256 */
+    uint32_t *argb;          /* 256, LVGL's I8 palette */
+    uint8_t  *used;          /* 32 B: a bit a value some pixel holds */
+} orb_ui_pal_t;
+/* An indexed target sets ix (a value a pixel, at stride) and pal; px and a are then unused. A
+ * draw onto it writes values: a PNG its own (its palette becomes the target's), a ring or a line
+ * the value whose colour it draws with (orb_ui_pal_index). */
+typedef struct { uint16_t *px; uint8_t *a; int32_t w, h, stride; uint8_t *ix; const orb_ui_pal_t *pal; } orb_ui_tgt_t;
+/* Entry i of an indexed target's palette from argb, in all three forms. */
+void orb_ui_pal_set(const orb_ui_pal_t *p, int i, uint32_t argb);
+/* The value a colour draws with: a used entry of that colour, else a free one given it, else
+ * the nearest used colour. Marks it used. */
+int  orb_ui_pal_index(const orb_ui_pal_t *p, uint32_t argb);
 /* In a PNG draw's scale: magnify by the low byte (up to 16) and sample the values
  * bilinearly (radar-plan §6.9); without it the scale is 1-4, each source pixel a block. */
 #define ORB_UI_PNG_SMOOTH 0x100

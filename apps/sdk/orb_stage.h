@@ -82,6 +82,15 @@ ORB_IMPORT("stage_live")     int32_t orb_stage_live(int32_t layer, int32_t order
  * it must cover: build it from orb_stage_live_copy(1, 0) and draw over it. Off when the
  * layers go (the app off the glass): ask again after reopening them. */
 ORB_IMPORT("stage_live_merge") int32_t orb_stage_live_merge(int32_t on);
+/* OS v1.6.1 (radar-plan §7.9): a live layer's format. Colour and alpha is every layer's to begin
+ * with (3 B a pixel); OPAQUE is colour alone, for a layer that covers (2 B); INDEXED is a value a
+ * pixel through the picture's own palette (1 B): orb_cv_png8 onto it keeps each pixel's value
+ * and makes its palette the picture's, and a ring or a line takes a free palette entry for its
+ * colour. The layer is cleared; ORB_ERR_INVALID_STATE while the layers are merged. */
+#define ORB_LIVE_RGBA    0
+#define ORB_LIVE_OPAQUE  1
+#define ORB_LIVE_INDEXED 2
+ORB_IMPORT("stage_live_format") int32_t orb_stage_live_format(int32_t layer, int32_t fmt);
 /* Layer src's pixels into layer dst, inside the glass's disc. */
 ORB_IMPORT("stage_live_copy")  int32_t orb_stage_live_copy(int32_t dst, int32_t src);
 /* OS v1.2.38 (radar-plan §6.27): a layer's next picture drawn off the frame. stage_live_back

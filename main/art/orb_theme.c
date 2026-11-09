@@ -17,6 +17,8 @@
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <sys/stat.h>
+#include "esp_flash.h"      /* esp_flash_read_id: the C0 bench names the chip */
 #include <inttypes.h>                 // PRIu32 in the complication-loop logs (the
                                       // riscv toolchain's uint32_t is not `int`)
 #include <stdio.h>
@@ -1858,6 +1860,117 @@ static esp_err_t copy_bundle3(int fd, const orb_bundle_t *b, const uint8_t *regi
     *out_art_crc = acrc;
     return ESP_OK;
 }
+
+#if CONFIG_ORB_DEBUG_HTTP
+/* ---- theme-cache-plan C0: a fill's cost under a running dial ------------------------- */
+typedef struct { char id[48]; uint32_t chunk_kb, pace_ms; bool urgent; } bench_fill_arg_t;   /* ORB_JOB_ARG_MAX 64 */
+static volatile bool s_bench_fill_busy;
+static char s_bench_fill_last[400];        /* the last run's line, for the door */
+const char *orb_theme_bench_fill_last(void) { return s_bench_fill_last; }
+
+static void bench_fill_job(void *arg)
+{
+    const bench_fill_arg_t *a = arg;
+    const esp_partition_t *p = art_bank_partition();
+    char path[ORB_SD_PATH_MAX];
+    uint8_t *buf = NULL;
+    int fd = -1;
+    const char *why = NULL;
+    const uint32_t chunk = a->chunk_kb * 1024u;
+    if (!p || !s_pool) { why = "no pool"; goto out; }
+    if (!theme_file(a->id, path, sizeof path)) { why = "not a theme name"; goto out; }
+    buf = heap_caps_malloc(chunk, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!buf) { why = "no buffer"; goto out; }
+    if (orb_sd_ensure_mounted() != ESP_OK) { why = "no card in the socket"; goto out; }
+    orb_sd_lock();
+    fd = open(path, O_RDONLY);
+    struct stat st;
+    const bool sized = fd >= 0 && fstat(fd, &st) == 0 && st.st_size > 0;
+    orb_sd_unlock();
+    if (!sized) { why = "no such file on the card"; goto out; }
+    const uint32_t size = (uint32_t)st.st_size, n = orb_pool_round(size);
+    const uint32_t dst = orb_pool_used_end(s_pool);
+    if (dst + n > ORB_POOL_END) { why = "no free room past the packed run"; goto out; }
+    if (a->urgent) display_ring_urgent_for(DISPLAY_URGENT_FILL, true);
+
+    const int64_t t0 = esp_timer_get_time();
+    /* paced: no erase up front; each 4 KB sector erased, written, then pace_ms for the dial */
+    if (!a->pace_ms && esp_partition_erase_range(p, dst, n) != ESP_OK) { why = "erase failed"; goto out; }
+    const int64_t t1 = esp_timer_get_time();
+    int64_t card_us = 0, flash_us = 0, worst_card = 0, worst_flash = 0;
+    uint32_t crc = 0, done = 0;
+    size_t pos = 0;
+    while (done < size) {
+        const uint32_t want = size - done > chunk ? chunk : size - done;
+        const int64_t c0 = esp_timer_get_time();
+        orb_sd_lock();
+        const ssize_t got = rd_at(fd, &pos, buf, want);
+        orb_sd_unlock();
+        const int64_t c1 = esp_timer_get_time();
+        if (got != (ssize_t)want) { why = "short card read"; goto out; }
+        crc = esp_rom_crc32_le(crc, buf, want);
+        int64_t fl = 0;
+        if (!a->pace_ms) {
+            if (esp_partition_write(p, dst + done, buf, want) != ESP_OK) { why = "write failed"; goto out; }
+            fl = esp_timer_get_time() - c1;
+            if (fl > worst_flash) worst_flash = fl;
+        } else {
+            for (uint32_t o = 0; o < want; o += ORB_POOL_SECTOR) {
+                const uint32_t m = want - o > ORB_POOL_SECTOR ? ORB_POOL_SECTOR : want - o;
+                const int64_t f0 = esp_timer_get_time();
+                if (esp_partition_erase_range(p, dst + done + o, ORB_POOL_SECTOR) != ESP_OK ||
+                    esp_partition_write(p, dst + done + o, buf + o, m) != ESP_OK) { why = "erase or write failed"; goto out; }
+                const int64_t f1 = esp_timer_get_time() - f0;
+                fl += f1;
+                if (f1 > worst_flash) worst_flash = f1;
+                vTaskDelay(pdMS_TO_TICKS(a->pace_ms));
+            }
+        }
+        const int64_t c2 = esp_timer_get_time();
+        (void)c2;
+        card_us += c1 - c0; flash_us += fl;
+        if (c1 - c0 > worst_card) worst_card = c1 - c0;
+        done += want;
+    }
+    const int64_t t2 = esp_timer_get_time();
+    uint32_t back = 0;
+    for (uint32_t o = 0; o < size; ) {
+        const uint32_t want = size - o > chunk ? chunk : size - o;
+        if (esp_partition_read(p, dst + o, buf, want) != ESP_OK) { why = "read-back failed"; goto out; }
+        back = esp_rom_crc32_le(back, buf, want);
+        o += want;
+    }
+    const int64_t t3 = esp_timer_get_time();
+    uint32_t jedec = 0;
+    (void)esp_flash_read_id(NULL, &jedec);
+    snprintf(s_bench_fill_last, sizeof s_bench_fill_last,
+             "flash %06x | %u B at 0x%x, %u KB chunks, pace %u ms%s | erase %d ms, copy %d ms (card %d ms, worst %d ms; "
+             "flash %d ms, worst %d ms), read-back %d ms %s | %d ms in all, %.2f s/MB", (unsigned)jedec, (unsigned)size, (unsigned)dst, (unsigned)a->chunk_kb, (unsigned)a->pace_ms, a->urgent ? ", ring urgent" : "",
+             (int)((t1 - t0) / 1000), (int)((t2 - t1) / 1000), (int)(card_us / 1000), (int)(worst_card / 1000),
+             (int)(flash_us / 1000), (int)(worst_flash / 1000), (int)((t3 - t2) / 1000),
+             back == crc ? "matches" : "DIFFERS", (int)((t3 - t0) / 1000), (double)(t3 - t0) / 1e6 / ((double)size / 1048576.0));
+    ESP_LOGI(TAG, "C0 fill %s: %s", a->id, s_bench_fill_last);
+out:
+    if (why) { ESP_LOGW(TAG, "C0 fill %s: %s", a->id, why); snprintf(s_bench_fill_last, sizeof s_bench_fill_last, "refused: %s", why); }
+    display_ring_urgent_for(DISPLAY_URGENT_FILL, false);
+    if (fd >= 0) { orb_sd_lock(); close(fd); orb_sd_unlock(); }
+    heap_caps_free(buf);
+    s_bench_fill_busy = false;
+}
+
+esp_err_t orb_theme_bench_fill(const char *id, uint32_t chunk_kb, uint32_t pace_ms, bool urgent)
+{
+    if (s_bench_fill_busy) return ESP_ERR_INVALID_STATE;
+    bench_fill_arg_t a = { .chunk_kb = chunk_kb < 4 ? 4 : chunk_kb > 64 ? 64 : chunk_kb,
+                           .pace_ms = pace_ms > 200 ? 200 : pace_ms, .urgent = urgent };
+    snprintf(a.id, sizeof a.id, "%s", id);
+    s_bench_fill_last[0] = '\0';
+    s_bench_fill_busy = true;
+    const esp_err_t e = orb_jobs_post(bench_fill_job, &a, sizeof a);
+    if (e != ESP_OK) s_bench_fill_busy = false;
+    return e;
+}
+#endif
 
 /* The slot header for an installed bundle: the same 128 bytes and the same torn-
  * header self-check as a container, with the slot's offsets, this install's serial,

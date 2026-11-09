@@ -275,7 +275,7 @@ void display_glass_hold(bool on);
 void display_ring_urgent(bool on);
 /* The same, per holder, so one cannot clear another's: the carousel's (above), and the
  * map service's while the app on the glass waits for a render (radar-plan §6.15). */
-enum { DISPLAY_URGENT_CAROUSEL = 1, DISPLAY_URGENT_MAP = 2 };
+enum { DISPLAY_URGENT_CAROUSEL = 1, DISPLAY_URGENT_MAP = 2, DISPLAY_URGENT_FILL = 4 };   /* FILL: theme-cache-plan */
 void display_ring_urgent_for(uint8_t who, bool on);
 bool display_glass_held(void);
 /* LVGL frames that reached the mirror while the glass was held, counting up: the

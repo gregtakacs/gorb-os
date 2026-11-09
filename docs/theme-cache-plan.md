@@ -83,8 +83,14 @@ editor already takes: the app re-reads its stage at the first frame after an arr
 - **The preview** is already in memory: the app carousel keeps each app's deflated preview
   (`orb_strip.c` `pv_t.z`), read from the **card** by the chosen stem, never from the pool,
   so an evicted theme keeps its picture. The fill screen inflates it at 300 px.
-- Leaving the app mid-fill lets the fill finish. A card that is out, or a file that is
-  gone, drops the preview and leaves the app bare; its settings page says why.
+- **Leaving the app mid-fill pauses the fill** (proposed after C0, §6): a fill under a live
+  app halves its frame rate however it is paced, so it runs only while the preview is up
+  and resumes when the app comes back. A card that is out, or a file that is gone, drops
+  the preview and leaves the app bare; its settings page says why.
+- **The fill's shape** (from C0): a 64 KB block erased, then its sixteen sectors written,
+  block by block, so the ring keeps moving through what was a 2.5 s erase up front; the
+  whole fill marked as heavy I/O (`orb_io_heavy_*`), so a guest call the flash stalls is
+  forgiven its budget rather than trapped.
 
 ### 2.5 Boot
 
@@ -104,7 +110,7 @@ Unchanged, except that the app the orb opens may have no entry: it opens bare an
 
 | Slice | Content | Gate |
 |---|---|---|
-| **C0** | Measure a live copy on Bronze: a 1.3 MB card→pool copy with the radar's sweep on the glass (fps, longest stall, copy time) | numbers in §6 before C3 is built |
+| **C0** | Measure a live copy on Bronze: a card→pool copy with the radar's sweep on the glass (fps, longest stall, copy time) | numbers in §6 before C3 is built — **measured 2026-11-08** (§6) |
 | **C1** | `orb_pool_evictions`, `orb_pool_reserve_lru` (pure C; the table format unchanged) | `host_pool_test.py`: the order, keep, the table's slots, refusals untouched, a cut at every step of two fills — **built 2026-11-08** (§6) |
 | **C2** | The choice record (NVS) and the last-on-glass order (RAM, saved lazily); stores make room instead of refusing; the shelf's budgets per theme | bench: a fifth theme stored into a full pool evicts the least recent; host suites |
 | **C3** | The fill on arrival behind the preview and its slice, the zoom into the app, the card-missing case | bench: four apps cycled through a pool that holds three; a card pulled mid-fill |
@@ -114,8 +120,40 @@ Unchanged, except that the app the orb opens may have no entry: it opens bare an
 
 - **A store still reboots** (it may move the bound entry). Ruling 1 names fills; whether a
   store goes reboot-free too (unbind, store, rebind) is the owner's call after C3.
+- **Pause or pace when the owner leaves mid-fill** (§2.4 proposes pause; C0's numbers).
+- **Flash auto-suspend** (`CONFIG_SPI_FLASH_AUTO_SUSPEND`) would let reads run during an
+  erase or a program, the one thing that would keep a live dial at its rate through a fill.
+  Bronze's flash is XMC `0x204018` (16 MB); whether that part suspends is not known from
+  its ID, and a wrong flash setting can leave a board that will not boot an OTA. Only to be
+  tried with USB recovery at hand.
+- **A trap not reproduced:** on the C0 bench day the radar failed with two faults, "wasm
+  trapped in orb_input", at the first knob turns after a reboot, before any fill; three
+  repeats of the same sequence did not trap. The fault record now names m3's trap message
+  (`orb_input: [trap] …`), so the next one says what it was.
 
 ## 6. As built
+
+### C0 — a fill under a running dial (2026-11-08, Bronze, XMC flash 0x204018)
+
+`GET /api/v1/debug/fill?id=<stem>&chunk=<KB>&pace=<ms>` (debug builds) copies a card theme
+into the pool's free space as a fill would and never writes the table; `?result=1` answers
+the last run's line. The radar's Scope (1,762,348 B) with the radar on the glass, its loop
+held (20 fps), 1 s windows from the dial bench:
+
+| | erase | copy (card / flash) | read-back | in all | the glass meanwhile |
+|---|---|---|---|---|---|
+| full speed, 32 KB | 2.5 s | 8.0 s (1.5 / 6.5) | 0.3 s | 10.5 s, 6.2 s/MB | 0 fps through the erase, 5-6 fps through the copy |
+| a sector at a time, 20 ms between | - | ~20 s | 0.3 s | ~20 s | 7-11 fps |
+| a sector at a time, 50 ms between | - | 37.2 s (1.3 / 14.5) | 0.3 s | 37.5 s, 22 s/MB | 8-13 fps |
+
+- **The card is not the cost:** 1.3-1.5 s of every fill. The flash is: ~6.5 s/MB written,
+  and every erase and program stops both cores' cache. A sector's erase and program is
+  ~33 ms of stall, two thirds of a 20 fps frame, so no pacing keeps a live sweep at rate.
+- **What it means for the design:** a fill behind the static preview and its ring can run at
+  full speed (a 1.76 MB theme in ~11 s, Skeleton's 3.48 MB in ~22 s); a fill under a live app
+  costs that app half its frames for as long as it runs, so it pauses (§2.4).
+- The read-back matched every run; the table was never touched; the copies sit in space the
+  pool calls free.
 
 ### C1 — the eviction (2026-11-08)
 

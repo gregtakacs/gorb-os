@@ -41,6 +41,9 @@
 #include <stdint.h>
 
 #include "esp_err.h"
+#if __has_include("sdkconfig.h")
+#include "sdkconfig.h"     /* CONFIG_ORB_DEBUG_HTTP: the C0 bench (absent on the host) */
+#endif
 #include "clk_types.h"   /* clk_theme_t, clk_bg_rect_t + the baked-in fallback */
 #include "orb_clock3.h"  /* clk_sound_t, CLK_SND_*: orb_theme_sounds() answers in them */
 #include "orb_bundle.h"  /* orb_bundle_sec_t — orb_theme_live_sec() hands one back */
@@ -206,6 +209,17 @@ orb_asset_ans_t orb_theme_design_stream(const char *handle,
                                         esp_err_t (*begin)(void *arg, uint32_t size, uint32_t crc),
                                         esp_err_t (*chunk)(void *arg, const uint8_t *p, size_t n),
                                         void *arg, char *why, size_t whysz);
+#if CONFIG_ORB_DEBUG_HTTP
+/* theme-cache-plan C0: copy card theme `id` into the pool's free space past the packed run, as
+ * a fill would (erase, the card read a chunk at a time under its own lock, the flash write,
+ * the read-back), never writing the table, and log what each phase cost. Posted to the jobs
+ * worker; ESP_ERR_INVALID_STATE while one runs. chunk_kb 4..64; pace_ms > 0: each 4 KB sector
+ * erased and written alone, then pace_ms for the dial; urgent: the ring comes back after each
+ * read rather than the network's window. */
+esp_err_t orb_theme_bench_fill(const char *id, uint32_t chunk_kb, uint32_t pace_ms, bool urgent);
+const char *orb_theme_bench_fill_last(void);   /* the last run's line, "" before one */
+#endif
+
 orb_asset_ans_t orb_theme_preview_read(const char *handle,
                                        uint8_t *buf, size_t cap,
                                        uint16_t *w, uint16_t *h,

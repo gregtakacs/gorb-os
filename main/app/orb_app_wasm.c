@@ -1979,6 +1979,9 @@ static bool wasm_call(wasm_slot_t *s, int entry, const void *argv[], uint32_t ar
         snprintf(why, sizeof why, "wasm trapped in %s", s_entries[entry].export_name);
         ESP_LOGE(TAG, "\"%s\" %s: %s%s%s", s->app ? s->app->slug : "?", why, r,
                  info.message ? " (" : "", info.message ? info.message : "");
+        /* the fault's record (48 B, kept in NVS for the app's page) names the trap, not only
+         * where: "orb_input: [trap] out of bounds memory access" says what a post-mortem needs */
+        snprintf(why, sizeof why, "%s: %s", s_entries[entry].export_name, r);
         m3_ResetErrorInfo(s->rt);
         orb_svc_note_fault(s->app, why);
         if (s->app && orb_svc_faulted(s->app)) {

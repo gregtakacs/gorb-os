@@ -224,6 +224,9 @@ const char *orb_theme_bench_fill_last(void);   /* the last run's line, "" before
 /* theme-cache-plan §2.6: `slug`'s voice bank, mapped from boot whatever the stage is bound to,
  * and its start in *bank; NULL for an app with none. A sound's PCM is bank + s[k].pcm_off. */
 const orb_voice_t *orb_theme_voice(const char *slug, const uint8_t **bank);
+/* theme-cache-plan §2.1: each app's choice, the order of the glass and the pool's entries, as
+ * JSON into b (cap bytes); answers the length. GET /api/v1/theme_cache. */
+size_t orb_theme_cache_json(char *b, size_t cap);
 
 orb_asset_ans_t orb_theme_preview_read(const char *handle,
                                        uint8_t *buf, size_t cap,

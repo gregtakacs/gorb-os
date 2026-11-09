@@ -991,14 +991,15 @@ def install_lint():
         # pool's answer and nothing else, the fit is asked before the dial parks, and
         # the table names the entry only after its header is written.
         import re as _re
-        rsv = body.find("orb_pool_reserve(&s_pool_io, s_pool, &s_pool_which, slug, entry_size, &tgt);")
+        # theme-cache-plan C4: the pool reserves by eviction, least recently worn first
+        rsv = body.find("ord, nord, NULL, &tgt, gone, &ngone);")
         sets = _re.findall(r"\btgt\s*[-+]?=[^=]", body)
         if rsv < 0 or len(sets) != 1:
             print("FAIL orb_theme_install_bundle(): the target is not the pool's answer alone "
                   "(%s, %d assignments) — a theme written where the table does not say is "
                   "free space the next store writes over" % ("reserved" if rsv >= 0 else
-                  "no orb_pool_reserve", len(sets))); rc = 1
-        fit, park = body.find("orb_pool_fits("), body.find("store_park_dial(")
+                  "no orb_pool_reserve_lru", len(sets))); rc = 1
+        fit, park = body.find("orb_pool_evictions_kind("), body.find("store_park_dial(")
         if fit < 0 or park < 0 or fit > park:
             print("FAIL orb_theme_install_bundle(): the fit is not asked before the dial parks "
                   "— a theme that cannot fit would cost the owner the glass and a reboot"); rc = 1
@@ -1350,11 +1351,11 @@ MUTATIONS = [
      "                         &art_crc, &w, store_progress, NULL);",
      "        (void)file_art_base;"),
     ("the store writes where the pool did not say", "th",
-     "slug, entry_size, &tgt);",
-     "slug, entry_size, &tgt); tgt += THEME_SECTOR;"),
+     "ord, nord, NULL, &tgt, gone, &ngone);",
+     "ord, nord, NULL, &tgt, gone, &ngone); tgt += THEME_SECTOR;"),
     ("the store parks before it asks the pool", "th",
-     "orb_pool_fits(s_pool, slug, entry_size)",
-     "0"),
+     "orb_pool_evictions_kind(s_pool, slug, ORB_POOL_DISPLAY,",
+     "orb_pool_nothing(s_pool, slug, ORB_POOL_DISPLAY,"),
     ("the upload door accepts a bundle without the region check", "th",
      "    if (!r) r = verify_bundle3(fd, &b3, fsz, sec0, &nsec);",
      "    if (!r) { (void)verify_bundle3; }"),

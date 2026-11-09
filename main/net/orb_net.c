@@ -5282,6 +5282,20 @@ static esp_err_t h_debug_panic(httpd_req_t *req)
 }
 #endif /* CONFIG_ORB_DEBUG_HTTP */
 
+/* GET /api/v1/theme_cache — theme-cache-plan §2.1: what each app wears, the order the apps
+ * were last on the glass, and what the pool holds (voice banks and display entries). */
+static esp_err_t h_theme_cache(httpd_req_t *req)
+{
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    char *b = heap_caps_malloc(4096, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!b) return httpd_resp_sendstr(req, "{\"error\":\"no memory\"}");
+    const size_t n = orb_theme_cache_json(b, 4096);
+    const esp_err_t e = httpd_resp_send(req, b, (ssize_t)n);
+    heap_caps_free(b);
+    return e;
+}
+
 #if CONFIG_ORB_DEBUG_HTTP
 /* GET /api/v1/debug/map_view?place=0&radius_m=N[&rot=DEG][&dash=1][&slot=7][&dump=1]
  * radar-plan R3: a real view through orb_map_open on a spare app slot, timed from the
@@ -8912,6 +8926,7 @@ static esp_err_t net_start_httpd(void)
         { .uri = "/api/v1/sd",          .method = HTTP_GET,  .handler = h_sd },
         { .uri = "/api/v1/sd/theme",    .method = HTTP_POST, .handler = h_theme_upload },
         { .uri = "/api/v1/sd/bundle",   .method = HTTP_POST, .handler = h_bundle_install },
+        { .uri = "/api/v1/theme_cache", .method = HTTP_GET,  .handler = h_theme_cache },
         { .uri = "/api/v1/sd/delete",   .method = HTTP_POST, .handler = h_theme_del },
         { .uri = "/api/v1/sd/preview",  .method = HTTP_GET,  .handler = h_sd_preview },
         { .uri = "/api/v1/sd/design",   .method = HTTP_GET,  .handler = h_sd_design },

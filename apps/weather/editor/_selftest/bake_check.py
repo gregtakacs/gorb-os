@@ -33,14 +33,10 @@ STAGE = "/mnt/c/Temp/weather-bake-check"
 RUNTIME = os.path.join(ROOT, "tools", "orb-manager", "web", "runtime")
 EDITOR = os.path.dirname(HERE)
 APPV = open(os.path.join(EDITOR, "..", "version.txt")).read().strip()
-# The pool's room beside the shelf's other defaults, the clock's (skeleton) and the tracker's
-# (modern), read off the shelf so the figure follows them: 8 MB less those, the two table
-# sectors and 512 KB of slack. (It was a fixed 1750 KB against the 5.07 MB and 1.34 MB those
-# two weighed before OS v1.2.12's compression.) A clock theme heavier than the shelf's
-# leaves less: the pool is shared, and the hub refuses what does not fit.
-SHELF = os.path.join(ROOT, "tools", "orb-manager", "themes")
-BUDGET = (8 << 20) - os.path.getsize(os.path.join(SHELF, "skeleton.orbtheme")) \
-    - os.path.getsize(os.path.join(SHELF, "flights-scope.orbtheme")) - 2 * 4096 - (512 << 10)
+# A theme's room (docs/theme-cache-plan.md C4): the pool is a cache, so a theme need only fit
+# it alone, beside the most a voice bank may hold (1 MB, ruling 6): 8 MB less that, the two
+# table sectors and 512 KB of slack. The shelf's other defaults no longer count against it.
+BUDGET = (8 << 20) - (1 << 20) - 2 * 4096 - (512 << 10)
 
 
 def stage():

@@ -35,11 +35,10 @@ RUNTIME = os.path.join(ROOT, "tools", "orb-manager", "web", "runtime")
 EDITOR = os.path.dirname(HERE)
 APPV = open(os.path.join(EDITOR, "..", "version.txt")).read().strip()
 VALUES_B = 64 + 16 + 16 + 4 + 4 + 1024 + 16 + 16 + 16 + 16    # radar.h rd_values_t, layout 5
-# The pool's room beside the shelf's other defaults (8 MB less those, the two table
-# sectors and 512 KB of slack), read off the shelf so it follows them.
-SHELF = os.path.join(ROOT, "tools", "orb-manager", "themes")
-BUDGET = (8 << 20) - sum(os.path.getsize(os.path.join(SHELF, f)) for f in
-                         ("skeleton.orbtheme", "flights-scope.orbtheme", "weather-scope.orbtheme")) - 2 * 4096 - (512 << 10)
+# A theme's room (docs/theme-cache-plan.md C4): the pool is a cache, so a theme need only fit
+# it alone, beside the most a voice bank may hold (1 MB, ruling 6): 8 MB less that, the two
+# table sectors and 512 KB of slack. The shelf's other defaults no longer count against it.
+BUDGET = (8 << 20) - (1 << 20) - 2 * 4096 - (512 << 10)
 
 
 def stage():

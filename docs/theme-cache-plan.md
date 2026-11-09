@@ -181,7 +181,7 @@ carries is read off the glass (its values blob draws; the preview is the card's)
 | **C1** | `orb_pool_evictions`, `orb_pool_reserve_lru` (pure C; the table format unchanged) | `host_pool_test.py`: the order, keep, the table's slots, refusals untouched, a cut at every step of two fills — **built 2026-11-08** (§6) |
 | **C2** | The table's format 2 (an entry's kind, voice or display; sixteen entries; the carry from format 1); voice banks packed first, never moved by an eviction | `host_pool_test.py`: the carry, evictions that never take or move a voice bank, a cut at every step of a voice bank's store — **built 2026-11-08** (§6) |
 | **C3** | Sound off the glass: a store writes the voice bank (≤ 1 MB), boot maps every voice bank, a bind no longer stops voices, one-shots unleased and loops leased to the glass, a sound import that needs no stage; the clock chimes from its service | bench: the clock chiming through a switch to weather, and on the hour with weather on the glass; the tick stopping when the clock leaves — **built and benched on Bronze 2026-11-08** (§6) |
-| **C4** | The choice record (NVS), the last-on-glass order, stores that make room instead of refusing, the shelf's budgets per theme | bench: a theme stored into a full pool evicts the least recent display entry |
+| **C4** | The choice record (NVS), the last-on-glass order, stores that make room instead of refusing, the shelf's budgets per theme | bench: a theme stored into a full pool evicts the least recent display entry — **built and benched on Bronze 2026-11-08** (§6) |
 | **C5** | The fill on arrival behind the preview and its slice (full speed, block by block, heavy I/O), the zoom into the app, the pause on leaving, the card-missing case | bench: four apps cycled through a pool that holds three; leaving mid-fill; a card pulled mid-fill |
 | **C6** | The hub: "in the pool / on the card only" on the Themes page | the hub's lists still parse |
 
@@ -227,6 +227,32 @@ held (20 fps), 1 s windows from the dial bench:
   of ~33, the paced fills at 5-9 fps (20 ms) and 3-6 fps (1 ms). Each cache miss suspends
   and resumes the operation, so the operation stretches and the frame waits on it.
   Reverted; Bronze is back on the build without it.
+
+### C4 — the choices, the order, and stores that make room (2026-11-08, Bronze)
+
+- **One NVS blob** (`theme_cache`, 880 B, beside `theme_staged`): each app's choice (its card
+  stem and the file's geometry CRC) and the order the apps were last on the glass, least
+  recent first. A store records the choice; a clear lets it go with both of the app's copies
+  (its voice bank too: a clear had left the bank behind). A bind moves its app to the end of
+  the order in RAM; the order is saved with a choice or an eviction, or at most every five
+  minutes, so an app switch writes nothing. A theme stored before the choices were kept has
+  its choice seeded at boot from its own entry (its name gives the stem).
+- **A store makes room:** the fit is `orb_pool_evictions_kind` over the theme and its sounds,
+  so only a theme bigger than the pool beside every voice bank is refused; the store
+  reserves with `orb_pool_reserve_lru` and the voice bank with the same order, and logs each
+  app whose theme left ("least recently on the glass; its file stays on the card").
+- **The shelf's budgets** (`bake_check.py`, radar and weather): a theme fits the pool alone,
+  beside a full voice bank: 8 MB less 1 MB, the tables and 512 KB of slack. The other
+  defaults no longer count against it.
+- **`GET /api/v1/theme_cache`:** the choices, the order and the pool's entries, for the hub
+  (C6) and the bench.
+- **Bronze:** the pool held the clock's voice bank and the radar's, flights' and the clock's
+  display entries (7.4 MB); flights, then the radar, then the clock on the glass; weather's
+  Scope (1.31 MB) stored: "flights's theme left the pool", and the table read over USB is the
+  clock's voice bank, the radar's and the clock's display entries and weather's, 7.24 MB.
+  The next boot seeded the radar's and the clock's choices; the order survived the reboot.
+  Flights, evicted the boot before seeding, has no choice: its file is on the card, and a
+  store records one.
 
 ### C3 — sound off the glass (2026-11-08, Bronze)
 

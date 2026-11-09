@@ -782,6 +782,124 @@ static bool nvs_get(const char *key, char *out, size_t outsz)
     return nvs_get_str(h, key, out, &sz) == ESP_OK;
 }
 
+/* ---- theme-cache-plan §2.1: each app's choice, and the order of the glass ----------------
+ * One NVS blob: what each app wears (its card stem and the file's geometry CRC, the identity
+ * its flash copies carry, ruling 7), kept when the pool lets the copies go, and the order the
+ * apps were last on the glass, least recent first, which decides what a store or a fill
+ * evicts. The order is RAM's between saves: it is written with an eviction, a choice, or
+ * at most every ORDER_SAVE_US otherwise, so an app switch costs no flash write. */
+#define THEME_NVS_CACHE   "theme_cache"
+#define CACHE_VER         1u
+#define CACHE_APPS        8u
+#define ORDER_SAVE_US     (5LL * 60 * 1000000)
+typedef struct {
+    uint32_t ver, n_choice, n_order, pad;
+    struct { char slug[ORB_POOL_SLUG_MAX]; char stem[ORB_THEME_HANDLE_MAX + 1]; uint32_t file_crc; } c[CACHE_APPS];
+    char order[CACHE_APPS][ORB_POOL_SLUG_MAX];
+} cache_rec_t;
+EXT_RAM_BSS_ATTR static cache_rec_t s_cache;
+static bool    s_cache_dirty;
+static int64_t s_cache_saved_us;
+
+static void cache_save(void)
+{
+    const nvs_handle_t h = theme_nvs();
+    if (!h) return;
+    s_cache.ver = CACHE_VER;
+    if (nvs_set_blob(h, THEME_NVS_CACHE, &s_cache, sizeof s_cache) == ESP_OK && nvs_commit(h) == ESP_OK) {
+        s_cache_dirty = false;
+        s_cache_saved_us = esp_timer_get_time();
+    } else {
+        ESP_LOGW(TAG, "the theme choices would not save — the order since the last save is lost at a cut");
+    }
+}
+
+static void cache_load(void)
+{
+    memset(&s_cache, 0, sizeof s_cache);
+    const nvs_handle_t h = theme_nvs();
+    size_t sz = sizeof s_cache;
+    if (!h || nvs_get_blob(h, THEME_NVS_CACHE, &s_cache, &sz) != ESP_OK || sz != sizeof s_cache ||
+        s_cache.ver != CACHE_VER || s_cache.n_choice > CACHE_APPS || s_cache.n_order > CACHE_APPS) {
+        memset(&s_cache, 0, sizeof s_cache);         /* none yet: the pool's order stands in */
+        return;
+    }
+    for (uint32_t i = 0; i < CACHE_APPS; i++) {      /* a torn string is no string */
+        s_cache.c[i].slug[sizeof s_cache.c[i].slug - 1] = '\0';
+        s_cache.c[i].stem[sizeof s_cache.c[i].stem - 1] = '\0';
+        s_cache.order[i][sizeof s_cache.order[i] - 1] = '\0';
+    }
+}
+
+/* `slug` wears card file `stem`, whose geometry CRC is file_crc; NULL stem lets the choice go. */
+static void choice_set(const char *slug, const char *stem, uint32_t file_crc)
+{
+    uint32_t k = 0;
+    while (k < s_cache.n_choice && strcmp(s_cache.c[k].slug, slug)) k++;
+    if (!stem) {
+        if (k == s_cache.n_choice) return;
+        memmove(&s_cache.c[k], &s_cache.c[k + 1], (s_cache.n_choice - k - 1) * sizeof s_cache.c[0]);
+        memset(&s_cache.c[--s_cache.n_choice], 0, sizeof s_cache.c[0]);
+    } else {
+        if (k == s_cache.n_choice) {
+            if (k >= CACHE_APPS) { ESP_LOGW(TAG, "theme choices full: %s's is not kept", slug); return; }
+            s_cache.n_choice++;
+        }
+        strlcpy(s_cache.c[k].slug, slug, sizeof s_cache.c[k].slug);
+        strlcpy(s_cache.c[k].stem, stem, sizeof s_cache.c[k].stem);
+        s_cache.c[k].file_crc = file_crc;
+    }
+    cache_save();
+}
+
+/* `slug` is on the glass now: the end of the order (the most recent). */
+static void order_touch(const char *slug)
+{
+    if (!slug || !slug[0]) return;
+    uint32_t k = 0;
+    while (k < s_cache.n_order && strcmp(s_cache.order[k], slug)) k++;
+    if (k + 1 == s_cache.n_order) return;            /* already the most recent */
+    if (k < s_cache.n_order) {
+        memmove(&s_cache.order[k], &s_cache.order[k + 1], (s_cache.n_order - k - 1) * sizeof s_cache.order[0]);
+        s_cache.n_order--;
+    } else if (s_cache.n_order == CACHE_APPS) {      /* the least recent drops off the front */
+        memmove(&s_cache.order[0], &s_cache.order[1], (CACHE_APPS - 1) * sizeof s_cache.order[0]);
+        s_cache.n_order--;
+    }
+    strlcpy(s_cache.order[s_cache.n_order++], slug, sizeof s_cache.order[0]);
+    s_cache_dirty = true;
+    if (esp_timer_get_time() - s_cache_saved_us >= ORDER_SAVE_US) cache_save();
+}
+
+/* The order as orb_pool_evictions takes it: least recent first. */
+static uint32_t order_list(const char *out[CACHE_APPS])
+{
+    for (uint32_t i = 0; i < s_cache.n_order; i++) out[i] = s_cache.order[i];
+    return s_cache.n_order;
+}
+
+/* The cache as the hub reads it (GET /api/v1/theme_cache): each app's choice, the order of
+ * the glass, and the pool's entries. Answers the bytes written. */
+size_t orb_theme_cache_json(char *b, size_t cap)
+{
+    size_t o = 0;
+#define PUT(...) do { const int w_ = snprintf(b + o, o < cap ? cap - o : 0, __VA_ARGS__); if (w_ > 0) o += (size_t)w_; } while (0)
+    PUT("{\"choices\":[");
+    for (uint32_t i = 0; i < s_cache.n_choice; i++)
+        PUT("%s{\"app\":\"%s\",\"stem\":\"%s\",\"file_crc\":%lu}", i ? "," : "", s_cache.c[i].slug,
+            s_cache.c[i].stem, (unsigned long)s_cache.c[i].file_crc);
+    PUT("],\"order\":[");
+    for (uint32_t i = 0; i < s_cache.n_order; i++) PUT("%s\"%s\"", i ? "," : "", s_cache.order[i]);
+    PUT("],\"pool\":[");
+    for (uint32_t k = 0; s_pool && k < s_pool->n; k++)
+        PUT("%s{\"app\":\"%s\",\"name\":\"%s\",\"kind\":\"%s\",\"off\":%lu,\"size\":%lu,\"file_crc\":%lu}", k ? "," : "",
+            s_pool->e[k].slug, s_pool->e[k].name, s_pool->e[k].kind == ORB_POOL_VOICE ? "voice" : "display",
+            (unsigned long)s_pool->e[k].off, (unsigned long)s_pool->e[k].size, (unsigned long)s_pool->e[k].file_crc);
+    PUT("],\"capacity\":%lu}", (unsigned long)(ORB_POOL_END - ORB_POOL_FIRST));
+#undef PUT
+    return o < cap ? o : cap;
+}
+
 /* ---- the `staged` witness (§20.2 step 4, §20.4's ledger word) --------------
  *
  * Marked BEFORE the copy starts and cleared AFTER the slot header lands, which is
@@ -2073,8 +2191,14 @@ static esp_err_t store_voice(const esp_partition_t *p, const char *slug, const c
     if (!total || orb_voice_parse(head, total, &v)) { *w = "its sounds would not make a bank"; return ESP_ERR_INVALID_SIZE; }
     uint32_t at = 0;
     s_pool_io.progress = room_progress;
+    const char *ord[CACHE_APPS];
+    const uint32_t nord = order_list(ord);
+    char gone[ORB_POOL_ENTRIES][ORB_POOL_SLUG_MAX];
+    uint32_t ngone = 0;
     const int r = orb_pool_reserve_voice(&s_pool_io, s_pool, &s_pool_which, slug, total,
-                                         NULL, 0, slug, &at, NULL, NULL);
+                                         ord, nord, slug, &at, gone, &ngone);
+    for (uint32_t i = 0; i < ngone; i++)
+        ESP_LOGI(TAG, "making room for %s's sounds: %s's theme left the pool", slug, gone[i]);
     s_pool_io.progress = NULL;
     if (r) { *w = r == ORB_POOL_ERR_FULL ? "no room for its sounds" : "the theme area would not make room for its sounds"; return ESP_FAIL; }
     const int k = orb_pool_find(s_pool, slug);
@@ -2237,12 +2361,18 @@ esp_err_t orb_theme_install_bundle(const char *id, char *why, size_t whysz)
     }
     {
         const int old_v = s_pool ? orb_pool_find_kind(s_pool, slug, ORB_POOL_VOICE) : -1;
+        /* theme-cache-plan C4: a full pool is not a refusal. The least recently worn
+         * apps' display entries give way (their files stay on the card); only a theme
+         * bigger than the pool with every voice bank in it is refused. */
+        const char *ord[CACHE_APPS];
+        const uint32_t nord = order_list(ord);
+        uint32_t mask = 0;
         int f = (s_pool && pool_io(p))
-                ? orb_pool_fits(s_pool, slug, entry_size + orb_pool_round(voice_size) -
-                                (old_v >= 0 ? s_pool->e[old_v].size : 0))
+                ? orb_pool_evictions_kind(s_pool, slug, ORB_POOL_DISPLAY,
+                                          entry_size + orb_pool_round(voice_size) -
+                                          (old_v >= 0 ? s_pool->e[old_v].size : 0),
+                                          ord, nord, NULL, &mask)
                 : ORB_POOL_ERR_ARG;
-        if (!f && voice_size && old_v < 0 && s_pool->n + (orb_pool_find(s_pool, slug) < 0) >= ORB_POOL_ENTRIES)
-            f = ORB_POOL_ERR_TABLE;
         if (f) {
             char sent[96];
             if (f == ORB_POOL_ERR_FULL)
@@ -2298,7 +2428,15 @@ esp_err_t orb_theme_install_bundle(const char *id, char *why, size_t whysz)
     staged_mark(id);
     uint32_t tgt = 0;
     s_pool_io.progress = room_progress;
-    const int pr = orb_pool_reserve(&s_pool_io, s_pool, &s_pool_which, slug, entry_size, &tgt);
+    const char *ord[CACHE_APPS];
+    const uint32_t nord = order_list(ord);
+    char gone[ORB_POOL_ENTRIES][ORB_POOL_SLUG_MAX];
+    uint32_t ngone = 0;
+    const int pr = orb_pool_reserve_lru(&s_pool_io, s_pool, &s_pool_which, slug, entry_size,
+                                        ord, nord, NULL, &tgt, gone, &ngone);
+    for (uint32_t i = 0; i < ngone; i++)
+        ESP_LOGI(TAG, "making room: %s's theme left the pool (least recently on the glass; its file "
+                      "stays on the card)", gone[i]);
     s_pool_io.progress = NULL;
     uint32_t art_crc = 0;
     esp_err_t e = pr ? ESP_FAIL : ESP_OK;
@@ -2368,6 +2506,8 @@ esp_err_t orb_theme_install_bundle(const char *id, char *why, size_t whysz)
      * which binds no more (ruling 8): the app runs bare and its log says to send it again. */
     {
         const char *vw = NULL;
+        choice_set(slug, id, file_geom_crc);       /* theme-cache-plan §2.1: what it wears */
+        order_touch(slug);
         if (store_voice(p, slug, h.name, sec_art_off, file_geom_crc, serial, &vw) != ESP_OK)
             ESP_LOGE(TAG, "\"%s\": its voice bank: %s — the app runs bare until it is sent again",
                      h.name, vw ? vw : "failed");
@@ -2778,6 +2918,7 @@ esp_err_t orb_theme_bind(const char *slug)
         return ESP_ERR_INVALID_STATE;
     }
     s_live_base = s_pool->e[k].off;
+    order_touch(slug);                               /* theme-cache-plan §2.1 */
     ESP_LOGI(TAG, "bound %s's theme \"%s\"", slug, s_active_name);
     return ESP_OK;
 }
@@ -2851,6 +2992,26 @@ esp_err_t orb_theme_boot(void)
         s_pool_io.progress = repair_progress;
         pr = orb_pool_repair(&s_pool_io, s_pool, &s_pool_which);
         s_pool_io.progress = NULL;
+    }
+    cache_load();                                      /* theme-cache-plan §2.1 */
+    if (!pr) {
+        /* a theme stored before the choices were kept: its entry says what it wears, so
+         * the choice is seeded from it while the entry is still here to say it */
+        bool seeded = false;
+        for (uint32_t k = 0; k < s_pool->n; k++) {
+            const orb_pool_entry_t *e = &s_pool->e[k];
+            if (e->kind != ORB_POOL_DISPLAY) continue;
+            uint32_t c = 0;
+            while (c < s_cache.n_choice && strcmp(s_cache.c[c].slug, e->slug)) c++;
+            if (c < s_cache.n_choice || s_cache.n_choice >= CACHE_APPS) continue;
+            strlcpy(s_cache.c[c].slug, e->slug, sizeof s_cache.c[c].slug);
+            theme_stem(e->slug, e->name, s_cache.c[c].stem, sizeof s_cache.c[c].stem);
+            s_cache.c[c].file_crc = e->file_crc;
+            s_cache.n_choice++;
+            seeded = true;
+            ESP_LOGI(TAG, "%s's choice seeded from its stored theme: %s", e->slug, s_cache.c[c].stem);
+        }
+        if (seeded) cache_save();
     }
     if (!pr) voices_map(p);                            /* theme-cache-plan §2.6 */
     const int live = pr ? -1 : pool_live_entry();
@@ -3048,7 +3209,11 @@ static void clear_job(void *arg)
     if (p && s_pool && pool_io(p)) {
         s_pool_io.progress = room_progress;     /* the apps after it move down */
         r = orb_pool_remove(&s_pool_io, s_pool, &s_pool_which, gone);
+        /* theme-cache-plan ruling 7: the file it wore is gone, so both of its copies go,
+         * and the choice */
+        if (!r) r = orb_pool_remove_kind(&s_pool_io, s_pool, &s_pool_which, gone, ORB_POOL_VOICE);
         s_pool_io.progress = NULL;
+        if (!r) choice_set(gone, NULL, 0);
     }
     if (r) {
         orb_boot_overlay("could not clear the theme slot", 0, 0, 0);

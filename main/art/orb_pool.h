@@ -128,6 +128,26 @@ int orb_pool_remove(const orb_pool_io_t *io, orb_pool_t *p, int *which, const ch
 int orb_pool_reserve(const orb_pool_io_t *io, orb_pool_t *p, int *which,
                      const char *slug, uint32_t size, uint32_t *at);
 
+/* The theme cache (docs/theme-cache-plan.md §2.2): the entries a theme of `size` bytes for
+ * `slug` evicts, least recently on the glass first. `order` lists slugs from least to most
+ * recent; an entry it does not name counts as older than any it does, in pool order. `keep`
+ * (may be NULL) is never evicted; `slug`'s own old entry always goes. Pure: sets bit k of
+ * *mask for each entry k to drop, and answers 0, or ORB_POOL_ERR_FULL when even every
+ * entry it may evict leaves no room (or no table slot). */
+int orb_pool_evictions(const orb_pool_t *p, const char *slug, uint32_t size,
+                       const char *const *order, uint32_t n_order, const char *keep,
+                       uint32_t *mask);
+
+/* orb_pool_reserve, evicting as orb_pool_evictions says: refuse with ORB_POOL_ERR_FULL,
+ * touching nothing; else drop every evicted entry in one table write, compact, and answer
+ * in *at where the new bytes go. The compaction may MOVE `keep`: the caller makes sure
+ * nothing reads the pool through a mapping while this runs. *evicted (may be NULL) gets
+ * the evicted slugs, `slug`'s own old entry not among them; *n_evicted their count. */
+int orb_pool_reserve_lru(const orb_pool_io_t *io, orb_pool_t *p, int *which,
+                         const char *slug, uint32_t size,
+                         const char *const *order, uint32_t n_order, const char *keep,
+                         uint32_t *at, char (*evicted)[ORB_POOL_SLUG_MAX], uint32_t *n_evicted);
+
 /* Append the entry the caller wrote at orb_pool_reserve's *at, LIVE, and write the
  * table. e->off must be that offset and e->slug absent from the table. */
 int orb_pool_commit(const orb_pool_io_t *io, orb_pool_t *p, int *which,

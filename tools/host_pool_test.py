@@ -15,7 +15,11 @@ What it proves:
   - a cut at every single step of a replacement and of a removal leaves a valid table,
     a packed pool, every entry's bytes matching its CRCs, and at most one theme lost
     besides the one being stored or removed; and a second cut during the repair too;
-  - a move that reads back wrong is refused rather than recorded.
+  - a move that reads back wrong is refused rather than recorded;
+  - the theme cache's eviction (docs/theme-cache-plan.md §2.2): least recently on the glass
+    first, an app the order does not name older than any it does, `keep` never, a refusal
+    touching nothing, the table's eight slots, and a cut at every step of a fill that
+    evicts two themes, and of one whose eviction slides the next theme over itself.
 --mutations breaks each guard in turn and checks a test notices.
 """
 import os
@@ -307,11 +311,130 @@ static void basic(void)
     printf("  basic: store, replace, remove, a full pool, eight apps, the newer table, a bad move\n");
 }
 
+/* ---- the theme cache: evictions (theme-cache-plan §2.2) ---- */
+static int store_lru(orb_pool_t *p, int *w, const th_t *t, const char *const *order, uint32_t n,
+                     const char *keep, char (*ev)[ORB_POOL_SLUG_MAX], uint32_t *nev)
+{
+    uint32_t at;
+    int r = orb_pool_reserve_lru(&IO, p, w, t->slug, t->art_off + t->art, order, n, keep, &at, ev, nev);
+    if (r) return r;
+    orb_pool_entry_t e;
+    if ((r = write_theme(t, at, &e))) return r;
+    return orb_pool_commit(&IO, p, w, &e);
+}
+static int has(char (*ev)[ORB_POOL_SLUG_MAX], uint32_t n, const char *s)
+{
+    for (uint32_t i = 0; i < n; i++) if (!strcmp(ev[i], s)) return 1;
+    return 0;
+}
+static uint32_t room(const orb_pool_t *p, const char *a, const char *b)   /* the pool less a and b */
+{
+    uint32_t t = ORB_POOL_END - ORB_POOL_FIRST;
+    for (uint32_t k = 0; k < p->n; k++)
+        if ((a && !strcmp(p->e[k].slug, a)) || (b && !strcmp(p->e[k].slug, b))) t -= p->e[k].size;
+    return t;
+}
+static const char *const ORDER[] = { "color", "clock", "flights" };   /* least recent first */
+
+static void lru(void)
+{
+    orb_pool_t p; int w;
+    char ev[8][ORB_POOL_SLUG_MAX]; uint32_t nev;
+    uint32_t mask;
+
+    /* a theme that needs two out: color (least recent) and then the clock, never flights */
+    fresh(&p, &w);
+    th_t radar = { "radar", 0x1000, 0x1000, room(&p, "flights", NULL) - 0x1000, 77 };
+    memcpy(snap, fl, ORB_POOL_PART_BYTES);
+    CK(orb_pool_evictions(&p, "radar", radar.art_off + radar.art, ORDER, 3, NULL, &mask) == 0 &&
+       mask == ((1u << 0) | (1u << 2)), "the evictions are clock and color (mask 0x%x)", mask);
+    CK(!memcmp(snap, fl, ORB_POOL_PART_BYTES), "asking the evictions touches nothing");
+    CK(store_lru(&p, &w, &radar, ORDER, 3, NULL, ev, &nev) == 0 && nev == 2 && has(ev, nev, "color") &&
+       has(ev, nev, "clock") && p.n == 2 && orb_pool_find(&p, "flights") == 0, "a fill evicts color and the clock, keeps flights");
+    sound(&p, "after evicting two");
+
+    /* least recent first: one out is enough, and it is color, not the clock */
+    fresh(&p, &w);
+    const th_t small = { "radar", 0x1000, 0x1000, room(&p, "flights", "clock") - 0x2000, 78 };
+    CK(store_lru(&p, &w, &small, ORDER, 3, NULL, ev, &nev) == 0 && nev == 1 && has(ev, nev, "color") &&
+       orb_pool_find(&p, "clock") >= 0, "one eviction is enough, and it is the least recent");
+    sound(&p, "after evicting one");
+
+    /* an app the order does not name is older than any it names, in pool order */
+    fresh(&p, &w);
+    const char *const named[] = { "flights" };
+    const th_t mid = { "radar", 0x1000, 0x1000, room(&p, "flights", "color") - 0x1000, 79 };
+    CK(store_lru(&p, &w, &mid, named, 1, NULL, ev, &nev) == 0 && nev == 1 && has(ev, nev, "clock"),
+       "unnamed apps go first, the first in the pool first");
+    sound(&p, "after evicting an unnamed one");
+
+    /* keep is never evicted: a refusal, flash untouched */
+    fresh(&p, &w);
+    memcpy(snap, fl, ORB_POOL_PART_BYTES);
+    CK(store_lru(&p, &w, &radar, ORDER, 3, "clock", ev, &nev) == ORB_POOL_ERR_FULL && p.n == 3,
+       "a fill that needs the kept theme out is refused");
+    CK(!memcmp(snap, fl, ORB_POOL_PART_BYTES), "the refusal touched nothing");
+    CK(store_lru(&p, &w, &small, ORDER, 3, "color", ev, &nev) == 0 && nev == 1 && has(ev, nev, "clock") &&
+       orb_pool_find(&p, "color") >= 0, "keep passes over the least recent to the next");
+    sound(&p, "after keeping color");
+
+    /* the app's own old entry goes, uncounted */
+    fresh(&p, &w);
+    CK(store_lru(&p, &w, &FLIGHT2, ORDER, 3, NULL, ev, &nev) == 0 && nev == 0 && p.n == 3 &&
+       p.e[2].serial == 44, "a replacement that fits evicts nobody");
+    sound(&p, "after a replacement");
+
+    /* eight apps: a ninth evicts the least recent one */
+    fresh(&p, &w);
+    char names[8][16];
+    for (int i = 0; i < 5; i++) {
+        snprintf(names[i], 16, "app%d", i);
+        th_t t = { names[i], 0x1000, 0x1000, 0x1000, (uint8_t)(80 + i) };
+        CK(store(&p, &w, &t) == 0, "store %s", names[i]);
+    }
+    const char *const by[] = { "app3", "clock", "flights", "color", "app0", "app1", "app2", "app4" };
+    th_t nine = { "ninth", 0x1000, 0x1000, 0x1000, 99 };
+    CK(store_lru(&p, &w, &nine, by, 8, NULL, ev, &nev) == 0 && nev == 1 && has(ev, nev, "app3") && p.n == 8,
+       "a ninth app evicts the least recent of eight");
+    sound(&p, "nine apps through eight slots");
+
+    /* nothing it may evict leaves room: refused */
+    fresh(&p, &w);
+    const th_t huge = { "huge", 0x1000, 0x1000, ORB_POOL_END, 55 };
+    CK(store_lru(&p, &w, &huge, ORDER, 3, NULL, ev, &nev) == ORB_POOL_ERR_FULL && p.n == 3,
+       "a theme bigger than the pool is refused, evicting nobody");
+    printf("  lru: least recent first, unnamed oldest, keep never, a ninth app, refusals untouched\n");
+}
+
 /* ---- a cut at every step ---- */
 typedef int (*op_t)(orb_pool_t *, int *);
 static int op_replace(orb_pool_t *p, int *w) { return store(p, w, &FLIGHT2); }
 static int op_remove(orb_pool_t *p, int *w) { return orb_pool_remove(&IO, p, w, "clock"); }
 static int op_remove_small(orb_pool_t *p, int *w) { return orb_pool_remove(&IO, p, w, "color"); }
+/* a fill that evicts the clock and color in a small-first pool: flights moves 2.5 MB down */
+static int op_fill(orb_pool_t *p, int *w)
+{
+    const th_t t = { "radar", 0x1000, 0x1000, room(p, "flights", NULL) - 0x1000, 77 };
+    return store_lru(p, w, &t, ORDER, 3, NULL, NULL, NULL);
+}
+/* a fill that evicts color alone, first in the pool: the clock slides over itself */
+static int op_fill_small(orb_pool_t *p, int *w)
+{
+    static const char *const o[] = { "color", "flights", "clock" };
+    const th_t t = { "radar", 0x1000, 0x1000, room(p, "clock", "flights") - 0x1000, 77 };
+    return store_lru(p, w, &t, o, 3, NULL, NULL, NULL);
+}
+static int targeted(const char *targets, const char *slug)   /* targets: comma separated */
+{
+    const size_t n = strlen(slug);
+    for (const char *s = targets; s && *s;) {
+        const char *e = strchr(s, ',');
+        const size_t m = e ? (size_t)(e - s) : strlen(s);
+        if (m == n && !strncmp(s, slug, n)) return 1;
+        s = e ? e + 1 : NULL;
+    }
+    return 0;
+}
 
 static void cuts(const char *what, void (*setup)(orb_pool_t *, int *), op_t op,
                  const char *target, int nested)
@@ -346,7 +469,7 @@ static void cuts(const char *what, void (*setup)(orb_pool_t *, int *), op_t op,
             sound(&q, ctx);
             int lost = 0;
             for (uint32_t k = 0; k < base.n; k++)
-                if (strcmp(base.e[k].slug, target) && orb_pool_find(&q, base.e[k].slug) < 0) lost++;
+                if (!targeted(target, base.e[k].slug) && orb_pool_find(&q, base.e[k].slug) < 0) lost++;
             if (lost > 1) { printf("FAIL %s: %d other themes lost\n", ctx, lost); g_fail++; }
             if (lost > worst) worst = lost;
             runs++;
@@ -367,6 +490,10 @@ int main(int argc, char **argv)
     cuts("removing the clock", fresh, op_remove, "clock", !quick);
     cuts("removing a small first theme (an overlapping move)", small_first, op_remove_small,
          "color", !quick);
+    lru();
+    cuts("a fill evicting two themes", small_first, op_fill, "radar,clock,color", !quick);
+    cuts("a fill evicting the small first theme (the clock slides over itself)", small_first,
+         op_fill_small, "radar,color", !quick);
     printf("%d failures\n", g_fail);
     return g_fail ? 1 : 0;
 }
@@ -385,6 +512,13 @@ MUTANTS = (
     ("the ninth app", "if (k < 0 && p->n >= ORB_POOL_ENTRIES) return ORB_POOL_ERR_TABLE;", ""),
     ("the order check", "if (e->off < end) return", "if (0) return"),
     ("the newer copy", "get32(io->buf + H_SERIAL * 4) > a_serial", "get32(io->buf + H_SERIAL * 4) < a_serial"),
+    ("the cache's keep", "if (keep && !strcmp(p->e[k].slug, keep)) continue;", ""),
+    ("least recent first", "if (pick < 0 || rank[k] < rank[pick]) pick = (int)k;",
+     "if (pick < 0 || rank[k] > rank[pick]) pick = (int)k;"),
+    ("unnamed is oldest", "rank[k] = -1;                                /* not named: older than any named */",
+     "rank[k] = 99;"),
+    ("the cache's table slots", "while (total > ORB_POOL_END - ORB_POOL_FIRST || count > ORB_POOL_ENTRIES) {",
+     "while (total > ORB_POOL_END - ORB_POOL_FIRST) {"),
     ("the ascending copy", "for (uint32_t o = 0; o < e->size; o += ORB_POOL_SECTOR) {",
      "for (uint32_t o = e->size - ORB_POOL_SECTOR; o < e->size; o -= ORB_POOL_SECTOR) {"),
 )

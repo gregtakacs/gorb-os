@@ -1904,8 +1904,8 @@ blip pace (up to ~600 ms over a storm), which is the loop's and was never meant 
   its blip), at 1.5 s a detent and at 0.4 s; a cold one (the first, or the first after the
   dial reverses) 160-220 ms. The loop playing is unchanged (median 17).
 
-**Kept for after the flash-resident theme work** (each needs PSRAM it will free, or is
-measured against what it changes):
+**Kept for later** (the memory-bound ones need PSRAM; the theme cache, theme-cache-plan.md,
+frees flash, not PSRAM, so they wait on PSRAM found elsewhere):
 
 1. **The clock's build-ahead planes for app stages** (+868 KB): a new rain picture prepared in
    the slack and landed with no blip at all, in place of the paced blip.
@@ -1919,6 +1919,5 @@ measured against what it changes):
 5. **A faster first load:** the frames come one request at a time over one connection (the
    list ~2 s with its TLS handshake, then 18 frames at 120-620 ms each); two or three at once,
    and Now and its neighbours first.
-6. **Re-measure the sweep's 38 ms frame and the blips** once the theme's art is read through
-   the flash cache: pre-painted slow layers live in PSRAM planes, but the sweep's art is read
-   every frame.
+6. **Re-measure the sweep's 38 ms frame and the blips** while the theme cache fills a theme
+   (flash writes stall both cores).

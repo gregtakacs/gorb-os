@@ -294,6 +294,66 @@ int orb_pool_reserve(const orb_pool_io_t *io, orb_pool_t *p, int *which,
     return 0;
 }
 
+int orb_pool_evictions(const orb_pool_t *p, const char *slug, uint32_t size,
+                       const char *const *order, uint32_t n_order, const char *keep,
+                       uint32_t *mask)
+{
+    *mask = 0;
+    if (!size || !slug) return ORB_POOL_ERR_ARG;
+    uint64_t total = orb_pool_round(size);
+    uint32_t count = 1;                              /* the new entry */
+    int rank[ORB_POOL_ENTRIES];
+    for (uint32_t k = 0; k < p->n; k++) {
+        if (!strcmp(p->e[k].slug, slug)) { *mask |= 1u << k; rank[k] = -2; continue; }   /* its own old */
+        total += p->e[k].size;
+        count++;
+        rank[k] = -1;                                /* not named: older than any named */
+        for (uint32_t r = 0; order && r < n_order; r++)
+            if (order[r] && !strcmp(order[r], p->e[k].slug)) { rank[k] = (int)r; break; }
+    }
+    /* least recent first, ties in pool order; never keep */
+    while (total > ORB_POOL_END - ORB_POOL_FIRST || count > ORB_POOL_ENTRIES) {
+        int pick = -1;
+        for (uint32_t k = 0; k < p->n; k++) {
+            if ((*mask >> k) & 1u) continue;
+            if (keep && !strcmp(p->e[k].slug, keep)) continue;
+            if (pick < 0 || rank[k] < rank[pick]) pick = (int)k;
+        }
+        if (pick < 0) { *mask = 0; return ORB_POOL_ERR_FULL; }
+        *mask |= 1u << pick;
+        total -= p->e[pick].size;
+        count--;
+    }
+    return 0;
+}
+
+int orb_pool_reserve_lru(const orb_pool_io_t *io, orb_pool_t *p, int *which,
+                         const char *slug, uint32_t size,
+                         const char *const *order, uint32_t n_order, const char *keep,
+                         uint32_t *at, char (*evicted)[ORB_POOL_SLUG_MAX], uint32_t *n_evicted)
+{
+    uint32_t mask;
+    if (n_evicted) *n_evicted = 0;
+    const int f = orb_pool_evictions(p, slug, size, order, n_order, keep, &mask);
+    if (f) return f;
+    if (mask) {
+        for (uint32_t k = p->n; k-- > 0;) {
+            if (!((mask >> k) & 1u)) continue;
+            if (n_evicted && strcmp(p->e[k].slug, slug)) {
+                if (evicted) memcpy(evicted[*n_evicted], p->e[k].slug, ORB_POOL_SLUG_MAX);
+                (*n_evicted)++;
+            }
+            drop(p, k);
+        }
+        const int r = orb_pool_write(io, p, which);  /* every eviction in one table write */
+        if (r) return r;
+    }
+    const int r = orb_pool_compact(io, p, which);
+    if (r) return r;
+    *at = orb_pool_used_end(p);
+    return 0;
+}
+
 int orb_pool_commit(const orb_pool_io_t *io, orb_pool_t *p, int *which,
                     const orb_pool_entry_t *e)
 {

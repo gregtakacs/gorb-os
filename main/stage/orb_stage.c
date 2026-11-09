@@ -958,7 +958,7 @@ static void bench_paint_band(int32_t y0, int nr)
 
 #define CLK_COMP_SLOTS (CLK_STRIP_GLYPHS_MAX + 2)  /* glyph positions + window pieces L/R */
 static lv_obj_t       *s_comp_obj[CLK_COMP_MAX][CLK_COMP_SLOTS];
-static lv_image_dsc_t  s_comp_dsc[CLK_COMP_MAX][CLK_COMP_SLOTS];
+EXT_RAM_BSS_ATTR static lv_image_dsc_t  s_comp_dsc[CLK_COMP_MAX][CLK_COMP_SLOTS];   /* PSRAM: internal RAM is the DMA ring's */
 /* The frame drawn right now, per comp: the window's tile index; the strip's
  * digit at each glyph position and a 0 for each window piece; -1 = nothing
  * drawn. Sole truth for both paths: the layer table's pose pass reads these

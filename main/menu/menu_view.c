@@ -917,7 +917,7 @@ static int s_cardrm_arm = -1;
 /* The card walk's snapshot — the menu's private copy of h_apps_list's card
  * tier, sized at the listing's own cap. s_card_n reads -1 until the first walk
  * lands, and until then the catalog is the registry alone. */
-static orbapp_scan_entry_t s_card_ent[ORB_APP_SCAN_MAX];
+EXT_RAM_BSS_ATTR static orbapp_scan_entry_t s_card_ent[ORB_APP_SCAN_MAX];   /* PSRAM: internal RAM is the DMA ring's (2026-11-09) */
 static int s_card_n = -1;
 
 /* The pending press's subject, stashed at press time for the worker: jobs

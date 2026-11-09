@@ -9,6 +9,12 @@
 
 #include "esp_rom_crc.h"
 #include "orb_pool.h"
+#if __has_include("esp_attr.h")
+#include "esp_attr.h"
+#endif
+#ifndef EXT_RAM_BSS_ATTR
+#define EXT_RAM_BSS_ATTR                    /* the host build */
+#endif
 
 static void put32(uint8_t *p, uint32_t v)
 {
@@ -294,7 +300,7 @@ int orb_pool_write(const orb_pool_io_t *io, orb_pool_t *p, int *which)
 {
     /* Never write a table this file would refuse to read. Static, not on the stack:
      * a pool is a few kilobytes, and pool work is one worker's, never two at once. */
-    static orb_pool_t check;
+    EXT_RAM_BSS_ATTR static orb_pool_t check;   /* PSRAM: internal RAM is the DMA ring's */
     p->serial++;
     orb_pool_encode(p, io->buf);
     if (orb_pool_decode(io->buf, ORB_POOL_SECTOR, &check)) { p->serial--; return ORB_POOL_ERR_TABLE; }

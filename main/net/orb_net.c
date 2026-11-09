@@ -6504,7 +6504,7 @@ static esp_err_t h_debug_dial(httpd_req_t *req)
 
     const uint64_t n = b.commits - a.commits;
     const double per = n ? 1.0 / (double)n : 0.0;
-    static char body[2800];   /* the one httpd task; off its 8 kB stack */
+    EXT_RAM_BSS_ATTR static char body[2800];   /* the one httpd task; off its 8 kB stack; PSRAM */
     int k = snprintf(body, sizeof body,
         "{\"aa\":%d,\"apps_ms_per_s\":{\"tick\":%.1f,\"service\":%.1f,\"other\":%.1f,\"bg_max_ms\":%.1f},"
         "\"gif_fps\":%.2f,\"gif_x\":%d,\"osc\":%d,\"shadow\":\"%s\",\"sweep\":%d,\"max_commit_us\":%u,"

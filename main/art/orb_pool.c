@@ -131,7 +131,8 @@ const char *orb_pool_decode(const uint8_t *in, size_t len, orb_pool_t *out)
         for (int k = 0; k < E_WORDS; k++) *entry_word(e, k) = get32(r + E_WORDS_AT + 4 * k);
         if (!str_ok(e->slug, ORB_POOL_SLUG_MAX, true)) return "an entry with no app";
         if (!str_ok(e->name, ORB_POOL_NAME_MAX, false)) return "an entry's name runs on";
-        if (e->kind != ORB_POOL_DISPLAY && e->kind != ORB_POOL_VOICE) return "an entry of no known kind";
+        if (e->kind != ORB_POOL_DISPLAY && e->kind != ORB_POOL_VOICE && e->kind != ORB_POOL_PREVIEW)
+            return "an entry of no known kind";
         if (e->state != ORB_POOL_LIVE) return "an entry in no known state";
         if (!e->pid || e->pid > 255u) return "an entry with no page id";
         for (uint32_t j = 0; j < i; j++) {
@@ -423,7 +424,8 @@ int orb_pool_commit(const orb_pool_io_t *io, orb_pool_t *p, int *which,
                     const orb_pool_entry_t *e, const orb_pool_pages_t *pg)
 {
     if (p->n >= ORB_POOL_ENTRIES || orb_pool_find_kind(p, e->slug, e->kind) >= 0) return ORB_POOL_ERR_ARG;
-    if (e->kind != ORB_POOL_DISPLAY && e->kind != ORB_POOL_VOICE) return ORB_POOL_ERR_ARG;
+    if (e->kind != ORB_POOL_DISPLAY && e->kind != ORB_POOL_VOICE && e->kind != ORB_POOL_PREVIEW)
+        return ORB_POOL_ERR_ARG;
     if (!pg->n || pg->n * ORB_POOL_PAGE != e->size) return ORB_POOL_ERR_ARG;
     for (uint32_t i = 0; i < pg->n; i++) {
         const uint32_t page = pg->off[i] / ORB_POOL_PAGE;

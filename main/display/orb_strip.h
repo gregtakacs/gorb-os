@@ -44,12 +44,11 @@ void orb_strip_poll(int32_t delta, bool pressed, bool lpress, int64_t now_us);
  *  from the carousel stops its own zoom at the face), or when no fill runs for it. */
 void orb_strip_fill_face(const orb_app_t *app);
 
-/** theme-cache-plan (2026-11-09): `slug`'s chosen theme changed without a reboot; its
- *  preview is read again from the card and swapped in while the carousel is shut. Any task. */
+/** Owner, 2026-11-09: `slug`'s chosen theme changed without a reboot. The carousel keeps no
+ *  thumbnail while shut (it builds them from the previews in flash when it opens); its full
+ *  plane, if it holds that app's, is let go. Any task. */
 void orb_strip_preview_changed(const char *slug);
-/** True while that re-read is still to come (a fill for it waits, so its face shows the new
- *  picture). */
-bool orb_strip_preview_pending(const char *slug);
+
 
 /** Let the centre app's full-glass preview go (434 KB of PSRAM) — a landing theme's bind
  *  needs the room: Skeleton's gear canvas would not allocate beside it, and its gears stood

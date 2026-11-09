@@ -222,7 +222,7 @@ static void t_decode(void)
         { "a pool of another page count", 24, 128, 4 },
         { "the table's CRC is wrong", ORB_POOL_MAP_AT + 100, 0x01, 1 },
         { "an entry with no app", E0, 0, 1 },
-        { "an entry of no known kind", EW(12), 3, 4 },
+        { "an entry of no known kind", EW(12), 4, 4 },
         { "an entry in no known state", EW(10), 2, 4 },
         { "an entry with no page id", EW(13), 0, 4 },
         { "an entry not in whole pages", EW(1), 0x51000, 4 },
@@ -342,6 +342,14 @@ static void t_scatter(void)
     CK(store(&p, &w, &CVOICE) == 0, "a voice bank stored beside the display entries");
     CK(only_touched(was, &before, NULL, 0) == 0, "and it moved nothing");
     sound(&p, "with a voice bank");
+    /* and a preview (owner, 2026-11-09): resident, never evicted */
+    const th_t PREV = { "clock", ORB_POOL_PREVIEW, 0x10, 0x10, 0x1FFF0, 66 };
+    CK(store(&p, &w, &PREV) == 0, "a preview stored beside them");
+    uint32_t mask = 0;
+    CK(orb_pool_evictions(&p, "radar", ORB_POOL_CAP - 2 * ORB_POOL_PAGE, ORDER0, 0, NULL, &mask) != 0 ||
+       !(mask & (1u << orb_pool_find_kind(&p, "clock", ORB_POOL_PREVIEW))), "a preview is never evicted");
+    orb_pool_t q2;
+    CK(reboot(&q2, &w) == 0 && orb_pool_find_kind(&q2, "clock", ORB_POOL_PREVIEW) >= 0, "and it reloads");
 }
 
 /* ---- the eviction ---- */

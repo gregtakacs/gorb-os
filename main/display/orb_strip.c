@@ -58,17 +58,13 @@ typedef struct {
     uint16_t        *name;      /* NAME_W x NAME_H, wire order, black ground */
 } item_t;
 
-/* The preview cache: one plane per app slug, filled once by the worker. */
+/* The thumbnails: one plane per app slug, built by the preview task when the carousel opens
+ * — nearest the centre first — from the app's preview kept in flash (owner, 2026-11-09), and
+ * all freed when it shuts: the carousel keeps nothing while it is closed. */
 typedef struct {
     char      slug[24];
-    uint16_t *px;               /* side x side wire order, corners black; NULL = none */
-    uint8_t  *z;                /* §60.2: the full preview as stored (deflated disc), kept so
-                                 * the centre's full plane never needs the card again */
-    uint32_t  zn;
-    uint16_t  zside;
-    int       side;             /* the theme's own preview size: 232 for every shipped
-                                 * app's (Weather's was 128 before v1.4.1) — the disc
-                                 * scales any square up to PV */
+    uint16_t *px;               /* PV x PV wire order, corners black; NULL = not built */
+    int       side;
 } pv_t;
 
 /* SETTLE: the app is switched in under the held glass and is drawing into the mirror;
@@ -94,7 +90,13 @@ static volatile bool s_hi_ready;
 static volatile bool s_hi_drop;     /* the strip closed: the preview task frees the plane */
 static char      s_hi_want[24];
 static TaskHandle_t s_pv_th;
-static uint16_t *s_gear;        /* PV x PV wire order */
+static uint16_t *s_gear;        /* PV x PV wire order, made at open, freed at close */
+static volatile bool s_thumbs_want; /* the carousel is open: build its thumbnails */
+static char      s_thumb_centre[24]; /* ...nearest this app first */
+static volatile uint32_t s_thumb_gen; /* bumped at each thumbnail built */
+static uint32_t  s_thumb_seen;
+EXT_RAM_BSS_ATTR static StaticSemaphore_t s_pv_mx_buf;
+static SemaphoreHandle_t s_pv_mx;   /* a thumbnail's publish against the close's free */
 static uint16_t *s_snap;        /* W x H: the glass at open */
 static uint16_t *s_names;       /* MAX_ITEMS name planes, back to back */
 
@@ -245,118 +247,93 @@ static const pv_t *pv_for(const orb_app_t *a)
     return NULL;
 }
 
-/* The reads ride the card mutex like any picker's, never the LVGL task's. On a task of
- * their own, not the jobs worker: the worker takes one job at a time, and a theme store
- * posted while this read held it was refused with ESP_ERR_INVALID_STATE — the hub's
- * Weather install stores Scope right after the orb's reboot, exactly when this ran
- * (owner, 2026-11-07). Each read also waits out a store or an upload in flight. */
-/* One app's preview into *p (its slug set): its chosen theme's, read off the card. */
-static void pv_fill(pv_t *p)
+/* An app's preview, inflated at its own size into a fresh buffer (native order), from its
+ * entry in flash; an app with none there (a choice the reconcile has not reached) reads it off
+ * the card. NULL when it has none. Preview task. */
+static uint16_t *pv_inflate(const char *slug, uint16_t *w_out)
 {
-    p->px = NULL; p->z = NULL; p->zn = 0; p->zside = 0;
-    char stem[64];
-    while (orb_jobs_busy() || orb_theme_upload_busy()) vTaskDelay(pdMS_TO_TICKS(500));
-    {
-        const char *slug = p->slug;
-        if (orb_theme_pool_stem(slug, stem, sizeof stem)) {
-            const int64_t t0 = esp_timer_get_time();
-            uint16_t w = 0;
-            uint16_t *buf = NULL;
-            char why[96];
-            /* §60.2: the stored bytes first, kept; the cache plane is derived from them */
-            p->z = orb_theme_preview_zcopy(stem, &p->zn, &p->zside, why, sizeof why);
-            if (p->z) {
-                buf = (uint16_t *)orb_preview_inflate(p->z, p->zn, p->zside);
-                w = p->zside;
-            } else {
-                buf = pv_read(stem, &w, slug);            /* a raw preview, an older bake */
-            }
-            if (buf && w > PV) {                 /* §60: a full-glass preview, boxed down */
-                uint16_t *sm = heap_caps_malloc((size_t)PV * PV * 2, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-                if (sm) box_down(buf, w, sm, PV);
-                heap_caps_free(buf);
-                buf = sm;
-                w = PV;
-            }
-            if (buf) {
-                for (size_t k = 0; k < (size_t)w * w; k++) buf[k] = wire(buf[k]);
-                p->px = buf;
-                p->side = w;
-                ESP_LOGI(TAG, "preview %s (%s): %d ms, %lu B kept", slug, stem,
-                         (int)((esp_timer_get_time() - t0) / 1000), (unsigned long)p->zn);
-            }
-        }
+    uint32_t n = 0;
+    uint16_t side = 0;
+    const uint8_t *z = orb_theme_preview_hold(slug, &n, &side);
+    if (z) {
+        uint16_t *full = (uint16_t *)orb_preview_inflate(z, n, side);
+        orb_theme_preview_release();
+        *w_out = side;
+        return full;
     }
+    char stem[64], why[96];
+    if (!orb_theme_pool_stem(slug, stem, sizeof stem)) return NULL;
+    while (orb_jobs_busy() || orb_theme_upload_busy()) vTaskDelay(pdMS_TO_TICKS(500));
+    uint8_t *zc = orb_theme_preview_zcopy(stem, &n, &side, why, sizeof why);
+    if (zc) {
+        uint16_t *full = (uint16_t *)orb_preview_inflate(zc, n, side);
+        heap_caps_free(zc);
+        *w_out = side;
+        return full;
+    }
+    return pv_read(stem, w_out, slug);                  /* a raw preview, an older bake */
 }
 
+/* One app's thumbnail: its preview boxed down to PV, wire order. */
+static uint16_t *pv_thumb(const char *slug)
+{
+    const int64_t t0 = esp_timer_get_time();
+    uint16_t w = 0;
+    uint16_t *buf = pv_inflate(slug, &w);
+    if (buf && w > PV) {
+        uint16_t *sm = heap_caps_malloc((size_t)PV * PV * 2, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        if (sm) box_down(buf, w, sm, PV);
+        heap_caps_free(buf);
+        buf = sm;
+        w = PV;
+    }
+    if (!buf || w != PV) { heap_caps_free(buf); return NULL; }
+    for (size_t k = 0; k < (size_t)PV * PV; k++) buf[k] = wire(buf[k]);
+    ESP_LOGI(TAG, "thumbnail %s: %d ms", slug, (int)((esp_timer_get_time() - t0) / 1000));
+    return buf;
+}
+
+/* The apps, once, after boot: names only, nothing read. */
 static void pv_load(void)
 {
-    if (!orb_sd_mounted()) {
-        ESP_LOGW(TAG, "no card: the carousel waits for its previews, the text list stays");
-        return;
-    }
     for (size_t i = 0; i < orb_app_count() && s_pv_n < MAX_ITEMS; i++) {
         const orb_app_t *a = orb_app_at(i);
         if (!a || a->kind == ORB_APP_KIND_SHELL || !a->slug) continue;
-        pv_t *p = &s_pv[s_pv_n];
-        snprintf(p->slug, sizeof p->slug, "%s", a->slug);
-        pv_fill(p);
+        snprintf(s_pv[s_pv_n].slug, sizeof s_pv[s_pv_n].slug, "%s", a->slug);
+        s_pv[s_pv_n].px = NULL;
         s_pv_n++;
     }
     s_pv_ready = true;
 }
 
-/* A store chose another theme for an app without a reboot (theme-cache-plan, 2026-11-09):
- * its preview is read again, and swapped in while the carousel is shut — never under a frame
- * that draws the old one. The shut carousel's release wakes the task, so a deferred swap
- * lands then. Preview task only. */
-static volatile uint32_t s_pv_stale;            /* bit i: s_pv[i] wants reading again */
-static void pv_refresh(void)
+/* The carousel opened: its thumbnails, the centre app's neighbours first, each published
+ * the moment it is built (the strip draws it from its next frame). Preview task. */
+static void thumbs_build(void)
 {
-    for (int i = 0; i < s_pv_n; i++) {
-        if (!(s_pv_stale & (1u << i)) || orb_strip_active()) continue;
-        pv_t fresh;
-        memcpy(fresh.slug, s_pv[i].slug, sizeof fresh.slug);
-        fresh.side = 0;
-        pv_fill(&fresh);
-        if (orb_strip_active()) {                        /* opened meanwhile: next wake */
-            heap_caps_free(fresh.px); heap_caps_free(fresh.z);
-            continue;
+    int c = 0;
+    for (int i = 0; i < s_pv_n; i++) if (!strcmp(s_pv[i].slug, s_thumb_centre)) c = i;
+    for (int d = 0; d <= s_pv_n / 2 && s_thumbs_want; d++)
+        for (int sgn = -1; sgn <= 1 && s_thumbs_want; sgn += 2) {
+            if (d == 0 && sgn > 0) continue;
+            const int i = ((c + sgn * d) % s_pv_n + s_pv_n) % s_pv_n;
+            if (s_pv[i].px) continue;
+            uint16_t *px = pv_thumb(s_pv[i].slug);
+            xSemaphoreTake(s_pv_mx, portMAX_DELAY);
+            if (px && s_thumbs_want && !s_pv[i].px) {
+                s_pv[i].side = PV;
+                s_pv[i].px = px;
+                s_thumb_gen++;
+                px = NULL;
+            }
+            xSemaphoreGive(s_pv_mx);
+            heap_caps_free(px);                          /* shut meanwhile: not kept */
         }
-        s_pv_stale &= ~(1u << i);
-        if (!fresh.px) {
-            /* the card would not answer: the old picture stands rather than the gear (owner,
-             * 2026-11-09: the clock's became the gear when its fill held the card) */
-            ESP_LOGW(TAG, "preview %s: the new one would not read; the old one stays", fresh.slug);
-            heap_caps_free(fresh.z);
-            continue;
-        }
-        uint16_t *old_px = s_pv[i].px;
-        uint8_t  *old_z  = s_pv[i].z;
-        s_pv[i] = fresh;
-        if (s_hi && !strcmp(s_hi_slug, fresh.slug)) {   /* its full plane was the old theme's */
-            s_hi_ready = false;
-            heap_caps_free(s_hi);
-            s_hi = NULL;
-            s_hi_slug[0] = '\0';
-        }
-        heap_caps_free(old_px);
-        heap_caps_free(old_z);
-    }
-}
-
-
-bool orb_strip_preview_pending(const char *slug)
-{
-    for (int i = 0; slug && s_pv_ready && i < s_pv_n; i++)
-        if (!strcmp(s_pv[i].slug, slug)) return (s_pv_stale & (1u << i)) != 0;
-    return false;
 }
 
 void orb_strip_preview_changed(const char *slug)
 {
-    for (int i = 0; slug && s_pv_ready && i < s_pv_n; i++)
-        if (!strcmp(s_pv[i].slug, slug)) s_pv_stale |= 1u << i;
+    /* its zoom plane was the old theme's: the next ask inflates the new one */
+    if (slug && s_hi_slug[0] && !strcmp(s_hi_slug, slug)) s_hi_drop = true;
     if (s_pv_th) xTaskNotifyGive(s_pv_th);
 }
 
@@ -370,10 +347,10 @@ static void pv_task(void *arg)
     (void)arg;
     vTaskDelay(pdMS_TO_TICKS(8000));
     pv_load();
-    /* §60: then the centre app's full-glass plane, each time the strip asks */
+    /* §60: then the centre app's full-glass plane, each time the strip asks, and the
+     * thumbnails each time it opens */
     for (;;) {
         ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
-        if (s_pv_stale) pv_refresh();
         if (s_hi_drop) {
             s_hi_drop = false;
             uint16_t *old = s_hi;
@@ -384,22 +361,24 @@ static void pv_task(void *arg)
         char want[sizeof s_hi_want];
         memcpy(want, s_hi_want, sizeof want);
         want[sizeof want - 1] = '\0';
-        if (!want[0] || (s_hi_ready && strcmp(want, s_hi_slug) == 0)) continue;
-        const pv_t *src = NULL;
-        for (int i = 0; i < s_pv_n; i++) if (!strcmp(s_pv[i].slug, want)) src = &s_pv[i];
-        if (!src || !src->z || src->zside != W) continue;  /* no kept bytes: the cache is it */
+        if (want[0] && !(s_hi_ready && strcmp(want, s_hi_slug) == 0)) {
         s_hi_ready = false;
         const int64_t t0 = esp_timer_get_time();
-        uint16_t *buf = (uint16_t *)orb_preview_inflate(src->z, src->zn, src->zside);
-        if (!buf) continue;
+        uint16_t w = 0;
+        uint16_t *buf = pv_inflate(want, &w);
+        if (buf && w != W) { heap_caps_free(buf); buf = NULL; }   /* a full-glass preview only */
+        if (buf) {
         for (size_t k = 0; k < (size_t)W * W; k++) buf[k] = wire(buf[k]);
         uint16_t *old = s_hi;
         s_hi = buf;
         memcpy(s_hi_slug, want, sizeof s_hi_slug);
         s_hi_ready = true;
         if (old) heap_caps_free(old);
-        ESP_LOGI(TAG, "full preview %s: %d ms (inflated, no card)", want,
+        ESP_LOGI(TAG, "full preview %s: %d ms (from flash)", want,
                  (int)((esp_timer_get_time() - t0) / 1000));
+        }
+        }
+        if (s_thumbs_want) thumbs_build();
     }
 }
 
@@ -414,7 +393,7 @@ static void hi_want(const orb_app_t *a)
 
 void orb_strip_init(void)
 {
-    make_gear();
+    s_pv_mx = xSemaphoreCreateMutexStatic(&s_pv_mx_buf);
     if (xTaskCreatePinnedToCoreWithCaps(pv_task, "strip_pv", 8192, NULL, 2, &s_pv_th,
                                         tskNO_AFFINITY, MALLOC_CAP_SPIRAM) != pdPASS)
         ESP_LOGE(TAG, "the preview task did not start; the text list stays");
@@ -665,6 +644,14 @@ static void snap_free(void)
  * the preview task's to free (it may be writing it): asked here, freed there. */
 static void strip_give_back(void)
 {
+    /* the thumbnails and the Settings card: the carousel keeps nothing while it is shut */
+    s_thumbs_want = false;
+    if (s_pv_mx) xSemaphoreTake(s_pv_mx, portMAX_DELAY);
+    for (int i = 0; i < s_pv_n; i++) { heap_caps_free(s_pv[i].px); s_pv[i].px = NULL; }
+    if (s_pv_mx) xSemaphoreGive(s_pv_mx);
+    for (int i = 0; i < MAX_ITEMS; i++) s_it[i].px = NULL;
+    heap_caps_free(s_gear);
+    s_gear = NULL;
     snap_free();
     for (int i = 0; i < MAX_ITEMS; i++) s_it[i].name = NULL;
     heap_caps_free(s_names);
@@ -716,7 +703,9 @@ bool orb_strip_active(void) { return s_st != ST_OFF; }
 
 bool orb_strip_open(const orb_app_t *from, int step)
 {
-    if (s_st != ST_OFF || !s_pv_ready || !s_gear) return false;
+    if (s_st != ST_OFF || !s_pv_ready) return false;
+    if (!s_gear) make_gear();                 /* the Settings card: made per open, freed at close */
+    if (!s_gear) return false;
     uint32_t fd, ft;
     const bool from_fill = from && from->slug && orb_theme_fill_progress(from->slug, &fd, &ft);
     const uint16_t *mirror = display_fb_mirror();
@@ -761,6 +750,12 @@ bool orb_strip_open(const orb_app_t *from, int step)
     s_face_app = NULL;
     s_ring = -1;
     make_names();
+    /* the thumbnails: none are kept while the carousel is shut; the preview task builds them
+     * now, this app's neighbours first, and each disc wears its icon until its own lands */
+    snprintf(s_thumb_centre, sizeof s_thumb_centre, "%s", from && from->slug ? from->slug : "");
+    s_thumb_seen = s_thumb_gen;
+    s_thumbs_want = true;
+    if (s_pv_th) xTaskNotifyGive(s_pv_th);
 
     display_glass_hold(true);
     orb_sched_set_running(false);
@@ -1021,6 +1016,15 @@ static void step_once(int32_t delta, bool pressed, bool lpress, int64_t now)
 void orb_strip_poll(int32_t delta, bool pressed, bool lpress, int64_t now)
 {
     if (s_st == ST_OFF) return;
+    if (s_thumb_gen != s_thumb_seen) {        /* thumbnails landed: the discs wear them */
+        s_thumb_seen = s_thumb_gen;
+        for (int i = 0; i < s_n; i++) {
+            item_t *it = &s_it[i];
+            if (!it->app || it->px == s_snap) continue;
+            const pv_t *pv = pv_for(it->app);
+            if (pv && it->px != pv->px) { it->px = pv->px; it->side = pv->side; s_dirty = true; }
+        }
+    }
     if (s_m.last_poll_us && now - s_m.last_poll_us > (int64_t)s_m.gap_max_us)
         s_m.gap_max_us = (uint32_t)(now - s_m.last_poll_us);
     s_m.last_poll_us = now;

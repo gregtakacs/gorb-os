@@ -242,6 +242,12 @@ void orb_theme_service(void);
 /* theme-cache-plan C6: `stem` is an app's choice (in the pool or on the card only: the row's
  * `stored` says which). */
 bool orb_theme_chosen(const char *stem);
+/* Owner, 2026-11-09: `slug`'s chosen theme's preview, deflated, straight from its resident
+ * entry's window in flash (plain memory: any task may read it), with *n its bytes and *side
+ * its square's side; NULL when it has none for what it wears. Non-NULL holds the previews'
+ * lock: read, then call orb_theme_preview_release. */
+const uint8_t *orb_theme_preview_hold(const char *slug, uint32_t *n, uint16_t *side);
+void orb_theme_preview_release(void);
 /* Why `slug` has no theme on the glass when it should: true with a few words for its dial
  * row (*brief: "no card", "file deleted", "copy failed", "send it again") and a sentence
  * for the hub (why, may be NULL); false when there is nothing to explain (it wears its theme,

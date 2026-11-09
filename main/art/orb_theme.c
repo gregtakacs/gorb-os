@@ -2395,6 +2395,145 @@ static void fill_show(uint32_t done, uint32_t total)
     orb_sd_lock();
 }
 
+/* ---- owner, 2026-11-09: each chosen app's preview, resident in flash ----------------------
+ * The theme's full-glass preview, deflated as its bundle carries it, in an entry of its own
+ * that is never evicted (ORB_POOL_PREVIEW): the carousel reads it from flash — fast, and
+ * without the card lock that lends the display's DMA ring — and builds its thumbnails when it
+ * opens, keeping nothing while it is shut. Written by a store and, for a choice that has none
+ * (or one from another file), by the reconcile. The entry: a 16-byte head (magic, side,
+ * bytes), then the bytes. */
+#define PREVIEW_MAGIC 0x31565250u                   /* "PRV1" */
+static void preview_unmap(const char *slug);
+static void preview_map(const char *slug);
+EXT_RAM_BSS_ATTR static orb_pool_pages_t s_prev_pg;
+
+/* Worker only, the card not held by the caller (the read takes it). */
+static esp_err_t preview_store(const char *slug, const char *stem, uint32_t file_crc)
+{
+    uint32_t zn = 0;
+    uint16_t side = 0;
+    char why[96] = "";
+    uint8_t *z = orb_theme_preview_zcopy(stem, &zn, &side, why, sizeof why);
+    if (!z) {
+        ESP_LOGW(TAG, "%s's preview: none to keep from \"%s\" (%s)", slug, stem, why[0] ? why : "no deflated preview");
+        return ESP_ERR_NOT_FOUND;
+    }
+    const char *ord[CACHE_APPS];
+    const uint32_t nord = order_list(ord);
+    orb_pool_pages_t *pg = &s_prev_pg;
+    const uint32_t total = 16u + zn;
+    preview_unmap(slug);                             /* its old entry's pages are about to go */
+    /* room never taken from the theme bound now: its banks are mapped and drawing */
+    const char *keep = (s_active_valid && s_live_sec) ? s_live_sec->slug : slug;
+    int r = orb_pool_reserve(&s_pool_io, s_pool, &s_pool_which, slug, ORB_POOL_PREVIEW, total,
+                             ord, nord, keep, pg, NULL, NULL);
+    esp_err_t e = r ? ESP_FAIL : ESP_OK;
+    const uint32_t head[4] = { PREVIEW_MAGIC, side, zn, 0 };
+    if (e == ESP_OK) e = pg_erase(pg, 0, orb_pool_round(total));
+    if (e == ESP_OK) e = pg_write(pg, 0, head, sizeof head);
+    if (e == ESP_OK) e = pg_write(pg, 16, z, zn);
+    heap_caps_free(z);
+    orb_pool_entry_t pe;
+    memset(&pe, 0, sizeof pe);
+    strlcpy(pe.slug, slug, sizeof pe.slug);
+    strlcpy(pe.name, stem, sizeof pe.name);
+    pe.size = orb_pool_round(total);
+    pe.geom_size = 16; pe.art_off = 16; pe.art_size = zn;
+    pe.file_crc = file_crc; pe.kind = ORB_POOL_PREVIEW;
+    if (e != ESP_OK || orb_pool_pcrc(&s_pool_io, pg, 0, 16, &pe.geom_crc) ||
+        orb_pool_pcrc(&s_pool_io, pg, 16, zn, &pe.art_crc) ||
+        orb_pool_commit(&s_pool_io, s_pool, &s_pool_which, &pe, pg)) {
+        ESP_LOGE(TAG, "%s's preview would not store (%d)", slug, r);
+        return ESP_FAIL;
+    }
+    preview_map(slug);
+    ESP_LOGI(TAG, "%s's preview kept in flash: %u B on %u page%s", slug, (unsigned)zn,
+             (unsigned)pg->n, pg->n == 1 ? "" : "s");
+    return ESP_OK;
+}
+
+/* Each preview entry has a window of its own, mapped from a task on an internal stack (boot,
+ * the worker), so the carousel's preview task — whose stack is PSRAM, where a flash read
+ * (it turns the caches off) is not allowed — reads it as plain memory. The lock keeps a window
+ * from coming down while that task reads it. */
+typedef struct { char slug[ORB_POOL_SLUG_MAX]; uint32_t file_crc; orb_pagemap_t pm; } prev_reg_t;
+EXT_RAM_BSS_ATTR static prev_reg_t s_prevs[CACHE_APPS];
+EXT_RAM_BSS_ATTR static StaticSemaphore_t s_prev_mx_buf;
+static SemaphoreHandle_t s_prev_mx;
+
+static void prev_lock(void)
+{
+    if (!s_prev_mx) s_prev_mx = xSemaphoreCreateMutexStatic(&s_prev_mx_buf);
+    xSemaphoreTake(s_prev_mx, portMAX_DELAY);
+}
+static void prev_unlock(void) { xSemaphoreGive(s_prev_mx); }
+
+/* `slug`'s window down (its entry is about to go). Internal-stack tasks only. */
+static void preview_unmap(const char *slug)
+{
+    prev_lock();
+    for (uint32_t i = 0; i < CACHE_APPS; i++)
+        if (s_prevs[i].slug[0] && !strcmp(s_prevs[i].slug, slug)) {
+            orb_pageunmap(&s_prevs[i].pm);
+            memset(&s_prevs[i], 0, sizeof s_prevs[i]);
+        }
+    prev_unlock();
+}
+
+/* `slug`'s entry mapped and listed. Internal-stack tasks only. */
+static void preview_map(const char *slug)
+{
+    const esp_partition_t *p = art_bank_partition();
+    const int k = (p && s_pool) ? orb_pool_find_kind(s_pool, slug, ORB_POOL_PREVIEW) : -1;
+    if (k < 0) return;
+    preview_unmap(slug);
+    EXT_RAM_BSS_ATTR static orb_pool_pages_t mpg;
+    orb_pool_pages(s_pool, (uint32_t)k, &mpg);
+    prev_lock();
+    for (uint32_t i = 0; i < CACHE_APPS; i++) {
+        if (s_prevs[i].slug[0]) continue;
+        if (orb_pagemap(p, mpg.off, mpg.n, &s_prevs[i].pm) == ESP_OK) {
+            s_prevs[i].file_crc = s_pool->e[k].file_crc;
+            strlcpy(s_prevs[i].slug, slug, sizeof s_prevs[i].slug);
+        }
+        break;
+    }
+    prev_unlock();
+}
+
+static void previews_map(void)
+{
+    for (uint32_t k = 0; k < s_pool->n; k++)
+        if (s_pool->e[k].kind == ORB_POOL_PREVIEW) preview_map(s_pool->e[k].slug);
+}
+
+const uint8_t *orb_theme_preview_hold(const char *slug, uint32_t *n, uint16_t *side)
+{
+    *n = 0; *side = 0;
+    if (!slug) return NULL;
+    uint32_t want = 0;                               /* only the preview of what it wears */
+    bool chosen = false;
+    for (uint32_t c = 0; c < s_cache.n_choice; c++)
+        if (!strcmp(s_cache.c[c].slug, slug)) { want = s_cache.c[c].file_crc; chosen = true; }
+    if (!chosen) return NULL;
+    prev_lock();
+    for (uint32_t i = 0; i < CACHE_APPS; i++) {
+        const prev_reg_t *r = &s_prevs[i];
+        if (!r->slug[0] || strcmp(r->slug, slug) || r->file_crc != want || !r->pm.ptr) continue;
+        const uint32_t *head = r->pm.ptr;
+        if (head[0] != PREVIEW_MAGIC || !head[2] || !head[1] || head[1] > 466u ||
+            16u + head[2] > r->pm.pages * ORB_POOL_PAGE)
+            break;
+        *n = head[2];
+        *side = (uint16_t)head[1];
+        return (const uint8_t *)r->pm.ptr + 16;      /* held: orb_theme_preview_release */
+    }
+    prev_unlock();
+    return NULL;
+}
+
+void orb_theme_preview_release(void) { prev_unlock(); }
+
 /* ---- owner, 2026-11-09: a store chooses, and does not reboot ------------------------------
  *
  * Under format 3 (§4.1) nothing a reader holds ever moves, so a store need not park the dial
@@ -2448,7 +2587,6 @@ static esp_err_t store_choose(const char *slug, const char *id, const char *name
         voice_add(slug);
     s_hide_slug[0] = '\0';
     strlcpy(s_refill_slug, slug, sizeof s_refill_slug);   /* on the glass: it fills there */
-    orb_strip_preview_changed(slug);                      /* the carousel's picture of it */
     staged_clear();
     ESP_LOGI(TAG, "stored \"%s\" (%s) for %s: chosen, no reboot; it fills from the card when "
                   "%s is on the glass", name, id, slug, slug);
@@ -2633,6 +2771,10 @@ esp_err_t orb_theme_install_bundle(const char *id, char *why, size_t whysz)
         const esp_err_t ce = store_choose(slug, id, h.name, fd, file_art_base, sec_art_off,
                                           file_geom_crc, why, whysz);
         card_close(fd);
+        if (ce == ESP_OK) {
+            (void)preview_store(slug, id, file_geom_crc);   /* the carousel's, from flash */
+            orb_strip_preview_changed(slug);
+        }
         return ce;
     }
 
@@ -3353,6 +3495,7 @@ esp_err_t orb_theme_boot(void)
         if (seeded) cache_save();
     }
     if (!pr) voices_map();                             /* theme-cache-plan §2.6 */
+    if (!pr) previews_map();                           /* the carousel's, from flash */
     const int live = pr ? -1 : pool_live_entry();
     if (pr)
         ESP_LOGE(TAG, "the theme pool would not load (%d) — base digital face", pr);
@@ -3619,6 +3762,7 @@ static void clear_job(void *arg)
         /* theme-cache-plan ruling 7: the file it wore is gone, so both of its copies go,
          * and the choice */
         if (!r) r = orb_pool_remove_kind(&s_pool_io, s_pool, &s_pool_which, gone, ORB_POOL_VOICE);
+        if (!r) r = orb_pool_remove_kind(&s_pool_io, s_pool, &s_pool_which, gone, ORB_POOL_PREVIEW);
         s_pool_io.progress = NULL;
         if (!r) choice_set(gone, NULL, 0);
     }
@@ -3680,7 +3824,17 @@ static void reconcile_job(void *arg)
         const int fd = card_open_verified_id3(stem, &h, &fsz, &w);
         if (fd < 0) continue;
         card_close(fd);
-        if (h.geom_crc == s_cache.c[c].file_crc) continue;
+        if (h.geom_crc == s_cache.c[c].file_crc) {
+            /* its preview in flash (owner, 2026-11-09): made for a choice that has none */
+            const int pk = orb_pool_find_kind(s_pool, slug, ORB_POOL_PREVIEW);
+            if (pk < 0 || s_pool->e[pk].file_crc != h.geom_crc) {
+                char st[ORB_THEME_HANDLE_MAX + 1], sl[ORB_POOL_SLUG_MAX];
+                strlcpy(st, stem, sizeof st);
+                strlcpy(sl, slug, sizeof sl);
+                if (preview_store(sl, st, h.geom_crc) == ESP_OK) orb_strip_preview_changed(sl);
+            }
+            continue;
+        }
         ESP_LOGW(TAG, "reconcile: %s's theme file \"%s\" changed on the card since it was stored: "
                       "stored again", slug, stem);
         char why[72] = "";
@@ -3738,7 +3892,7 @@ void orb_theme_service(void)
 {
     if (s_fill_changed) { s_fill_changed = false; s_reconciled_gen--; }   /* due again */
     /* a theme chosen for the app on the glass fills there, once the store's job is done */
-    if (s_refill_slug[0] && !orb_jobs_busy() && !orb_strip_preview_pending(s_refill_slug)) {
+    if (s_refill_slug[0] && !orb_jobs_busy()) {
         orb_app_t *app = (orb_app_t *)orb_app_find_slug(s_refill_slug);
         s_refill_slug[0] = '\0';
         if (app && input_router_current() == app) orb_wasm_theme_changed(app);

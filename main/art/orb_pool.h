@@ -52,7 +52,11 @@ enum { ORB_POOL_LIVE = 1, ORB_POOL_MOVING = 2 };           /* MOVING: formats 1 
 /* An entry's kind (theme-cache-plan §2.6): an app's voice bank, resident while its theme is
  * chosen, or its display entry, the cache's to drop. A format 1 table's entries are display
  * entries. */
-enum { ORB_POOL_DISPLAY = 1, ORB_POOL_VOICE = 2 };
+enum { ORB_POOL_DISPLAY = 1, ORB_POOL_VOICE = 2,
+       /* owner, 2026-11-09: an app's preview, the theme's full-glass picture as the bundle
+        * deflated it, resident like a voice bank (never evicted), so the carousel reads it
+        * from flash, never the card, and keeps nothing while it is shut */
+       ORB_POOL_PREVIEW = 3 };
 
 /* One app's theme (or voice bank) in the pool. Offsets inside it are the entry's own: its
  * head is [0, geom_size), its banks [art_off, art_off + art_size), and byte x of it is at

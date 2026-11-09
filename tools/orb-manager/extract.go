@@ -310,6 +310,10 @@ type regionOutcome struct {
 	reason string
 }
 
+// hostedEntryName is the page extract-editors writes for a hosted editor (host@1): the
+// hub's own editor page, rendered as the hub would serve it at the editor's address.
+const hostedEntryName = "index.html"
+
 func skipped(reason string) regionOutcome { return regionOutcome{status: "skipped", reason: reason} }
 
 // extractEditorRegion is the per-archive half of the contract: read the region as a ZIP,
@@ -381,7 +385,32 @@ func extractEditorRegion(root *os.Root, slug string, region []byte) (regionOutco
 	entry, manifest := "", seenName[editorManifestName]
 	if manifest {
 		if entry = rawEntryName(bodies[editorManifestName]); entry == "" {
-			return skipped("editor.json names no entry the hub can open"), nil
+			// A hosted editor (editor.json "host": 1) names no page: the hub serves Orb
+			// Manager's own (runtime host@1) with the app's modules in it. A site has no hub
+			// to write that page, so it is written here, from the same template and the same
+			// checks serveHostedEditor applies, as the folder's index.html.
+			p, hosted, why := hostedEditor(bodies[editorManifestName], zr)
+			if !hosted {
+				return skipped("editor.json names no entry the hub can open"), nil
+			}
+			if why != "" {
+				return skipped(why), nil
+			}
+			if seenName[hostedEntryName] {
+				return skipped("a hosted editor carries its own " + hostedEntryName + ", which the hub's page would stand in for"), nil
+			}
+			if missing := editorRuntimeMissing(bodies[editorManifestName]); len(missing) > 0 {
+				return skipped(runtimeMissingSentence(slug, missing)), nil
+			}
+			p.Title = slug + " theme editor"
+			var buf bytes.Buffer
+			if err := hostedTmpl.Execute(&buf, p); err != nil {
+				return skipped("the hosted editor page could not be written: " + err.Error()), nil
+			}
+			entry = hostedEntryName
+			bodies[entry] = buf.Bytes()
+			files = append(files, extractFile{Name: entry, Bytes: buf.Len(), SHA256: hexSha(buf.Bytes())})
+			seenName[entry] = true
 		}
 	} else {
 		entry = "index.html"

@@ -101,7 +101,7 @@ func TestExtractEditorsMatchesWhatTheHubServes(t *testing.T) {
 		}
 	}
 	// stdout is one line per app: the status, then the app or the reason.
-	for _, line := range []string{"ok         clock v1.2.29+3434c44 (7 files)",
+	for _, line := range []string{"ok         clock v1.6.0+8e64ba9 (9 files)",
 		"no-editor  color_picker.orbapp: this app ships no editor"} {
 		if !strings.Contains(stdout, line) {
 			t.Errorf("stdout lacks %q:\n%s", line, stdout)
@@ -135,7 +135,18 @@ func checkExtractedApp(t *testing.T, out string, row extractRow) {
 	if err != nil {
 		t.Fatalf("%s: the entry the report names is not on disk: %v", row.File, err)
 	}
+	zr0, err := zip.NewReader(bytes.NewReader(region), int64(len(region)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A hosted editor (host@1) has no page in its region: extract-editors writes the hub's
+	// own, which the hub answers at the directory (checked below), not under a file name.
+	_, inRegion := editorMember(zr0, row.Editor.Entry)
+	generated := !inRegion
 	for _, f := range row.Editor.Files {
+		if generated && f.Name == row.Editor.Entry {
+			continue
+		}
 		disk, err := os.ReadFile(filepath.Join(out, row.Editor.Dir, filepath.FromSlash(f.Name)))
 		if err != nil {
 			t.Fatalf("%s: %s: %v", row.File, f.Name, err)
@@ -178,6 +189,9 @@ func checkExtractedApp(t *testing.T, out string, row extractRow) {
 		if !f.FileInfo().IsDir() {
 			members++
 		}
+	}
+	if generated {
+		members++ // the page extract-editors wrote
 	}
 	if len(row.Editor.Files) != members {
 		t.Errorf("%s: %d files reported, the region holds %d members", row.File, len(row.Editor.Files), members)

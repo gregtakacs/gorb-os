@@ -198,8 +198,17 @@ carries is read off the glass (its values blob draws; the preview is the card's)
   Skeleton stored over Neon Moon took ~3 min of "making room"): the display entry is placed
   first, then the voice bank is placed at the front and lifts every display entry above it.
   Writing the voice bank first would move them once. Same slice.
-- **A theme file's settings page line** for an app whose file is gone or whose card is out
-  (§2.4) is not written yet: such an app runs bare and only the log says why.
+- **C7's two shapes** (owner's question, 2026-11-09: how would it work without moving?):
+  *first fit* — entries stay where they land, the table keeps the holes, a fill takes the
+  first hole big enough, and the eviction drops least-recent entries until one hole (two
+  neighbours freed together merge) fits; when the free bytes are enough but no one hole is,
+  it falls back to today's compaction. *Scattered pages* — the S3's MMU maps flash in 64 KB
+  pages, and every entry is already 64 KB-aligned, so an entry could be stored as a list of
+  free pages anywhere and mapped into one contiguous window page by page: no hole is ever too
+  small and nothing ever moves. It costs a page list per entry in the table (a 3.4 MB theme
+  is 54 pages; 128 pages in the pool) and a mapper that maps pages one by one instead of
+  `esp_partition_mmap`'s single range. First fit is the smaller change; scattered pages is
+  the one that never moves anything.
 
 - **A store still reboots** (it may move the bound entry). Ruling 1 names fills; whether a
   store goes reboot-free too (unbind, store, rebind) is the owner's call after C3.
@@ -241,6 +250,24 @@ held (20 fps), 1 s windows from the dial bench:
   of ~33, the paced fills at 5-9 fps (20 ms) and 3-6 fps (1 ms). Each cache miss suspends
   and resumes the operation, so the operation stretches and the frame waits on it.
   Reverted; Bronze is back on the build without it.
+
+### Why a theme is missing (2026-11-09, the owner's ask)
+
+- `orb_theme_absent(slug)`: a few words for the dial and a sentence for the hub, or nothing.
+  **No card** (chosen, not in the pool, the card not mounted: read live); **file deleted**
+  (the reconcile found the chosen file gone: kept in NVS, `theme_gone`, because the removal
+  reboots); **copy failed** (this boot's last fill failure, with its reason); **send it
+  again** (ruling 8's refusal). Each clears when the app is stored a theme. An app evicted
+  and waiting to come back is not "missing": the hub says "on the card only".
+- The app's page on the dial shows its Themes row as "Themes (no card)" and so on, even when
+  the card holds none of its themes (the press is then inert); `GET /api/v1/sd` carries
+  `absent` ({app, brief, why}), and the hub's Themes page adds the sentence to its line.
+- **Bronze:** radar's file deleted behind the orb → "file deleted" with the sentence, kept
+  across the reboot; the file written back and stored → cleared.
+- **Internal RAM, again:** the notes first sat in internal RAM (~780 B), and an OTA's park
+  to the menu then never painted; the stall guard rebooted the orb mid-upload, every time.
+  In PSRAM the OTA staged. The guard also fired once on the switch back to the clock after a
+  staged OTA (harmless: the update reboots anyway), not chased.
 
 ### C6 — the hub says where a theme is (2026-11-09)
 

@@ -250,8 +250,12 @@ happens only when they are not. No first fit, no compaction, no MOVING state.
   `esp_partition_mmap`'s single range. First fit is the smaller change; scattered pages is
   the one that never moves anything.
 
-- **A store still reboots** (it may move the bound entry). Ruling 1 names fills; whether a
-  store goes reboot-free too (unbind, store, rebind) is the owner's call after C3.
+- **Closed 2026-11-09 (owner: "I'd like to avoid the reboot"):** a store no longer reboots
+  (§6, "A store chooses").
+- **The display stall guard rebooted Bronze twice on a screen switch** shortly after a boot
+  that started a fill (switch to weather unpainted 7.6 s, "card idle"; the stage rendering
+  16-27 fps with no LVGL flush, and no ring loan logged in the window). Not reproduced on
+  demand; leaving a fill face mid-fill was clean three times. Open.
 
 - **A trap not reproduced:** on the C0 bench day the radar failed with two faults, "wasm
   trapped in orb_input", at the first knob turns after a reboot, before any fill; three
@@ -259,6 +263,28 @@ happens only when they are not. No first fit, no compaction, no MOVING state.
   (`orb_input: [trap] …`), so the next one says what it was.
 
 ## 6. As built
+
+### A store chooses, and does not reboot (2026-11-09, Bronze)
+
+- **The store** (`store_choose`): the file is checked as before (identity, region, the
+  projection and its sounds, the fit). Then, on the LVGL task, the app's old theme lets go:
+  its voices and schedule stop, its voice bank's window comes down, and its stage rebinds to
+  the bare face (the theme module answers no theme for it meanwhile, `s_hide_slug`). Then, on
+  the worker, the old display entry and voice bank leave the table, the choice is recorded,
+  and the new voice bank is made from the card file. The display entry is the cache's: it
+  fills when the app is next on the glass, at once if it is (`orb_wasm_theme_changed`, the
+  face and the ring). The doors answer `"reboot":"none"`; the hub counts a chosen row as
+  landed. The reconcile stores a changed file the same way, all of them in one run.
+- **The clock read its stage once, at init**, so a theme that arrived while it ran (any
+  fill since C5, and now any store) kept the base face's labels over the theme, with no
+  hands (owner, 2026-11-09). It re-reads the stage at every activate and resume now, hides
+  its labels under a theme and shows them without one; the stage counts visible widgets
+  only when it decides an app has widgets over its theme.
+- **Bronze:** Skeleton stored with weather on the glass: no reboot, its voice bank (14
+  pages) made in ~1.5 s, the old display entry gone; the clock opened, filled behind its
+  face, left mid-fill (paused at 1,148 KB) and came back (went on from 1,152 KB, landed in
+  6.8 s). Neon Moon stored with the clock on the glass: the dial went bare, the fill ran
+  behind the face, and Neon Moon came up with its hands, no digital face over it.
 
 ### C7 — scattered pages (2026-11-09, Bronze)
 

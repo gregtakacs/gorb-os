@@ -184,7 +184,46 @@ carries is read off the glass (its values blob draws; the preview is the card's)
 | **C3** | Sound off the glass: a store writes the voice bank (≤ 1 MB), boot maps every voice bank, a bind no longer stops voices, one-shots unleased and loops leased to the glass, a sound import that needs no stage; the clock chimes from its service | bench: the clock chiming through a switch to weather, and on the hour with weather on the glass; the tick stopping when the clock leaves — **built and benched on Bronze 2026-11-08** (§6) |
 | **C4** | The choice record (NVS), the last-on-glass order, stores that make room instead of refusing, the shelf's budgets per theme | bench: a theme stored into a full pool evicts the least recent display entry — **built and benched on Bronze 2026-11-08** (§6) |
 | **C5** | The fill on arrival behind the preview and its slice (full speed, block by block, heavy I/O), the zoom into the app, the pause on leaving, the card-missing case | bench: four apps cycled through a pool that holds three; leaving mid-fill; a card pulled mid-fill — **C5a, the engine, C5b, the face and the pause, C5c, the card file followed, built 2026-11-08** (§6); a card pulled mid-fill benched by the owner 2026-11-09 (§6) |
+| **C7** | Scattered pages (§4.1): no entry ever moves | host_pool_test format 3; Bronze: four apps through the pool with no move, a fill that makes a voice bank, the carry from format 2 |
 | **C6** | The hub: "in the pool / on the card only" on the Themes page | the hub's lists still parse — **built 2026-11-09** (§6) |
+
+## 4.1 C7 — scattered pages (owner, 2026-11-09: "do the 64k scattered pages")
+
+The pool stops being packed. Every entry is a set of whole 64 KB pages, wherever they are
+free, and nothing ever moves: a theme fits whenever enough pages are free, and an eviction
+happens only when they are not. No first fit, no compaction, no MOVING state.
+
+- **The table, format 3.** The page is 64 KB (the S3's MMU page); the pool is the 127 whole
+  pages below the tables (8,323,072 B; the 56 KB beside the tables are unused). Each entry
+  gets a page id (`pid`, 1..255, unique); a page map of 127 bytes after the entries names
+  each page's owner (0 = free). An entry's pages, in ascending flash order, are its bytes in
+  order: page i of the entry is its i-th owned page. `size` is whole pages; `off` keeps the
+  first page's offset, for the log and the hub. One sector still: 32 + 16 × 136 + 128 B.
+- **Cut safety is the table's alone.** A store or a fill writes its bytes into free pages,
+  which no table names, then commits one table write (A/B, as today) naming them. An
+  eviction is one table write that frees pages. A cut at any step leaves the last table and
+  nothing torn: the half-written pages are free space. There is nothing to repair.
+- **Mapping.** A display entry binds through a window the size of its art: `esp_mmu_map`
+  maps a contiguous run (owned, contiguous virtual addresses), and its MMU entries are then
+  pointed, page by page, at the entry's pages (IRAM, caches off, as ESP-IDF's own mapper
+  does; skipped when the pages are contiguous already). `spi_flash_mmap_pages` is not used:
+  it maps each run separately and assumes the addresses come out adjacent, which nothing
+  guarantees. Each voice bank gets a window of its own, mapped when it is made (boot, a store,
+  or a fill), so voice banks need no longer be packed first.
+- **The voice bank can be made by a fill.** With no lift, a fill whose app has sounds and
+  no voice bank writes one into free pages beside its display entry. Ruling 8's refusal
+  ("send it again") then only meets a theme the fill cannot read.
+- **The carry from format 2 (one boot, no migration of bytes).** Format 2's entries sit on
+  the 4 KB grid, mostly not on pages, so they are not carried: the first boot of format 3
+  seeds any missing choice from the old table, then starts an empty pool. Each app's theme
+  fills from the card the first time it opens (the face, the ring), its voice bank with it.
+  A factory theme at offset 0 with no table is carried as before (it starts on page 0).
+- **What it costs:** each entry rounds up to whole pages, ~32 KB on average, ~200 KB over a
+  full pool (2.5 %), and the 56 KB beside the tables. What it buys: an arrival is the copy
+  alone (~10 s for 1.7 MB, against 40-55 s), and a store never moves another app's theme.
+- **Slices:** C7a the table (pure C, host test: format 3, the pages, evictions, a cut at
+  every step); C7b the page window (art bank) and the voice windows; C7c the theme module
+  on entry I/O (store, fill, voice bank in a fill, bind, boot, the carry); C7d bench.
 
 ## 5. Open
 

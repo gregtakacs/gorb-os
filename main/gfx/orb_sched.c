@@ -612,6 +612,7 @@ static uint32_t        s_rung_period  = 66;                     /* 1000/rung, ms
 static uint32_t        s_demote_run, s_promote_run;
 static uint32_t        s_last_demote_ms;
 static uint32_t        s_last_probe_ms;                             /* 0: none since the reset */
+static bool            s_climbing;                                  /* a held step: the next is near */
 static uint32_t        s_probe_wait_ms = ORB_SCHED_PROBE_WAIT_MS;   /* doubles on a failed probe */
 static bool            s_floor_seeded;
 
@@ -914,6 +915,12 @@ static void sched_hysteresis(uint32_t measured)
     const uint32_t now = lv_tick_get();
     if (measured < s_rung_fps) {
         s_promote_run = 0;
+#if CONFIG_ORB_DEBUG_HTTP
+        /* radar-plan §7.8: an app's sweep paced to its steps delivers under the pick on
+         * purpose; demoting on it held the dial down after the rain eased (Bronze,
+         * 2026-11-09: RUNG 12->11 under a paced storm) */
+        if (s_dyn_pace10) { s_demote_run = 0; return; }
+#endif
         if (burst_covers(now)) {             /* a handshake's second: ride it out */
             s_burst_ignored++;
             s_demote_run = 0;
@@ -926,6 +933,7 @@ static void sched_hysteresis(uint32_t measured)
             if (s_floor_fps < ORB_SCHED_PANEL_FLOOR) s_floor_fps = ORB_SCHED_PANEL_FLOOR;
             s_demote_run = 0;
             s_last_demote_ms = now;
+            s_climbing = false;
             /* A probe this dial could not hold: wait longer before the next one. */
             if (s_last_probe_ms && (uint32_t)(now - s_last_probe_ms) < s_probe_wait_ms) {
                 s_probe_wait_ms *= 2u;
@@ -937,16 +945,24 @@ static void sched_hysteresis(uint32_t measured)
     }
     s_demote_run = 0;
     /* Delivering the whole pick (it cannot measure above it: the pick paces the
-     * tick) for long enough, and long enough after the last demote: probe the top. */
-    if (s_floor_fps < ORB_SCHED_FPS_CEILING &&
-        ++s_promote_run >= ORB_SCHED_HYST_PROMOTE_SEC &&
-        (uint32_t)(now - s_last_demote_ms) >= s_probe_wait_ms) {
-        const uint32_t from = s_rung_fps;
-        s_floor_fps = ORB_SCHED_FPS_CEILING;   /* the pick re-clamps it down */
-        s_promote_run = 0;
-        s_last_probe_ms = now;
-        sched_rung_move(from);
-    }
+     * tick) for long enough, and long enough after the last demote: probe a step up,
+     * about a quarter, to the next floor that moves the pick. A step that held is
+     * the next one's go-ahead after ORB_SCHED_HYST_STEP_SEC, and resets the backoff. */
+    if (s_floor_fps >= ORB_SCHED_FPS_CEILING) { s_climbing = false; return; }
+    ++s_promote_run;
+    const bool go = s_climbing ? s_promote_run >= ORB_SCHED_HYST_STEP_SEC
+                               : s_promote_run >= ORB_SCHED_HYST_PROMOTE_SEC &&
+                                 (uint32_t)(now - s_last_demote_ms) >= s_probe_wait_ms;
+    if (!go) return;
+    if (s_climbing) s_probe_wait_ms = ORB_SCHED_PROBE_WAIT_MS;   /* the last step held */
+    const uint32_t from = s_rung_fps;
+    uint32_t f = s_floor_fps + (s_floor_fps / 4u ? s_floor_fps / 4u : 1u);
+    while (f < ORB_SCHED_FPS_CEILING && orb_sched_pick_rung(s_dial_asks, s_dial_n, f) == from) f++;
+    s_floor_fps = f > ORB_SCHED_FPS_CEILING ? ORB_SCHED_FPS_CEILING : f;
+    s_promote_run = 0;
+    s_last_probe_ms = now;
+    s_climbing = true;
+    sched_rung_move(from);
 }
 
 
@@ -1380,6 +1396,7 @@ void orb_sched_reset_fps(void)
 #endif
     s_probe_wait_ms = ORB_SCHED_PROBE_WAIT_MS;   /* a new dial earns its own backoff */
     s_last_probe_ms = 0;
+    s_climbing = false;
     s_demote_run = 0;
     s_promote_run = 0;
     uint32_t bf; uint64_t bt; uint32_t bm;

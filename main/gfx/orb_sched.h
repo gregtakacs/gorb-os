@@ -283,9 +283,16 @@ uint32_t orb_sched_bg_bursts_ignored(void);   /* demote-seconds forgiven, for th
  * delivered, but the pick paces the tick, so a demoted rung could never measure
  * above itself and never came back. A promote now probes: ten seconds delivering
  * the whole pick, and the probe wait since the last demote; a probe the dial
- * cannot hold demotes inside the wait and doubles it, up to the cap. */
+ * cannot hold demotes inside the wait and doubles it, up to the cap.
+ *
+ * The probe climbs (owner, 2026-11-09: "gradually try to throttle up again, not full
+ * speed and immediately fail"): each probe raises the floor about a quarter, to the
+ * next figure that moves the pick, and a probe that holds ORB_SCHED_HYST_STEP_SEC
+ * steps again. The top in one jump failed at once on a storm and held the dial at
+ * the demoted figure for the doubled wait. */
 #define ORB_SCHED_HYST_DEMOTE_SEC  2    /* report-seconds under pick before a demote */
 #define ORB_SCHED_HYST_PROMOTE_SEC 10   /* seconds delivering the whole pick before a probe */
+#define ORB_SCHED_HYST_STEP_SEC    3    /* seconds a held step delivers before the next  */
 #define ORB_SCHED_HYST_DEMOTE_MS   30000 /* minimum ms between two demotes            */
 #define ORB_SCHED_PROBE_WAIT_MS    30000 /* ms after a demote before the first probe  */
 #define ORB_SCHED_PROBE_WAIT_MAX   300000 /* the doubled wait's cap                   */

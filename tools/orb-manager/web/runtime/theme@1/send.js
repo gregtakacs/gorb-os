@@ -23,6 +23,7 @@
  *                           // once it ends (the dialog stays with its verdict until cancel()); null to close
  *     orb(ip),              // optional: the orb address once found (for a label)
  *     orbIp(),              // optional: where to send; default s.findOrb()
+ *     download(blob, name), // optional: how a web host (send: false) saves the bake; default OrbTheme.download
  *   });
  *   s.send(name, bake)      // a press: Replace the held bake for this name, else run bake()
  *   s.post(bytes, {name, stem, summary}, overwrite)   // what bake() calls with its bytes
@@ -31,6 +32,26 @@
 (function (root) {
   'use strict';
   var OrbTheme = root.OrbTheme = root.OrbTheme || {};
+
+  // GorbHost: the page sets window.GorbHost before the editor loads; with no GorbHost, or
+  // kind "hub", nothing changes (the Orb Manager default). Under kind "web" the hub's paths
+  // sit under another base and Send to orb becomes a download; editors read the flags (send,
+  // publish, inbox) through OrbTheme.hostInfo() and never kind (orb-os-net design §6.3).
+  // ---- GorbHost: keep this block byte-identical in theme@1/send.js and theme@1/session.js
+  OrbTheme.hostInfo = OrbTheme.hostInfo || function () {
+    var raw = root.GorbHost;
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) raw = {};
+    var kind = raw.kind === 'web' ? 'web' : 'hub';
+    var api = typeof raw.api === 'string' &&
+      /^\/[A-Za-z0-9_~-][A-Za-z0-9._~-]*(?:\/[A-Za-z0-9_~-][A-Za-z0-9._~-]*)*$/.test(raw.api) &&
+      !raw.api.split('/').some(function (s) { return s === '.' || s === '..'; })
+      ? raw.api : (kind === 'web' ? '/studio-api' : '/api');
+    var send = typeof raw.send === 'boolean' ? raw.send : kind === 'hub';
+    return Object.freeze({ kind: kind, api: api, send: send, publish: raw.publish === true, inbox: raw.inbox === true });
+  };
+  // a hub path, its leading api segment removed, at this host's base
+  OrbTheme.hostUrl = OrbTheme.hostUrl || function (p) { return OrbTheme.hostInfo().api + p; };
+  // ---- end GorbHost
 
   OrbTheme.sender = function (host) {
     var api = {
@@ -51,13 +72,15 @@
      * Send dialing the old one. A found address is cached; "no orb" is asked again, and
      * so is everything when fresh is set (an editor that keeps its own cache). */
     api.findOrb = async function (fresh) {
+      // a web host with send: false has no orb to find: no request, no cache, and the query is ignored
+      if (!OrbTheme.hostInfo().send) { if (host.orb) host.orb(null); return null; }
       if (orbCache && !fresh) return orbCache;
       var q = null; try { q = new URLSearchParams(location.search); } catch (e) { q = null; }
       var named = q && q.get('orb'), ip = null;
       if (named && /^(\d{1,3}\.){3}\d{1,3}$/.test(named)) ip = named;
       else {
         try {
-          var r = await fetch('/api/orb/known');
+          var r = await fetch(OrbTheme.hostUrl('/orb/known'));
           var j = await r.json();
           if (j && j.ok && j.data && j.data.ip) ip = j.data.ip;
         } catch (e) { ip = null; }
@@ -146,7 +169,7 @@
           committed();
           say('Replacing "' + a.nm + '" on ' + ip + ' from the copy already on the card — no second upload');
           try {
-            var r = await fetch('/api/theme/commit', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ip: ip, commit: a.commit }) });
+            var r = await fetch(OrbTheme.hostUrl('/theme/commit'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ip: ip, commit: a.commit }) });
             var j = await r.json().catch(function () { return null; });
             if (r.status === 200 && j && j.ok) {
               var stt = (j.data && j.data.state) || 'stored';
@@ -175,12 +198,24 @@
       var nm = meta.name, stem = meta.stem, summary = meta.summary;
       var hold = function (commit) { return { bytes: bytes, nm: nm, stem: stem, summary: summary, commit: commit }; };
       if (api.cancelled()) return;
+      if (!OrbTheme.hostInfo().send) {
+        // Send to orb is a download here (web host, send: false): the bytes never leave the page
+        var file = (meta.stem || meta.name || 'theme') + '.orbtheme';
+        var dn = host.download || OrbTheme.download;
+        if (dn) {
+          dn(new Blob([bytes], { type: 'application/octet-stream' }), file);
+          say('Downloaded "' + meta.name + '" as ' + file + ' — import it in Orb Manager to send it to an orb');
+        } else {
+          say('Not sent: this page cannot send to an orb, and it has no download');
+        }
+        return;
+      }
       var ip = await orbIp();
       if (!ip) {
         say('Not sent: this hub is not talking to an orb — load one on the Manage card first, then press again. (The download still ships without a hub.)');
         return;
       }
-      var door = '/api/theme/upload?ip=' + encodeURIComponent(ip);
+      var door = OrbTheme.hostUrl('/theme/upload') + '?ip=' + encodeURIComponent(ip);
       if (!overwrite) {
         say('Asking ' + ip + ' whether "' + nm + '" is already on the card…');
         var pre = null, preErr = '';
@@ -332,7 +367,7 @@
       var timer = setInterval(async function () {
         if (dead) return;
         try {
-          var r = await fetch('/api/theme/upload-status?ip=' + encodeURIComponent(ip));
+          var r = await fetch(OrbTheme.hostUrl('/theme/upload-status') + '?ip=' + encodeURIComponent(ip));
           var j = await r.json().catch(function () { return null; });
           var s = j && j.ok && j.data;
           if (s && words[s.phase]) say(words[s.phase](s));

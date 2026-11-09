@@ -41,6 +41,26 @@
   'use strict';
   var OrbTheme = root.OrbTheme = root.OrbTheme || {};
 
+  // GorbHost: the page sets window.GorbHost before the editor loads; with no GorbHost, or
+  // kind "hub", nothing changes (the Orb Manager default). Under kind "web" the hub's paths
+  // sit under another base and Send to orb becomes a download; editors read the flags (send,
+  // publish, inbox) through OrbTheme.hostInfo() and never kind (orb-os-net design §6.3).
+  // ---- GorbHost: keep this block byte-identical in theme@1/send.js and theme@1/session.js
+  OrbTheme.hostInfo = OrbTheme.hostInfo || function () {
+    var raw = root.GorbHost;
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) raw = {};
+    var kind = raw.kind === 'web' ? 'web' : 'hub';
+    var api = typeof raw.api === 'string' &&
+      /^\/[A-Za-z0-9_~-][A-Za-z0-9._~-]*(?:\/[A-Za-z0-9_~-][A-Za-z0-9._~-]*)*$/.test(raw.api) &&
+      !raw.api.split('/').some(function (s) { return s === '.' || s === '..'; })
+      ? raw.api : (kind === 'web' ? '/studio-api' : '/api');
+    var send = typeof raw.send === 'boolean' ? raw.send : kind === 'hub';
+    return Object.freeze({ kind: kind, api: api, send: send, publish: raw.publish === true, inbox: raw.inbox === true });
+  };
+  // a hub path, its leading api segment removed, at this host's base
+  OrbTheme.hostUrl = OrbTheme.hostUrl || function (p) { return OrbTheme.hostInfo().api + p; };
+  // ---- end GorbHost
+
   // a file the browser saves: the one download every editor's export goes through
   OrbTheme.download = function (blob, name) {
     var a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = name;
@@ -86,7 +106,7 @@
     (function () {
       var q = null; try { q = new URLSearchParams(root.location.search); } catch (e) { q = null; }
       if (!q) return;
-      if (/^[A-Za-z0-9_.-]{1,64}$/.test(q.get('theme') || '')) api.opening = 'Opening the theme’s design from the ' + (q.get('src') === 'shelf' ? 'hub’s shelf' : 'card') + '…';
+      if (/^[A-Za-z0-9_.-]{1,64}$/.test(q.get('theme') || '')) api.opening = OrbTheme.hostInfo().kind === 'web' ? 'Opening the design…' : 'Opening the theme’s design from the ' + (q.get('src') === 'shelf' ? 'hub’s shelf' : 'card') + '…';
       else if (q.get('entry')) api.opening = 'Opening “' + q.get('entry') + '” from the library…';
     })();
 
@@ -100,8 +120,10 @@
     // the keys this browser held before K9: read once to move My designs, then dropped
     api.sessionKey = function () { return 'wc.session.' + api.slug(); };
     api.mineKey = function () { return 'wc.mine.' + api.slug(); };
-    // the orb this page was served for: /editor/<ip>/<slug>/…, or null off the hub
+    // the orb this page was served for: /editor/<ip>/<slug>/…, or null off the hub. Under a
+    // web host there is no orb, and the site's library stands where the hub's does.
     api.hubOrb = function () {
+      if (OrbTheme.hostInfo().kind === 'web') return { ip: null, slug: api.slug() };
       var m = /^\/editor\/(\d{1,3}(?:\.\d{1,3}){3})\/([a-z0-9_-]{1,32})\//i.exec(String((root.location && root.location.pathname) || ''));
       return m ? { ip: m[1], slug: m[2] } : null;
     };
@@ -155,7 +177,7 @@
     var err = function (e) { return e && e.message ? e.message : String(e); };
     var extrasOf = function (x) { var o = {}; Object.keys(x).forEach(function (k) { if (k !== 'name' && k !== 'doc' && k !== 'at') o[k] = x[k]; }); return o; };
     var saveDraft = function (name, doc, extra) {
-      return hubJson('/api/design/save' + app() + '&name=' + encodeURIComponent(name),
+      return hubJson(OrbTheme.hostUrl('/design/save') + app() + '&name=' + encodeURIComponent(name),
         { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(Object.assign({}, doc, { saved: { extra: extra || {} } })) });
     };
     api.library = function () { return lib.slice(); };
@@ -163,7 +185,7 @@
     api.libraryRefresh = async function () {
       if (!api.hubOrb()) { lib = []; return false; }
       try {
-        var l = await hubJson('/api/library/entries' + app());
+        var l = await hubJson(OrbTheme.hostUrl('/library/entries') + app());
         lib = (Array.isArray(l) ? l : []).map(function (e) { return Object.assign({}, (e.draft && e.draft.extra) || {}, e); });
       } catch (e) { say('The library could not be read from the hub: ' + err(e)); return false; }
       host.set({});
@@ -184,7 +206,7 @@
     };
     // an entry's newest design (its draft, else its theme's), or its theme's with from='theme'
     var designOf = async function (nm, from) {
-      var r = await fetch('/api/library/design' + app() + '&name=' + encodeURIComponent(nm) + (from ? '&from=' + from : ''));
+      var r = await fetch(OrbTheme.hostUrl('/library/design') + app() + '&name=' + encodeURIComponent(nm) + (from ? '&from=' + from : ''));
       var o = null; try { o = await r.json(); } catch (e) { o = null; }
       if (!r.ok || !o || o.format !== 'wc-design') throw new Error((o && o.error) || 'the hub has no design for “' + nm + '”');
       return o;
@@ -206,7 +228,7 @@
     // what: 'draft' discards a theme's unsent changes; 'all' takes the entry out of the library
     api.forgetEntry = async function (nm, what) {
       if (!api.hubOrb()) { say(offHub); return false; }
-      try { await hubJson('/api/library/forget' + app() + '&name=' + encodeURIComponent(nm) + '&what=' + (what === 'draft' ? 'draft' : 'all'), { method: 'POST' }); }
+      try { await hubJson(OrbTheme.hostUrl('/library/forget') + app() + '&name=' + encodeURIComponent(nm) + '&what=' + (what === 'draft' ? 'draft' : 'all'), { method: 'POST' }); }
       catch (e) { say('Not removed: ' + err(e)); return false; }
       await api.libraryRefresh();
       say(what === 'draft' ? 'Discarded the unsent changes to “' + nm + '”' : 'Removed “' + nm + '” from the library');
@@ -233,7 +255,7 @@
           api.restart();
           var bytes = await host.bake();
           if (!bytes) throw new Error(String(host.state().status || 'the bake did not finish'));
-          var kept = await hubJson('/api/library/keep' + app() + '&fold=0', { method: 'POST', headers: { 'Content-Type': 'application/octet-stream' }, body: bytes });
+          var kept = await hubJson(OrbTheme.hostUrl('/library/keep') + app() + '&fold=0', { method: 'POST', headers: { 'Content-Type': 'application/octet-stream' }, body: bytes });
           // the bake names itself from the design; one that came out under another name is a
           // second entry, and the stale one still stands
           if (kept && kept.name && kept.name !== e.name) throw new Error('it baked as “' + kept.name + '”, so the stale “' + e.name + '” is still in the library');
@@ -268,8 +290,8 @@
         if (moved === left.length) { try { root.localStorage.removeItem(api.mineKey()); } catch (e) { /* no storage */ } }
       }
       await api.libraryRefresh();
-      try {
-        var src = await hubJson('/api/editor/source?ip=' + encodeURIComponent(hub.ip) + '&slug=' + encodeURIComponent(hub.slug));
+      if (OrbTheme.hostInfo().kind !== 'web') try {
+        var src = await hubJson(OrbTheme.hostUrl('/editor/source') + '?ip=' + encodeURIComponent(hub.ip) + '&slug=' + encodeURIComponent(hub.slug));
         // an orb behind the hub keeps its own editor, so its bakes are ones its app reads
         api.orbNote = src && src.relation === 'newer' && src.orb_version && src.hub_version
           ? 'this is the orb’s own ' + api.slug() + ' ' + src.orb_version + ' editor; the hub has ' + src.hub_version + ' — update the app on the orb to edit with it' : '';
@@ -396,10 +418,24 @@
     var openTheme = async function () {
       var q = null; try { q = new URLSearchParams(location.search); } catch (e) { q = null; }
       var id = q && q.get('theme'); if (!id || !/^[A-Za-z0-9_.-]{1,64}$/.test(id)) return false;
+      if (OrbTheme.hostInfo().kind === 'web') {
+        // under a web host the id is a site design, not a card theme: orb and src are ignored
+        say('Opening the design…');
+        try {
+          var rw = await fetch(OrbTheme.hostUrl('/theme/design?id=' + encodeURIComponent(id)));
+          if (!rw.ok) { var we = ''; try { we = (await rw.json()).error || ''; } catch (e) { we = ''; } say('Could not open that design: ' + (we || 'the server answered ' + rw.status)); return false; }
+          var ow = JSON.parse(new TextDecoder().decode(new Uint8Array(await rw.arrayBuffer())));
+          var whyw = api.apply(ow, 'the design');
+          if (whyw) { say('Could not open that design: ' + whyw); return false; }
+          api.restart();
+          api.sayOpened('the design');
+          return true;
+        } catch (e) { say('Could not open that design: ' + (e && e.message ? e.message : String(e))); return false; }
+      }
       var ip = q.get('orb') || '', src = q.get('src') === 'shelf' ? 'shelf' : 'card';
       say('Opening the theme’s design from the ' + (src === 'shelf' ? 'hub’s shelf' : 'card') + '…');
       try {
-        var r = await fetch('/api/theme/design?' + (src === 'shelf' ? 'name=' + encodeURIComponent(id) : 'ip=' + encodeURIComponent(ip) + '&id=' + encodeURIComponent(id)));
+        var r = await fetch(OrbTheme.hostUrl('/theme/design?') + (src === 'shelf' ? 'name=' + encodeURIComponent(id) : 'ip=' + encodeURIComponent(ip) + '&id=' + encodeURIComponent(id)));
         if (!r.ok) { var w = ''; try { w = (await r.json()).error || ''; } catch (e) { w = ''; } say('Could not reopen that theme: ' + (w || 'the hub answered ' + r.status)); return false; }
         var o = JSON.parse(new TextDecoder().decode(new Uint8Array(await r.arrayBuffer())));
         var why = api.apply(o, src === 'shelf' ? 'the hub’s shelf' : 'the card');

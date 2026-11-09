@@ -761,7 +761,7 @@ size and fps readouts) is the host's, done once.
 | Slice | Content | Gate |
 |---|---|---|
 | **E1** | the hosted page and the contract, with Radar on it (the smallest editor) | runtime and Radar suites; on Gold, Radar's editor opened from its Themes tab offers the four starts and the three Render actions — **built and benched on Gold 2026-11-08**, with E2's import and export (§8.5) |
-| **E2** | import into the library, Export with a Save dialog | Go suites for the import route; session suites with the hub stubbed; on Gold, an imported `.orbtheme` is in the library before it opens — **built with E1** (§8.5); the Save dialog is not benched in a headed browser |
+| **E2** | import into the library, Export with a Save dialog | Go suites for the import route; session suites with the hub stubbed; on Gold, an imported `.orbtheme` is in the library before it opens — **built with E1** (§8.5); the Save dialog benched by the owner in a headed browser on Gold 2026-11-08 (Export of Broad arrow saved, and the file imported back) |
 | **E3** | Weather and Flights on the host | each app's suites; no app code left that draws a start sheet, a Render step or a download — **built 2026-11-08**, benched on the bench fake at OS v1.2.38 (§8.6) |
 | **E4** | declared views in the centre pane, for all three | the same controls in every app; each view reaches the glass — **built 2026-11-08**, benched on the bench fake with home and two places (§8.7) |
 | **E5** | the live size readout; Check the bake goes | the clock's bake timed first; a readout that matches the bake's bytes — **built 2026-11-08** (§8.8) |

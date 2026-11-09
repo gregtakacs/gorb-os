@@ -2026,13 +2026,26 @@ function releaseSeed(watch, msg) {
 // tells installRun the shelf's copy must cross again even where the card and
 // the dial already hold readable copies of their own — the press was made
 // because those copies are older.
+// Every install holds the rotation off for the copy and puts it back as it was, as Update
+// everything does for its whole run (which leaves it off, so this finds nothing to pause): a
+// rotation step mid-copy takes and gives back the memory the card's write is asking for, and
+// moves the glass under the orb's own copying overlay (Gold, 2026-11-08: a clock update
+// refused twice with "the card refused the write").
 async function streamInstall(ip, only, auto, frame, force, card, onStep) {
   let q = "/api/library/install?ip=" + encodeURIComponent(ip);
   if (only) q += "&only=" + encodeURIComponent(only);
   if (auto) q += "&auto=1";
   if (force) q += "&force=1";
   if (card) q += "&card=1";
-  return streamSteps(q, frame, ip, onStep);
+  const car = await updAllRotation(ip);
+  const was = car && car.rotate && car.rotate.on && await updAllRotation(ip, { rotate: "0" }) ? car.rotate : null;
+  try { return await streamSteps(q, frame, ip, onStep); }
+  finally {
+    if (was) {
+      const back = { rotate: "1", every_s: String(was.every_s) };
+      if (!await updAllRotation(ip, back)) await updAllRotation(ip, back);   // once more: the orb may be rescanning
+    }
+  }
 }
 
 // streamSteps is streamInstall's body, split out because D38's Add-to-card press runs the

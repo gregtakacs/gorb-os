@@ -7626,6 +7626,15 @@ static esp_err_t h_app_upload(httpd_req_t *req)
                 : "{\"error\":\"could not open the app file on the card\"}");
     }
 
+    /* The file is open: park the dial for the copy, as the theme door does. A card write
+     * under a running dial competes with the panel for internal DMA RAM, and the sdmmc
+     * driver's small asks lose on a fragmented pool: Gold, 2026-11-08, a clock.orbapp
+     * update refused twice with "card write failed (I/O error)" under the Clock and went
+     * through on the third (§17.6's shape). Parked, the clock's scheduler stops, the home
+     * screen takes the glass under the copying overlay, and the copy names itself there.
+     * A park that loses to a raced resume proceeds anyway: the bytes are the job. */
+    const bool parked = orb_theme_upload_park((uint32_t)clen, "copying");
+
     /* The receive buffer lives in PSRAM, not internal .bss. This file already
      * carries the theme upload's static rx[4096] and the OTA chunk; a SECOND
      * internal-static rx starved the httpd task's own stack on orb-A the day it
@@ -7644,6 +7653,7 @@ static esp_err_t h_app_upload(httpd_req_t *req)
         rx = heap_caps_malloc(APP_RX, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
         if (!rx) {
             orb_app_upload_cancel(&up);
+            if (parked) orb_theme_upload_unpark();
             httpd_resp_set_status(req, "503 Service Unavailable");
             return httpd_resp_sendstr(req, "{\"error\":\"out of memory for the upload buffer\"}");
         }
@@ -7656,12 +7666,14 @@ static esp_err_t h_app_upload(httpd_req_t *req)
             /* Client vanished: cancel() deletes the .part, so nothing survives on the
              * card to be listed as an app and fail to load. */
             orb_app_upload_cancel(&up);
+            if (parked) orb_theme_upload_unpark();
             httpd_resp_set_status(req, "400 Bad Request");
             return httpd_resp_sendstr(req, "{\"error\":\"upload aborted by client\"}");
         }
         const esp_err_t de = orb_app_upload_data(up, rx, (size_t)r);
         if (de != ESP_OK) {
             orb_app_upload_cancel(&up);
+            if (parked) orb_theme_upload_unpark();
             if (de == ESP_ERR_INVALID_SIZE) {
                 httpd_resp_set_status(req, "413 Payload Too Large");
                 return httpd_resp_sendstr(req, "{\"error\":\"upload too large\"}");
@@ -7683,10 +7695,12 @@ static esp_err_t h_app_upload(httpd_req_t *req)
                 : "{\"error\":\"the card refused the write\"}");
         }
         got += r;
+        if (parked) orb_theme_upload_progress((uint32_t)got, (uint32_t)clen);
     }
 
     const char *why = NULL;
     const esp_err_t ee = orb_app_upload_end(&up, overwrite, &why);
+    if (parked) orb_theme_upload_unpark();   /* the file is verified (or refused): the dial is back */
     if (ee == ORB_APP_UPLOAD_E_DUP) {
         /* A different app already lives under that slug. 409, not 422: nothing is
          * wrong with the upload — the owner decides, and the page re-sends with

@@ -2095,6 +2095,7 @@ void orb_wasm_theme_landed(orb_app_t *app)
     wasm_slot_t *s = slot_of_app(app);
     if (!s || !s->rt || !s->on_glass) return;
     s->stage = true;
+    orb_strip_drop_full();                        /* the face's big plane: the bind needs the room */
     if (stage_rebind(app) == ESP_OK) stage_run(true);
     (void)wasm_call(s, W_RESUME, NULL, 0);
 }

@@ -345,6 +345,7 @@ static void pv_refresh(void)
     }
 }
 
+
 bool orb_strip_preview_pending(const char *slug)
 {
     for (int i = 0; slug && s_pv_ready && i < s_pv_n; i++)
@@ -1038,4 +1039,21 @@ void orb_strip_poll(int32_t delta, bool pressed, bool lpress, int64_t now)
     }
     if (s_st != ST_OFF) s_m.last_poll_us = esp_timer_get_time();
     glass_tell();
+}
+
+void orb_strip_drop_full(void)
+{
+    /* Only a finished plane: one still being inflated is the preview task's to keep. */
+    if (!s_hi_ready || !s_hi) return;
+    s_hi_ready = false;
+    /* a disc the grow or the fade still draws from it goes on from the small preview */
+    for (int i = 0; i < s_draw_n; i++)
+        if (s_draw[i].px == s_hi) {
+            const pv_t *p = pv_for(s_face_app);
+            if (p) { s_draw[i].px = p->px; s_draw[i].side = p->side; }
+            else   { s_draw[i] = s_draw[--s_draw_n]; i--; }
+        }
+    heap_caps_free(s_hi);
+    s_hi = NULL;
+    s_hi_slug[0] = '\0';
 }

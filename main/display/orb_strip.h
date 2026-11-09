@@ -51,6 +51,11 @@ void orb_strip_preview_changed(const char *slug);
  *  picture). */
 bool orb_strip_preview_pending(const char *slug);
 
+/** Let the centre app's full-glass preview go (434 KB of PSRAM) — a landing theme's bind
+ *  needs the room: Skeleton's gear canvas would not allocate beside it, and its gears stood
+ *  still (owner, 2026-11-09). The face's zoom goes on from the small preview. LVGL task. */
+void orb_strip_drop_full(void);
+
 /** Hand the glass back at once, the app under the carousel as it was (a screen the
  *  router was asked for over HTTP outranks the carousel). */
 void orb_strip_abort(void);

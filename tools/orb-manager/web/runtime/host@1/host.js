@@ -378,6 +378,10 @@
     var bakeWhy = '';
     async function bakeNow() {
       var dd = stateRef.current.d; bakeWhy = '';
+      // a design opened under a shared name (a site's ?shared= link) bakes under that name,
+      // `<name> by @<handle>`, whatever the app calls it; the design itself is not renamed
+      var bn = ses.bakeName ? ses.bakeName(dd.name) : dd.name;
+      if (bn !== dd.name) dd = Object.assign({}, dd, { name: bn });
       try {
         if (!(baked.key === keyOf(dd) && baked.r)) say('Baking “' + dd.name + '”…');
         var r = await bakeOf(dd, say);

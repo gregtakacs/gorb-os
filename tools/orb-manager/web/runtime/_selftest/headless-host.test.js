@@ -517,6 +517,19 @@ const last = () => draws[draws.length - 1];
     H.unmount(); location.search = ''; fh.themes.get('tint').delete('Old sea');
   }
 
+  // ---- a design opened under a shared name (a site's ?shared= link) bakes under that name,
+  // whatever the app's own design calls itself; the design held is not renamed
+  {
+    fh.themes.get('tint').set('Old sea', { design: { format: 'wc-design', schema: 1, app: 'tint', appVersion: 'v0.9.0', design: tint('Old sea', 'teal'), shared: { name: 'Old sea by @greg' } }, stale: 'bundle geometry v5', at: 9 });
+    const named = [];
+    const sapp = Object.assign({}, app, { bake: async (d) => { named.push(d.name); throw new Error('the test stops here'); } });
+    location.search = '?rebake=1';
+    const H = mount(HOST.Editor, { app: sapp });
+    await H.settle(30); await wait(80); H.render(); await H.settle(30);
+    ok(named[0] === 'Old sea by @greg', 'the bake takes the shared name', named.join());
+    H.unmount(); location.search = ''; fh.themes.get('tint').delete('Old sea');
+  }
+
   console.log(fails ? 'RESULT: FAIL — ' + fails + ' of ' + checked + ' checks' : 'all green (' + checked + ' checks)');
   process.exit(fails ? 1 : 0);
 })().catch((e) => { console.log('FAIL threw: ' + (e && e.stack || e)); process.exit(1); });

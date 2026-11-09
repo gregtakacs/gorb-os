@@ -492,7 +492,11 @@ var hostUrlCall = regexp.MustCompile(`OrbTheme\.hostUrl\('(/[^'?]+)`)
 
 // TestEditorAPIContractCoversTheRuntime holds the committed fixture to the runtime: every
 // path theme@1 calls, prefixed /api, is a step's path. /editor/source reports on an orb,
-// which a hosted editor never has (design §6.3), and is the only exemption.
+// which a hosted editor never has (design §6.3), and is exempt; so are the site-only
+// doors a hosted editor calls under GorbHost's assets flag (an image by hash, a shared
+// design's bundle), which the hub never serves and its editors never ask.
+var siteOnly = map[string]bool{"/asset": true, "/shared/bundle": true}
+
 func TestEditorAPIContractCoversTheRuntime(t *testing.T) {
 	src, err := os.ReadFile(filepath.Join("web", "runtime", "theme@1", "session.js"))
 	if err != nil {
@@ -512,7 +516,7 @@ func TestEditorAPIContractCoversTheRuntime(t *testing.T) {
 	}
 	missing := []string{}
 	for path := range calls {
-		if path == "/editor/source" {
+		if path == "/editor/source" || siteOnly[path] {
 			continue
 		}
 		if !recorded["/api"+path] {

@@ -15,7 +15,12 @@
  *     migration walk (composer-stack-plan ruling 12), and its refusals: another app's
  *     design, a schema with no step, a design from a newer release of the app;
  *   - opening a design from a file (an .orbtheme's design region, or a design file), a
- *     library entry (?entry=) or a card theme (?theme=), and the theme download.
+ *     library entry (?entry=) or a card theme (?theme=), and the theme download;
+ *   - on a site that asks for it (GorbHost's assets and designIds flags): art by hash, so the
+ *     site stores each image once and a design carries refs; and saving by design id, so Save
+ *     overwrites the design this page opened and a renamed Save makes a new one;
+ *   - a site's shared link (?shared=<id>&download=1): a design bundle in, baked here under the
+ *     shared name <name> by @<handle> and downloaded, with nothing of it saved.
  *
  * Everything is per app (?app=, else the host's slug), so two apps' editors never read
  * each other's designs. Plain JS, no React. The app keeps what only it knows:
@@ -44,7 +49,8 @@
   // GorbHost: the page sets window.GorbHost before the editor loads; with no GorbHost, or
   // kind "hub", nothing changes (the Orb Manager default). Under kind "web" the hub's paths
   // sit under another base and Send to orb becomes a download; editors read the flags (send,
-  // publish, inbox) through OrbTheme.hostInfo() and never kind (orb-os-net design §6.3).
+  // publish, inbox, assets, designIds) through OrbTheme.hostInfo() and never kind
+  // (orb-os-net design §6.3).
   // ---- GorbHost: keep this block byte-identical in theme@1/send.js and theme@1/session.js
   OrbTheme.hostInfo = OrbTheme.hostInfo || function () {
     var raw = root.GorbHost;
@@ -55,7 +61,7 @@
       !raw.api.split('/').some(function (s) { return s === '.' || s === '..'; })
       ? raw.api : (kind === 'web' ? '/studio-api' : '/api');
     var send = typeof raw.send === 'boolean' ? raw.send : kind === 'hub';
-    return Object.freeze({ kind: kind, api: api, send: send, publish: raw.publish === true, inbox: raw.inbox === true });
+    return Object.freeze({ kind: kind, api: api, send: send, publish: raw.publish === true, inbox: raw.inbox === true, assets: raw.assets === true, designIds: raw.designIds === true });
   };
   // a hub path, its leading api segment removed, at this host's base
   OrbTheme.hostUrl = OrbTheme.hostUrl || function (p) { return OrbTheme.hostInfo().api + p; };
@@ -90,6 +96,8 @@
       orbNote: '',                 // set by boot() when the orb's app is behind the hub's
       lastMade: null,              // the older release a design just opened was made by, else null
       opening: null,               // while a design is on its way in, the line saying so; else null
+      opened: null,                // under a host that saves by id: the site design this holds, {id, name}
+      sharedName: null,            // the shared name a design was opened under, while it stands
     };
     var lib = [];
     var say = function (s) { host.say(s); };
@@ -97,6 +105,11 @@
     var burstMs = function () { return host.burstMs ? host.burstMs() : 600; };
     var undoMax = function () { return host.undoMax ? host.undoMax() : 100; };
     var download = function (blob, name) { return (host.download || OrbTheme.download)(blob, name); };
+    // ?shared=<design id> (a site's shared link): the id, when this page was opened for one
+    var sharedOf = function (q) {
+      var s = (q && q.get('shared')) || '';
+      return OrbTheme.hostInfo().kind === 'web' && /^[A-Za-z0-9_-]{22}$/.test(s) ? s : null;
+    };
     /* An open is a fetch and a decode, megabytes off an orb's card for a converted theme, and
      * until it lands the start sheet's presets sit under the pointer: a click there picks a dial
      * the open then overwrites. The editor covers itself while api.opening holds a line. Every
@@ -106,7 +119,8 @@
     (function () {
       var q = null; try { q = new URLSearchParams(root.location.search); } catch (e) { q = null; }
       if (!q) return;
-      if (/^[A-Za-z0-9_.-]{1,64}$/.test(q.get('theme') || '')) api.opening = OrbTheme.hostInfo().kind === 'web' ? 'Opening the design…' : 'Opening the theme’s design from the ' + (q.get('src') === 'shelf' ? 'hub’s shelf' : 'card') + '…';
+      if (sharedOf(q)) api.opening = 'Opening the shared design…';
+      else if (/^[A-Za-z0-9_.-]{1,64}$/.test(q.get('theme') || '')) api.opening = OrbTheme.hostInfo().kind === 'web' ? 'Opening the design…' : 'Opening the theme’s design from the ' + (q.get('src') === 'shelf' ? 'hub’s shelf' : 'card') + '…';
       else if (q.get('entry')) api.opening = 'Opening “' + q.get('entry') + '” from the library…';
     })();
 
@@ -133,6 +147,94 @@
       try { j = await r.json(); } catch (e) { j = null; }
       if (!r.ok || !j || j.ok === false) throw new Error((j && j.error) || ('the hub answered ' + r.status));
       return j.data;
+    };
+
+    /* ---- art by hash (orb-os-net W4b): under a host that sets the assets flag the site keeps
+     * every image once, by its sha256, and a design carries refs (`orb-asset:<hex>`) plus a
+     * top-level `orbAssets` sidecar instead of bytes. An open inflates the refs back to data
+     * URLs, checking each answer's hash; a save sends what the session has already seen as refs
+     * with their sidecar, and every other image inline for the site to upload — after which it
+     * is known too, so the next save sends a ref. Never under the hub. */
+    var known = new Map();                     // the exact data URL a save can send as a ref
+    var b64 = function (bytes) {               // chunked: a megabyte image would overflow apply
+      var s = '', CH = 32768;
+      for (var i = 0; i < bytes.length; i += CH) s += String.fromCharCode.apply(null, bytes.subarray(i, i + CH));
+      return btoa(s);
+    };
+    var unb64 = function (t) { var b = atob(t), u = new Uint8Array(b.length); for (var i = 0; i < b.length; i++) u[i] = b.charCodeAt(i); return u; };
+    var hexOf = function (buf) { var u = new Uint8Array(buf), s = ''; for (var i = 0; i < u.length; i++) s += (u[i] < 16 ? '0' : '') + u[i].toString(16); return s; };
+    var shaHex = async function (bytes) { return hexOf(await crypto.subtle.digest('SHA-256', bytes)); };
+    var utf8Len = function (s) { try { return new TextEncoder().encode(s).length; } catch (e) { return s.length; } };
+    // a string the site would store as an asset: a data URL whose base64 payload decodes clean
+    // (re-encoding gives it back exactly) and holds at least 512 bytes; anything else stays put
+    var assetOf = function (s) {
+      if (typeof s !== 'string' || s.slice(0, 5) !== 'data:') return null;
+      var c = s.indexOf(','); if (c < 0) return null;
+      var prefix = s.slice(0, c);
+      if (prefix.slice(-7) !== ';base64') return null;
+      var pay = s.slice(c + 1), bytes = null;
+      try { bytes = unb64(pay); } catch (e) { return null; }
+      if (!bytes || bytes.length < 512 || b64(bytes) !== pay) return null;
+      return { prefix: prefix, bytes: bytes };
+    };
+    var assetBytes = async function (h, source) {
+      if (source) {
+        var t = source.assets && typeof source.assets[h] === 'string' ? source.assets[h] : null;
+        if (!t) throw new Error('the bundle is missing an image');
+        try { return unb64(t); } catch (e) { throw new Error('the bundle is missing an image'); }
+      }
+      var r = await fetch(OrbTheme.hostUrl('/asset?sha256=' + h));
+      if (!r.ok) throw new Error('could not fetch an image of this design (' + r.status + ')');
+      return new Uint8Array(await r.arrayBuffer());
+    };
+    var putRefs = function (v, byRef) {
+      if (Array.isArray(v)) { for (var i = 0; i < v.length; i++) { var x = v[i]; if (typeof x === 'string') { if (byRef.has(x)) v[i] = byRef.get(x); } else putRefs(x, byRef); } }
+      else if (v && typeof v === 'object') { for (var k in v) { if (!Object.prototype.hasOwnProperty.call(v, k)) continue; var y = v[k]; if (typeof y === 'string') { if (byRef.has(y)) v[k] = byRef.get(y); } else putRefs(y, byRef); } }
+      return v;
+    };
+    // a host document back in editor form: every ref replaced by the bytes it stands for, the
+    // sidecar gone. `source` is a shared design bundle (its assets are base64 in the bundle);
+    // without one the bytes come from the host, one fetch per image.
+    var inflate = async function (o, source) {
+      var list = o && Array.isArray(o.orbAssets) ? o.orbAssets : null;
+      if (list) delete o.orbAssets;
+      if (!list || !list.length) return o;
+      var byRef = new Map();
+      for (var i = 0; i < list.length; i++) {
+        var e = list[i], h = e && typeof e.sha256 === 'string' ? e.sha256 : '';
+        if (!/^[0-9a-f]{64}$/.test(h)) continue;
+        if (typeof e.prefix !== 'string' || e.prefix.slice(-7) !== ';base64') continue;
+        var bytes = await assetBytes(h, source);
+        if (await shaHex(bytes) !== h) throw new Error('an image of this design came back changed');
+        var url = e.prefix + ',' + b64(bytes);
+        known.set(url, { sha256: h, prefix: e.prefix, size: bytes.length });
+        byRef.set('orb-asset:' + h, url);
+      }
+      return putRefs(o, byRef);
+    };
+    // the save body, walked in place: known data URLs become refs and their sidecar entries.
+    // Returns the data URLs this save sent inline, so they join `known` once it landed.
+    var refify = async function (body) {
+      var strs = [];
+      (function walk(v) {
+        if (Array.isArray(v)) { for (var i = 0; i < v.length; i++) { var x = v[i]; if (typeof x === 'string') strs.push([v, i, x]); else walk(x); } }
+        else if (v && typeof v === 'object') { for (var k in v) { if (!Object.prototype.hasOwnProperty.call(v, k)) continue; var y = v[k]; if (typeof y === 'string') strs.push([v, k, y]); else walk(y); } }
+      })(body);
+      var side = new Map(), fresh = new Map();
+      for (var j = 0; j < strs.length; j++) {
+        var s = strs[j][2], e = known.get(s);
+        if (e) {
+          side.set(e.sha256, { sha256: e.sha256, prefix: e.prefix, size: e.size });
+          strs[j][0][strs[j][1]] = 'orb-asset:' + e.sha256;
+          continue;
+        }
+        var a = assetOf(s);
+        if (!a) continue;
+        if (!fresh.has(s)) fresh.set(s, { sha256: await shaHex(a.bytes), prefix: a.prefix, size: a.bytes.length });
+      }
+      if (side.size) body.orbAssets = Array.from(side.values()).sort(function (a, b) { return a.sha256 < b.sha256 ? -1 : a.sha256 > b.sha256 ? 1 : 0; });
+      else delete body.orbAssets;
+      return Array.from(fresh, function (kv) { return [kv[0], kv[1]]; });
     };
 
     /* ---- history. A snapshot is the named keys' values by reference: an editor that
@@ -176,9 +278,18 @@
     var offHub = 'the library is kept on the hub: open this editor from the hub, or download the .orbtheme';
     var err = function (e) { return e && e.message ? e.message : String(e); };
     var extrasOf = function (x) { var o = {}; Object.keys(x).forEach(function (k) { if (k !== 'name' && k !== 'doc' && k !== 'at') o[k] = x[k]; }); return o; };
-    var saveDraft = function (name, doc, extra) {
-      return hubJson(OrbTheme.hostUrl('/design/save') + app() + '&name=' + encodeURIComponent(name),
-        { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(Object.assign({}, doc, { saved: { extra: extra || {} } })) });
+    var saveDraft = async function (name, doc, extra, asNew) {
+      var flags = OrbTheme.hostInfo();
+      var body = Object.assign({}, doc, { saved: { extra: extra || {} } });
+      var fresh = [];
+      if (flags.assets) { body = JSON.parse(JSON.stringify(body)); fresh = await refify(body); }
+      var u = OrbTheme.hostUrl('/design/save') + app() + '&name=' + encodeURIComponent(name);
+      if (flags.designIds) u += asNew || !api.opened || !api.opened.id ? '&saveAs=1' : '&id=' + encodeURIComponent(api.opened.id);
+      var data = await hubJson(u, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+      // the site answers a renamed Save as a Save As: from now on this is that design
+      if (flags.designIds && data && typeof data.design === 'string' && data.design) api.opened = { id: data.design, name: name };
+      for (var i = 0; i < fresh.length; i++) known.set(fresh[i][0], fresh[i][1]);
+      return data;
     };
     api.library = function () { return lib.slice(); };
     api.libraryEntry = function (nm) { return lib.find(function (e) { return e.name === nm; }) || null; };
@@ -194,9 +305,11 @@
     // entry: {name, doc, ...anything the app lists by}. A draft under a theme's name sits beside
     // it as that theme's unsent changes; under a draft's name it replaces it.
     // quiet (Send to orb's first step): no line unless it fails, so the send's own lines stand
-    api.saveDraft = async function (entry, quiet) {
+    // asNew: always a new design, whatever this session was opened from (Save As, and a renamed
+    // Save under a host that saves by id — the site makes the new design and answers its id)
+    var saveEntry = async function (entry, quiet, asNew) {
       if (!api.hubOrb()) { if (!quiet) say('Not saved: ' + offHub); return false; }
-      try { await saveDraft(entry.name, entry.doc, extrasOf(entry)); }
+      try { await saveDraft(entry.name, entry.doc, extrasOf(entry), asNew); }
       catch (e) { say('Not saved: ' + err(e)); return false; }
       await api.libraryRefresh();
       if (quiet) return true;
@@ -204,11 +317,15 @@
       say('Saved “' + entry.name + '” to the library' + (e && e.state === 'changed' ? ' as unsent changes to its theme — Send to orb bakes them in' : ' as a draft'));
       return true;
     };
+    api.saveDraft = function (entry, quiet) { return saveEntry(entry, quiet, false); };
+    api.saveAs = function (entry, quiet) { return saveEntry(entry, quiet, true); };
     // an entry's newest design (its draft, else its theme's), or its theme's with from='theme'
     var designOf = async function (nm, from) {
-      var r = await fetch(OrbTheme.hostUrl('/library/design') + app() + '&name=' + encodeURIComponent(nm) + (from ? '&from=' + from : ''));
+      var u = OrbTheme.hostUrl('/library/design') + app() + '&name=' + encodeURIComponent(nm) + (from ? '&from=' + from : '') + (OrbTheme.hostInfo().assets ? '&refs=1' : '');
+      var r = await fetch(u);
       var o = null; try { o = await r.json(); } catch (e) { o = null; }
       if (!r.ok || !o || o.format !== 'wc-design') throw new Error((o && o.error) || 'the hub has no design for “' + nm + '”');
+      if (OrbTheme.hostInfo().assets) o = await inflate(o, null);
       return o;
     };
     api.openEntry = async function (nm) {
@@ -221,6 +338,10 @@
       var why = api.apply(o, 'the library');
       if (why) { say('Could not open “' + nm + '”: ' + why); return false; }
       api.restart();
+      if (OrbTheme.hostInfo().designIds) {
+        var ent = api.libraryEntry(nm);
+        api.opened = ent && ent.design ? { id: ent.design, name: nm } : null;
+      }
       if (!api.lastMade) say('Opened “' + nm + '” from the library');
       api.sayOpened('“' + nm + '”');
       return true;
@@ -278,6 +399,9 @@
     };
     var boot = async function () {
       try { root.localStorage.removeItem(api.sessionKey()); } catch (e) { /* no storage */ }
+      // a shared link opens a design nobody owns: this browser's library has nothing to do with it
+      var qs = null; try { qs = new URLSearchParams(root.location.search); } catch (e) { qs = null; }
+      if (sharedOf(qs)) return true;
       var hub = api.hubOrb();
       if (!hub) return false;
       var old = null; try { old = JSON.parse(root.localStorage.getItem(api.mineKey()) || 'null'); } catch (e) { old = null; }
@@ -340,6 +464,10 @@
     // older release made opens, and lastMade keeps that release so the opener can say so
     var relOf = function (v) { var g = /^v(\d+)\.(\d+)\.(\d+)(?:\+[0-9A-Za-z.-]+)?$/.exec(String(v || '')); return g ? [+g[1], +g[2], +g[3]] : null; };
     api.apply = function (o, from) {
+      // the shared name a design was opened under (a site's ?shared= link): every apply sets it,
+      // so opening anything else — a file, an entry, a fresh dial — puts the editor's own name back
+      var sn = o && o.shared && typeof o.shared.name === 'string' ? o.shared.name : '';
+      api.sharedName = sn && utf8Len(sn) <= 55 ? sn : null;
       var c = api.check(o);
       var why = c.why || host.apply(c.doc, from);
       var a = relOf(o && o.appVersion), b = relOf(api.version());
@@ -350,6 +478,8 @@
     api.sayOpened = function (what) {
       if (api.lastMade) say('Opened ' + what + ' — made with ' + api.slug() + ' ' + api.lastMade + '; saving or sending it updates it to ' + api.version());
     };
+    // the name an editor bakes under: the shared name while one stands, else its own
+    api.bakeName = function (own) { return api.sharedName || own; };
     // open a file: a baked .orbtheme (its design read out of it) or a design file
     api.openFile = async function (file) {
       opening('Opening ' + (file && file.name ? '“' + file.name + '”' : 'the file') + '…');
@@ -367,6 +497,7 @@
       var why = api.apply(o, file.name);
       if (why) { say('Not opened: ' + why); return false; }
       api.restart();
+      api.opened = null;              // a file is nobody's design: the next save makes one
       api.sayOpened(file.name);
       return true;
     };
@@ -415,19 +546,79 @@
     api.openTheme = async function () {
       try { return await openTheme(); } finally { opening(null); }
     };
+    /* ?shared=<design id>&download=1 (a site's share link, no sign-in): the design bundle
+     * stands for the design and its art, the editor bakes it under the shared name
+     * `<name> by @<handle>` and the file is what other people get. Nothing of it is saved:
+     * the site keeps no baked theme, and this session holds no design id. */
+    var openShared = async function (q) {
+      api.opened = null;
+      say('Opening the shared design…');
+      var bundle = null;
+      try {
+        var rb = await fetch(OrbTheme.hostUrl('/shared/bundle?id=' + encodeURIComponent(q.get('shared'))));
+        if (!rb.ok) { var se = ''; try { se = (await rb.json()).error || ''; } catch (e) { se = ''; } say('Could not open that design: ' + (se || 'the server answered ' + rb.status)); return false; }
+        try { bundle = JSON.parse(new TextDecoder().decode(new Uint8Array(await rb.arrayBuffer()))); } catch (e) { bundle = null; }
+        if (!bundle || bundle.format !== 'orb-design-bundle' || bundle.bundle !== 1) { say('Could not open that design: that is not a design bundle'); return false; }
+        var sd = await inflate(bundle.design, bundle);
+        var why = api.apply(sd, 'the shared design');
+        if (why) { say('Could not open that design: ' + why); return false; }
+      } catch (e) { say('Could not open that design: ' + (e && e.message ? e.message : String(e))); return false; }
+      api.restart();
+      api.sayOpened('the shared design');
+      if (q.get('download') !== '1') return true;
+      var want = api.bakeName(String((sd && (sd.themeName || sd.name || (sd.design && sd.design.name))) || 'design'));
+      if (!host.bake) { say('Not downloaded: this editor cannot bake here'); return true; }
+      // an editor that could not bake says why in its own status line; the session's own lines
+      // (the opening, the baking) are not that line, so they are not quoted back
+      var ownLine = function (s) {
+        var mine = ['Opening the shared', 'Baking', 'Downloaded', 'Not downloaded', 'Could not open'];
+        for (var i = 0; i < mine.length; i++) if (s.slice(0, mine[i].length) === mine[i]) return '';
+        return s;
+      };
+      var was = ''; try { was = ownLine(String((host.state && host.state().status) || '')); } catch (e) { was = ''; }
+      var line = 'Baking “' + want + '” for download…';
+      say(line);
+      // a React editor applies a design on its next render, so the first bake can still name the
+      // watch before it: check the header and bake again, three bakes at most
+      var vfy = root.GorbBake && typeof root.GorbBake.verifyBundle3 === 'function' ? root.GorbBake.verifyBundle3 : null;
+      var bytes = null, got = want;
+      for (var attempt = 0; attempt < 3; attempt++) {
+        bytes = await host.bake();
+        if (bytes === null || bytes === undefined) break;
+        got = vfy ? String((vfy(bytes) || {}).name || '') : want;
+        if (got === want || attempt === 2) break;
+        await new Promise(function (r) { setTimeout(r, 1000); });
+      }
+      if (bytes === null || bytes === undefined) {
+        var st = ''; try { st = ownLine(String((host.state && host.state().status) || '')); } catch (e) { st = ''; }
+        say('Not downloaded: ' + (st || was || 'the bake did not finish'));
+        return true;
+      }
+      if (got !== want) { say('Not downloaded: the bake came out named “' + got + '”'); return true; }
+      download(new Blob([bytes], { type: 'application/octet-stream' }), String(want).replace(/[\\/:*?"<>|\x00-\x1f\x7f]/g, '_') + '.orbtheme');
+      say('Downloaded “' + want + '”');
+      return true;
+    };
     var openTheme = async function () {
       var q = null; try { q = new URLSearchParams(location.search); } catch (e) { q = null; }
+      if (sharedOf(q)) return await openShared(q);   // a site's share link: sharedOf is web-only
       var id = q && q.get('theme'); if (!id || !/^[A-Za-z0-9_.-]{1,64}$/.test(id)) return false;
       if (OrbTheme.hostInfo().kind === 'web') {
         // under a web host the id is a site design, not a card theme: orb and src are ignored
         say('Opening the design…');
         try {
-          var rw = await fetch(OrbTheme.hostUrl('/theme/design?id=' + encodeURIComponent(id)));
+          var rw = await fetch(OrbTheme.hostUrl('/theme/design?id=' + encodeURIComponent(id)) + (OrbTheme.hostInfo().assets ? '&refs=1' : ''));
           if (!rw.ok) { var we = ''; try { we = (await rw.json()).error || ''; } catch (e) { we = ''; } say('Could not open that design: ' + (we || 'the server answered ' + rw.status)); return false; }
           var ow = JSON.parse(new TextDecoder().decode(new Uint8Array(await rw.arrayBuffer())));
+          if (OrbTheme.hostInfo().assets) ow = await inflate(ow, null);
           var whyw = api.apply(ow, 'the design');
           if (whyw) { say('Could not open that design: ' + whyw); return false; }
           api.restart();
+          if (OrbTheme.hostInfo().designIds) {
+            await api.libraryRefresh();
+            var ent = lib.filter(function (e) { return e.design === id; })[0];
+            api.opened = ent ? { id: id, name: ent.name } : null;
+          }
           api.sayOpened('the design');
           return true;
         } catch (e) { say('Could not open that design: ' + (e && e.message ? e.message : String(e))); return false; }

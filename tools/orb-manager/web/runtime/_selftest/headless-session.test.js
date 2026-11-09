@@ -312,6 +312,50 @@ const edit = (app, p) => { app.set(p); app.ses.track(); };
     OrbTheme.download = was;
   }
 
+  // ---- the site's two flags, seen from the hub: nothing at all changes
+  {
+    location.pathname = ON_HUB; location.search = '';
+    const asked = [];
+    const inner = global.fetch;
+    global.fetch = async (u, o) => { asked.push(String(u)); return inner(u, o); };
+    const b64of = (n, seed) => { const u = new Uint8Array(n); for (let i = 0; i < n; i++) u[i] = (seed * 7 + i * 13) & 0xff; return btoa(Array.from(u, (x) => String.fromCharCode(x)).join('')); };
+    const url = 'data:image/png;base64,' + b64of(600, 3);
+    const artDoc = () => ({ format: 'wc-design', schema: 1, app: 'tint', appVersion: 'v1.3.0', color: 'teal', size: 5, name: 'Hashed', art: [url, { deep: url }] });
+    const a = mk();
+    ok(await a.ses.saveDraft({ name: 'Hashed', doc: artDoc() }), 'on the hub a design with a large image still saves');
+    const held = fh.drafts.get('tint').get('Hashed');
+    ok(held.art[0] === url && held.art[1].deep === url, 'the hub holds that art inline, exactly as it did', JSON.stringify(held.art).slice(0, 30));
+    ok(!('orbAssets' in held) && JSON.stringify(held).indexOf('orb-asset:') < 0, 'with no refs and no sidecar asked for by anything', JSON.stringify(held).slice(0, 40));
+    ok(a.ses.opened === null && a.ses.sharedName === null && a.ses.bakeName('Mine') === 'Mine', 'and the session holds no design id and its own bake name');
+    await a.ses.libraryRefresh();
+    ok(await a.ses.openEntry('Hashed') && !asked.some((u2) => /refs=1|\/asset\?/.test(u2)), 'an open asks for no ref form and no image', asked.join(' ').slice(0, 90));
+    ok(await a.ses.saveAs({ name: 'Hashed two', doc: artDoc() }) && !asked.some((u2) => /saveAs|&id=/.test(u2)), 'and so does a Save As', asked.slice(-1)[0]);
+    const s = mk();
+    location.search = '?shared=abcdefghijklmnopqrstuv';
+    ok(s.ses.opening === null, 'a hub page opened with ?shared= gets no shared cover');
+    ok((await s.ses.boot()) === true && s.ses.library().length > 0, 'a hub page ignores ?shared= and reads its library as it always did');
+    ok(!(await s.ses.openTheme()) && !asked.some((u2) => /shared\/bundle/.test(u2)), 'and its openTheme asks the hub for no bundle', asked.slice(-1)[0]);
+    location.search = '';
+    global.fetch = inner;
+  }
+
+  // ---- the bake name
+  {
+    const a = mk();
+    ok(a.ses.bakeName('Mine') === 'Mine' && a.ses.sharedName === null, 'an editor bakes under its own name');
+    a.ses.apply({ format: 'wc-design', schema: 1, app: 'tint', appVersion: 'v1.3.0', color: 'teal', shared: { name: 'Skeleton by @greg' } }, 'the shared design');
+    ok(a.ses.sharedName === 'Skeleton by @greg' && a.ses.bakeName('Mine') === 'Skeleton by @greg', 'a design opened under a shared name bakes under that name', a.ses.sharedName);
+    a.ses.apply({ format: 'wc-design', schema: 1, app: 'tint', appVersion: 'v1.3.0', color: 'teal', shared: { name: '—'.repeat(20) } }, 'the shared design');
+    ok(a.ses.sharedName === null, 'a name longer than 55 bytes is not a shared name', String(a.ses.sharedName));
+    a.ses.apply({ format: 'wc-design', schema: 1, app: 'tint', appVersion: 'v1.3.0', color: 'teal', shared: { name: '  ' } }, 'the shared design');
+    ok(a.ses.sharedName === '  ' && a.ses.bakeName('Mine') === '  ', 'a short one stands as it was written');
+    a.ses.apply({ format: 'wc-design', schema: 1, app: 'tint', appVersion: 'v1.3.0', color: 'teal' }, 'the card');
+    ok(a.ses.sharedName === null && a.ses.bakeName('Mine') === 'Mine', 'and opening anything else puts the editor’s own name back');
+    a.ses.apply({ format: 'wc-design', schema: 1, app: 'tint', appVersion: 'v1.3.0', color: 'teal', shared: 'not an object' }, 'the card');
+    ok(a.ses.sharedName === null, 'a shared field that is not an object is no shared name');
+    ok(a.ses.bakeName(undefined) === undefined, 'with nothing to say, bakeName says nothing');
+  }
+
   console.log(fails ? 'RESULT: FAIL — ' + fails + ' of ' + checked + ' checks' : 'all green (' + checked + ' checks)');
   process.exit(fails ? 1 : 0);
 })().catch((e) => { console.log('FAIL threw: ' + (e && e.stack || e)); process.exit(1); });

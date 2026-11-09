@@ -70,6 +70,9 @@
   /* the class, hosted: the host keeps history, so the class's own steps aside */
   var Base = root.ClockLogic(DCLogic);
   class Hosted extends Base {
+    // a re-timed bake waits for the rebuilt movement 30 s, not the class's 2 minutes (a class
+    // field is the instance's own, so it is set here rather than shadowed by an accessor)
+    constructor(props) { super(props); this.REBAKE_SETTLE_MS = 30000; }
     trackHistory() { /* the host's history (snapshots of the snapshot) */ }
   }
 
@@ -184,6 +187,16 @@
       ctl.ready = true;
       if (pending) { var p = pending; pending = null; adopt(p); }
       ctl.buildMovement(); ctl.startTimer(); notify();
+      // The dc page ran componentDidUpdate after every render, and the ticker rendered every
+      // frame; hosted, the panes draw only when the class's state changes, and a re-time or a
+      // plan learned in a bake changes the movement's key without any. Then nothing rebuilt it:
+      // the bank sat half-built (8 of 15 frames), the balance stopped and the readout said 4 fps
+      // for Broad arrow's 15 (Gold, 2026-11-08). So the controller keeps the class's own loop.
+      ctl.__pump = setInterval(function () {
+        if (!ctl.ready) return;
+        try { ctl.componentDidUpdate(); } catch (e) { /* the class says so on its status line */ }
+        pushIfChanged();
+      }, 100);
     })();
     return ctl;
   }
@@ -347,15 +360,35 @@
       // Rebake all bakes at boot, before any pane has drawn and made the controller
       if (!ctl) ensure(host);
       await ctl.__mount;
-      // the watch the host holds; a hand-over that rebuilds the movement is waited out
-      var was = lastKey + '|' + handedKey; adopt(d);
-      if (lastKey + '|' + handedKey !== was) await new Promise(function (r) { setTimeout(r, 300); });
-      for (var t0 = Date.now(); (!ctl.settled3() || ctl.rendering) && Date.now() - t0 < 120000;) await new Promise(function (r) { setTimeout(r, 250); });
-      ctl._quietBake = true; ctl._quietLast = ''; ctl._bakedBytes = null;
-      try { await ctl._export3Body({ send: 'bytes' }); } finally { ctl._quietBake = false; }
-      var bytes = ctl._bakedBytes; ctl._bakedBytes = null;
-      if (!bytes) throw new Error(String(ctl._quietLast || 'the bake did not finish').replace(/^Not baked: /, ''));
-      return { bytes: bytes };
+      // The class rebuilds its movement only from componentDidUpdate, which the hosted editor runs
+      // when a pane draws; a bake must not wait on the page drawing (play paused, nothing changing:
+      // Gold 2026-11-08, a re-timed bank stuck at 8 of 15 frames). So the bake drives it itself, as
+      // the shelf's driver page does (bank3-drive.html), from the hand-over to the bytes.
+      var pump = setInterval(function () { try { ctl.componentDidUpdate(); } catch (e) { /* the bake says */ } }, 40);
+      try {
+        // the watch the host holds; a hand-over that rebuilds the movement is waited out
+        var was = lastKey + '|' + handedKey; adopt(d);
+        if (lastKey + '|' + handedKey !== was) await new Promise(function (r) { setTimeout(r, 300); });
+        // the movement must be drawn before it is baked; it draws only while the window is
+        // visible, so a wait is said, and one with no new frame in STALL_MS gives up in words
+        var say = (o && o.say) || function () {}, t0 = Date.now(), moved = t0, seen = -1, told = '';
+        while (!ctl.settled3() || ctl.rendering) {
+          var n = (ctl.gt || []).filter(Boolean).length, of = ctl.B || 0;
+          if (n !== seen) { seen = n; moved = Date.now(); }
+          if (Date.now() - t0 > root.ClockHost.SAY_AFTER_MS) {
+            var line = 'Waiting for the movement to finish drawing (' + n + ' of ' + of + ' frames) \u2014 keep this window in front';
+            if (line !== told) { told = line; say(line); }
+          }
+          if (Date.now() - moved > root.ClockHost.STALL_MS)
+            throw new Error('the movement stopped drawing at ' + n + ' of ' + of + ' frames \u2014 if this window is hidden or minimised, bring it to the front and press again');
+          await new Promise(function (r) { setTimeout(r, 250); });
+        }
+        ctl._quietBake = true; ctl._quietLast = ''; ctl._bakedBytes = null;
+        try { await ctl._export3Body({ send: 'bytes' }); } finally { ctl._quietBake = false; }
+        var bytes = ctl._bakedBytes; ctl._bakedBytes = null;
+        if (!bytes) throw new Error(String(ctl._quietLast || 'the bake did not finish').replace(/^Not baked: /, ''));
+        return { bytes: bytes };
+      } finally { clearInterval(pump); }
     },
     // the fit: the clock's own rows and its pace model (_devPace), not the host's sampling
     fit: function () {
@@ -374,6 +407,6 @@
       overlay: function (c) { return h(Overlay, c); },
     },
   };
-  root.ClockHost = { app: app, snap: function () { return ctl && snap(); }, ctl: function () { return ctl; }, templateSnap: templateSnap, scratchSnap: scratchSnap };
+  root.ClockHost = { STALL_MS: 15000, SAY_AFTER_MS: 2000, app: app, snap: function () { return ctl && snap(); }, ctl: function () { return ctl; }, templateSnap: templateSnap, scratchSnap: scratchSnap };
   if (root.OrbHost) root.OrbHost.register(app);
 })(typeof window !== 'undefined' ? window : globalThis);

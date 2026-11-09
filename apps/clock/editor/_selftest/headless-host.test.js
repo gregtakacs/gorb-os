@@ -126,6 +126,32 @@ require('../clock-host.js');
   ok(!JSON.stringify(pushed[pushed.length - 1]).includes('"pcm"'), 'still without its PCM');
   ok(!('upSig' in (await app.toDoc(pushed[pushed.length - 1], true)).sounds), 'and the file carries no fingerprint');
 
+  // a movement that stops drawing (a hidden window pauses it) is said while the bake waits, and
+  // the bake gives up in those words instead of holding Export on "Baking…" (2026-11-08)
+  {
+    const said = [], st3 = ctl.settled3;
+    ctl.settled3 = () => false;
+    window.ClockHost.STALL_MS = 400; window.ClockHost.SAY_AFTER_MS = 100;
+    let why = null;
+    try { await app.bake(window.ClockHost.snap(), { say: (t) => said.push(t) }); } catch (e) { why = e.message; }
+    ctl.settled3 = st3; window.ClockHost.STALL_MS = 15000; window.ClockHost.SAY_AFTER_MS = 2000;
+    ok(said.some((t) => /Waiting for the movement to finish drawing \(\d+ of \d+ frames\)/.test(t)), 'a wait for the movement is said', said.join(' | '));
+    ok(/stopped drawing at \d+ of \d+ frames .*bring it to the front/.test(why || ''), 'and a movement that stops drawing gives up in words', why);
+  }
+  // the bake drives the class's update itself: with no pane drawing, a movement that needs a
+  // rebuild is still rebuilt (Gold 2026-11-08: a re-timed bank sat at 8 of 15 frames)
+  {
+    let calls = 0; const cdu = ctl.componentDidUpdate, st3 = ctl.settled3;
+    ctl.componentDidUpdate = function () { calls++; };
+    ctl.settled3 = () => (calls >= 5 ? st3.call(ctl) : null);
+    window.ClockHost.STALL_MS = 1500;
+    let why = null;
+    try { await app.bake(window.ClockHost.snap(), {}); } catch (e) { why = e.message; }
+    ctl.componentDidUpdate = cdu; ctl.settled3 = st3; window.ClockHost.STALL_MS = 15000;
+    ok(calls >= 5 && !/stopped drawing/.test(why || ''), 'a bake drives the class\u2019s update itself, so a rebuild needs no pane to draw', calls + ' updates · ' + (why || 'baked'));
+  }
+  ok(window.ClockHost.ctl().REBAKE_SETTLE_MS === 30000, 'a re-timed bake waits 30 s for the rebuilt movement, not 2 minutes');
+
   const f = app.fit();
   ok(f.rows > 0 && f.cap >= f.rows && f.pace > 0, 'the fit: the rows against the cap, and the pace', JSON.stringify(f));
 

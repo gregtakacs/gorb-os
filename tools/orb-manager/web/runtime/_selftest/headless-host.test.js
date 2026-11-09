@@ -438,6 +438,31 @@ const last = () => draws[draws.length - 1];
     H.unmount(); location.search = '';
   }
 
+  // ---- a bake that never answers frees the queue in words, and a press's bake can say its
+  // wait (Export once sat on "Baking…" behind a bake that never finished, 2026-11-08)
+  {
+    const toast = (H) => text(by(H.tree, 'div', 'st-toast')[0] || null);
+    let mode = 'hang', saidSeen = '';
+    const bapp = Object.assign({}, app, { bake: async (d, o) => {
+      if (mode === 'hang') return new Promise(() => {});
+      ok(typeof o.say === 'function', 'a press hands the app a say for its waits');
+      o.say('Waiting for the test'); await wait(40); Hb.render(); saidSeen = text(by(Hb.tree, 'div', 'st-toast')[0] || null);
+      return { bytes: new Uint8Array(2048) };
+    } });
+    const cap0 = HOST.BAKE_CAP_MS; HOST.BAKE_CAP_MS = 80;
+    location.search = '?step=render&preset=sun';
+    const Hb = mount(HOST.Editor, { app: bapp });
+    await Hb.settle(20);
+    window.showSaveFilePicker = async () => { const x = new Error('closed'); x.name = 'AbortError'; throw x; };
+    by(Hb.tree, 'button', 'st-big')[2].props.onClick(); await wait(250); Hb.render(); await Hb.settle(10);
+    ok(/Not baked: the Tint bake did not answer in 0 s/.test(toast(Hb)), 'a bake that never answers fails in words at the cap', toast(Hb));
+    mode = 'ok';
+    by(Hb.tree, 'button', 'st-big')[2].props.onClick(); await wait(150); Hb.render(); await Hb.settle(10);
+    ok(saidSeen === 'Waiting for the test', 'the app\u2019s wait is said on the status line while it bakes', saidSeen);
+    ok(/Not exported|Exported/.test(toast(Hb)), 'and the next bake runs: the stuck one no longer holds the queue', toast(Hb));
+    HOST.BAKE_CAP_MS = cap0; Hb.unmount(); location.search = '';
+  }
+
   // ---- Rebake all on the real host (Gold, 2026-11-08): it opens each stale theme and bakes
   // straight away, before React draws again, so the bake must see the opened design; a failed
   // bake is named in its own words, not the status line the open left

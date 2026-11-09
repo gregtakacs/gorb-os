@@ -77,6 +77,8 @@
   var R = root.React, h = R.createElement, S = root.OrbStudio, T = root.OrbTheme;
   var H = root.OrbHost = root.OrbHost || {};
   var G = 466;
+  // the longest any app's bake may hold the bake queue (the clock's own waits give up sooner)
+  H.BAKE_CAP_MS = 120000;
 
   var list = function (a) { return Array.isArray(a) ? a : []; };
   var clone = function (o) { return JSON.parse(JSON.stringify(o)); };
@@ -325,13 +327,19 @@
     /* ---- the bake, the send, the export ---- */
     // one bake at a time, and the kept one for the design it was made from: Send and Export
     // reuse the live readout's bake when nothing has changed since
-    function bakeOf(dd) {
+    // A press's bake hands the app `say`, so a wait it knows about is said rather than left on
+    // "Baking…" (the live size's bake stays quiet); and no app bake holds the queue past
+    // BAKE_CAP_MS: it fails in those words and the next bake runs (an Export once sat behind
+    // a bake that never answered, 2026-11-08)
+    function bakeOf(dd, sayIt) {
       var k = keyOf(dd);
       var run = function () {
         if (baked.key === k && baked.r) return baked.r;
         return (async function () {
           var doc = new TextEncoder().encode(JSON.stringify(A.toDoc ? await ses.doc(true) : Object.assign(await ses.doc(true), { design: dd })));
-          var t0 = Date.now(), r = await A.bake(dd, { design: doc });
+          var cap, t0 = Date.now(), r = await Promise.race([A.bake(dd, { design: doc, say: sayIt || function () {} }),
+            new Promise(function (res, rej) { cap = setTimeout(function () { rej(new Error('the ' + (A.title || A.slug) + ' bake did not answer in ' + Math.round(H.BAKE_CAP_MS / 1000) + ' s')); }, H.BAKE_CAP_MS); })])
+            .finally(function () { clearTimeout(cap); });
           baked.ms = Date.now() - t0; baked.key = k; baked.r = r;
           return r;
         })();
@@ -345,7 +353,7 @@
       var dd = stateRef.current.d; bakeWhy = '';
       try {
         if (!(baked.key === keyOf(dd) && baked.r)) say('Baking “' + dd.name + '”…');
-        var r = await bakeOf(dd);
+        var r = await bakeOf(dd, say);
         say('Baked “' + dd.name + '”: ' + Math.round(r.bytes.length / 1024) + ' KB');
         return r;
       } catch (e) { bakeWhy = err(e); say('Not baked: ' + bakeWhy); return null; }

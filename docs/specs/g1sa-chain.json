@@ -1,0 +1,14 @@
+{
+  "name": "g1sa",
+  "repo": "../..",
+  "base": "g1-shared-assets",
+  "retries": 2,
+  "steps": [
+    {
+      "name": "g1sa-1-site-assets-and-shared-download",
+      "spec": "docs/specs/g1sa-1-site-assets-and-shared-download.md",
+      "hard": true,
+      "verify": "cd tools/orb-manager/web/runtime/_selftest && PY=python3 node headless-test.js && node headless-host.test.js && node headless-session.test.js && cd ../../../../../apps/clock/editor/_selftest && node headless-test.js && GORB_HOST='{\"kind\":\"hub\"}' NODE_OPTIONS=\"--require=$PWD/../../../../tools/orb-manager/web/runtime/_selftest/gorb-host-preload.js\" node headless-test.js && cd ../../../.. && node -e \"for (const f of ['apps/flights/editor/flights-editor.js','apps/weather/editor/weather-editor.js','tools/orb-manager/web/runtime/theme@1/session.js','tools/orb-manager/web/runtime/theme@1/send.js']) new Function(require('fs').readFileSync(f,'utf8'))\""
+    }
+  ]
+}

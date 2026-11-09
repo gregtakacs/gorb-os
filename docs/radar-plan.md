@@ -2198,3 +2198,21 @@ carousel opens) and London.
   glass region full (51 KB free): the spare PB is held there now.
 - **What it did not do:** the storm's rate. A step is the push (~50 ms), the sweep and the rest,
   and PF composed at the swap; the room went to holding the spare plane, not to a second one.
+
+### 7.10 The swap interlaced (2026-11-09, Bronze, OS v1.6.2)
+
+- **Ruling (owner):** a rain step goes onto the glass interlaced, "it almost gives it an animated
+  look". `gfx_prep_swap` swaps the planes whole and marks only the rows of phase 0; the commits
+  after release the rest, row y on commit y % 3 (`s_sb_*`, `sb_release`). A new swap first
+  releases whatever the last one still held. Bands (thirds) and the one blip stay behind
+  `GET /api/v1/debug/swap_band?mode=0|1|2&n=2..8` for the bench.
+- **The arm is not cut:** it is composed from the planes every frame and pushed as its own short
+  spans; under it the new rain shows a frame or two early.
+- **Rows, not pixels:** the panel takes spans (a window, then a run of pixels). A row is one span,
+  so a third of the rows is a third of the push; a checkerboard would make every new pixel its
+  own span and cost more than the whole rows. Interpolating two frames (a dissolve) would compose
+  and push the whole disc each frame (~50 ms of push alone), the arm ~5 fps: not done.
+- **Bronze, the region showing (lighter rain than §7.7's storm):** arm 15.6 fps avg, 10 at the
+  worst second in one blip; interlaced ~16.0, 12-13 at the worst; the step's biggest commit
+  61 → 53 ms. The rest of a step is PF composed at the swap, still in one commit: the next
+  place to spread it, with care that no fast job reads a half-swapped PF.

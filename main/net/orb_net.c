@@ -5681,6 +5681,22 @@ static esp_err_t h_debug_usb(httpd_req_t *req)
              esp_err_to_name(e), orb_usb_msc_state());
     return httpd_resp_sendstr(req, b);
 }
+
+/* GET /api/v1/debug/swap_band?mode=0|1|2&n=3 — trial: a live swap's repaint in one blip (0),
+ * in bands top to bottom (1) or interlaced rows (2), over n commits (orb_gfx.c). */
+static esp_err_t h_debug_swap_band(httpd_req_t *req)
+{
+    char v[8] = "";
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    httpd_resp_set_type(req, "application/json");
+    int mode = gfx_swap_band_mode(), n = gfx_swap_band_n();
+    if (q_param(req, "mode", v, sizeof v)) mode = atoi(v);
+    if (q_param(req, "n", v, sizeof v)) n = atoi(v);
+    gfx_swap_band_set(mode, n);
+    char b[48];
+    snprintf(b, sizeof b, "{\"mode\":%d,\"n\":%d}", gfx_swap_band_mode(), gfx_swap_band_n());
+    return httpd_resp_sendstr(req, b);
+}
 #endif /* CONFIG_ORB_DEBUG_HTTP */
 
 #if CONFIG_ORB_DEBUG_HTTP
@@ -9094,6 +9110,7 @@ static esp_err_t net_start_httpd(void)
         { .uri = "/api/v1/debug/time", .method = HTTP_GET, .handler = h_debug_time },
         { .uri = "/api/v1/debug/usb",  .method = HTTP_GET,  .handler = h_debug_usb },
         { .uri = "/api/v1/debug/card_bench", .method = HTTP_GET, .handler = h_debug_card_bench },
+        { .uri = "/api/v1/debug/swap_band", .method = HTTP_GET, .handler = h_debug_swap_band },
 #endif
         /* microSD + themes. /themes is the page; the routes under /api/v1/sd are its
          * backing calls. Migration 1 deleted the flip and default doors: under the

@@ -1202,18 +1202,68 @@ void gfx_prep_mode(int mode)
     }
 }
 int gfx_prep_on(void) { return s_pp_mode ? s_pp_mode | (s_pp_lean ? GFX_PREP_LEAN : 0) : 0; }
+/* radar-plan §7.10: the swap's repaint spread over s_sb_n commits, the planes still swapped
+ * whole. Mode 2, the default (owner, 2026-11-09: "almost gives it an animated look"),
+ * interlaces: row y goes on commit y % n. Mode 1 bands (thirds top to bottom), 0 is the one
+ * blip. Rows held back show the old rain until their commit; the arm composes from the
+ * planes every frame either way. Spans are what the panel takes, so rows are the finest
+ * mesh that still saves the push. */
+static int s_sb_mode = 2, s_sb_n = 3;
+static int s_sb_next, s_sb_left;
+static bool s_sb_fresh, s_sb_ready;              /* ready: the held spans start empty */
+EXT_RAM_BSS_ATTR static int16_t s_sb0[CLK_SCR_H], s_sb1[CLK_SCR_H];
+static int sb_phase(int32_t y)
+{
+    if (!s_sb_mode || s_sb_n < 2) return 0;
+    return s_sb_mode == 2 ? (int)(y % s_sb_n) : (int)(y * s_sb_n / CLK_SCR_H);
+}
+static void sb_hold(int32_t y, int32_t a, int32_t b)
+{
+    if (s_sb0[y] > s_sb1[y]) { s_sb0[y] = (int16_t)a; s_sb1[y] = (int16_t)b; }
+    else { if (a < s_sb0[y]) s_sb0[y] = (int16_t)a; if (b > s_sb1[y]) s_sb1[y] = (int16_t)b; }
+    const int k = sb_phase(y);
+    if (k > s_sb_left) s_sb_left = k;
+}
+/* the next band's rows onto this commit (all of them when a new swap overtakes) */
+static void sb_release(bool all)
+{
+    if (s_sb_left <= 0) return;
+    const int k = ++s_sb_next;
+    for (int32_t y = 0; y < CLK_SCR_H; y++) {
+        if (s_sb0[y] > s_sb1[y] || (!all && sb_phase(y) != k)) continue;
+        row_add(y, s_sb0[y], s_sb1[y]);
+        display_mark_rows_clocked(y, y);
+        s_sb0[y] = INT16_MAX; s_sb1[y] = -1;
+    }
+    if (all || k >= s_sb_left) { s_sb_left = 0; s_sb_next = 0; }
+}
+void gfx_swap_band_set(int mode, int n)
+{
+    sb_release(true);
+    s_sb_mode = mode < 0 ? 0 : mode > 2 ? 2 : mode;
+    s_sb_n = n < 2 ? 2 : n > 8 ? 8 : n;
+    for (int32_t y = 0; y < CLK_SCR_H; y++) { s_sb0[y] = INT16_MAX; s_sb1[y] = -1; }
+    s_sb_ready = true;
+}
+int gfx_swap_band_mode(void) { return s_sb_mode; }
+int gfx_swap_band_n(void) { return s_sb_n; }
+
 bool gfx_prep_swap(const int16_t *x0, const int16_t *x1, const uint8_t *alp)
 {
     if (!s_pp_mode || !s_pp_valid) return false;
+    if (!s_sb_ready) gfx_swap_band_set(s_sb_mode, s_sb_n);
+    sb_release(true);                                 /* the last swap's bands first */
     for (int32_t y = 0; y < CLK_SCR_H; y++) {
         const int32_t a = x0 && x1 ? x0[y] : 0, b = x0 && x1 ? x1[y] : CLK_SCR_W - 1;
         if (!s_sw_rows) { s_sw0[y] = INT16_MAX; s_sw1[y] = -1; }
         if (a > b) continue;
         if (a < s_sw0[y]) s_sw0[y] = (int16_t)a;
         if (b > s_sw1[y]) s_sw1[y] = (int16_t)b;
+        if (sb_phase(y)) { sb_hold(y, a, b); continue; }  /* a later commit's band (trial) */
         row_add(y, a, b);                                 /* repainted by this commit */
         display_mark_rows_clocked(y, y);
     }
+    s_sb_fresh = s_sb_left > 0;
     s_sw_rows = true;
     s_lg_alp = alp;
     s_lg_wait = true;
@@ -1578,6 +1628,8 @@ static void pp_commit(int nj, const gfx_paint_ctx_t *jc, const uint16_t *canvas,
     /* §7.7: rows built ahead for this swap hold only if nothing went stale since they began */
     const bool ahead_ok = s_sw_rows && s_ah_state == AH_DONE && s_ah_gen == s_pp_gen &&
                           s_lg_alp == s_ah_alp;
+    if (s_sb_fresh) s_sb_fresh = false;               /* the swap's own commit: band 0 */
+    else sb_release(false);
     s_lg_wait = false;                                /* §6.27: the job list reads the new pixels */
     pp_classify(nj, jc);
     {

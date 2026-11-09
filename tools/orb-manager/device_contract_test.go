@@ -499,7 +499,8 @@ func TestEveryFirmwareDeviceRouteIsAllowedAndFakeable(t *testing.T) {
 	// The theme cache's fill (C0's copy bench, C5's eviction and stale-choice doors) and the
 	// clock warp the chime tests run under are bench doors too (theme-cache-plan §6), and
 	// so is the USB disk row's press from the bench host (debug/usb, the same section), and
-	// the card's frame-file timing (debug/card_bench, radar frames on the card).
+	// the card's frame-file timing (debug/card_bench, radar frames on the card), and the
+	// swap-band trial (debug/swap_band).
 	refused := map[string]bool{"/api/v1/ota": true, "/generate_204": true,
 		"/hotspot-detect.html": true, "/connect/test.php": true,
 		"/api/v1/debug/panic": true, "/api/v1/debug/flights": true,
@@ -507,7 +508,8 @@ func TestEveryFirmwareDeviceRouteIsAllowedAndFakeable(t *testing.T) {
 		"/api/v1/debug/units_forget": true, "/api/v1/debug/map_bench": true,
 		"/api/v1/debug/map_view": true, "/api/v1/debug/png_bench": true,
 		"/api/v1/debug/live": true, "/api/v1/debug/fill": true, "/api/v1/debug/time": true,
-		"/api/v1/debug/usb": true, "/api/v1/debug/card_bench": true}
+		"/api/v1/debug/usb": true, "/api/v1/debug/card_bench": true,
+		"/api/v1/debug/swap_band": true}
 	checked := 0
 	for _, m := range found {
 		uri, method := m[1], strings.ToUpper(m[2])

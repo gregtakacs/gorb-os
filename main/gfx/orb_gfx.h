@@ -207,6 +207,9 @@ void gfx_set_band_hook(gfx_band_hook_fn fn);
  * time and its push, us) is what the last one cost, 0 before the first. */
 void gfx_swap_note(void);
 uint32_t gfx_swap_blip_us(void);
+void gfx_swap_band_set(int mode, int n);          /* trial: 0 one blip, 1 bands, 2 interlaced */
+int  gfx_swap_band_mode(void);
+int  gfx_swap_band_n(void);
 void gfx_commit(int nj, const gfx_paint_ctx_t *jc, const uint16_t *canvas);
 
 #if CONFIG_ORB_DEBUG_HTTP

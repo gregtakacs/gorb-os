@@ -41,7 +41,7 @@ MUTATIONS = [
     (UI, "            if (p->disc) { xa = p->disc[Y];", "            if (0) { xa = p->disc[Y];"),
     (UI, "xb = (int32_t)ORB_DISC_SIDE - 1 - xa; }\n            for (int32_t X = xa;", "xb = (int32_t)ORB_DISC_SIDE - xa; }\n            for (int32_t X = xa;"),
     (UI, "const int32_t u = p->sx * k2 + 2 * X - 2 * p->dx + 1 - p->k, x0", "const int32_t u = p->sx * k2 + 2 * X - 2 * p->dx, x0"),
-    (UI, "p->pal[p->shift >= 0 ? n >> p->shift : n / (k2 * k2)]", "p->pal[p->shift >= 0 ? n >> (p->shift - 1) : n / (k2 * k2)]"),
+    (UI, "const int32_t vi = p->shift >= 0 ? n >> p->shift : n / (k2 * k2);", "const int32_t vi = p->shift >= 0 ? n >> (p->shift - 1) : n / (k2 * k2);"),
     (UI, "for (int x = 0; x < w; x++) p->col[x] = p->prev[x] * (k2 - fy) + p->cur[x] * fy;", "for (int x = 0; x < w; x++) p->col[x] = p->prev[x] * (k2 - fy) + p->cur[x] * (fy ? fy : 1);"),
     (UI, "const int32_t c = p->sy * k2 - 2 * p->dy + 1 - p->k;", "const int32_t c = p->sy * k2 - 2 * p->dy;"),
     (UI, "if (x0 < 0 || x0 + 1 >= w) continue;", "if (x0 < 0 || x0 >= w) continue;"),

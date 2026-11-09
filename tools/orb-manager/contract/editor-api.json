@@ -1,0 +1,942 @@
+{
+  "format": 1,
+  "about": "Every request an editor's library calls make, and every answer the hub gave, recorded from the hub's own handlers by TestEditorAPIContract so another server can replay them; the send door's /api/orb/known, /api/theme/upload, /api/theme/commit and /api/theme/upload-status and /api/editor/source stay out because a hosted editor never calls them.",
+  "generator": "tools/orb-manager/contract_test.go TestEditorAPIContract",
+  "volatile": [
+    "at"
+  ],
+  "steps": [
+    {
+      "name": "list an empty library",
+      "request": {
+        "method": "GET",
+        "path": "/api/library/entries",
+        "query": [
+          [
+            "app",
+            "clock"
+          ]
+        ]
+      },
+      "response": {
+        "status": 200,
+        "contentType": "application/json",
+        "body": {
+          "data": [],
+          "ok": true
+        }
+      }
+    },
+    {
+      "name": "save a draft",
+      "request": {
+        "method": "POST",
+        "path": "/api/design/save",
+        "query": [
+          [
+            "app",
+            "clock"
+          ],
+          [
+            "name",
+            "Big sub"
+          ]
+        ],
+        "contentType": "application/json",
+        "body": {
+          "app": "clock",
+          "appVersion": "v1.2.16",
+          "assets": [
+            {
+              "dataUrl": "data:image/png;base64,AAAAAAAA",
+              "id": "bg-1"
+            }
+          ],
+          "dial": "skeleton",
+          "format": "wc-design",
+          "made": "2026-11-04T00:00:00Z",
+          "saved": {
+            "at": 0,
+            "extra": {
+              "dial": "skeleton"
+            },
+            "name": "ignored"
+          },
+          "schema": 1,
+          "themeName": "Big sub"
+        }
+      },
+      "response": {
+        "status": 200,
+        "contentType": "application/json",
+        "body": {
+          "data": {
+            "appVersion": "v1.2.16",
+            "at": 0,
+            "bytes": 282,
+            "extra": {
+              "dial": "skeleton"
+            },
+            "made": "2026-11-04T00:00:00Z",
+            "name": "Big sub"
+          },
+          "ok": true
+        }
+      }
+    },
+    {
+      "name": "replace the draft",
+      "request": {
+        "method": "POST",
+        "path": "/api/design/save",
+        "query": [
+          [
+            "app",
+            "clock"
+          ],
+          [
+            "name",
+            "Big sub"
+          ]
+        ],
+        "contentType": "application/json",
+        "body": {
+          "app": "clock",
+          "appVersion": "v1.2.16",
+          "assets": [
+            {
+              "dataUrl": "data:image/png;base64,AAAAAAAAAAAA",
+              "id": "bg-1"
+            }
+          ],
+          "dial": "skeleton",
+          "format": "wc-design",
+          "made": "2026-11-04T00:00:00Z",
+          "saved": {
+            "at": 0,
+            "extra": {
+              "dial": "skeleton"
+            },
+            "name": "ignored"
+          },
+          "schema": 1,
+          "themeName": "Big sub"
+        }
+      },
+      "response": {
+        "status": 200,
+        "contentType": "application/json",
+        "body": {
+          "data": {
+            "appVersion": "v1.2.16",
+            "at": 0,
+            "bytes": 286,
+            "extra": {
+              "dial": "skeleton"
+            },
+            "made": "2026-11-04T00:00:00Z",
+            "name": "Big sub"
+          },
+          "ok": true
+        }
+      }
+    },
+    {
+      "name": "list the one draft",
+      "request": {
+        "method": "GET",
+        "path": "/api/library/entries",
+        "query": [
+          [
+            "app",
+            "clock"
+          ]
+        ]
+      },
+      "response": {
+        "status": 200,
+        "contentType": "application/json",
+        "body": {
+          "data": [
+            {
+              "at": 0,
+              "draft": {
+                "appVersion": "v1.2.16",
+                "at": 0,
+                "bytes": 286,
+                "extra": {
+                  "dial": "skeleton"
+                },
+                "made": "2026-11-04T00:00:00Z",
+                "name": "Big sub"
+              },
+              "id": "clock-big-sub-8fb305c46757",
+              "name": "Big sub",
+              "state": "draft"
+            }
+          ],
+          "ok": true
+        }
+      }
+    },
+    {
+      "name": "open the draft",
+      "request": {
+        "method": "GET",
+        "path": "/api/library/design",
+        "query": [
+          [
+            "app",
+            "clock"
+          ],
+          [
+            "name",
+            "Big sub"
+          ]
+        ]
+      },
+      "response": {
+        "status": 200,
+        "contentType": "application/json",
+        "body": {
+          "app": "clock",
+          "appVersion": "v1.2.16",
+          "assets": [
+            {
+              "dataUrl": "data:image/png;base64,AAAAAAAAAAAA",
+              "id": "bg-1"
+            }
+          ],
+          "dial": "skeleton",
+          "format": "wc-design",
+          "made": "2026-11-04T00:00:00Z",
+          "saved": {
+            "at": 0,
+            "extra": {
+              "dial": "skeleton"
+            },
+            "name": "Big sub"
+          },
+          "schema": 1,
+          "themeName": "Big sub"
+        }
+      }
+    },
+    {
+      "name": "keep a baked theme",
+      "request": {
+        "method": "POST",
+        "path": "/api/library/keep",
+        "query": [
+          [
+            "app",
+            "clock"
+          ]
+        ],
+        "contentType": "application/octet-stream",
+        "bodyBase64": "VFJPRwMAAAADAAAAABAAAIAAAAD8AAAAHVIddgAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAAQAABUb3VyYmlsbG9uAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAN/Edv0AEAAADQEAAISVK3MBAAAAAAAAAPQABQADAAMAAQAAADAAAADMAAAAtS8ihAAAAAAAAAAAAAAAAAAAAAABAAAAAAAAABoAAAAFAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABAAAAAwAAAAAAAAAAAAAAAQAAAAAAAAAAAAAA0gEAANIBAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAY2xvY2sAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHsiZm9ybWF0Ijoid2MtZGVzaWduIiwic2NoZW1hIjoxLCJhcHAiOiJjbG9jayIsImFwcFZlcnNpb24iOiJ2MS4yLjEyIiwibWFkZSI6IjIwMjYtMTEtMDRUMDA6MDA6MDBaIiwiZGlhbCI6InNrZWxldG9uIiwidGhlbWVOYW1lIjoiVG91cmJpbGxvbiIsImFzc2V0cyI6W3siaWQiOiJiZy0xIiwiZGF0YVVybCI6ImRhdGE6aW1hZ2UvcG5nO2Jhc2U2NCxBQUFBIn1dLCJzYXZlZCI6eyJuYW1lIjoiaWdub3JlZCIsImF0IjoxLCJleHRyYSI6eyJkaWFsIjoic2tlbGV0b24ifX19"
+      },
+      "response": {
+        "status": 200,
+        "contentType": "application/json",
+        "body": {
+          "data": {
+            "file": "clock-tourbillon-732ba1d7.orbtheme",
+            "name": "Tourbillon"
+          },
+          "ok": true
+        }
+      }
+    },
+    {
+      "name": "save a draft over a theme",
+      "request": {
+        "method": "POST",
+        "path": "/api/design/save",
+        "query": [
+          [
+            "app",
+            "clock"
+          ],
+          [
+            "name",
+            "Tourbillon"
+          ]
+        ],
+        "contentType": "application/json",
+        "body": {
+          "app": "clock",
+          "appVersion": "v1.2.16",
+          "assets": [
+            {
+              "dataUrl": "data:image/png;base64,AAAA",
+              "id": "bg-1"
+            }
+          ],
+          "dial": "skeleton",
+          "format": "wc-design",
+          "made": "2026-11-04T00:00:00Z",
+          "saved": {
+            "at": 0,
+            "extra": {
+              "dial": "skeleton"
+            },
+            "name": "ignored"
+          },
+          "schema": 1,
+          "themeName": "Tourbillon"
+        }
+      },
+      "response": {
+        "status": 200,
+        "contentType": "application/json",
+        "body": {
+          "data": {
+            "appVersion": "v1.2.16",
+            "at": 0,
+            "bytes": 284,
+            "extra": {
+              "dial": "skeleton"
+            },
+            "made": "2026-11-04T00:00:00Z",
+            "name": "Tourbillon"
+          },
+          "ok": true
+        }
+      }
+    },
+    {
+      "name": "list a draft and a changed theme",
+      "request": {
+        "method": "GET",
+        "path": "/api/library/entries",
+        "query": [
+          [
+            "app",
+            "clock"
+          ]
+        ]
+      },
+      "response": {
+        "status": 200,
+        "contentType": "application/json",
+        "body": {
+          "data": [
+            {
+              "at": 0,
+              "draft": {
+                "appVersion": "v1.2.16",
+                "at": 0,
+                "bytes": 284,
+                "extra": {
+                  "dial": "skeleton"
+                },
+                "made": "2026-11-04T00:00:00Z",
+                "name": "Tourbillon"
+              },
+              "id": "clock-tourbillon-d051c6bfcab7",
+              "name": "Tourbillon",
+              "state": "changed",
+              "theme": {
+                "at": 0,
+                "baked": 0,
+                "bytes": 4365,
+                "can_reopen": true,
+                "file": "clock-tourbillon-732ba1d7.orbtheme",
+                "made_with": "v1.2.12",
+                "serial": 0,
+                "stem": "clock-tourbillon-732ba1d7"
+              }
+            },
+            {
+              "at": 0,
+              "draft": {
+                "appVersion": "v1.2.16",
+                "at": 0,
+                "bytes": 286,
+                "extra": {
+                  "dial": "skeleton"
+                },
+                "made": "2026-11-04T00:00:00Z",
+                "name": "Big sub"
+              },
+              "id": "clock-big-sub-8fb305c46757",
+              "name": "Big sub",
+              "state": "draft"
+            }
+          ],
+          "ok": true
+        }
+      }
+    },
+    {
+      "name": "open a changed theme's draft",
+      "request": {
+        "method": "GET",
+        "path": "/api/library/design",
+        "query": [
+          [
+            "app",
+            "clock"
+          ],
+          [
+            "name",
+            "Tourbillon"
+          ]
+        ]
+      },
+      "response": {
+        "status": 200,
+        "contentType": "application/json",
+        "body": {
+          "app": "clock",
+          "appVersion": "v1.2.16",
+          "assets": [
+            {
+              "dataUrl": "data:image/png;base64,AAAA",
+              "id": "bg-1"
+            }
+          ],
+          "dial": "skeleton",
+          "format": "wc-design",
+          "made": "2026-11-04T00:00:00Z",
+          "saved": {
+            "at": 0,
+            "extra": {
+              "dial": "skeleton"
+            },
+            "name": "Tourbillon"
+          },
+          "schema": 1,
+          "themeName": "Tourbillon"
+        }
+      }
+    },
+    {
+      "name": "open the theme beside its draft",
+      "request": {
+        "method": "GET",
+        "path": "/api/library/design",
+        "query": [
+          [
+            "app",
+            "clock"
+          ],
+          [
+            "name",
+            "Tourbillon"
+          ],
+          [
+            "from",
+            "theme"
+          ]
+        ]
+      },
+      "response": {
+        "status": 200,
+        "contentType": "application/json",
+        "body": {
+          "app": "clock",
+          "appVersion": "v1.2.12",
+          "assets": [
+            {
+              "dataUrl": "data:image/png;base64,AAAA",
+              "id": "bg-1"
+            }
+          ],
+          "dial": "skeleton",
+          "format": "wc-design",
+          "made": "2026-11-04T00:00:00Z",
+          "saved": {
+            "at": 0,
+            "extra": {
+              "dial": "skeleton"
+            },
+            "name": "ignored"
+          },
+          "schema": 1,
+          "themeName": "Tourbillon"
+        }
+      }
+    },
+    {
+      "name": "read a shelf theme's design",
+      "request": {
+        "method": "GET",
+        "path": "/api/theme/design",
+        "query": [
+          [
+            "name",
+            "clock-tourbillon-732ba1d7"
+          ]
+        ]
+      },
+      "response": {
+        "status": 200,
+        "contentType": "application/json",
+        "body": {
+          "app": "clock",
+          "appVersion": "v1.2.12",
+          "assets": [
+            {
+              "dataUrl": "data:image/png;base64,AAAA",
+              "id": "bg-1"
+            }
+          ],
+          "dial": "skeleton",
+          "format": "wc-design",
+          "made": "2026-11-04T00:00:00Z",
+          "saved": {
+            "at": 0,
+            "extra": {
+              "dial": "skeleton"
+            },
+            "name": "ignored"
+          },
+          "schema": 1,
+          "themeName": "Tourbillon"
+        }
+      }
+    },
+    {
+      "name": "rebake and keep the changes",
+      "request": {
+        "method": "POST",
+        "path": "/api/library/keep",
+        "query": [
+          [
+            "app",
+            "clock"
+          ],
+          [
+            "fold",
+            "0"
+          ]
+        ],
+        "contentType": "application/octet-stream",
+        "bodyBase64": "VFJPRwMAAAADAAAAABAAAIAAAAD8AAAAHVIddgAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAAQAABUb3VyYmlsbG9uAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAEybe7IAEAAADwEAAO3p/2EBAAAAAAAAAPQABQADAAMAAQAAADAAAADMAAAAtS8ihAAAAAAAAAAAAAAAAAAAAAABAAAAAAAAABoAAAAFAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABAAAAAwAAAAAAAAAAAAAAAQAAAAAAAAAAAAAA0gEAANIBAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAY2xvY2sAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHsiZm9ybWF0Ijoid2MtZGVzaWduIiwic2NoZW1hIjoxLCJhcHAiOiJjbG9jayIsImFwcFZlcnNpb24iOiJ2MS4yLjE2IiwibWFkZSI6IjIwMjYtMTEtMDRUMDA6MDA6MDBaIiwiZGlhbCI6InNrZWxldG9uIiwidGhlbWVOYW1lIjoiVG91cmJpbGxvbiIsImFzc2V0cyI6W3siaWQiOiJiZy0xIiwiZGF0YVVybCI6ImRhdGE6aW1hZ2UvcG5nO2Jhc2U2NCxBQUFBQUEifV0sInNhdmVkIjp7Im5hbWUiOiJpZ25vcmVkIiwiYXQiOjEsImV4dHJhIjp7ImRpYWwiOiJza2VsZXRvbiJ9fX0="
+      },
+      "response": {
+        "status": 200,
+        "contentType": "application/json",
+        "body": {
+          "data": {
+            "file": "clock-tourbillon-732ba1d7.orbtheme",
+            "name": "Tourbillon"
+          },
+          "ok": true
+        }
+      }
+    },
+    {
+      "name": "list the theme made anew",
+      "request": {
+        "method": "GET",
+        "path": "/api/library/entries",
+        "query": [
+          [
+            "app",
+            "clock"
+          ]
+        ]
+      },
+      "response": {
+        "status": 200,
+        "contentType": "application/json",
+        "body": {
+          "data": [
+            {
+              "at": 0,
+              "draft": {
+                "appVersion": "v1.2.16",
+                "at": 0,
+                "bytes": 284,
+                "extra": {
+                  "dial": "skeleton"
+                },
+                "made": "2026-11-04T00:00:00Z",
+                "name": "Tourbillon"
+              },
+              "id": "clock-tourbillon-d051c6bfcab7",
+              "name": "Tourbillon",
+              "state": "changed",
+              "theme": {
+                "at": 0,
+                "baked": 0,
+                "bytes": 4367,
+                "can_reopen": true,
+                "file": "clock-tourbillon-732ba1d7.orbtheme",
+                "made_with": "v1.2.16",
+                "serial": 0,
+                "stem": "clock-tourbillon-732ba1d7"
+              }
+            },
+            {
+              "at": 0,
+              "draft": {
+                "appVersion": "v1.2.16",
+                "at": 0,
+                "bytes": 286,
+                "extra": {
+                  "dial": "skeleton"
+                },
+                "made": "2026-11-04T00:00:00Z",
+                "name": "Big sub"
+              },
+              "id": "clock-big-sub-8fb305c46757",
+              "name": "Big sub",
+              "state": "draft"
+            }
+          ],
+          "ok": true
+        }
+      }
+    },
+    {
+      "name": "discard a theme's changes",
+      "request": {
+        "method": "POST",
+        "path": "/api/library/forget",
+        "query": [
+          [
+            "app",
+            "clock"
+          ],
+          [
+            "name",
+            "Tourbillon"
+          ],
+          [
+            "what",
+            "draft"
+          ]
+        ]
+      },
+      "response": {
+        "status": 200,
+        "contentType": "application/json",
+        "body": {
+          "data": {
+            "name": "Tourbillon",
+            "what": "draft"
+          },
+          "ok": true
+        }
+      }
+    },
+    {
+      "name": "forget the whole entry",
+      "request": {
+        "method": "POST",
+        "path": "/api/library/forget",
+        "query": [
+          [
+            "app",
+            "clock"
+          ],
+          [
+            "name",
+            "Tourbillon"
+          ],
+          [
+            "what",
+            "all"
+          ]
+        ]
+      },
+      "response": {
+        "status": 200,
+        "contentType": "application/json",
+        "body": {
+          "data": {
+            "name": "Tourbillon",
+            "what": "all"
+          },
+          "ok": true
+        }
+      }
+    },
+    {
+      "name": "list the library once more",
+      "request": {
+        "method": "GET",
+        "path": "/api/library/entries",
+        "query": [
+          [
+            "app",
+            "clock"
+          ]
+        ]
+      },
+      "response": {
+        "status": 200,
+        "contentType": "application/json",
+        "body": {
+          "data": [
+            {
+              "at": 0,
+              "draft": {
+                "appVersion": "v1.2.16",
+                "at": 0,
+                "bytes": 286,
+                "extra": {
+                  "dial": "skeleton"
+                },
+                "made": "2026-11-04T00:00:00Z",
+                "name": "Big sub"
+              },
+              "id": "clock-big-sub-8fb305c46757",
+              "name": "Big sub",
+              "state": "draft"
+            }
+          ],
+          "ok": true
+        }
+      }
+    },
+    {
+      "name": "list another app's library",
+      "request": {
+        "method": "GET",
+        "path": "/api/library/entries",
+        "query": [
+          [
+            "app",
+            "flights"
+          ]
+        ]
+      },
+      "response": {
+        "status": 200,
+        "contentType": "application/json",
+        "body": {
+          "data": [],
+          "ok": true
+        }
+      }
+    },
+    {
+      "name": "refuse an app slug with a path in it",
+      "request": {
+        "method": "GET",
+        "path": "/api/library/entries",
+        "query": [
+          [
+            "app",
+            "../x"
+          ]
+        ]
+      },
+      "response": {
+        "status": 400,
+        "contentType": "application/json",
+        "body": {
+          "error": "expected ?app=<slug>",
+          "ok": false
+        }
+      }
+    },
+    {
+      "name": "refuse another app's design",
+      "request": {
+        "method": "POST",
+        "path": "/api/design/save",
+        "query": [
+          [
+            "app",
+            "flights"
+          ],
+          [
+            "name",
+            "x"
+          ]
+        ],
+        "contentType": "application/json",
+        "body": {
+          "app": "clock",
+          "appVersion": "v1.2.16",
+          "assets": [
+            {
+              "dataUrl": "data:image/png;base64,A",
+              "id": "bg-1"
+            }
+          ],
+          "dial": "skeleton",
+          "format": "wc-design",
+          "made": "2026-11-04T00:00:00Z",
+          "saved": {
+            "at": 0,
+            "extra": {
+              "dial": "skeleton"
+            },
+            "name": "ignored"
+          },
+          "schema": 1,
+          "themeName": "x"
+        }
+      },
+      "response": {
+        "status": 400,
+        "contentType": "application/json",
+        "body": {
+          "error": "that design is the clock app’s, not flights’s",
+          "ok": false
+        }
+      }
+    },
+    {
+      "name": "refuse a document that is not a design",
+      "request": {
+        "method": "POST",
+        "path": "/api/design/save",
+        "query": [
+          [
+            "app",
+            "clock"
+          ],
+          [
+            "name",
+            "x"
+          ]
+        ],
+        "contentType": "application/json",
+        "body": {
+          "format": "zip"
+        }
+      },
+      "response": {
+        "status": 400,
+        "contentType": "application/json",
+        "body": {
+          "error": "that is not a design document",
+          "ok": false
+        }
+      }
+    },
+    {
+      "name": "refuse a blank name",
+      "request": {
+        "method": "POST",
+        "path": "/api/design/save",
+        "query": [
+          [
+            "app",
+            "clock"
+          ],
+          [
+            "name",
+            " "
+          ]
+        ],
+        "contentType": "application/json"
+      },
+      "response": {
+        "status": 400,
+        "contentType": "application/json",
+        "body": {
+          "error": "a design needs a name",
+          "ok": false
+        }
+      }
+    },
+    {
+      "name": "refuse a design that is not there",
+      "request": {
+        "method": "GET",
+        "path": "/api/library/design",
+        "query": [
+          [
+            "app",
+            "clock"
+          ],
+          [
+            "name",
+            "Nope"
+          ]
+        ]
+      },
+      "response": {
+        "status": 400,
+        "contentType": "application/json",
+        "body": {
+          "error": "no “Nope” in the clock library on this hub",
+          "ok": false
+        }
+      }
+    },
+    {
+      "name": "refuse to forget something else",
+      "request": {
+        "method": "POST",
+        "path": "/api/library/forget",
+        "query": [
+          [
+            "app",
+            "clock"
+          ],
+          [
+            "name",
+            "Big sub"
+          ],
+          [
+            "what",
+            "some"
+          ]
+        ]
+      },
+      "response": {
+        "status": 400,
+        "contentType": "application/json",
+        "body": {
+          "error": "what must be draft or all",
+          "ok": false
+        }
+      }
+    },
+    {
+      "name": "refuse another app's theme",
+      "request": {
+        "method": "POST",
+        "path": "/api/library/keep",
+        "query": [
+          [
+            "app",
+            "flights"
+          ]
+        ],
+        "contentType": "application/octet-stream",
+        "bodyBase64": "VFJPRwMAAAADAAAAABAAAIAAAAD8AAAAHVIddgAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAAQAABUb3VyYmlsbG9uAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAEybe7IAEAAADwEAAO3p/2EBAAAAAAAAAPQABQADAAMAAQAAADAAAADMAAAAtS8ihAAAAAAAAAAAAAAAAAAAAAABAAAAAAAAABoAAAAFAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABAAAAAwAAAAAAAAAAAAAAAQAAAAAAAAAAAAAA0gEAANIBAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAY2xvY2sAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHsiZm9ybWF0Ijoid2MtZGVzaWduIiwic2NoZW1hIjoxLCJhcHAiOiJjbG9jayIsImFwcFZlcnNpb24iOiJ2MS4yLjE2IiwibWFkZSI6IjIwMjYtMTEtMDRUMDA6MDA6MDBaIiwiZGlhbCI6InNrZWxldG9uIiwidGhlbWVOYW1lIjoiVG91cmJpbGxvbiIsImFzc2V0cyI6W3siaWQiOiJiZy0xIiwiZGF0YVVybCI6ImRhdGE6aW1hZ2UvcG5nO2Jhc2U2NCxBQUFBQUEifV0sInNhdmVkIjp7Im5hbWUiOiJpZ25vcmVkIiwiYXQiOjEsImV4dHJhIjp7ImRpYWwiOiJza2VsZXRvbiJ9fX0="
+      },
+      "response": {
+        "status": 400,
+        "contentType": "application/json",
+        "body": {
+          "error": "that theme is not one of the flights app’s",
+          "ok": false
+        }
+      }
+    },
+    {
+      "name": "refuse a GET at the save door",
+      "request": {
+        "method": "GET",
+        "path": "/api/design/save",
+        "query": [
+          [
+            "app",
+            "clock"
+          ],
+          [
+            "name",
+            "x"
+          ]
+        ]
+      },
+      "response": {
+        "status": 405,
+        "contentType": "text/plain; charset=utf-8",
+        "bodyText": "POST only\n"
+      }
+    }
+  ]
+}

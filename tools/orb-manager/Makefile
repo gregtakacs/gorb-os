@@ -29,7 +29,7 @@ MODULE    := github.com/gregtakacs/gorb-os/tools/orb-manager
 VERSION ?= $(shell git describe --tags --match 'v[0-9]*' --always --dirty 2>/dev/null || echo dev)
 LDFLAGS := -s -w -X main.version=$(VERSION)
 
-.PHONY: all build manager orbflash library test vet fmt check run desktop cdp reload flash windows win-test crosscheck clean firmware vendor-runtime vendor-check release dist winres usb-doc-test
+.PHONY: all build manager orbflash library test contract vet fmt check run desktop cdp reload flash windows win-test crosscheck clean firmware vendor-runtime vendor-check release dist winres usb-doc-test
 
 all: test build
 
@@ -124,6 +124,14 @@ test:
 
 vet:
 	$(GO) vet ./...
+
+## contract: regenerate contract/editor-api.json, the editor API fixture. The test of the
+## same name drives one scripted scenario through the hub's real routes and records every
+## request and answer, so the file is the hub's own behaviour written down — and the test
+## refuses a committed fixture that no longer matches it. A change to an endpoint the
+## editor uses is therefore always a fixture change here first; the site replays the file.
+contract:
+	ORB_WRITE_CONTRACT=1 $(GO) test -count=1 -run '^TestEditorAPIContract$$' .
 
 ## check: the verification ladder in one command — the suite with the bundle guard
 ## armed, vet, every supported GOOS/GOARCH type-checked including tests, and the

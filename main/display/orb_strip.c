@@ -319,8 +319,18 @@ static void pv_refresh(void)
         memcpy(fresh.slug, s_pv[i].slug, sizeof fresh.slug);
         fresh.side = 0;
         pv_fill(&fresh);
-        if (orb_strip_active()) continue;                /* opened meanwhile: next wake */
+        if (orb_strip_active()) {                        /* opened meanwhile: next wake */
+            heap_caps_free(fresh.px); heap_caps_free(fresh.z);
+            continue;
+        }
         s_pv_stale &= ~(1u << i);
+        if (!fresh.px) {
+            /* the card would not answer: the old picture stands rather than the gear (owner,
+             * 2026-11-09: the clock's became the gear when its fill held the card) */
+            ESP_LOGW(TAG, "preview %s: the new one would not read; the old one stays", fresh.slug);
+            heap_caps_free(fresh.z);
+            continue;
+        }
         uint16_t *old_px = s_pv[i].px;
         uint8_t  *old_z  = s_pv[i].z;
         s_pv[i] = fresh;
@@ -333,6 +343,13 @@ static void pv_refresh(void)
         heap_caps_free(old_px);
         heap_caps_free(old_z);
     }
+}
+
+bool orb_strip_preview_pending(const char *slug)
+{
+    for (int i = 0; slug && s_pv_ready && i < s_pv_n; i++)
+        if (!strcmp(s_pv[i].slug, slug)) return (s_pv_stale & (1u << i)) != 0;
+    return false;
 }
 
 void orb_strip_preview_changed(const char *slug)

@@ -3738,7 +3738,7 @@ void orb_theme_service(void)
 {
     if (s_fill_changed) { s_fill_changed = false; s_reconciled_gen--; }   /* due again */
     /* a theme chosen for the app on the glass fills there, once the store's job is done */
-    if (s_refill_slug[0] && !orb_jobs_busy()) {
+    if (s_refill_slug[0] && !orb_jobs_busy() && !orb_strip_preview_pending(s_refill_slug)) {
         orb_app_t *app = (orb_app_t *)orb_app_find_slug(s_refill_slug);
         s_refill_slug[0] = '\0';
         if (app && input_router_current() == app) orb_wasm_theme_changed(app);

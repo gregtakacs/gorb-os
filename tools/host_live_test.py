@@ -77,8 +77,10 @@ def lifted(mutation=None):
     i = gh.index("typedef struct gfx_paint_ctx {")
     pctx = gh[i:gh.index("} gfx_paint_ctx_t;", i) + len("} gfx_paint_ctx_t;") + 1]
     uih = open(UIH).read()
+    i = uih.index("typedef struct {\n    uint16_t *c565;")     # radar-plan §7.9: an indexed target's palette
+    palt = uih[i:uih.index("} orb_ui_pal_t;", i) + len("} orb_ui_pal_t;") + 1]
     i = uih.index("typedef struct { uint16_t *px; uint8_t *a;")
-    tgt = uih[i:uih.index("\n", i) + 1]
+    tgt = palt + uih[i:uih.index("\n", i) + 1]
     i = ui.index("typedef struct { uint16_t c; uint8_t a; } pal565_t;")
     pal_t = ui[i:ui.index("\n", i) + 1]
     i = ui.index("typedef struct {\n    const orb_ui_tgt_t *t;\n    const pal565_t *pal;           /* by value */")
@@ -89,6 +91,7 @@ def lifted(mutation=None):
         func(ui, "static inline void over("),
         ui[ui.index("static inline bool hatched_out("):ui.index("\n", ui.index("static inline bool hatched_out(")) + 1],   # one line
         sctx,
+        ui[ui.index("static inline void pal_mark("):ui.index("\n", ui.index("static inline void pal_mark(")) + 1],   # one line
         ui[ui.index("static int32_t floordiv("):ui.index("\n", ui.index("static int32_t floordiv(")) + 1],   # one line
         func(ui, "static void smooth_prep("),
         func(ui, "static int smooth_row("),

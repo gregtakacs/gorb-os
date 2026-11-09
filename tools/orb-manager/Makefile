@@ -91,7 +91,7 @@ VENDOR_DIR := web/runtime/vendor
 EDITOR_SRC := $(REPO)/apps/clock/editor
 SUPPORT_JS := web/runtime/support@1/support.js
 vendor-runtime:
-	@test -f "$(EDITOR_SRC)/Watch Composer.dc.html" || { echo "no $(EDITOR_SRC) — run this from the gorb-os clone"; exit 1; }
+	@test -f "$(EDITOR_SRC)/_selftest/bank3-drive.html" || { echo "no $(EDITOR_SRC) — run this from the gorb-os clone"; exit 1; }
 	$(GO) run ./cmd/orbvendor -out $(VENDOR_DIR) -editor "$(EDITOR_SRC)" -support $(SUPPORT_JS)
 
 ## vendor-check: verify the committed vendor tree, fetching nothing. It re-checks every

@@ -405,6 +405,8 @@
         var why = api.apply(o, src === 'shelf' ? 'the hub’s shelf' : 'the card');
         if (why) { say('Could not reopen that theme: ' + why); return false; }
         api.restart();
+        // as the library's open does: the "Opening…" line must not outlive the open
+        if (!api.lastMade) say('Opened the theme from the ' + (src === 'shelf' ? 'hub’s shelf' : 'card'));
         api.sayOpened('the theme from the ' + (src === 'shelf' ? 'hub’s shelf' : 'card'));
         return true;
       } catch (e) { say('Could not reopen that theme: ' + (e && e.message ? e.message : String(e))); return false; }

@@ -17,7 +17,7 @@ compiled pair has no field for a thumbnail"). `--check` never re-runs it, so the
 stays runnable on a box with no browser; the committed container is the artifact, exactly
 as the firmware bundle under `internal/firmware/bundle/` is.
 
-    python3 apps/clock/editor/deploy_test_folder.py
+    python3 apps/clock/editor/_selftest/deploy_test_folder.py
     '/mnt/c/Program Files/Google/Chrome/Application/chrome.exe' \\
       --headless=new --disable-gpu --no-sandbox --user-data-dir='C:\\Temp\\wc' \\
       --virtual-time-budget=600000 --dump-dom \\

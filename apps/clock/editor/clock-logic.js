@@ -2403,7 +2403,7 @@ class Component extends DCLogic {
     this._wheelFrozen = frozen;
     this._t3 = { pxs, un, bw, bh, compRows, compB, auxRows, auxB, onlyBase, wheelRows, cover,
                  orbital: !!m3.orbital, carW: m3.carriageW | 0, carH: m3.carriageH | 0 };
-    await this.t3bake(nm, fc, M, gt, B, fps, opts.send);
+    await this.t3bake(nm, fc, M, gt, B, fps, opts.send, !!opts._retimed);
   }
   /* §31's motion walk, apart from the export so the sweep page runs the same
    * code: compose the plate at every frame (white-balanced, as the bake reads it),
@@ -2988,7 +2988,8 @@ class Component extends DCLogic {
    * planes the bake wants, and download under the id the card will file it by.
    * A second method only because the first one holds the walk's ~8 MB of
    * frame pixels in its locals and the bake should not also hold its stack. */
-  async t3bake(nm, fc, M, gt, B, fps, send) {
+  // send: the press's ask ('bytes', true, or none for Export); retimed: this is the one re-time's pass
+  async t3bake(nm, fc, M, gt, B, fps, send, retimed) {
     const G = window.GorbBake;
     const { pxs, un, bw, bh, compRows, compB, auxRows, auxB, orbital, carW, carH, onlyBase, wheelRows, cover } = this._t3; this._t3 = null;
     const pixOf = (c) => this.wbPix(new Uint8Array(c.getContext('2d').getImageData(0, 0, c.width, c.height).data.slice().buffer));
@@ -3209,11 +3210,13 @@ class Component extends DCLogic {
            * learned also re-bakes when the beat it shipped is not the plan's */
           const beat4 = opts.scalars && opts.scalars.second_sweep ? opts.scalars.tick_rate : 0;
           const wantBeat = pk && this.sweepBeat3(pol) ? pk.fps : 0;
-          if (want4 && (want4 !== fps || (wantBeat && Math.round(wantBeat) !== beat4)) && !opts._retimed) {
+          if (want4 && (want4 !== fps || (wantBeat && Math.round(wantBeat) !== beat4)) && !retimed) {
             this.setState({ status: 'Re-timing the gears to ' + pk.gears + ' fps for the ' + pk.fps + ' fps hands (' + G.planKey4(pk) + ')\u2026' });
             for (const t0 = Date.now(); Date.now() - t0 < 1500 && this.settled3();) await new Promise((rs) => setTimeout(rs, 100));
             for (const t0 = Date.now(); !this.settled3() && Date.now() - t0 < this.REBAKE_SETTLE_MS;) await new Promise((rs) => setTimeout(rs, 250));
-            return this._export3Body(Object.assign({}, opts, { _retimed: 1 }));
+            // the press's own ask, not the baker's options: a re-timed Send still sends, a quiet
+            // bake still hands back bytes (before 2026-11-08 every re-time fell through to Export)
+            return this._export3Body({ send: send, _retimed: 1 });
           }
           this._plan4Shipped = pk;
         }

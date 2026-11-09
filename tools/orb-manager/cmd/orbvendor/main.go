@@ -151,7 +151,7 @@ type manifestEntry struct {
 
 func main() {
 	out := flag.String("out", "web/runtime/vendor", "directory to write the vendored assets into")
-	editor := flag.String("editor", "apps/clock/editor", "the editor dir whose .dc.html names the font links")
+	editor := flag.String("editor", "apps/clock/editor", "the clock's editor dir, whose _selftest/bank3-drive.html names the font links")
 	support := flag.String("support", "tools/orb-manager/web/runtime/support@1/support.js", "the runtime's support.js, whose SRI pins the scripts must match")
 	verify := flag.Bool("verify", false, "check the existing tree against the manifest and download nothing")
 	flag.Parse()
@@ -183,7 +183,9 @@ var (
 // The subset filter is the reason the result is 93 files and not 160: Google serves
 // every script per family, and a watch-face layout tool sets its display type in Latin.
 func collectFonts(client *http.Client, source string) (string, []fetched, error) {
-	entry := filepath.Join(source, "Watch Composer.dc.html")
+	// E7 2d retired the composer's own page; the shelf bake's drive page loads every face the
+	// editor offers (a face that has not arrived bakes as the fallback), so its links are the list
+	entry := filepath.Join(source, "_selftest", "bank3-drive.html")
 	page, err := os.ReadFile(entry)
 	if err != nil {
 		return "", nil, fmt.Errorf("read composer entry %s: %w", entry, err)

@@ -766,7 +766,7 @@ size and fps readouts) is the host's, done once.
 | **E4** | declared views in the centre pane, for all three | the same controls in every app; each view reaches the glass — **built 2026-11-08**, benched on the bench fake with home and two places (§8.7) |
 | **E5** | the live size readout; Check the bake goes | the clock's bake timed first; a readout that matches the bake's bytes — **built 2026-11-08** (§8.8) |
 | **E6** | frame rate per view, every app | an estimate shown for each view; checked against Gold for at least one view per app — **built 2026-11-08** (§8.9); checked on Gold for Flights and Weather (Radar has no moving view; the clock is E7's) |
-| **E7** | the clock on the host | the clock's headless suites (about 1,500 checks) green; nothing lost against the P5 checklist — **in two stages (owner, 2026-11-08): Stage 1, the clock's own page given the shared start, import, Render and live size, built 2026-11-08 (§8.11); Stage 2, the move onto the host: 2a–2d built 2026-11-08 (§8.13), the Gold bench (2e) left** |
+| **E7** | the clock on the host | the clock's headless suites (about 1,500 checks) green; nothing lost against the P5 checklist — **in two stages (owner, 2026-11-08): Stage 1, the clock's own page given the shared start, import, Render and live size, built 2026-11-08 (§8.11); Stage 2, the move onto the host: 2a–2d built and 2e benched on Gold 2026-11-08 (§8.13)** |
 
 The clock goes last. It is the largest editor and the one where the frame rate matters
 most, so it moves after the contract has carried the other three.
@@ -1120,7 +1120,7 @@ confirm. The clock's own session, history, start sheet, Render panel and top bar
 | 2b | `clock-logic.js`: the class out of the `.dc.html`, the suites' extract pointed at it — **folded into 2d** (§8.13) | the 20 clock suites green on the module; the `.dc.html` still runs it unchanged |
 | 2c | `clock-panes.js` (built as `clock-host.js`): the template as React in the host's slots, the clock's controller — **built 2026-11-08** | the clock's pages and UI suites ported; every binding of the template still in a pane |
 | 2d | the switch: `editor.json` hosted, the packer packs the module, the `.dc.html` and its session, history and start retired — **built 2026-11-08** (§8.13; the clock's own packer retired with the page) | the packer's checks and a `clock-host.js` suite; the shelf rebaked if a bake changes |
-| 2e | the bench | on Gold: start, every step, layers drag, art and sound uploads, diagnostics, Send, the size and pace readouts |
+| 2e | the bench — **benched on Gold 2026-11-08** (§8.13, Rebake all included) | on Gold: start, every step, layers drag, art and sound uploads, diagnostics, Send, the size and pace readouts |
 
 ### 8.13 E7 Stage 2 so far (2026-11-08)
 
@@ -1182,6 +1182,68 @@ confirm. The clock's own session, history, start sheet, Render panel and top bar
   three browser probes (`theme-check`, `probe-bake-motion`, `probe-coverage`) now catch
   `saveFile` too; the bake runs in 6 s again, and a dry run (not installed) passes
   `make_default_theme.py`'s gate. The shipped Skeleton is unchanged and still current.
-- **Left for 2e:** the bench on Gold: start, every step, layers drag, art and sound
-  uploads, diagnostics, the Edit door, Rebake all, Send, the size and pace readouts.
+- **2e, benched on Gold 2026-11-08** (bench hub on :3790 with scratch libraries, headless
+  Chrome over CDP): the four ways in with nothing drawn before a choice; Skeleton from the
+  template panel; Movement, Dial, Parts and Finish each with its inspector; + Hand (6 → 8
+  of 24 rows), Undo and Redo; a Layers drag (Hour hand to the top), undone and redone;
+  dial art (3,457 → 3,470 KB) and a tick upload; diagnostics (8-frame bank, seam check
+  seamless); Render's size, frame rate and fit; Save to library; Send storing "E7 bench"
+  and Gold drawing it (`/api/v1/fb`); the Edit door reopening it off the card with its
+  name, art and layer order; Export (3,312,853 B, the size Render showed). Gold put back
+  after: Skeleton active, the bench theme deleted, its theme list identical to before.
+  Rebake all was not benched: it acts only on a library theme the orb would refuse, and
+  every Skeleton in the history is ABI 6; it reuses the open-then-bake path the Edit door
+  and Send exercised.
+- **Found and fixed on the bench:**
+  - *A rename never reached the bake.* The host's top bar owns the name, but the class
+    bakes and files under its own `themeName`, and `adopt` keyed only the watch, so a
+    renamed design baked as "Skeleton" and Send offered to replace the orb's own Skeleton
+    with it. `clock-host.js` hands the host's name to the class (a rename alone rebuilds
+    nothing and pushes nothing back).
+  - *A design's sound upload was dropped on open.* `fromDoc` emptied the uploads, which
+    snapshots leave out; a file's uploads now ride under a ref the snapshot carries, so an
+    open and Undo back to it keep them, and the file it writes back carries them with no
+    ref of the host's.
+  - *A new upload was no change.* With the voice already "upload", replacing the file
+    left the snapshot as it was: no live size, no history, no unsent changes. Snapshots
+    carry a fingerprint of the uploads (names and lengths, no PCM).
+  - *The Edit door's "Opening…" line outlived the open*; `session.js` now says it opened,
+    as the library's open does.
+  - *Leftovers of the dc page*: `orbvendor` and `make vendor-runtime` read the font links
+    from the retired page (now from `_selftest/bank3-drive.html`, the same ten links);
+    `tools/bench/loopcheck.py` reads `clock-logic.js` (its two failing cases fail the same
+    on the commit before 2d); `bake_presets.py` and `make_default_theme.py`'s recipe name
+    the moved deployer.
+  The `clock-host.js` suite is 32 checks; each fix's checks fail on the code before it.
+- **Second round on Gold (2026-11-08, after the owner's review):**
+  - *Rebake all, benched:* a scratch Skeleton marked ABI 5 (header CRC recomputed) listed as
+    stale; Rebake all rebaked it (3,484,720 B, ABI 6, 6 sounds; it passes
+    `make_default_theme.py`'s gate). Three faults on the way, all fixed: (1) the host baked
+    the design BEFORE the one it had just opened, for every app: `apply` set React state and
+    the bake read the ref React fills on its next draw (the host suite's new check baked
+    "gold" for "teal"); (2) the clock's bake had no controller when no pane had drawn yet;
+    (3) a failed bake was reported as the stale status line, now its own reason.
+  - *A re-timed bake lost the press's ask* (since clock v1.2.24, d1c1368): the retime
+    re-entered `_export3Body` with the baker's options, so a Send that re-timed its gears
+    downloaded instead (or opened Save), and a quiet bake did the same. It now carries the
+    press's `send`, and the one-retime guard reads the right flag.
+  - *The reopened design's 256 KB:* its uploaded tick shipped as silence. JSON writes the
+    Int16Array samples as `{"0": v, ...}` and nothing turned them back, so every reopened
+    design (and every Edit-door open) with an uploaded sound baked it silent, which ADPCM
+    packs small. `fromDoc` revives the samples; a fresh build and its reopen now bake the
+    same 3,576,301 B with identical art, the design differing only in `made`. The host's
+    snapshot ref and fingerprint no longer leak into the class, so a bake's embedded design
+    carries neither.
+  - *The Send dialog keeps its button:* past the commit it reads "Waiting for the orb…"
+    (disabled) instead of a Cancel it cannot keep, and the verdict stays up, "Sent to the
+    orb" with Done, "Not sent" with Close, an unwitnessed store with a check, until pressed
+    (owner: no close until done, done unmistakable). A cancel or the duplicate question still
+    closes it; an exact match ends as done. Benched on Gold: Waiting… through the store, then
+    Done, which closed it.
+  - *loopcheck* passes: its seal checks follow the wheel cutout's second seal (c0a8f45) and
+    the FORMAT 3 bake's sealed walk (the layer kit retired in 825e5ee), and its mutants are
+    caught by rerunning the checks rather than by a missing string.
+  Gold back as before each time (Skeleton active, bench themes deleted, its list identical).
+- **Open:** a bench hub keeps a library editor in memory for ten minutes (`editorFetchTTL`):
+  a rebuilt `.orbapp` needs a hub restart to be served.
 

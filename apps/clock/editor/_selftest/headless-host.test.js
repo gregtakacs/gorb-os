@@ -72,12 +72,59 @@ require('../clock-host.js');
   ctl.setState = ss;
   ok(sets === 0, 'and the host’s copy coming back is no change', String(sets));
 
+  // the host's name is the theme's: a rename in its top bar is what the bake and the file carry,
+  // with no movement rebuilt and nothing handed back (Gold, 2026-11-08: a renamed design baked
+  // as "Skeleton", and Send offered to replace the orb's own Skeleton with it)
+  let builds = 0; const bm = ctl.buildMovement; ctl.buildMovement = function () { builds++; return bm.apply(this, arguments); };
+  app.adopt(Object.assign({}, pushed[0], { name: 'E7 bench' }));
+  ctl.buildMovement = bm;
+  draw();
+  ok(ctl.themeName() === 'E7 bench', 'a rename in the host is the class\u2019s theme name', ctl.themeName());
+  ok(builds === 0 && pushed.length === 1, 'and rebuilds nothing, pushes nothing', builds + ' builds, ' + pushed.length + ' pushes');
+  ok((await app.toDoc(pushed[0], false)).themeName === 'E7 bench', 'the file carries the new name');
+  app.adopt(Object.assign({}, pushed[0], { name: 'Modern' }));
+  ok(ctl.themeName() === 'Modern', 'and Undo past the rename takes the old name back');
+
   // the file: the clock's own shape, and back
   const doc = await app.toDoc(pushed[0], false);
   ok(doc && doc.dial === 'modern' && Array.isArray(doc.design.comps), 'the file is the clock’s designContent');
   const back = app.fromDoc(doc);
   ok(back && !app.check(back) && JSON.stringify(back.design.comps) === JSON.stringify(ctl.design().comps), 'which reads back as the same watch');
   ok(app.fromDoc({ dial: 'modern' }) === null, 'a file with no design reads as nothing');
+
+  // a design file's sound upload survives the open (Gold, 2026-11-08: a library draft with its
+  // own tick came back with the tick named and its PCM gone), and Undo back to it
+  const sd0 = ctl.sndDesign();
+  const withUp = Object.assign({}, doc, { themeName: 'Ticker', sounds: Object.assign({}, sd0, { tick: 'upload', up: { tick_loop: { name: 'tick.wav', pcm: [1, 2, 3], loop: true, rate: 22050, first: 0 } } }) });
+  const opened = app.fromDoc(withUp);
+  ok(!JSON.stringify(opened).includes('"pcm"'), 'the snapshot carries no PCM');
+  app.adopt(opened);
+  const upNow = () => ((ctl.sndDesign().up || {}).tick_loop || {}).name;
+  ok(upNow() === 'tick.wav', 'an opened design\u2019s sound upload is the class\u2019s', String(upNow()));
+  ok(ctl.sndDesign().up.tick_loop.pcm instanceof Int16Array && ctl.sndDesign().up.tick_loop.pcm[2] === 3, 'its samples are samples again, not the object JSON made of them');
+  // the form a real file holds: a typed array through JSON is an object of indices
+  const asSaved = JSON.parse(JSON.stringify(Object.assign({}, withUp, { sounds: Object.assign({}, withUp.sounds, { up: { tick_loop: { name: 'tick.wav', pcm: new Int16Array([-2984, 6262, 15342]), loop: false } } }) })));
+  ok(!Array.isArray(asSaved.sounds.up.tick_loop.pcm), 'a saved file holds the samples as an object');
+  app.adopt(app.fromDoc(asSaved));
+  const revived = ctl.sndDesign().up.tick_loop.pcm;
+  ok(revived instanceof Int16Array && revived.length === 3 && revived[0] === -2984 && revived[2] === 15342, 'and they open as the samples they were', String(revived && Array.from(revived)));
+  app.adopt(opened);
+  const inner = ctl.sndDesign();
+  ok(!('upRef' in inner) && !('upSig' in inner) && !('upRef' in (await ctl.designContent(true)).sounds), 'the class holds neither the ref nor the fingerprint, so the design a bake embeds carries neither', Object.keys(inner).join());
+  const doc2 = await app.toDoc(opened, true);
+  ok(doc2.sounds.up.tick_loop && !('upRef' in doc2.sounds), 'and is in the file it writes, with no ref of the host\u2019s', JSON.stringify(Object.keys(doc2.sounds)));
+  app.adopt(window.ClockHost.templateSnap('modern'));
+  app.adopt(opened);
+  ok(upNow() === 'tick.wav', 'Undo back to the opened design brings its upload back', String(upNow()));
+
+  // a new upload is a change the host sees, even with the voice already "upload" (Gold: the live
+  // size stayed put after a second tick.wav)
+  draw(); const before = pushed.length;
+  ctl.sndUpd((x) => { x.tick = 'upload'; x.up.tick_loop = { name: 'other.wav', pcm: [1, 2, 3, 4], loop: true, rate: 22050, first: 0 }; });
+  draw();
+  ok(pushed.length === before + 1 && /other\.wav/.test(pushed[pushed.length - 1].sounds.upSig || ''), 'a new sound upload is pushed to the host', (pushed.length - before) + ' pushes');
+  ok(!JSON.stringify(pushed[pushed.length - 1]).includes('"pcm"'), 'still without its PCM');
+  ok(!('upSig' in (await app.toDoc(pushed[pushed.length - 1], true)).sounds), 'and the file carries no fingerprint');
 
   const f = app.fit();
   ok(f.rows > 0 && f.cap >= f.rows && f.pace > 0, 'the fit: the rows against the cap, and the pace', JSON.stringify(f));

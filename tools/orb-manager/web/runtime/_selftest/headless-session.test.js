@@ -239,6 +239,7 @@ const edit = (app, p) => { app.set(p); app.ses.track(); };
     location.search = '?theme=tint-reef-000000000000&orb=192.0.2.7';
     const d = mk();
     ok(await d.ses.openTheme() && asked[0] === '/api/theme/design?ip=192.0.2.7&id=tint-reef-000000000000' && d.applied[0] === 'the card', 'the Edit door opens a card theme through the hub', asked[0]);
+    ok(/^Opened the theme from the card/.test(d.state.status), 'and says it opened: the Opening line does not outlive the open (Gold, 2026-11-08)', d.state.status);
     location.search = '?theme=tint-reef-000000000000&src=shelf';
     const e = mk(); await e.ses.openTheme();
     ok(asked[1] === '/api/theme/design?name=tint-reef-000000000000' && e.applied[0] === 'the hub’s shelf', 'and a shelf theme by name', asked[1]);

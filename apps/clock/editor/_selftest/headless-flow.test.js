@@ -246,14 +246,16 @@ const stepOf = (it) => it.stepNow()[0];
      rowsD.filter((f) => (f.rowCls === 'wide') === !!f.isRange).map((f) => f.label).join());
   ok(V().viewOpts.map((o) => o.label).join() === 'Fit,1:1,True size,Magnify', 'the four view stops', V().viewOpts.map((o) => o.label).join());
   ok(V().inFrame === false && V().notHub === true && /Clock/.test(V().crumbLabel), 'standalone: no back arrow, the download in the top bar', V().crumbLabel);
-  // K6: the shell's parts carry the clock's own values: the send modal says what the clock's
-  // send lines say in every state, and the top bar holds the clock's steps and primary action
-  [null, { canCancel: true, cancelling: false }, { canCancel: false, cancelling: false }, { canCancel: false, cancelling: true }].forEach((sd) => {
-    it.setState({ sending: sd, status: sd ? 'Sending' : '' });
-    const R = V();
-    ok(R.studioSend.open === R.sendOpen && R.studioSend.hint === R.sendHint && R.studioSend.cancelLabel === R.sendCancelLabel && R.studioSend.noCancel === R.sendNoCancel && R.studioSend.line === R.sendLine,
-       'the shell’s send modal and the clock’s send lines agree: ' + JSON.stringify(sd), R.studioSend.hint + ' | ' + R.sendHint);
-  });
+  // a re-timed bake re-enters with the press's own ask (Gold, 2026-11-08: it passed the baker's
+  // options, so every re-time fell through to Export: a Send downloaded, a quiet bake opened Save)
+  {
+    const src = fs.readFileSync(path.join(__dirname, '..', 'clock-logic.js'), 'utf8');
+    ok(/return this\._export3Body\(\{ send: send, _retimed: 1 \}\)/.test(src) && /this\.t3bake\(nm, fc, M, gt, B, fps, opts\.send, !!opts\._retimed\)/.test(src) && !/Object\.assign\(\{\}, opts, \{ _retimed: 1 \}\)/.test(src),
+       'a re-timed bake keeps the press\u2019s ask: Send still sends, a quiet bake still hands back bytes');
+  }
+  // K6's parity of the shell's send modal with the clock's own send lines retired with E7: the
+  // hosted editor's dialog is the host's, drawn from its own sender (theme@1/send.js and its
+  // suite), and the class's send lines are no longer drawn anywhere
   it.setState({ sending: null, status: '' });
   { const R = V(); ok(R.chosenNow && R.studioTop.steps === R.stepOpts && R.studioTop.primary.label === 'Export .orbtheme' && R.studioGlass.size === R.stageCv && R.studioTool.view === R.viewOpts && R.studioRender.downloads.length === 1 && R.studioRender.downloads[0].label === 'Export .orbtheme', 'the top bar, glass, toolbar and Render panel carry the clock’s own values', JSON.stringify([R.chosenNow, R.studioTop.primary && R.studioTop.primary.label])); }
   // §8.10: on the start, before a choice, the start is all there is

@@ -438,6 +438,23 @@ const last = () => draws[draws.length - 1];
     H.unmount(); location.search = '';
   }
 
+  // ---- Rebake all on the real host (Gold, 2026-11-08): it opens each stale theme and bakes
+  // straight away, before React draws again, so the bake must see the opened design; a failed
+  // bake is named in its own words, not the status line the open left
+  {
+    if (!fh.themes.get('tint')) fh.themes.set('tint', new Map());
+    fh.themes.get('tint').set('Old sea', { design: { format: 'wc-design', schema: 1, app: 'tint', appVersion: 'v0.9.0', design: tint('Old sea', 'teal') }, stale: 'bundle geometry v5', at: 9 });
+    const seen = [];
+    const rapp = Object.assign({}, app, { bake: async (d) => { seen.push(d.color); throw new Error('the test stops here'); } });
+    location.search = '?rebake=1';
+    const H = mount(HOST.Editor, { app: rapp });
+    await H.settle(30); await wait(80); H.render(); await H.settle(30);
+    ok(seen[0] === 'teal', 'Rebake all bakes the theme it opened, not the design before it', seen.join());
+    const st = text(H.tree);
+    ok(/not rebaked: Old sea \(the test stops here\)/.test(st), 'and a failed bake is named in its own words', (st.match(/Rebaked[^]*?\)/) || [''])[0]);
+    H.unmount(); location.search = ''; fh.themes.get('tint').delete('Old sea');
+  }
+
   console.log(fails ? 'RESULT: FAIL — ' + fails + ' of ' + checked + ' checks' : 'all green (' + checked + ' checks)');
   process.exit(fails ? 1 : 0);
 })().catch((e) => { console.log('FAIL threw: ' + (e && e.stack || e)); process.exit(1); });

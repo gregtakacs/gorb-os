@@ -62,7 +62,10 @@ const busy = () => posted.filter((m) => m.type === 'theme.busy').map((m) => m.on
   ok(!it._cancel3, 'and a cancel press there does nothing');
   answer({ ok: true, data: { name: 'Test', id: 'clock-test-000000000000', store: 'stored', back: true } });
   await run;
-  ok(it.state.sending === null, 'the verdict closes the modal');
+  // owner, 2026-11-08: the verdict stays up, done, until its button closes it
+  ok(it.state.sending && it.state.sending.done && it.state.sending.outcome === 'ok', 'the verdict stays up as the send\u2019s outcome', JSON.stringify(it.state.sending));
+  it.cancelSend3();
+  ok(it.state.sending === null, 'and its button closes it');
   ok(busy().join() === 'false', 'and tells the hub the editor is free', busy().join());
   ok(unloads.size === 0, 'and drops the window guard');
   ok(/the orb is back drawing it/.test(it.state.status), 'the verdict says the orb is back', it.state.status);

@@ -299,10 +299,10 @@
     if (!p.open) return null;
     return h('div', { className: 'st-modal', style: { zIndex: 60 } },
       h('div', null,
-        h('div', { className: 'st-mtitle' }, 'Sending to the orb'),
+        h('div', { className: 'st-mtitle' }, p.title || 'Sending to the orb'),
         h('div', { className: 'st-mbody' }, p.line),
         p.hint ? h('div', { className: 'st-hint' }, p.hint) : null,
-        h('div', { className: 'st-mfoot' }, h('button', { onClick: p.onCancel, disabled: !!p.noCancel }, p.cancelLabel || 'Cancel'))));
+        h('div', { className: 'st-mfoot' }, h('button', { className: p.primary ? 'primary' : '', onClick: p.onCancel, disabled: !!p.noCancel }, p.cancelLabel || 'Cancel'))));
   };
   /* the live size (theme-editor-kit-plan §8.8), said for every editor: a short form for the top
    * bar and a line for Render. z: {state 'waiting'|'baking'|'done'|'error', bytes, ms, why} */
@@ -628,11 +628,19 @@
   /* ---- builders: the services' answers as the components' props ---- */
   // a sender's state (OrbTheme.sender's `sending`) and the status line as SendModal's props
   S.sendProps = function (sending, status, onCancel) {
+    // the verdict: the send is over, the line says how, and one button closes it
+    if (sending && sending.done) {
+      var o = sending.outcome;
+      return { open: true, line: status || '', title: o === 'ok' ? 'Sent to the orb' : o === 'warn' ? 'Sent — check the orb' : 'Not sent',
+        hint: '', noCancel: false, cancelLabel: o === 'fail' ? 'Close' : 'Done', primary: o !== 'fail', onCancel: onCancel };
+    }
     return { open: !!sending, line: status || 'Building the theme…',
       hint: !sending ? '' : sending.cancelling ? 'Cancelling: the send stops before anything reaches the orb.'
         : sending.canCancel ? 'Nothing has reached the orb yet, so Cancel stops it cleanly.'
         : 'The orb is storing it and rebooting onto it. That cannot be stopped part way, so this waits until the orb is back.',
-      noCancel: !(sending && sending.canCancel), cancelLabel: sending && sending.cancelling ? 'Cancelling…' : 'Cancel', onCancel: onCancel };
+      noCancel: !(sending && sending.canCancel),
+      // past the commit the button is a promise of the verdict, not a Cancel it cannot keep
+      cancelLabel: !sending ? 'Cancel' : sending.cancelling ? 'Cancelling…' : sending.canCancel ? 'Cancel' : 'Waiting for the orb…', onCancel: onCancel };
   };
   // the sender's duplicate question as DupModal's props
   S.dupProps = function (dup, onReplace, onCancel) {

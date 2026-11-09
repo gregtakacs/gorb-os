@@ -87,7 +87,19 @@
     var snd = ctl.sndDesign ? ctl.sndDesign() : null;
     return { name: ctl.themeName(), dial: s.dial, design: ctl.design(), cfg: ctl.cfg(), seeds: s.seeds, hands: s.hands, handFinish: s.handFinish,
       caseStyle: s.caseStyle, caseMetal: s.caseMetal, glassStyle: s.glassStyle, train: s.train, caseOpen: s.caseOpen, themeName: s.themeName,
-      scratch: !!s.scratch, sounds: snd ? Object.assign({}, snd, { up: {} }) : null, base: s.scratch ? 'blank' : s.dial };
+      scratch: !!s.scratch, sounds: snd ? sndSnap(snd) : null, base: s.scratch ? 'blank' : s.dial };
+  }
+  // the sound design without its PCM; the file's ref only while the class still holds those very
+  // uploads, and a fingerprint of them, so a new upload is a change the host sees (its live size,
+  // its history, its unsent changes) even when the voice was already "upload"
+  var upSig = function (up) {
+    return Object.keys(up || {}).sort().map(function (k) { var u = up[k] || {}; return k + ':' + (u.name || '') + ':' + (u.pcm ? u.pcm.length : 0); }).join(',');
+  };
+  function sndSnap(snd) {
+    var o = Object.assign({}, snd, { up: {}, upSig: upSig(snd.up) });
+    delete o.upRef;
+    Object.keys(ups).forEach(function (r) { if (ups[r] === snd.up) o.upRef = r; });
+    return o;
   }
   // a snapshot's identity in one field order, whoever built it (the host stamps base, a
   // template builds its fields in its own order): the same watch is the same key
@@ -95,13 +107,41 @@
   var keyOf = function (d) {
     try { return JSON.stringify(FIELDS.map(function (k) { return d[k] === undefined ? null : d[k]; })); } catch (e) { return String(Math.random()); }
   };
+  // the theme's name is the host's (its top bar): the class bakes and files under themeName,
+  // so the host's name is the class's typed one
+  var nameOf = function (d) { return typeof d.name === 'string' && d.name.trim() ? d.name.trim() : d.themeName || ''; };
+  // a file's sound uploads (PCM) stay out of the snapshots, as the class's own do: the file's
+  // ride under a ref (sounds.upRef) the snapshot carries, so an opened design, and Undo back
+  // to it, keeps them
+  var ups = {}, upN = 0;
+  // a file's samples back to the Int16Array the sound engine reads: JSON writes a typed array as
+  // {"0": v, "1": v, ...}, and read back as that object every sample was silence (Gold, 2026-11-08:
+  // a reopened design shipped its uploaded tick as zeros); a plain array is taken as well
+  var pcmOf = function (p) {
+    if (!p || p instanceof Int16Array) return p;
+    if (Array.isArray(p)) return Int16Array.from(p);
+    if (typeof p !== 'object') return p;
+    var n = 0; while (p[n] !== undefined) n++;
+    var o = new Int16Array(n); for (var i = 0; i < n; i++) o[i] = p[i];
+    return o;
+  };
+  var upsOf = function (up) {
+    var o = {};
+    Object.keys(up || {}).forEach(function (k) { o[k] = Object.assign({}, up[k], up[k] && up[k].pcm ? { pcm: pcmOf(up[k].pcm) } : {}); });
+    return o;
+  };
   // the class's state from a snapshot (the watch only: selection and view are the class's)
   function stateOf(d) {
     var Ee = E();
-    var o = { dial: d.dial, designs: Object.assign({}, ctl.state.designs), themeName: d.themeName || '', scratch: !!d.scratch };
+    var o = { dial: d.dial, designs: Object.assign({}, ctl.state.designs), themeName: nameOf(d), scratch: !!d.scratch };
     o.designs[d.dial] = Ee.canonDesign(JSON.parse(JSON.stringify(d.design)));
     ['cfg', 'seeds', 'hands', 'handFinish', 'caseStyle', 'caseMetal', 'glassStyle', 'train', 'caseOpen'].forEach(function (k) { if (d[k] != null) o[k] = d[k]; });
-    if (d.sounds) { o.sounds = Object.assign({}, ctl.state.sounds); o.sounds[d.dial] = Object.assign({}, d.sounds, { up: ((ctl.state.sounds || {})[d.dial] || {}).up || {} }); }
+    if (d.sounds) {
+      var held = ((ctl.state.sounds || {})[d.dial] || {}).up || {};
+      o.sounds = Object.assign({}, ctl.state.sounds); o.sounds[d.dial] = Object.assign({}, d.sounds, { up: (d.sounds.upRef && ups[d.sounds.upRef]) || held });
+      // the ref and the fingerprint are the snapshot's, never the class's: its files and bakes carry neither
+      delete o.sounds[d.dial].upRef; delete o.sounds[d.dial].upSig;
+    }
     return o;
   }
   // a template, as designed (the clock's pick after From scratch: no author's light rides over)
@@ -153,7 +193,11 @@
   function adopt(d) {
     if (!ctl || !ctl.ready) { pending = d; return; }
     var k = keyOf(d);
-    if (k === lastKey || k === handedKey) return;
+    if (k === lastKey || k === handedKey) {
+      // the same watch, perhaps renamed: the name alone, with no rebuild and nothing pushed back
+      if (nameOf(d) !== (ctl.state.themeName || '')) { ctl.setState({ themeName: nameOf(d) }); lastKey = keyOf(snap()); }
+      return;
+    }
     ctl.setState(Object.assign(stateOf(d), { sel: null, selKind: null }));
     ctl.faces = {}; if (ctl.buildMovement) ctl.buildMovement();
     lastKey = keyOf(snap()); handedKey = k;
@@ -284,17 +328,26 @@
     steps: [['movement', 'Movement'], ['dial', 'Dial'], ['parts', 'Parts'], ['finish', 'Finish']],
     adopt: adopt,
     // the clock's files: designContent's own shape, both ways
-    toDoc: async function (d, withArt) { return ctl.designContent(withArt); },
+    toDoc: async function (d, withArt) {
+      var doc = await ctl.designContent(withArt);
+      if (doc.sounds) { doc.sounds = Object.assign({}, doc.sounds); delete doc.sounds.upRef; delete doc.sounds.upSig; }
+      return doc;
+    },
     fromDoc: function (doc) {
       if (!doc || !doc.design || !Array.isArray(doc.design.comps)) return null;
       var Ee = root.WatchEngine, T0 = Ee && Ee.template(doc.dial);
       if (Ee && doc.assets) Ee.assetRestore(doc.assets);
+      var up = doc.sounds && doc.sounds.up && upsOf(doc.sounds.up), ref = null;
+      if (up && Object.keys(up).length) { ref = 'up' + (++upN); ups[ref] = up; }
       return { name: doc.themeName || (T0 ? T0.name : 'Untitled'), dial: doc.dial, design: doc.design, cfg: doc.cfg || {}, seeds: doc.seeds, hands: doc.hands, handFinish: doc.handFinish,
         caseStyle: doc.caseStyle, caseMetal: doc.caseMetal, glassStyle: doc.glassStyle, train: doc.train, caseOpen: doc.caseOpen, themeName: doc.themeName || '',
-        scratch: doc.dial === 'scratch', sounds: doc.sounds ? Object.assign({}, doc.sounds, { up: {} }) : null, base: doc.dial };
+        scratch: doc.dial === 'scratch', sounds: doc.sounds ? Object.assign({}, doc.sounds, { up: {}, upSig: upSig(up) }, ref ? { upRef: ref } : {}) : null, base: doc.dial };
     },
     // the bake: the composer's own walk on the watch the host holds (adopted first)
     bake: async function (d, o) {
+      // Rebake all bakes at boot, before any pane has drawn and made the controller
+      if (!ctl) ensure(host);
+      await ctl.__mount;
       // the watch the host holds; a hand-over that rebuilds the movement is waited out
       var was = lastKey + '|' + handedKey; adopt(d);
       if (lastKey + '|' + handedKey !== was) await new Promise(function (r) { setTimeout(r, 300); });

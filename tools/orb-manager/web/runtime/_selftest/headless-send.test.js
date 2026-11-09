@@ -89,7 +89,10 @@ const busy = () => posted.filter((m) => m.type === 'theme.busy').map((m) => m.on
     ok(!s.cancelRequested, 'and a cancel there does nothing');
     answer({ ok: true, data: { name: 'Dial', id: meta.stem, store: 'stored', back: true } });
     await run;
-    ok(h.sending === null && !s.active && busy() === 'true,false' && unloads.size === 0, 'the verdict closes the send, frees the hub and drops the guard');
+    ok(h.sending && h.sending.done && h.sending.outcome === 'ok' && !s.active && busy() === 'true,false' && unloads.size === 0,
+       'the verdict frees the hub and drops the guard, and stays up as the send\u2019s outcome', JSON.stringify(h.sending));
+    s.cancel();
+    ok(h.sending === null, 'until its button closes it');
     ok(/Sent to 192\.0\.2\.7 as "Dial" \(clock-dial-000000000000\) — still · 3 KB · stored into the one slot, and the orb is back drawing it/.test(h.status),
       'the verdict carries the app’s summary and the store witness', h.status);
   }
@@ -119,6 +122,7 @@ const busy = () => posted.filter((m) => m.type === 'theme.busy').map((m) => m.on
     const bytes = bake();
     await s.send('Dial', () => s.post(bytes, meta, false));
     ok(h.dup && h.dup.pre === true && h.dup.nm === 'Dial' && xhr === null, 'a duplicate is asked before any byte crosses', JSON.stringify(h.dup));
+    ok(h.sending === null, 'and the question takes the screen: the send dialog closes', JSON.stringify(h.sending));
     ok(s.held && s.held.bytes === bytes && s.held.nm === 'Dial', 'and the refused bake is held');
     // Replace ships THOSE bytes with overwrite and no second precheck
     scen.precheck = () => { throw new Error('the replace asked again'); };
@@ -146,6 +150,7 @@ const busy = () => posted.filter((m) => m.type === 'theme.busy').map((m) => m.on
     const { h, s } = mk();
     await s.send('Dial', () => s.post(bake(), meta, false));
     ok(xhr === null && s.held === null && h.dup === null && /already on the card, byte for byte/.test(h.status), 'an exact match uploads nothing and holds nothing', h.status);
+    ok(h.sending && h.sending.done && h.sending.outcome === 'ok', 'and ends as done, not as a failure', JSON.stringify(h.sending));
   }
   {
     // no clean read: fail closed, hold the bake, name the hub's reason
@@ -154,6 +159,7 @@ const busy = () => posted.filter((m) => m.type === 'theme.busy').map((m) => m.on
     const { h, s } = mk();
     await s.send('Dial', () => s.post(bake(), meta, false));
     ok(xhr === null && !!s.held && /could not get a clean read .* the orb did not answer the list/.test(h.status), 'a precheck that could not read the card stops before upload with the hub’s reason', h.status);
+    ok(h.sending && h.sending.done && h.sending.outcome === 'fail', 'and ends as not sent, its reason left up to read', JSON.stringify(h.sending));
     // a refusal naming the bytes the index needs is answered once with exactly that many
     const asked = [];
     scen.precheck = (body) => { asked.push(body.byteLength); return asked.length === 1 ? resp(200, { ok: false, error: 'send the first 900 B of the file' }) : resp(200, { ok: true, data: { duplicate: true } }); };

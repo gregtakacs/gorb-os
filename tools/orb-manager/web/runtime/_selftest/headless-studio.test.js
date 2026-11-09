@@ -116,7 +116,13 @@ Object.defineProperty(global, 'fn', { get: mkfn });
   ok(c.cancelLabel === 'Cancelling…' && /stops before anything reaches the orb/.test(c.hint), 'a cancel in flight says so');
   const m = render(S.SendModal, a);
   ok(by(m, 'div', 'st-modal').length === 1 && /Sending to the orb/.test(text(m)) && by(m, 'button')[0].props.onClick === cancel && !by(m, 'button')[0].props.disabled, 'the modal draws the line, the hint and Cancel');
-  ok(by(render(S.SendModal, b), 'button')[0].props.disabled === true, 'and disables Cancel when it cannot stop');
+  ok(by(render(S.SendModal, b), 'button')[0].props.disabled === true && b.cancelLabel === 'Waiting for the orb…', 'and, when it cannot stop, its button waits for the orb instead of offering a Cancel it cannot keep', b.cancelLabel);
+  // owner, 2026-11-08: the verdict stays up, and a button closes it
+  const v = S.sendProps({ done: true, outcome: 'ok' }, 'Sent to 192.0.2.7 as "Scope"', cancel), vm = render(S.SendModal, v);
+  ok(v.open && /Sent to the orb/.test(text(vm)) && /as "Scope"/.test(text(vm)) && by(vm, 'button')[0].props.onClick === cancel && !by(vm, 'button')[0].props.disabled && text(by(vm, 'button')[0]) === 'Done',
+     'a sent theme ends on its verdict with Done', text(vm));
+  const vf = S.sendProps({ done: true, outcome: 'fail' }, 'Not sent: HTTP 500', cancel), vw = S.sendProps({ done: true, outcome: 'warn' }, 'x', cancel);
+  ok(vf.title === 'Not sent' && vf.cancelLabel === 'Close' && !vf.noCancel && vw.cancelLabel === 'Done' && /check the orb/.test(vw.title), 'a failure ends on Close, an unwitnessed store on a check', vf.title + ' / ' + vw.title);
   ok(render(S.DupModal, S.dupProps(null, fn, fn)) === null, 'no question, no modal');
   const rep = fn, dis = fn, d = render(S.DupModal, S.dupProps({ nm: 'Scope', stem: 'radar-scope-000000000000', note: 'a different build' }, rep, dis));
   ok(/already on the card/.test(text(d)) && /radar-scope-000000000000/.test(text(d)) && /a different build/.test(text(d)), 'the duplicate names the theme, its card stem and the hub’s note');

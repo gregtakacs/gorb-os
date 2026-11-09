@@ -223,10 +223,17 @@
         apply: function (doc) {
           var dd = A.fromDoc ? A.fromDoc(doc) : doc.design;
           var why = !dd ? 'that design carries no theme' : A.check(dd);
-          if (!why) { setD(complete(dd)); setChosen(true); setStep(function (s) { return s === 'start' ? first : s; }); }
+          if (!why) {
+            var nd = complete(dd);
+            // Rebake all bakes straight after an open, before React draws again: the ref the bake
+            // reads must hold the opened design now, not the one before it
+            stateRef.current = Object.assign({}, stateRef.current, { d: nd });
+            setD(nd); setChosen(true); setStep(function (s) { return s === 'start' ? first : s; });
+          }
           return why;
         },
-        bake: async function () { var r = await bakeNow(); return r ? r.bytes : null; },
+        // a failed bake throws its own reason, so Rebake all names it rather than a stale status line
+        bake: async function () { var r = await bakeNow(); if (!r) throw new Error(bakeWhy || 'the bake did not finish'); return r.bytes; },
       });
     }, []);
     var sender = R.useMemo(function () {
@@ -333,14 +340,15 @@
       baked.chain = p.catch(function () {});
       return p;
     }
+    var bakeWhy = '';
     async function bakeNow() {
-      var dd = stateRef.current.d;
+      var dd = stateRef.current.d; bakeWhy = '';
       try {
         if (!(baked.key === keyOf(dd) && baked.r)) say('Baking “' + dd.name + '”…');
         var r = await bakeOf(dd);
         say('Baked “' + dd.name + '”: ' + Math.round(r.bytes.length / 1024) + ' KB');
         return r;
-      } catch (e) { say('Not baked: ' + err(e)); return null; }
+      } catch (e) { bakeWhy = err(e); say('Not baked: ' + bakeWhy); return null; }
     }
     /* ---- the live size (E5): the design baked again a pause after the last edit. The pause
      * is twice the last bake (at least 1.2 s, at most 6 s), so a slow design is not baked at

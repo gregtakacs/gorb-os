@@ -391,8 +391,8 @@ def build(appdir, out_dir=None):
 
 # ---- the editor region (flight-tracker-design §12.2) ---------------------------------
 # An app whose app.json names a directory of its own as "editor" ships that directory as
-# its editor region: the hub opens it from the Themes page. The recipe is the clock's
-# (tools/make_clock_region.py): a flat STORE ZIP, editor.json first and canonical, then
+# its editor region: the hub opens it from the Themes page. The recipe was the clock's
+# (make_clock_region.py, retired with its dc page in E7 2d): a flat STORE ZIP, editor.json first and canonical, then
 # the directory's top-level files in name order, the fixed date and mode, read back
 # before it ships. Subdirectories (an editor's _selftest/) and dotfiles stay home. One member
 # is written here: orb-app.js, `window.__ORB_APP = {slug, version}`, the release the

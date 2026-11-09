@@ -251,6 +251,23 @@ held (20 fps), 1 s windows from the dial bench:
   and resumes the operation, so the operation stretches and the frame waits on it.
   Reverted; Bronze is back on the build without it.
 
+### The owner's card pull (2026-11-09)
+
+- **Pulled mid-fill:** the fill failed at its next read, the face grew into bare radar, and
+  its Themes row said "copy failed". As designed, except the words: the card module still
+  called the card mounted.
+- **Pushed back, radar opened again: still bare.** The card module kept its mount over the
+  dead handle, so every read timed out (0x107) until a reboot. A mounted card is now asked
+  its status (`sdmmc_get_status`) at most every 2 s when a caller asks for the mount; one
+  that does not answer is unmounted and mounted afresh at once. The remount counts as a
+  mount, so the reconcile runs again. Not yet re-benched by hand.
+- **The carousel had fallen back to the text list:** with radar on the glass PSRAM held
+  295 KB and the carousel's 434 KB snapshot would not come. The carousel now opens without
+  the snapshot when it must (its zoom starts from the app's preview), allocates its name
+  planes for the places it shows rather than twelve, and gives back the names and the
+  centre's full plane when it closes. Radar on the glass: 661 KB free (was 295-370 KB);
+  with the carousel up, ~100 KB.
+
 ### Why a theme is missing (2026-11-09, the owner's ask)
 
 - `orb_theme_absent(slug)`: a few words for the dial and a sentence for the hub, or nothing.

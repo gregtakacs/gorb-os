@@ -63,6 +63,7 @@ static bool s_bus_up;
 /* Set when the USB host owns the raw volume (MSC mode). Declared up here because
  * mount_now() reads it and the hand-over that sets it is further down. */
 static bool s_usb_owns;
+static bool s_share_held;   /* defined with its story below (the share window) */
 
 /* Each rung's answer at the last mount try, for the status page: on an owner's board
  * that will not mount a card, which rung failed and how is the whole diagnosis
@@ -235,8 +236,29 @@ esp_err_t orb_sd_ensure_mounted(void)
     orb_sd_lock();
 
     if (s_mounted) {
-        orb_sd_unlock();
-        return ESP_OK;
+        /* A card pulled and pushed back while mounted left this flag true over a dead
+         * handle: every read timed out (0x107) until a reboot, and the theme cache's fill
+         * kept failing on a card that was back in (owner's bench, 2026-11-09). So a mounted
+         * card is asked for its status, at most every 2 s; one that does not answer is
+         * unmounted, and the mount below tries it again at once. */
+        static int64_t s_probe_us;
+        const int64_t t = esp_timer_get_time();
+        if (s_card && !s_share_held && !s_usb_owns && t - s_probe_us >= 2000000) {
+            s_probe_us = t;
+            if (sdmmc_get_status(s_card) != ESP_OK && sdmmc_get_status(s_card) != ESP_OK) {
+                ESP_LOGW(TAG, "the card stopped answering (pulled?): unmounting to mount it afresh");
+                const esp_err_t ue = esp_vfs_fat_sdcard_unmount(ORB_SD_BASE, s_card);
+                if (ue != ESP_OK) ESP_LOGW(TAG, "unmount of the gone card: %s", esp_err_to_name(ue));
+                s_card = NULL;
+                s_mounted = false;
+                s_card_id[0] = '\0';
+                s_last_try_us = 0;               /* try the socket again now */
+            }
+        }
+        if (s_mounted) {
+            orb_sd_unlock();
+            return ESP_OK;
+        }
     }
 
     /* Bounded retry, not a ladder per poll. The theme page lists /sd while a

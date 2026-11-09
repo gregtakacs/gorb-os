@@ -91,6 +91,7 @@ static volatile bool s_pv_ready;
 static uint16_t *s_hi;
 static char      s_hi_slug[24];
 static volatile bool s_hi_ready;
+static volatile bool s_hi_drop;     /* the strip closed: the preview task frees the plane */
 static char      s_hi_want[24];
 static TaskHandle_t s_pv_th;
 static uint16_t *s_gear;        /* PV x PV wire order */
@@ -310,6 +311,13 @@ static void pv_task(void *arg)
     /* §60: then the centre app's full-glass plane, each time the strip asks */
     for (;;) {
         ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+        if (s_hi_drop) {
+            s_hi_drop = false;
+            uint16_t *old = s_hi;
+            s_hi = NULL;
+            s_hi_slug[0] = '\0';
+            heap_caps_free(old);
+        }
         char want[sizeof s_hi_want];
         memcpy(want, s_hi_want, sizeof want);
         want[sizeof want - 1] = '\0';
@@ -355,8 +363,8 @@ void orb_strip_init(void)
  * the plane. On the LVGL task, at open. */
 static void make_names(void)
 {
-    if (!s_names)
-        s_names = heap_caps_malloc((size_t)MAX_ITEMS * NAME_W * NAME_H * 2,
+    heap_caps_free(s_names);            /* this open's places only, freed at close too */
+    s_names = heap_caps_malloc((size_t)s_n * NAME_W * NAME_H * 2,
                                    MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     lv_draw_buf_t *db = lv_draw_buf_create(NAME_W, NAME_H, LV_COLOR_FORMAT_RGB565, 0);
     lv_obj_t *cv = db ? lv_canvas_create(lv_layer_sys()) : NULL;
@@ -581,10 +589,27 @@ static struct {
  * 15 rows refused). */
 static void snap_free(void)
 {
+    if (!s_snap) return;
     for (int i = 0; i < s_n; i++)
         if (s_it[i].px == s_snap) { s_it[i].px = NULL; }
     heap_caps_free(s_snap);
     s_snap = NULL;
+}
+
+/* At close the carousel gives back what only it draws: its name planes (made anew at each
+ * open) and the centre app's full plane (the preview task inflates it again, ~110 ms, on the
+ * next settle). Kept, they held ~720 KB of PSRAM under whatever app was open. The plane is
+ * the preview task's to free (it may be writing it): asked here, freed there. */
+static void strip_give_back(void)
+{
+    snap_free();
+    for (int i = 0; i < MAX_ITEMS; i++) s_it[i].name = NULL;
+    heap_caps_free(s_names);
+    s_names = NULL;
+    s_hi_ready = false;
+    s_hi_want[0] = '\0';                /* or the wake would inflate the last one again */
+    s_hi_drop = true;
+    if (s_pv_th) xTaskNotifyGive(s_pv_th);
 }
 
 static bool frame_kept(bool keep);
@@ -633,8 +658,10 @@ bool orb_strip_open(const orb_app_t *from, int step)
     const bool from_fill = from && from->slug && orb_theme_fill_progress(from->slug, &fd, &ft);
     const uint16_t *mirror = display_fb_mirror();
     if (!mirror) return false;
+    /* The glass as found, for the zoom down from it. Optional: with radar on the glass PSRAM
+     * held 295 KB, the snapshot's 434 KB would not come, and the carousel fell back to the
+     * text list (owner's bench, 2026-11-09); without it the zoom starts from the preview. */
     if (!s_snap) s_snap = heap_caps_malloc((size_t)W * H * 2, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    if (!s_snap) return false;
 
     s_n = 0;
     s_from_i = 0;
@@ -656,11 +683,11 @@ bool orb_strip_open(const orb_app_t *from, int step)
 
     /* The app the carousel opens on wears the glass itself until the strip moves off
      * it, so the zoom down starts from exactly what was showing. */
-    memcpy(s_snap, mirror, (size_t)W * H * 2);
+    if (s_snap) memcpy(s_snap, mirror, (size_t)W * H * 2);
     /* §61: Settings wears its own card, never a picture of the menu it was opened over: a
      * snapshot only comes off an app's card when the strip moves (start_turn), so the
      * Settings card kept the black MENU landing for the whole visit (owner, 2026-11-08). */
-    if (s_it[s_from_i].app && !from_fill) {
+    if (s_it[s_from_i].app && !from_fill && s_snap) {
         s_it[s_from_i].px = s_snap;
         s_it[s_from_i].side = W;
     }
@@ -731,7 +758,7 @@ void orb_strip_fill_face(const orb_app_t *app)
  * all app), so the release's full re-send changes nothing anyone can see. */
 static void release(void)
 {
-    snap_free();
+    strip_give_back();
     s_st = ST_OFF;
     s_face_app = NULL;
     s_ring = -1;
@@ -742,7 +769,7 @@ static void release(void)
 void orb_strip_abort(void)
 {
     if (s_st == ST_OFF) return;
-    snap_free();
+    strip_give_back();
     s_st = ST_OFF;
     s_face_app = NULL;
     s_ring = -1;
@@ -814,7 +841,7 @@ static void step_once(int32_t delta, bool pressed, bool lpress, int64_t now)
     case ST_TURN:
         if (lpress) {                           /* a hold leaves where it came from */
             s_pos = (float)s_from_i;
-            if (s_it[s_from_i].app) {
+            if (s_it[s_from_i].app && s_snap) {
                 s_it[s_from_i].px = s_snap; s_it[s_from_i].side = W;
             }
             start_out(now);

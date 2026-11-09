@@ -2099,6 +2099,21 @@ void orb_wasm_theme_landed(orb_app_t *app)
     (void)wasm_call(s, W_RESUME, NULL, 0);
 }
 
+void orb_wasm_theme_release(orb_app_t *app)
+{
+    wasm_slot_t *s = slot_of_app(app);
+    if (!s || !s->stage || !stage_bound(app)) return;
+    if (stage_rebind(app) == ESP_OK && s->on_glass) stage_run(true);
+}
+
+void orb_wasm_theme_changed(orb_app_t *app)
+{
+    wasm_slot_t *s = slot_of_app(app);
+    if (!s || !s->rt || !s->on_glass) return;
+    s->stage = true;
+    if (orb_theme_fill_post(app->slug)) orb_strip_fill_face(app);
+}
+
 static void wasm_show(orb_app_t *app)
 {
     wasm_slot_t *s = slot_of_app(app);

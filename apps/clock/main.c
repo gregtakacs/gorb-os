@@ -722,6 +722,7 @@ static void comps_value(const tm_t *ti, time_t t)
 
 static int32_t s_b_time, s_b_date, s_b_status;
 static char    s_b_last[16];
+static bool    s_b_built;
 
 static void base_build(void)
 {
@@ -799,15 +800,35 @@ static void repeater(void)
 
 /* ---- entry points ------------------------------------------------------------------ */
 
-ORB_EXPORT("orb_init") int32_t orb_init(void)
+/* The base face's labels shown, built the first time; or hidden, under a theme. */
+static void base_show(bool on)
+{
+    if (!s_b_built) {
+        if (!on) return;
+        base_build();
+        s_b_built = true;
+    }
+    orb_ui_set(s_b_time, ORB_P_HIDDEN, !on);
+    orb_ui_set(s_b_date, ORB_P_HIDDEN, !on);
+    orb_ui_set(s_b_status, ORB_P_HIDDEN, !on);
+    if (on) { s_b_last[0] = 0; base_tick(); }
+}
+
+/* What the stage holds now: its theme's rows, comps and sounds, or the base face. Read at
+ * init and again at every arrival — a theme can land while the clock runs (the OS fills an
+ * evicted theme back from the card, or a store chooses another without a reboot; OS
+ * theme-cache-plan §2.4, §4.1), and a dial read once kept its base face over the new theme
+ * with no hands (owner, 2026-11-09). */
+static int32_t stage_read(void)
 {
     if (orb_stage_open(&s_info) != ORB_OK) return ORB_ERR_NOT_ALLOWED;
     if (s_info.base) {
-        base_build();
-        base_tick();
+        base_show(true);
         orb_set_beat(1000);               /* the readout keeps itself current */
         return ORB_OK;
     }
+    base_show(false);
+    orb_set_beat(0);                      /* the stage's frames tick the dial */
     G.n_rows = s_info.n_rows < CLK_ROW_MAX ? s_info.n_rows : CLK_ROW_MAX;
     G.n_comps = s_info.n_comps < CLK_COMP_MAX ? s_info.n_comps : CLK_COMP_MAX;
     for (int i = 0; i < G.n_rows; i++) orb_stage_row(i, &G.rows[i]);
@@ -819,6 +840,8 @@ ORB_EXPORT("orb_init") int32_t orb_init(void)
              (unsigned)s_nsnd);
     return ORB_OK;
 }
+
+ORB_EXPORT("orb_init") int32_t orb_init(void) { return stage_read(); }
 
 /* The stage calls this every frame it composes; the base face gets the one-second
  * beat instead. */
@@ -851,8 +874,8 @@ ORB_EXPORT("orb_service") void orb_service(void)
 }
 ORB_EXPORT("orb_suspend") void orb_suspend(void) { s_on_glass = false; }
 
-ORB_EXPORT("orb_activate") void orb_activate(void) { s_shown_us = orb_uptime_us(); s_on_glass = true; }
-ORB_EXPORT("orb_resume")   void orb_resume(void)   { s_shown_us = orb_uptime_us(); s_on_glass = true; }
+ORB_EXPORT("orb_activate") void orb_activate(void) { s_shown_us = orb_uptime_us(); s_on_glass = true; (void)stage_read(); }
+ORB_EXPORT("orb_resume")   void orb_resume(void)   { s_shown_us = orb_uptime_us(); s_on_glass = true; (void)stage_read(); }
 
 /* The dial has no armed view: a press is the repeater's, and the dial stays unarmed so
  * the turn still walks the carousel. */

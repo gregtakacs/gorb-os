@@ -2640,7 +2640,11 @@ void stage_run(bool on)
          * drew in the boxes it redraws, and LVGL is what stacks the app's widgets on
          * top. The app built them in its init, after the stage, so they are counted
          * here, on the way onto the glass. */
-        const bool own = s_scr && lv_obj_get_child_count(s_scr) > s_stage_objs;
+        /* visible ones only: an app hides its themeless face's labels when a theme lands
+         * (the clock, 2026-11-09), and a hidden label stacks nothing */
+        bool own = false;
+        for (uint32_t i = s_stage_objs; s_scr && i < lv_obj_get_child_count(s_scr) && !own; i++)
+            own = !lv_obj_has_flag(lv_obj_get_child(s_scr, (int32_t)i), LV_OBJ_FLAG_HIDDEN);
         orb_sched_set_l4_veto(own);
         static const orb_app_t *s_vetoed_logged;
         if (own && s_vetoed_logged != s_lay_app) {

@@ -1002,10 +1002,13 @@ def install_lint():
                   "(%s, %d assignments, %d page writes) — a theme written where the table does "
                   "not say is free space the next store writes over" % ("reserved" if rsv >= 0 else
                   "no orb_pool_reserve", len(sets), len(writes))); rc = 1
-        fit, park = body.find("orb_pool_evictions_kind("), body.find("store_park_dial(")
-        if fit < 0 or park < 0 or fit > park:
-            print("FAIL orb_theme_install_bundle(): the fit is not asked before the dial parks "
-                  "— a theme that cannot fit would cost the owner the glass and a reboot"); rc = 1
+        # owner, 2026-11-09: a store chooses (store_choose) and a fill reserves; the fit is
+        # asked before either changes a thing, so a theme that cannot fit costs nothing
+        fit, choose, res = (body.find("orb_pool_evictions_kind("), body.find("store_choose("),
+                            body.find("orb_pool_reserve("))
+        if fit < 0 or choose < 0 or res < 0 or fit > choose or fit > res:
+            print("FAIL orb_theme_install_bundle(): the fit is not asked before the store chooses "
+                  "or the fill reserves — a theme that cannot fit would cost the owner its old one"); rc = 1
         hw, cm = body.find("build_slot_hdr3("), body.find("orb_pool_commit(")
         if hw < 0 or cm < 0 or cm < hw:
             print("FAIL orb_theme_install_bundle(): the table names the entry before its header "
@@ -1023,12 +1026,24 @@ def install_lint():
     # (flip_job, orb_theme_post_flip) is retired with the A/B pair.
     if "bundle_job" in spans:
         jbody = "\n".join(lines[spans["bundle_job"][0]:spans["bundle_job"][1] + 1])
-        if "orb_jobs_reboot_soon" not in jbody:
-            print("FAIL bundle_job() does not ask for the reboot — a stored bundle is the "
-                  "theme the next boot draws, and a store that leaves the old dial up is the "
-                  "silent no-op Migration 1 exists to end"); rc = 1
+        # owner, 2026-11-09: a store does not reboot — it chooses the theme, and the app
+        # wears it the next time it is on the glass (store_choose)
+        if "orb_jobs_reboot_soon" in jbody:
+            print("FAIL bundle_job() asks for a reboot — a store chooses the theme and the app "
+                  "wears it when it opens; the owner ruled the reboot out (2026-11-09)"); rc = 1
         if "orb_theme_install_bundle(" not in jbody:
             print("FAIL bundle_job() does not call the streaming ingest"); rc = 1
+        if "store_choose" in spans:
+            cbody = "\n".join(lines[spans["store_choose"][0]:spans["store_choose"][1] + 1])
+            for need, why in (("choice_set(", "records no choice: the app would never wear it"),
+                              ("store_voice(", "makes no voice bank: its sounds play off the glass"),
+                              ("xSemaphoreTake(s_choose_sem", "does not wait for the dial to let the old theme go")):
+                if need not in cbody:
+                    print("FAIL store_choose() %s" % why); rc = 1
+            if "orb_jobs_reboot_soon" in cbody:
+                print("FAIL store_choose() asks for a reboot"); rc = 1
+        else:
+            print("FAIL main/art/orb_theme.c has no store_choose() — a store has nothing to choose with"); rc = 1
     else:
         print("FAIL main/art/orb_theme.c has no bundle_job() — the ingest has no worker"); rc = 1
     if "orb_theme_post_bundle" in spans:

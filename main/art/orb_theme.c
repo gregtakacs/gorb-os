@@ -973,6 +973,8 @@ static uint32_t s_reconciled_gen;             /* the card mount the reconcile la
 static volatile bool s_pool_busy;             /* a fill is moving entries: binds wait     */
 static volatile uint32_t s_fill_done, s_fill_total;   /* the fill's progress, for its face */
 static char s_fill_slug[ORB_POOL_SLUG_MAX];   /* the app being filled, "" for none        */
+static char s_hide_slug[ORB_POOL_SLUG_MAX];   /* a store is choosing for it: binds see none */
+static char s_refill_slug[ORB_POOL_SLUG_MAX]; /* chosen while on the glass: fill it there    */
 
 /* The cache as the hub reads it (GET /api/v1/theme_cache): each app's choice, the order of
  * the glass, and the pool's entries. Answers the bytes written. */
@@ -2285,13 +2287,16 @@ static uint32_t voice_bank_size(const store_snd_t *snd)
     return orb_voice_build(in, snd->n, snd->pattern, 0, head, sizeof head);
 }
 
-/* After the display entry is committed: the app's voice bank made from it (its pages `src`),
- * or its old one gone for a theme with no sounds. Format 3 (§4.1): the bank's pages are free
- * pages, so nothing a reader holds moves, and a fill can make one as well as a store. */
+/* The app's voice bank, made from its theme's sounds — read from the display entry just
+ * written (its pages `src`), or straight from the card file (`fd` >= 0, its banks at
+ * `file_art_base`, as copy_bundle3 reads them) when a store writes no display entry (owner,
+ * 2026-11-09: a store does not reboot) — or its old one gone for a theme with no sounds.
+ * Format 3 (§4.1): the bank's pages are free pages, so nothing a reader holds moves. */
 EXT_RAM_BSS_ATTR static orb_pool_pages_t s_voice_pg;
 EXT_RAM_BSS_ATTR static orb_pool_pages_t s_job_pg;      /* the install's entry, old then new */
 static void voice_add(const char *slug);
 static esp_err_t store_voice(const char *slug, const char *name, const orb_pool_pages_t *src,
+                             int fd, uint32_t file_art_base,
                              uint32_t sec_art_off, uint32_t src_crc, uint32_t serial, const char **w)
 {
     const store_snd_t *snd = &s_store_snd;
@@ -2329,7 +2334,12 @@ static esp_err_t store_voice(const char *slug, const char *name, const orb_pool_
     for (uint32_t i = 0; e == ESP_OK && i < v.n; i++) {
         for (uint32_t done = 0; e == ESP_OK && done < v.bytes[i]; ) {
             const uint32_t want = v.bytes[i] - done > s_chunk_bytes ? s_chunk_bytes : v.bytes[i] - done;
-            e = pg_read(src, sec_art_off + snd->s[i].pcm_off + done, s_chunk, want);
+            if (fd >= 0) {
+                size_t pos = file_art_base + (sec_art_off - SLOT_ART_OFF) + snd->s[i].pcm_off + done;
+                e = rd_at(fd, &pos, s_chunk, want) == (ssize_t)want ? ESP_OK : ESP_FAIL;
+            } else {
+                e = pg_read(src, sec_art_off + snd->s[i].pcm_off + done, s_chunk, want);
+            }
             if (e == ESP_OK) e = pg_write(pg, v.s[i].pcm_off + done, s_chunk, want);
             done += want;
         }
@@ -2382,6 +2392,65 @@ static void fill_show(uint32_t done, uint32_t total)
         vTaskDelay(1);
     (void)orb_sd_ensure_mounted();      /* a card pulled meanwhile: the next read says so */
     orb_sd_lock();
+}
+
+/* ---- owner, 2026-11-09: a store chooses, and does not reboot ------------------------------
+ *
+ * Under format 3 (§4.1) nothing a reader holds ever moves, so a store need not park the dial
+ * and reboot. It lets the app's old theme go on the LVGL task (its stage rebinds to the bare
+ * face, its voices stop, its voice bank's window comes down), then on the worker drops the
+ * old copies, records the choice, and makes the new voice bank from the card file (sounds
+ * play off the glass, ruling 6, so the bank is made now). The display entry is the cache's:
+ * it fills when the app is next on the glass, now if it is. */
+static SemaphoreHandle_t s_choose_sem;
+static void voice_drop(const char *slug);
+
+static void choose_release(void *arg)                 /* LVGL task */
+{
+    const char *slug = arg;
+    orb_app_t *app = (orb_app_t *)orb_app_find_slug(slug);
+    if (app) orb_sound_stop_owner(app);               /* its voices and its schedule */
+    voice_drop(slug);
+    if (s_active_valid && s_live_sec && !strcmp(s_live_sec->slug, slug)) {
+        if (app) orb_wasm_theme_release(app);        /* the stage rebinds: bare, unmapped */
+        else { use_no_art(); art_bank_unmap(); s_live_key = 0; }
+    }
+    xSemaphoreGive(s_choose_sem);
+}
+
+static esp_err_t store_choose(const char *slug, const char *id, const char *name, int fd,
+                              uint32_t file_art_base, uint32_t sec_art_off, uint32_t file_crc,
+                              char *why, size_t whysz)
+{
+    if (!s_choose_sem) s_choose_sem = xSemaphoreCreateBinary();
+    if (!s_choose_sem) return install_failed(ESP_ERR_NO_MEM, "out of memory for the store", why, whysz);
+    job_stage("letting the old theme go", 0, 0);
+    strlcpy(s_hide_slug, slug, sizeof s_hide_slug);
+    (void)xSemaphoreTake(s_choose_sem, 0);
+    lv_async_call(choose_release, s_hide_slug);
+    if (xSemaphoreTake(s_choose_sem, pdMS_TO_TICKS(5000)) != pdTRUE) {
+        s_hide_slug[0] = '\0';
+        return install_failed(ESP_ERR_TIMEOUT, "the dial would not let the old theme go", why, whysz);
+    }
+    job_stage("storing its sounds", 0, 0);
+    const char *w = NULL;
+    if (orb_pool_remove_kind(&s_pool_io, s_pool, &s_pool_which, slug, ORB_POOL_DISPLAY) ||
+        orb_pool_remove_kind(&s_pool_io, s_pool, &s_pool_which, slug, ORB_POOL_VOICE)) {
+        s_hide_slug[0] = '\0';
+        return install_failed(ESP_FAIL, "the theme area's table would not let the old theme go", why, whysz);
+    }
+    choice_set(slug, id, file_crc);                   /* theme-cache-plan §2.1: what it wears */
+    if (store_voice(slug, name, NULL, fd, file_art_base, sec_art_off, file_crc, 1, &w) != ESP_OK)
+        ESP_LOGE(TAG, "\"%s\": its voice bank: %s — its sounds are missing until it is sent again",
+                 name, w ? w : "failed");
+    else
+        voice_add(slug);
+    s_hide_slug[0] = '\0';
+    strlcpy(s_refill_slug, slug, sizeof s_refill_slug);   /* on the glass: it fills there */
+    staged_clear();
+    ESP_LOGI(TAG, "stored \"%s\" (%s) for %s: chosen, no reboot; it fills from the card when "
+                  "%s is on the glass", name, id, slug, slug);
+    return ESP_OK;
 }
 
 esp_err_t orb_theme_install_bundle(const char *id, char *why, size_t whysz)
@@ -2554,30 +2623,26 @@ esp_err_t orb_theme_install_bundle(const char *id, char *why, size_t whysz)
         }
     }
 
+    /* Owner, 2026-11-09: a store does not reboot. It chooses: the app's old copies go, its
+     * new voice bank is made from the card file, and its display entry fills when it is on
+     * the glass, now if it is (store_choose). Only a fill goes on into the copy below. */
+    if (!s_install_fill) {
+        heap_caps_free(region);
+        const esp_err_t ce = store_choose(slug, id, h.name, fd, file_art_base, sec_art_off,
+                                          file_geom_crc, why, whysz);
+        card_close(fd);
+        return ce;
+    }
+
     /* C3, §5.3 rule 1: the erase must not happen under a live map. The dial
      * parks first, the map comes down second, and from here on there is no
      * path back to the old theme — its pixels are about to be erased — so every
      * remaining outcome, success or failure, ends in the reboot. If the park
      * itself will not land, refuse while the bank is still resident. */
-    s_slot_torn = false;
-    const orb_app_t *was = input_router_current();
-    if (s_install_fill) {
-        /* theme-cache-plan §2.4: the app being filled is on the glass on its bare face (its
-         * bind let the art go, on the LVGL task); binds wait while entries move; the voice
-         * banks the fill never moves keep playing */
-        s_pool_busy = true;
-    } else {
-    job_stage("parking", 0, 0);
-    if (!store_park_dial(was, h.art_size, "storing")) {
-        orb_boot_overlay_release();        /* the overlay's band goes back with the glass */
-        orb_sched_set_running(true);       /* the tick stands; the dial never stopped */
-        heap_caps_free(region); card_close(fd);
-        return install_failed(ESP_ERR_INVALID_STATE, "the dial would not park", why, whysz);
-    }
-    orb_sound_stop_all();                  /* theme-cache-plan §2.6: voices read the voice banks it moves */
-    art_bank_unmap();
-    s_slot_torn = true;                    /* from here the reboot is the only way back */
-    }
+    /* theme-cache-plan §2.4: the app being filled is on the glass on its bare face (its bind
+     * let the art go, on the LVGL task); binds wait while the table changes; the voice banks
+     * keep playing. Nothing is parked: a fill writes free pages alone (§4.1). */
+    s_pool_busy = true;
 
     /* The serial counts up over this app's last theme; none, or a header that cannot be
      * read, restarts the count at 1 — the count is a staleness guard, not a version
@@ -2699,28 +2764,14 @@ esp_err_t orb_theme_install_bundle(const char *id, char *why, size_t whysz)
          * written, mapped now; one made from another file is the reconcile's (a store) */
         if (s_store_snd.n && orb_pool_find_kind(s_pool, slug, ORB_POOL_VOICE) < 0) {
             const char *vw = NULL;
-            if (store_voice(slug, h.name, pg, sec_art_off, file_geom_crc, serial, &vw) != ESP_OK)
+            if (store_voice(slug, h.name, pg, -1, 0, sec_art_off, file_geom_crc, serial, &vw) != ESP_OK)
                 ESP_LOGE(TAG, "fill: %s's voice bank: %s", slug, vw ? vw : "failed");
             else
                 voice_add(slug);
         }
         return ESP_OK;
     }
-    {
-        const char *vw = NULL;
-        choice_set(slug, id, file_geom_crc);       /* theme-cache-plan §2.1: what it wears */
-        order_touch(slug);
-        if (store_voice(slug, h.name, pg, sec_art_off, file_geom_crc, serial, &vw) != ESP_OK)
-            ESP_LOGE(TAG, "\"%s\": its voice bank: %s — the app runs bare until it is sent again",
-                     h.name, vw ? vw : "failed");
-    }
-    staged_clear();
-    s_bundle_ms = (uint32_t)((esp_timer_get_time() - t0) / 1000);
-    s_bundle_bytes = h.art_size;
-    orb_boot_overlay("stored, rebooting", h.art_size, h.art_size, 0);
-    ESP_LOGI(TAG, "bundle \"%s\" (%s) in %s in %u ms — stored, drawn on the next boot",
-             h.name, id, slot_name(pg->off[0]), (unsigned)s_bundle_ms);
-    return ESP_OK;
+    return ESP_OK;                                 /* unreached: only a fill copies */
 }
 
 /* The FORMAT 3 twin of adopt() (P6.5 §25.5(2)): the same two publications — pixels
@@ -2963,12 +3014,17 @@ static void voice_add(const char *slug)
     const int k = s_pool ? orb_pool_find_kind(s_pool, slug, ORB_POOL_VOICE) : -1;
     if (!p || k < 0) return;
     if (!s_voices) s_voices = heap_caps_calloc(ORB_POOL_ENTRIES, sizeof *s_voices, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    if (!s_voices || s_nvoices >= ORB_POOL_ENTRIES) return;
-    for (uint32_t i = 0; i < s_nvoices; i++) if (!strcmp(s_voices[i].slug, slug)) return;
+    if (!s_voices) return;
+    uint32_t at = s_nvoices;                       /* a dropped bank's place first */
+    for (uint32_t i = 0; i < s_nvoices; i++) {
+        if (!strcmp(s_voices[i].slug, slug)) return;
+        if (!s_voices[i].slug[0] && at == s_nvoices) at = i;
+    }
+    if (at >= ORB_POOL_ENTRIES) return;
     const orb_pool_entry_t *e = &s_pool->e[k];
     EXT_RAM_BSS_ATTR static orb_pool_pages_t vpg;
     orb_pool_pages(s_pool, (uint32_t)k, &vpg);
-    voice_reg_t *r = &s_voices[s_nvoices];
+    voice_reg_t *r = &s_voices[at];
     memset(r, 0, sizeof *r);
     if (orb_pagemap(p, vpg.off, vpg.n, &r->pm) != ESP_OK) {
         ESP_LOGE(TAG, "%s's voice bank: %u pages would not map — no sounds for it this boot", e->slug, (unsigned)vpg.n);
@@ -2983,12 +3039,25 @@ static void voice_add(const char *slug)
         orb_pageunmap(&r->pm);
         return;
     }
-    strlcpy(r->slug, e->slug, sizeof r->slug);
     r->src_crc = e->file_crc;
     r->bank = b;
-    s_nvoices++;                                   /* listed last: a reader sees it whole */
+    strlcpy(r->slug, e->slug, sizeof r->slug);     /* named last: a reader sees it whole */
+    if (at == s_nvoices) s_nvoices++;
     ESP_LOGI(TAG, "%s's voice bank: %u sounds, %u KB on %u pages", e->slug, (unsigned)r->v.n,
              (unsigned)(e->size / 1024), (unsigned)vpg.n);
+}
+
+/* `slug`'s voice bank leaves the registry and its window comes down (a store chose another
+ * theme). LVGL task, after the app's voices were stopped: every reader is on it. */
+static void voice_drop(const char *slug)
+{
+    for (uint32_t i = 0; s_voices && i < s_nvoices; i++) {
+        voice_reg_t *r = &s_voices[i];
+        if (!r->slug[0] || strcmp(r->slug, slug)) continue;
+        r->slug[0] = '\0';
+        r->bank = NULL;
+        orb_pageunmap(&r->pm);
+    }
 }
 
 static void voices_map(void)
@@ -3145,7 +3214,8 @@ esp_err_t orb_theme_bind(const char *slug)
 {
     if (s_pool_busy) return ESP_ERR_INVALID_STATE;     /* a fill is moving entries (§2.4) */
     const esp_partition_t *p = art_bank_partition();
-    const int k = (p && s_pool) ? orb_pool_find(s_pool, slug) : -1;
+    /* a store choosing another theme for it lets this one go first (store_choose) */
+    const int k = (p && s_pool && strcmp(slug, s_hide_slug)) ? orb_pool_find(s_pool, slug) : -1;
     if (k < 0) {
         /* theme-cache-plan §2.4: no theme of its own in the pool. The last app's adoption
          * goes with it, here on the LVGL task: the stage then builds this app's bare face
@@ -3417,18 +3487,10 @@ static void bundle_job(void *arg)
         job_stage("", 0, 0);
         return;
     }
-    job_stage("rebooting", 0, 0);
+    /* Owner, 2026-11-09: no reboot. The store chose the theme (store_choose); the app wears
+     * it the next time it is on the glass, now if it is. */
+    job_stage("", 0, 0);
     try_note(NULL, NULL);
-    /* The store parked the glass on the menu — the erase needs the map down — and
-     * the park's own switch wrote `menu` into the resume record. Overwrite it with
-     * the face the store just replaced: the reboot this job arms should answer the
-     * owner's upload with their new dial, not the menu. If the clock row refuses or
-     * vanished, resume_last falls back home exactly as an unremembering boot does. */
-    char slug[ORB_BUNDLE_SLUG_MAX + 1], hex[THEME_ID_HEX + 1];
-    input_router_remember_slug(theme_stem_split(r->id, slug, sizeof slug, hex, sizeof hex)
-                               ? slug : "clock");
-    if (orb_jobs_reboot_soon("theme: the store") != ESP_OK)
-        ESP_LOGE(TAG, "bundle stored but the reboot could not be armed");
 }
 
 /* ---- theme-cache-plan §2.4: the fill ------------------------------------------------- */
@@ -3582,9 +3644,9 @@ static void clear_job(void *arg)
  *
  * Once a card has mounted (at boot, or back after a swap or a USB session), each choice's
  * file is read against the CRC its copies were made from. A file that changed is stored
- * again — the store rebuilds both copies, and reboots as every store does; a file that is
- * gone takes both copies and the choice with it (the removal's own ladder, which reboots
- * when it moved anything). One app a run: the reboot brings the next. A card that did not
+ * again — the store rebuilds both copies, without a reboot; a file that is gone takes both
+ * copies and the choice with it (the removal's own ladder, which reboots, and the reboot
+ * brings the rest). A card that did not
  * answer, or a header that would not read, changes nothing. */
 static void reconcile_job(void *arg)
 {
@@ -3620,17 +3682,9 @@ static void reconcile_job(void *arg)
         ESP_LOGW(TAG, "reconcile: %s's theme file \"%s\" changed on the card since it was stored: "
                       "stored again", slug, stem);
         char why[72] = "";
-        const orb_app_t *was = input_router_current();
-        char back[ORB_POOL_SLUG_MAX] = "";
-        if (was && was->slug) strlcpy(back, was->slug, sizeof back);
-        if (orb_theme_install_bundle(stem, why, sizeof why) != ESP_OK) {
+        if (orb_theme_install_bundle(stem, why, sizeof why) != ESP_OK)
             ESP_LOGW(TAG, "reconcile: %s's store refused: %s", slug, why);
-            continue;                    /* refused before the park: nothing changed */
-        }
-        input_router_remember_slug(back[0] ? back : slug);   /* the reboot comes back where it was */
-        if (orb_jobs_reboot_soon("theme: a changed card file stored again") != ESP_OK)
-            ESP_LOGE(TAG, "reconcile: stored but the reboot could not be armed");
-        return;
+        /* no reboot (owner, 2026-11-09): on to the next choice */
     }
 }
 
@@ -3681,6 +3735,12 @@ bool orb_theme_chosen(const char *stem)
 void orb_theme_service(void)
 {
     if (s_fill_changed) { s_fill_changed = false; s_reconciled_gen--; }   /* due again */
+    /* a theme chosen for the app on the glass fills there, once the store's job is done */
+    if (s_refill_slug[0] && !orb_jobs_busy()) {
+        orb_app_t *app = (orb_app_t *)orb_app_find_slug(s_refill_slug);
+        s_refill_slug[0] = '\0';
+        if (app && input_router_current() == app) orb_wasm_theme_changed(app);
+    }
     /* after the boot has settled (the first app bound, the carousel's previews read), with
      * the worker free and no upload in flight; a refused post tries again next poll */
     const uint32_t g = orb_sd_mount_gen();

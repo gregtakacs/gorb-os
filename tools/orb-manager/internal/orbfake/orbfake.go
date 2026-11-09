@@ -438,8 +438,8 @@ func (o *Orb) serveFb(w http.ResponseWriter, r *http.Request) {
 
 // serveBundle is h_bundle_install (P6.4), now the only theme write door: ?id= must pass
 // orb_theme_id_ok or the answer is the firmware's 400, a second job while one runs is a
-// 409, and the ack carries reboot:automatic — Migration 1 made the store the one press
-// that changes the theme, rebooting onto the new face when the copy verifies. The double
+// 409, and the ack carries reboot:none — the store is the one press that changes the theme,
+// and chooses it without a reboot (owner, 2026-11-09). The double
 // lands the outcome on acknowledge, the way it landed the slot witness before: no worker,
 // and a hub that must poll for a witness its fake never gives would leave the
 // store-then-watch flow the page implements entirely untested. A landing also clears the
@@ -476,7 +476,7 @@ func (o *Orb) serveBundle(w http.ResponseWriter, r *http.Request) {
 		o.stagedID, o.stagedWhy = "", ""
 	}
 	o.mu.Unlock()
-	writeJSON(w, 200, fmt.Sprintf(`{"state":"storing","id":%q,"reboot":"automatic"}`, id))
+	writeJSON(w, 200, fmt.Sprintf(`{"state":"storing","id":%q,"reboot":"none"}`, id))
 }
 
 // serveDelete is h_theme_del: same id gate, same 404 wording.
@@ -637,7 +637,7 @@ func (o *Orb) serveUpload(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	// h_theme_upload does not merely file the bytes: after a verified upload it
-	// queues orb_theme_post_bundle(id) and answers reboot:automatic. The double
+	// queues orb_theme_post_bundle(id) and answers reboot:none. The double
 	// lands that queued store synchronously — the same concession serveBundle
 	// already makes ("the double has no worker for the copy to lag behind") — so a
 	// hub that watches for the stored witness after an upload, as theme.go's
@@ -660,7 +660,7 @@ func (o *Orb) serveUpload(w http.ResponseWriter, r *http.Request) {
 			t.Serial++
 			t.OK, t.Why = true, ""
 			land(t)
-			writeJSON(w, 200, fmt.Sprintf(`{"state":"stored","id":%q,"bytes":%d,"reboot":"automatic"}`, id, len(body)))
+			writeJSON(w, 200, fmt.Sprintf(`{"state":"stored","id":%q,"bytes":%d,"reboot":"none"}`, id, len(body)))
 			return
 		}
 	}
@@ -673,7 +673,7 @@ func (o *Orb) serveUpload(w http.ResponseWriter, r *http.Request) {
 		// exactly as h_sd would read active off the slot header after the reboot.
 		o.active = name
 	}
-	writeJSON(w, 200, fmt.Sprintf(`{"state":"stored","id":%q,"bytes":%d,"reboot":"automatic"}`, id, len(body)))
+	writeJSON(w, 200, fmt.Sprintf(`{"state":"stored","id":%q,"bytes":%d,"reboot":"none"}`, id, len(body)))
 }
 
 // serveCommit is orb_theme_upload_recommit: the empty POST that spends a refusal's
@@ -707,7 +707,7 @@ func (o *Orb) serveCommit(w http.ResponseWriter, tok string) {
 				o.active = t.Name
 				o.stagedID, o.stagedWhy = "", ""
 			}
-			writeJSON(w, 200, fmt.Sprintf(`{"state":"stored","id":%q,"bytes":%d,"reboot":"automatic","committed":"staged"}`, id, len(body)))
+			writeJSON(w, 200, fmt.Sprintf(`{"state":"stored","id":%q,"bytes":%d,"reboot":"none","committed":"staged"}`, id, len(body)))
 			return
 		}
 	}

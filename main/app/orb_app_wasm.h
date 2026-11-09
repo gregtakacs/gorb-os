@@ -127,6 +127,13 @@ void orb_app_want_room(void);
  * glass: its stage binds again and the app reads it. LVGL task. */
 struct orb_app;
 void orb_wasm_theme_landed(struct orb_app *app);
+/* Owner, 2026-11-09 (a store does not reboot): `app`'s theme is being replaced. Its stage
+ * rebinds — the theme module answers no theme for it meanwhile — so nothing it draws reads
+ * the old one. LVGL task. */
+void orb_wasm_theme_release(struct orb_app *app);
+/* The new theme is chosen and `app` is on the glass: its fill starts, behind its face. LVGL
+ * task. */
+void orb_wasm_theme_changed(struct orb_app *app);
 
 #ifdef __cplusplus
 }

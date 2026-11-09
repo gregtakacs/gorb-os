@@ -320,10 +320,10 @@ func (c *Client) ThemeList(ip string) (*ThemeList, error) {
 // (orb_theme_post_bundle), the only route to a card theme now the FORMAT 2 install door
 // is gone. The id is the one that row came back with: a caller cannot name a card file,
 // and h_bundle_install answers 400 before the card is touched if it is not 12 lowercase
-// hex. A nil error means the store job was queued. The door acks reboot:automatic on
-// purpose: under the single slot the store IS the theme change, and the firmware
-// reboots onto the new face once the copy verifies. The row's stored witness is where
-// the landing shows; the try witness is where a refusal lands.
+// hex. A nil error means the store job was queued. The door acks reboot:none (owner,
+// 2026-11-09): the store chooses the theme for its app without a reboot, and the app wears
+// it the next time it opens. The row's chosen witness is where the landing shows (stored
+// on older firmware, which acked reboot:automatic); the try witness is where a refusal lands.
 func (c *Client) ThemeStore(ip, id string) (json.RawMessage, error) {
 	if err := CheckThemeID(id); err != nil {
 		return nil, err

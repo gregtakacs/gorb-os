@@ -385,9 +385,9 @@ var deviceRoutes = map[string][]string{
 	"/api/v1/sd/delete":  {http.MethodPost},
 	"/api/v1/sd/theme":   {http.MethodPost},
 	// Migration 1's store door: the one press that puts a card theme on the glass.
-	// It queues, acks reboot:automatic, and reboots onto the new face when the copy
-	// verifies — the single store verb after the flip/default pair was retired with
-	// the A/B choice, each pinned by the firmware comment beside its handler.
+	// It queues and acks reboot:none: the store chooses the theme without a reboot (owner,
+	// 2026-11-09) — the single store verb after the flip/default pair was retired with the
+	// A/B choice, each pinned by the firmware comment beside its handler.
 	"/api/v1/sd/bundle": {http.MethodPost},
 	"/api/v1/sd/rescan": {http.MethodPost},
 	// theme-cache-plan §2.1: each app's choice, the order of the glass, the pool's entries

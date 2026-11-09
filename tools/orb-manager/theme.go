@@ -1205,11 +1205,14 @@ func (s *Server) waitForStoreStaged(ctx context.Context, ip, id string, onStage 
 				return "refused", list.TryWhy
 			}
 			for _, row := range list.Themes {
-				if row.ID == id && row.Stored {
-					// Landed. The job now asks for the reboot that draws it — a self-
-					// inflicted silence the excuse has to cover before the next poll
-					// finds the board gone.
-					s.armSelfRebootFor(ip)
+				// Landed: the app's choice now (theme-cache-plan C6), in the pool or not —
+				// a store no longer copies the theme in or reboots (owner, 2026-11-09); the
+				// app wears it the next time it opens. Older firmware says Stored, and
+				// reboots, which the excuse still covers.
+				if row.ID == id && (row.Stored || row.Chosen) {
+					if !row.Chosen {
+						s.armSelfRebootFor(ip)
+					}
 					return "stored", ""
 				}
 			}

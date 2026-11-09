@@ -83,17 +83,15 @@ func TestThemeContractAgainstTheLiveDouble(t *testing.T) {
 		t.Errorf("load state lost: %+v", l.Themes)
 	}
 
-	// Store the listed id. Migration 1's one store door copies the bundle, verifies
-	// it, writes the header last and reboots onto the new face — the store IS the
-	// theme change — so the ack says reboot:automatic and a fresh read shows the
-	// dial moved to carousel with the stored witness landed. A store that left the
-	// face alone here would be the old two-press form Migration 1 retired.
+	// Store the listed id. The one store door verifies the bundle and chooses it for its
+	// app without a reboot (owner, 2026-11-09: theme-cache-plan §4.1 made it safe), so
+	// the ack says reboot:none and a fresh read shows the stored witness landed.
 	ack, err := c.ThemeStore(ip, byName["carousel"].ID)
 	if err != nil {
 		t.Fatalf("store carousel: %v", err)
 	}
-	if !strings.Contains(string(ack), `"state":"storing"`) || !strings.Contains(string(ack), `"reboot":"automatic"`) {
-		t.Errorf("store door ack = %s, want state:storing reboot:automatic", ack)
+	if !strings.Contains(string(ack), `"state":"storing"`) || !strings.Contains(string(ack), `"reboot":"none"`) {
+		t.Errorf("store door ack = %s, want state:storing reboot:none", ack)
 	}
 	l2, err := c.ThemeList(ip)
 	if err != nil {

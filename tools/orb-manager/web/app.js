@@ -4790,7 +4790,7 @@ async function commitTheme(f, tok, st) {
     if (!r.ok || j.ok === false) throw new Error(j.error || ("HTTP " + r.status));
     const d = j.data || {};
     st.textContent = "replaced \u201c" + f.name + "\u201d (" + (d.id || "?") + ") from the copy on the card \u2014 " +
-      (d.reboot === "automatic" ? "the orb is rebooting onto it" : "stored");
+      (d.reboot === "automatic" ? "the orb is rebooting onto it" : "chosen: the app wears it the next time it opens");
     await loadThemes(themeIP);
   } catch (err) {
     st.textContent = "commit refused (" + err.message + ") \u2014 sending the file again\u2026";

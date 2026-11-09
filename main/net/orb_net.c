@@ -6021,7 +6021,7 @@ static esp_err_t h_bundle_install(httpd_req_t *req)
     }
     char b[192];
     const int n = snprintf(b, sizeof b,
-        "{\"state\":\"storing\",\"id\":\"%s\",\"reboot\":\"automatic\"}", id);
+        "{\"state\":\"storing\",\"id\":\"%s\",\"reboot\":\"none\"}", id);
     if (n < 0 || (size_t)n >= sizeof b) return httpd_resp_sendstr(req, "{\"error\":\"id too long\"}");
     return httpd_resp_sendstr(req, b);
 }
@@ -6055,7 +6055,7 @@ static esp_err_t h_theme_del(httpd_req_t *req)
     const int n = snprintf(b, sizeof b,
         deactivating
             ? "{\"state\":\"deleted\",\"id\":\"%s\",\"deactivated\":true,"
-              "\"reboot\":\"automatic\"}"
+              "\"reboot\":\"none\"}"
             : "{\"state\":\"deleted\",\"id\":\"%s\",\"deactivated\":false}",
         id);
     if (n < 0 || (size_t)n >= sizeof b) return httpd_resp_sendstr(req, "{\"error\":\"id too long\"}");
@@ -7833,7 +7833,7 @@ static esp_err_t h_theme_upload(httpd_req_t *req)
             return httpd_resp_sendstr(req, b);
         }
         snprintf(b, sizeof b, "{\"state\":\"stored\",\"id\":\"%s\",\"bytes\":%lu,"
-                 "\"reboot\":\"automatic\",\"committed\":\"staged\"}", committed, (unsigned long)sz);
+                 "\"reboot\":\"none\",\"committed\":\"staged\"}", committed, (unsigned long)sz);
         return httpd_resp_sendstr(req, b);
     }
 
@@ -7975,7 +7975,7 @@ static esp_err_t h_theme_upload(httpd_req_t *req)
         return httpd_resp_sendstr(req, b);
     }
     snprintf(b, sizeof b, "{\"state\":\"stored\",\"id\":\"%s\",\"bytes\":%d,"
-             "\"reboot\":\"automatic\"}", committed, got);
+             "\"reboot\":\"none\"}", committed, got);
     return httpd_resp_sendstr(req, b);
 }
 

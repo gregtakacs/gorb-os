@@ -212,19 +212,20 @@ const stepOf = (it) => it.stepNow()[0];
   const bound = new Set((panes.match(/\bRv\.([A-Za-z_][A-Za-z0-9_]*)/g) || []).map((m) => m.slice(3)));
   // the panes also take the shell's parts (ctl.studioVals(Rv).studio<Part>) and the canvases' refs (ctl.<ref>)
   (panes.match(/\)\.studio[A-Z][A-Za-z0-9_]*|\bctl\.[a-z][A-Za-z0-9_]*Ref\b/g) || []).forEach((m) => bound.add(m.replace(/^\)\.|^ctl\./, '')));
-  // and the host draws the steps (isStart, stepOpts, the Render step that was isExport), the duplicate question (its StartFlow and
-  // Confirm) and the true-size caption and ruler (its views) from the app's own answers
-  ['isStart', 'stepOpts', 'isExport', 'studioDup', 'studioCal'].forEach((k) => bound.add(k));
-  // K6: the chrome is the OS's shell (studio@1). A value the clock hands it through
-  // studioVals (R.<name>) is still bound; the duplicate question and the true-size caption
-  // and ruler the shell builds from the services' own answers, so they ride the studio
-  // object that carries them, which the template must bind.
+  // E7: the chrome is Orb Manager's host now, drawn from the clock's own answers (the app
+  // object in clock-host.js) rather than from the class's values: the steps and Render (isStart,
+  // stepOpts, isExport, Send, Export and their notes), the template panel and New (dials,
+  // resetDesign), the name, the duplicate question, the calibration, the true-size caption and
+  // ruler, and the stage's glass and status line. Those bindings are the host's, not lost.
+  const HOSTED = new Set(['isStart', 'stepOpts', 'isExport', 'artNote', 'exportTheme', 'isHub', 'sendNote', 'sendToOrb', 'themeNote',
+    'dials', 'resetDesign', 'themeNameIn', 'themeNameLen', 'themeNamePh', 'themeNameVal',
+    'dupOpen', 'dupNm', 'dupNote', 'dupStem', 'dupStop', 'dupCancel', 'dupReplace',
+    'calDown', 'calMax', 'calMin', 'calStep', 'calUp', 'calVal', 'resetCal', 'setCal', 'solve', 'viewText', 'showRuler', 'rulerPx', 'rulerTicks', 'calText',
+    'stageCv', 'stageDown', 'stageFlow', 'stageRing', 'stageRing2', 'stageRound', 'stageWin', 'status']);
+  // K6: a value the clock hands the shell's parts through studioVals (R.<name>) is bound
   const sv = html.slice(html.indexOf('  studioVals(R) {'), html.indexOf('\n  }\n', html.indexOf('  studioVals(R) {')));
   (sv.match(/\bR\.([A-Za-z_][A-Za-z0-9_]*)/g) || []).forEach((m) => bound.add(m.slice(2)));
-  const SHELL = { dupOpen: 'studioDup', dupNm: 'studioDup', dupNote: 'studioDup', dupStem: 'studioDup', dupStop: 'studioDup',
-    viewText: 'studioCal', showRuler: 'studioCal', rulerPx: 'studioCal', rulerTicks: 'studioCal', calText: 'studioCal' };
-  Object.keys(SHELL).forEach((k) => { if (bound.has(SHELL[k])) bound.add(k); });
-  const lost = PRE.filter((k) => !RETIRED.has(k) && !bound.has(RENAMED[k] || k));
+  const lost = PRE.filter((k) => !RETIRED.has(k) && !HOSTED.has(k) && !HOSTED.has(RENAMED[k] || k) && !bound.has(RENAMED[k] || k));
   ok(lost.length === 0, 'every binding of the pre-P5 template is still in the page', lost.join(','));
   const v = it.renderVals();
   const unbound = [...bound].filter((k) => !['a', 'c', 'd', 'f', 'g', 'h', 'o', 'r', 't', 'w', 'true', 'false'].includes(k) && v[k] === undefined);
@@ -245,7 +246,6 @@ const stepOf = (it) => it.stepNow()[0];
   ok(rowsD.some((f) => f.isColor || f.isSwatch) && rowsD.every((f) => (f.rowCls === 'wide') === !f.isRange), 'only sliders keep the value column; every other row reads its value underneath',
      rowsD.filter((f) => (f.rowCls === 'wide') === !!f.isRange).map((f) => f.label).join());
   ok(V().viewOpts.map((o) => o.label).join() === 'Fit,1:1,True size,Magnify', 'the four view stops', V().viewOpts.map((o) => o.label).join());
-  ok(V().inFrame === false && V().notHub === true && /Clock/.test(V().crumbLabel), 'standalone: no back arrow, the download in the top bar', V().crumbLabel);
   // a re-timed bake re-enters with the press's own ask (Gold, 2026-11-08: it passed the baker's
   // options, so every re-time fell through to Export: a Send downloaded, a quiet bake opened Save)
   {
@@ -257,28 +257,10 @@ const stepOf = (it) => it.stepNow()[0];
   // hosted editor's dialog is the host's, drawn from its own sender (theme@1/send.js and its
   // suite), and the class's send lines are no longer drawn anywhere
   it.setState({ sending: null, status: '' });
-  { const R = V(); ok(R.chosenNow && R.studioTop.steps === R.stepOpts && R.studioTop.primary.label === 'Export .orbtheme' && R.studioGlass.size === R.stageCv && R.studioTool.view === R.viewOpts && R.studioRender.downloads.length === 1 && R.studioRender.downloads[0].label === 'Export .orbtheme', 'the top bar, glass, toolbar and Render panel carry the clock’s own values', JSON.stringify([R.chosenNow, R.studioTop.primary && R.studioTop.primary.label])); }
-  // §8.10: on the start, before a choice, the start is all there is
-  { const keep = { step: it.state.step, chosen: it.state.chosen, tab: it.state.tab };
-    it.setState({ step: 'start', chosen: false, startPick: '' });
-    const R = V();
-    ok(!R.chosenNow && !R.studioTop.steps.length && !R.studioTop.name && !R.studioTop.primary && !R.studioTop.fit && !R.studioTop.undo, 'before a choice the top bar has no steps, name, readout, undo or Send');
-    ok(R.studioStart && R.studioStart.tiles.length === R.dials.length && R.studioStart.tiles.every((t) => typeof t.draw === 'function' && t.key) && R.studioStart.library && R.studioStart.importFile,
-       'the start flow gets the clock’s templates (each drawing its own thumbnail), its library and Import');
-    R.studioStart.foot[0].on();
-    ok(it.state.chosen === true && it.state.step === 'movement', 'Continue chooses the template and goes to the first step', JSON.stringify([it.state.chosen, it.state.step]));
-    it.goStep('start');
-    ok(it.chosenNow() && it.state.startPick === '', 'back on Start after a choice, the design stays chosen and the four show again');
-    it.setState(keep); }
-  // the live size: said in the top bar and as the Render step's first block
-  { it.setState({ size: { state: 'done', bytes: 1048576 * 3, ms: 900 } });
-    const R = V();
-    ok(/3,072 KB/.test(R.studioTop.fit.text) && R.studioRender.blocks[0].title === 'Size' && /3,072 KB of the 8,320 KB an orb takes \(37%\) · baked in 0\.9 s/.test(R.studioRender.blocks[0].body),
-       'the live size is in the top bar and leads Render', R.studioTop.fit.text + ' | ' + R.studioRender.blocks[0].body);
-    it.setState({ size: { state: 'error', why: 'this dial has no hand at all' } });
-    const R2 = V();
-    ok(/not baked/.test(R2.studioTop.fit.text) && R2.studioTop.fit.dot === '#f85149' && /Not baked: this dial has no hand at all/.test(R2.studioRender.blocks[0].body), 'a refused bake is said in both places');
-    it.setState({ size: { state: 'waiting' } }); }
+  // the three parts the hosted panes draw carry the clock's own values; its top bar, start,
+  // Render and live size retired with E7 2d (the host's own, in the runtime's host suite)
+  { const R = V(); ok(R.studioTool.view === R.viewOpts && R.studioTool.render === R.renderOpts && R.studioLayers.rows === R.stackRows && R.studioFields.fields === R.fields
+      && !R.studioTop && !R.studioStart && !R.studioRender && !R.studioSend, 'the toolbar, the layers and the inspector carry the clock\u2019s own values, and nothing else is built', Object.keys(R).filter((k) => /^studio/.test(k)).join()); }
   // the quiet bake: a status-only update while it runs is kept, not shown; anything else goes through
   { it.setState({ status: 'before' });
     it._quietBake = true; it.setState({ status: 'Drawing 3 baked parts…' }); it.setState({ status: 'x', sel: null }); it._quietBake = false;

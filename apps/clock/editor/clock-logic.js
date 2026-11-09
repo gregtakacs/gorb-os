@@ -10,7 +10,7 @@
 window.ClockLogic = function (DCLogic) {
 class Component extends DCLogic {
   DEF = { tick: 'sweep', favour: 'sweep', plan: '', shSmooth: 0, balance: '1', plate: 'train', spokes: 'train', etching: 'none', pinion: 'on', center: 'jewel', finish: 'train', glow: 1, temp: 2200, innerAngle: 90, outerLight: 1, outerAngle: 315, outerTemp: 2200, trainAngle: 0, plateAngle: 0, plateScale: 1, hue: 30, hueSat: 0, outerHue: 210, outerSat: 0, wb: 6500, orbD: 128, orbTip: 194, cageD: 107, rearFinish: 'train', shAngle: -1, shDist: 1, shBlur: 1, shOp: 1, shMove: 1, shRelief: 1 };
-  state = { frame: 0, playing: true, slow: false, seam: 'Rendering…', status: '', seeds: { spokes: 1, pinion: 1, center: 1, finish: 1, etching: 1 }, dial: 'skeleton', designs: {}, sel: null, selKind: null, themeName: '', artSlot: null, pickKey: null, guide: 'auto', hands: 'auto', handFinish: 'auto', hidden: {}, timeMode: 'live', caseStyle: 'polished', caseMetal: 'auto', caseOpen: 221.5, glassStyle: 'domed', train: 'classic', tab: 'start', cfg: {}, view: 'fit', fitPx: 466, addOpen: false, zoom: 2, viewCal: 1, hubIp: null, hubCheck: false, dup: null, sounds: {}, sndSim: true, sndCut: true, sndMsg: '', render: 'design', wipe: 233, step: 'start', diag: false, more: {}, sending: null, startPick: '', chosen: false, confirm: null, size: { state: 'waiting' } };
+  state = { frame: 0, playing: true, slow: false, seam: 'Rendering…', status: '', seeds: { spokes: 1, pinion: 1, center: 1, finish: 1, etching: 1 }, dial: 'skeleton', designs: {}, sel: null, selKind: null, themeName: '', artSlot: null, pickKey: null, guide: 'auto', hands: 'auto', handFinish: 'auto', hidden: {}, timeMode: 'live', caseStyle: 'polished', caseMetal: 'auto', caseOpen: 221.5, glassStyle: 'domed', train: 'classic', tab: 'start', cfg: {}, view: 'fit', fitPx: 466, addOpen: false, zoom: 2, viewCal: 1, sounds: {}, sndSim: true, sndCut: true, sndMsg: '', render: 'design', wipe: 233, step: 'start', diag: false, more: {} };
   KEYS = Object.keys(this.DEF);
   RND = ['spokes', 'pinion', 'center', 'finish', 'etching'];
   TABS = [['dial', 'Dial'], ['comps', 'Complications'], ['hands', 'Hand set'], ['timing', 'Timing'], ['move', 'Geartrain'], ['insides', 'Clock insides'], ['light', 'Light'], ['case', 'Case & glass'], ['sound', 'Sound'], ['export', 'Export']];
@@ -1088,10 +1088,9 @@ class Component extends DCLogic {
     // Under a hub, learn the loaded orb once so the Send note names it before the
     // first press. Guarded and swallowed: off-hub there is no hub to ask, and a
     // headless run has no fetch — either way the button's press-time read still works.
-    if (this.hubSend3()) { try { await this.hubOrbIp(); } catch (e) {} }
     this.buildMovement(); this.startTimer(); this.forceUpdate();
   }
-  componentWillUnmount() { clearTimeout(this._szT); if (this._tick) this._tick.stop(); if (this._rmTimer) clearTimeout(this._rmTimer); if (this._onKey) window.removeEventListener('keydown', this._onKey); if (this._vis) document.removeEventListener('visibilitychange', this._vis); this.buildId = -1; }
+  componentWillUnmount() { if (this._tick) this._tick.stop(); if (this._rmTimer) clearTimeout(this._rmTimer); if (this._onKey) window.removeEventListener('keydown', this._onKey); if (this._vis) document.removeEventListener('visibilitychange', this._vis); this.buildId = -1; }
   ensureFont(k) {
     this._fl = this._fl || {}; if (!k || this._fl[k]) return; this._fl[k] = 1;
     const n = WatchEngine.FONT_NAME(k); if (!n) return;
@@ -1111,7 +1110,6 @@ class Component extends DCLogic {
     // this commit has bound them, so this is the first place the jump can be honoured.
     if (this._scrollTo) { const a = this._scrollTo; this._scrollTo = null; this.scrollToAnchor(a); }
     if (!this.ready) return;
-    this.liveSize();
     const D0 = this.design(); D0.comps.flatMap((c) => [c.font, c.wfont, ...(c.scale ? [c.scale.font, c.scale.font12, c.scale.fontQ] : [])]).forEach((k) => this.ensureFont(k));
     if (this._mk !== this.mvKey() || (!this.rendering && this.gt.length && this.gt.length !== this.B)) {
       /* The second clause is the self-heal for a superseded build: buildMovement
@@ -2180,108 +2178,16 @@ class Component extends DCLogic {
    * The hub window has no console, and before this a throw past t3bake's own
    * try left the status frozen mid-sentence with no explanation at all. */
   async exportTheme3(opts) {
-    // a press waits out a live-size bake in flight, so its own lines are never swallowed
-    while (this._sizeRun) { try { await this._sizeRun; } catch (e) { /* its own account */ } }
     this._bakeBusy = (this._bakeBusy || 0) + 1;
     try { await this._export3Body(opts || {}); }
     catch (e) { this.setState({ status: 'Not baked: bake threw — ' + (e && e.message ? e.message : String(e)) }); }
     finally { this._bakeBusy--; }
   }
-  /* The live size (theme-editor-kit-plan §8.8, Stage 1 of E7): a pause after the last edit the
-   * watch is baked again, quietly, through the walk Send and Export run, and its size said in
-   * the top bar and on Render. The pause is twice the last bake (1.2 s to 6 s); the bake waits
-   * for the movement to settle and for any press's bake, as a press waits for it. While it
-   * runs, a status-only update is the bake's own account and is kept, not shown. */
+  /* A quiet bake (the host's, clock-host.js: its live size and its Send) runs the walk Send and
+   * Export run; while it runs, a status-only update is the bake's own account, kept, not shown. */
   setState(p, cb) {
     if (this._quietBake && p && typeof p === 'object' && Object.keys(p).length === 1 && 'status' in p) { this._quietLast = p.status; return; }
     return super.setState(p, cb);
-  }
-  sizeKey() {
-    const s = this.state, snd = (s.sounds || {})[s.dial];
-    // an upload's samples stand for themselves by length: the key is read every update
-    const skim = (k, v) => (v && typeof v === 'object' && typeof v.length === 'number' && !Array.isArray(v) ? 'pcm' + v.length : v);
-    try { return JSON.stringify([s.dial, s.designs[s.dial] || null, s.cfg, s.seeds, s.hands, s.handFinish, s.caseStyle, s.caseMetal, s.glassStyle, s.train, s.caseOpen, s.themeName, snd || null], skim); }
-    catch (e) { return String(Date.now()); }
-  }
-  liveSize() {
-    if (!this.ready || !this.chosenNow()) return;
-    const k = this.sizeKey();
-    if (k === this._szKey) return;
-    this._szKey = k;
-    clearTimeout(this._szT);
-    if (this.state.size && this.state.size.state !== 'waiting') this.setState({ size: { state: 'waiting' } });
-    const run = () => {
-      if (k !== this._szKey) return;
-      if (this._bakeBusy || this.state.sending || !this.settled3()) { this._szT = setTimeout(run, 1000); return; }
-      this._sizeRun = (async () => {
-        const t0 = Date.now();
-        this._quietBake = true; this._quietLast = ''; this._bakedBytes = null;
-        try { await this._export3Body({ send: 'bytes' }); } catch (e) { this._quietLast = 'Not baked: ' + (e && e.message ? e.message : String(e)); }
-        finally { this._quietBake = false; }
-        const bytes = this._bakedBytes, ms = Date.now() - t0; this._bakedBytes = null; this._szMs = ms;
-        if (k !== this._szKey) return;
-        this.setState({ size: bytes ? { state: 'done', bytes: bytes.length, ms } : { state: 'error', why: String(this._quietLast || 'the bake did not finish').replace(/^Not baked: /, '') } });
-      })();
-      this._sizeRun.finally(() => { this._sizeRun = null; });
-    };
-    this._szT = setTimeout(run, Math.min(6000, Math.max(1200, 2 * (this._szMs || 0))));
-  }
-  /* §31's last open round, §32's honest round: send the baked bundle straight to the
-   * orb rather than handing the owner a file to re-upload. The bake is the SAME walk
-   * the download runs — same guard, same motion measure, same carrier split — so a
-   * sent dial is byte-for-byte the dial a downloaded one would have been. Only the
-   * last step differs: the bytes ride the hub's FORMAT 3 upload door
-   * (POST /api/theme/upload) to the orb the hub is already talking to.
-   *
-   * What the door actually does on the far side, stated here because the button's
-   * whole UX is about not being surprised by it: the orb verifies the container,
-   * files it on the card under sha256(name)[:12], and QUEUES the store — the copy
-   * into the one slot the dial reads. Under Migration 1 that store IS the theme
-   * change: the orb reboots itself onto the new face when the copy lands. There is
-   * no second slot, no flip, and no waiting press.
-   *
-   * §32's send is therefore a watched transfer, not a fire-and-forget POST:
-   * a duplicate name is asked about BEFORE megabytes cross the room (the hub's
-   * ?precheck=1 leg, answered inline on this page — no browser dialog, no re-bake),
-   * the upload runs over XHR so its bytes report live progress, and the hub's
-   * /api/theme/upload-status witness reports the phases this page cannot see on its
-   * own — the hub-to-orb leg and the store the door armed. The button appears only
-   * when a hub served the page (see hubSend3): from the filesystem there is no door
-   * to dial, so only the download shows. */
-  /* The send is the OS's (theme@1/send, theme-editor-kit-plan K1): the precheck, the
-   * duplicate question and its held bake, the upload and the hub's witness, and the one
-   * modal act around it all. The clock hands it the bytes and draws its state. These
-   * names stay so the bake and the panes call one door. */
-  get sender() {
-    if (!this._sender) {
-      this._sender = window.OrbTheme.sender({
-        say: (s) => this.setState({ status: s }),
-        ask: (d) => this.setState({ dup: d }),
-        sending: (st) => this.setState({ sending: st }),
-        orb: (ip) => this.setState({ hubIp: ip, hubCheck: true }),
-        orbIp: () => this.hubOrbIp(),
-      });
-    }
-    return this._sender;
-  }
-  get _replaceArmed() { return this.sender.held; }
-  set _replaceArmed(v) { this.sender.held = v; }
-  get _cancel3() { return this.sender.cancelRequested; }
-  cancelSend3() { this.sender.cancel(); }
-  _cancelled3() { return this.sender.cancelled(); }
-  // the library keeps it first: a send the orb refuses still leaves the watch on the hub
-  sendTheme3ToOrb() { return this.sender.send(this.themeName(), async () => { await this.saveDraft(true); return this.exportTheme3({ send: true }); }); }
-  replaceArmed3() { return this.sender.replace(); }
-  dismissDup3() { this.sender.dismiss(); }
-  // the clock keeps the found address in its state (the Render step's label reads it), so
-  // that is its cache, as before; a miss asks the hub afresh
-  async hubOrbIp() {
-    if (this.state.hubCheck && this.state.hubIp != null) return this.state.hubIp;
-    return this.sender.findOrb(true);
-  }
-  // the bake's own account (its policy sentence and the art meter) rides the verdict line
-  postTheme3ToOrb(bytes, nm, stem, pol, meter, overwrite) {
-    return this.sender.post(bytes, { name: nm, stem: stem, summary: pol.sentence + ' \u00b7 ' + meter }, overwrite);
   }
   async _export3Body(opts) {
     opts = opts || {};
@@ -2988,7 +2894,7 @@ class Component extends DCLogic {
    * planes the bake wants, and download under the id the card will file it by.
    * A second method only because the first one holds the walk's ~8 MB of
    * frame pixels in its locals and the bake should not also hold its stack. */
-  // send: the press's ask ('bytes', true, or none for Export); retimed: this is the one re-time's pass
+  // send: 'bytes' for a quiet bake (the host's), none for Export; retimed: this is the one re-time's pass
   async t3bake(nm, fc, M, gt, B, fps, send, retimed) {
     const G = window.GorbBake;
     const { pxs, un, bw, bh, compRows, compB, auxRows, auxB, orbital, carW, carH, onlyBase, wheelRows, cover } = this._t3; this._t3 = null;
@@ -3228,7 +3134,6 @@ class Component extends DCLogic {
         (r.meter.layers > r.meter.layerCap ? ' · the dial draws ' + r.meter.layers + ' layers and the orb seats ' + r.meter.layerCap + ' at full speed: past them it draws the whole dial the slow way \u2014 make a wheel snap, or drop a part or a hand\u2019s shadow' : '') +
         (this._wheelFrozen ? ' · the wheels\u2019 cover lies over ' + this._wheelFrozen + ' px of moving movement, which it holds still: move the wheel or its cutout off the opening' : '');
       if (send === 'bytes') { this._bakedBytes = bytes; this.setState({ status: 'Baked "' + nm + '" \u2014 ' + pol.sentence + ' \u00b7 ' + meter }); return; }
-      if (send) { this._replaceArmed = null; await this.postTheme3ToOrb(bytes, nm, stem, pol, meter); return; }
       const how = await this.saveFile(new Blob([bytes], { type: 'application/octet-stream' }), stem + '.orbtheme');
       if (how === 'cancelled') { this.setState({ status: 'Not exported' }); return; }
       this.setState({ status: (how === 'saved' ? 'Exported ' : 'Downloaded ') + stem + '.orbtheme — ' + pol.sentence + ' · ' + meter +
@@ -3237,16 +3142,6 @@ class Component extends DCLogic {
       const msg3 = (e && e.message ? e.message : String(e));
       this.setState({ status: 'Not baked: ' + msg3 + (msg3.indexOf('complication tiles cost') >= 0 ? (this._ptrHint || '') : '') });
     }
-  }
-  /* Whether this page can push to an orb at all. It can only when a hub served it:
-   * the upload door is the hub's POST /api/theme/upload, and the orb address to name
-   * to that door is the one the hub learned over the cable or was handed. A page
-   * opened from the filesystem (file://) has no hub to dial, so the Send button hides
-   * and only the download shows. Same-origin is the whole check the composer makes;
-   * whether a hub is CURRENTLY talking to an orb is answered later, by /api/orb/known,
-   * at the press. */
-  hubSend3() {
-    return typeof location !== 'undefined' && /^https?:$/.test(location.protocol);
   }
   /* §31's comp-table pass: render every domain value of every planned row as one
    * RGBA plate, cropped to the footprint it actually changed against the plate it
@@ -3567,20 +3462,6 @@ class Component extends DCLogic {
   }
   // Open a file: a baked .orbtheme (its design is read out of it) or a design file
   openFile(file) { return this.session.openFile(file); }
-  /* Import a file (§8.1 ruling 5): into the library first, then open; a name the library
-   * already holds asks before it is replaced */
-  importFile(file) {
-    const E = window.WatchEngine;
-    return this.session.importFile(file, {
-      nameOf: (doc) => doc.themeName || ((E && E.template(doc.dial)) || {}).name || '',
-      confirm: (nm) => new Promise((res) => {
-        const done = (v) => { this.setState({ confirm: null }); res(v); };
-        this.setState({ confirm: { title: '\u201c' + nm + '\u201d is already in the library', yes: 'Replace it',
-          body: 'Importing replaces the library\u2019s \u201c' + nm + '\u201d with this file, its unsent changes included. No orb is touched.',
-          on: () => done(true), cancel: () => done(false) } });
-      }),
-    });
-  }
   /* Export: the browser's Save dialog where it has one (the app window's does), else the
    * download; 'saved', 'downloaded' or 'cancelled' */
   async saveFile(blob, name) {
@@ -3601,7 +3482,7 @@ class Component extends DCLogic {
       ...(o.caseStyle ? { caseStyle: o.caseStyle } : {}), ...(o.caseMetal ? { caseMetal: o.caseMetal } : {}), ...(o.glassStyle ? { glassStyle: o.glassStyle } : {}),
       ...(o.hands ? { hands: o.hands } : {}), ...(o.handFinish ? { handFinish: o.handFinish } : {}), ...(o.caseOpen ? { caseOpen: o.caseOpen } : {}),
       ...(o.sounds ? { sounds: { ...st.sounds, [o.dial]: o.sounds } } : {}), themeName: o.themeName || '',
-      sel: null, selKind: null, step: 'parts', tab: 'comps', chosen: true,
+      sel: null, selKind: null, step: 'parts', tab: 'comps',
       status: 'Reopened \u201c' + (o.themeName || E.template(o.dial).name) + '\u201d' + (from ? ' from ' + from : '') + (o.art === false ? ' (it was saved without its art' + (refs.length ? ': ' + refs.length + ' image' + (refs.length > 1 ? 's' : '') + ' to load again' : '') + ')' : r.added ? ' with ' + r.added + ' art asset' + (r.added === 1 ? '' : 's') : '') + (miss.length && o.art !== false ? ' \u2014 ' + miss.length + ' missing' : '') + '. Send replaces it on the card.',
     }));
     this.faces = {}; if (this.buildMovement) this.buildMovement();
@@ -3639,17 +3520,7 @@ class Component extends DCLogic {
     if (at && at[2].includes(tab)) return at;
     return this.STEPS.find((x) => x[0] !== 'start' && x[2].includes(tab)) || this.STEPS[2];
   }
-  goStep(id) { const st = this.STEPS.find((x) => x[0] === id); if (st) this.setState(id === 'start' ? { step: id, tab: st[2][0], startPick: '' } : { step: id, tab: st[2][0], chosen: true }); }
-  /* theme-editor-kit-plan §8.10: a design is chosen once the start is left (New, a template's
-   * Continue, a library entry, an import, any step); until then the start is all there is */
-  chosenNow() { return !!this.state.chosen || this.state.step !== 'start'; }
-  /* D43 §4.2: under the hub the editor fills the window, and its back arrow is the way out. */
-  inFrame() { try { return typeof window !== 'undefined' && !!window.parent && window.parent !== window; } catch (e) { return false; } }
-  closeEditor() { if (this.state.sending) return; try { window.parent.postMessage({ type: 'theme.close' }, location.origin); } catch (e) { /* standalone: nowhere to go back to */ } }
-  crumbLabel() {
-    let q = null; try { q = new URLSearchParams(location.search); } catch (e) { q = null; }
-    return ((q && (q.get('label') || q.get('orb'))) || 'Clock') + (q && (q.get('label') || q.get('orb')) ? ' · Clock' : ' theme');
-  }
+  goStep(id) { const st = this.STEPS.find((x) => x[0] === id); if (st) this.setState({ step: id, tab: st[2][0] }); }
   setDial(on) {
     this.upd((d) => { if (on) delete d.noDial; else d.noDial = true; });
     this.setState(on ? { status: 'The dial is back', sel: 'dial', selKind: 'dial', step: 'dial', tab: 'dial' }
@@ -3682,26 +3553,16 @@ class Component extends DCLogic {
     const tabs = st[2], ready = !!(this.ready && E), d = ready ? (this.design() || {}) : {};
     const head = (f) => f && f.isHead;
     const out = {
-      headLabel: (this.ready && this.preset ? (this.preset() || {}).name || '' : '') + (s.designs && s.designs[s.dial] ? ' (edited)' : '') + ' · ' + st[1],
       stepOpts: this.STEPS.map(([id, label, , tip], i) => ({ num: i + 1, label, tip, cls: id === step ? 'on' : '', bg: id === step ? '#1f3a5f' : 'transparent', fg: id === step ? '#e6edf3' : '#8b98a5', pick: () => this.goStep(id) })),
       hasSubs: tabs.length > 1 && step !== 'parts',
       subOpts: tabs.map((t) => ({ label: this.SUBLABEL[t] || t, cls: s.tab === t ? 'on' : '', bg: s.tab === t ? '#1f3a5f' : 'transparent', bd: s.tab === t ? '#58a6ff' : '#2b3540', fg: s.tab === t ? '#e6edf3' : '#8b98a5', pick: () => this.setState({ step, tab: t }) })),
-      stepHint: st[3],
       isStart: step === 'start',
       hasTabReset: step === 'start' ? false : v.hasTabReset,   // Start's gallery carries its own Reset everything
-      isDial: false,
       isComps: step === 'parts' && (v.isComps || (v.isHands && !(s.selKind === 'hand' && s.sel != null))), isHands: v.isHands && step === 'parts' && s.selKind === 'hand' && s.sel != null,
       diagOpen: !!s.diag, diagLabel: s.diag ? 'Hide diagnostics' : 'Diagnostics', toggleDiag: () => this.setState((x) => ({ diag: !x.diag })), diagCls: s.diag ? 'on' : '',
       // D43 §4.2: the studio's chrome
-      inFrame: this.inFrame(), closeEditor: () => this.closeEditor(), crumbLabel: this.crumbLabel(),
-      notHub: !v.isHub, hasStatus: !!s.status, playIcon: s.playing ? '\u275a\u275a' : '\u25b6',
-      themeNameTip: 'The theme\u2019s name: what the orb lists it as, and its identity on the card · ' + v.themeNameLen,
-      sendTip: 'Bake the .orbtheme and store it on the orb, beside the theme on the glass. Switching to it is a separate press on the Themes tab. ' + (v.sendNote || ''),
+      playIcon: s.playing ? '\u275a\u275a' : '\u25b6',
       addLabel: '\uff0b Add a part\u2026', toggleAdd: () => this.setState({ sel: null, selKind: null, step: 'parts', tab: 'comps' }),
-      startGo: () => this.goStep('movement'), dialName: ready ? ((E.template(s.dial) || {}).name || '') : '',
-      chosenNow: this.chosenNow(),
-      ...(() => { const w = window.OrbStudio && window.OrbStudio.sizeWords ? window.OrbStudio.sizeWords(s.size || { state: 'waiting' }, window.GorbBake && window.GorbBake.THEME_UPLOAD_MAX) : null;
-        return w ? { sizeLine: w.line, sizeShort: w.short, sizeOver: w.over } : { sizeLine: '', sizeShort: '', sizeOver: false }; })(),
       fitShort: '', fitDot: '#5d6b78',
       fromScratch: () => this.fromScratch(),
     };
@@ -3807,54 +3668,19 @@ class Component extends DCLogic {
   /* theme-editor-kit-plan K6: the shell's parts (studio@1) are the OS's; what the clock hands
    * them is these props, made from the values above, so every value the page showed before is
    * still the clock's and only the markup that shows it moved. */
+  /* The shell parts the hosted panes draw (clock-host.js): the layers, the toolbar and the
+   * inspector's rows. E7 2d moved the rest of the chrome to Orb Manager's host: its top bar,
+   * start, Render step, send and duplicate dialogs, confirm, calibration and stage glass. */
   studioVals(R) {
-    const T = window.OrbStudio, O = window.OrbTheme, s = this.state;
+    const T = window.OrbStudio, O = window.OrbTheme;
     if (!T || !O) return {};
     return {
-      // §8.10: before a choice the start is all there is, no steps, name, undo, readout or Send
-      studioTop: R.chosenNow ? {
-        back: R.inFrame ? R.closeEditor : null, backTip: 'Back to this orb\u2019s themes', crumb: R.crumbLabel,
-        name: { value: R.themeNameVal, placeholder: R.themeNamePh, title: R.themeNameTip, onChange: R.themeNameIn },
-        steps: R.stepOpts,
-        undo: { on: R.undo, tip: R.undoTip, op: R.undoOp }, redo: { on: R.redo, tip: R.redoTip, op: R.redoOp },
-        extra: R.isEdited ? [{ label: R.resetPresetLabel, title: 'Put this watch back to its preset: its parts and their order, movement, case and light', on: R.resetDesign }] : [],
-        fit: { dot: R.sizeOver ? '#f85149' : R.fitDot, text: R.fitShort + (R.sizeShort ? ' \u00b7 ' + R.sizeShort : ''), tip: R.badgeTip + (R.sizeLine ? ' \u00b7 ' + R.sizeLine : '') },
-        primary: R.isHub ? { label: 'Send to orb', title: R.sendTip, on: R.sendToOrb } : { label: 'Export .orbtheme', title: R.themeNote, on: R.exportTheme },
-      } : { back: R.inFrame ? R.closeEditor : null, backTip: 'Back to this orb\u2019s themes', crumb: R.crumbLabel, steps: [] },
-      // §8.10: four ways to start, one at a time
-      studioStart: {
-        title: 'Start a clock theme', pick: s.startPick || '', setPick: (p) => this.setState({ startPick: p }),
-        fresh: { note: 'Nothing yet: no dial, no hands, no case, no glass; you build every part', on: () => { this.fromScratch(); this.setState({ chosen: true }); } },
-        tiles: (R.dials || []).map((d) => ({ key: d.id || d.name, name: d.name, short: d.short, tip: d.blurb, cls: d.cls, on: d.pick, draw: d.draw })),
-        library: { rows: R.mine || [], empty: 'Nothing saved yet. Save to library on the Render step keeps a watch here, art included; Send to orb bakes it into a theme under the same name; Import a file adds one.' },
-        importFile: { accept: '.orbtheme,.orbdesign,.json', on: (e) => { const f = e.target.files && e.target.files[0]; e.target.value = ''; if (f) this.importFile(f); } },
-        foot: [{ label: 'Continue with ' + R.dialName, primary: true, on: R.startGo }],
-      },
-      studioConfirm: Object.assign({ open: !!s.confirm }, s.confirm || {}),
-      studioGlass: { size: R.stageCv, round: R.stageRound, scrollRef: R.stageRef, onPointerDown: R.stageDown, zoomTag: R.zoomTag, status: R.hasStatus ? R.status : '',
-        onFit: (px) => { if (Math.abs(px - (+this.state.fitPx || 0)) >= 2) this.setState({ fitPx: px }); } },
       studioTool: { play: { icon: R.playIcon, label: R.playLabel, on: R.toggle }, time: R.timeOpts, view: R.viewOpts, zoom: R.hasZoom ? R.zoomOpts : null,
         render: R.renderOpts, wipe: R.isCompare ? { value: R.wipeVal, on: R.setWipe } : null },
-      studioCal: T.calProps(O.view({ view: s.view, zoom: s.zoom, fitPx: s.fitPx, cal: this.cal(), calibrated: this.calibrated() }),
-        { min: R.calMin, max: R.calMax, step: R.calStep, value: R.calVal, onChange: R.setCal, up: R.calUp, down: R.calDown, solve: R.solve, reset: R.resetCal,
-          solveCard: (e) => this.solveCard(e.target.value) }),
       studioLayers: { title: 'Layers', rows: R.stackRows, warnings: R.stackWarns,
         cap: { text: R.stackCapShort, color: R.stackCapFg, tip: 'R6: the live rows the bake ships (hands and their shadow twins, the discs\u2019 value rows, the carriage) against the dial\u2019s cap' },
         add: { label: R.addLabel, on: R.toggleAdd, tip: 'Open the parts catalogue on the right: hands, sub-dials, windows, a moon, openings, flares' } },
       studioFields: { fields: R.fields },
-      studioOpening: { line: this.session.opening },
-      studioSend: T.sendProps(s.sending, s.status, R.sendCancel),
-      studioDup: T.dupProps(s.dup, R.dupReplace, R.dupCancel),
-      studioRender: {
-        blocks: [{ title: 'Size', body: R.sizeLine, over: R.sizeOver, tip: 'The theme baked again a moment after your last edit: what Send to orb and Export send.' }],
-        badge: { text: R.badgeText, note: R.badgeNote, tip: R.badgeTip, color: R.badgeFg, border: R.badgeBd, background: R.badgeBg },
-        send: R.isHub ? { note: R.sendNote, tip: R.sendTip, on: R.sendToOrb } : null,
-        save: R.isHub ? { note: 'keep \u201c' + this.themeName() + '\u201d on the hub as a draft, art included', on: () => this.saveDraft(), tip: 'Keep this watch in the hub library under its name, without baking or sending it. Under a theme\u2019s name it is that theme\u2019s unsent changes until Send to orb bakes them in. Send to orb saves it too.' } : null,
-        downloads: [
-          { label: 'Export .orbtheme', note: R.themeNote, on: R.exportTheme, title: 'The same .orbtheme Send to orb bakes, saved where you choose: the baked dial, ready for any orb\u2019s Themes tab, with its design inside so the editor can open it again.' },
-        ],
-        note: R.artNote,
-      },
     };
   }
   renderVals0() {
@@ -4595,9 +4421,8 @@ class Component extends DCLogic {
       toggleSlow: () => this.setState((st) => ({ slow: !st.slow })),
       timeOpts: [['live', 'Live'], ['pose', '10:09'], ['cycle', 'Cycle dates']].map(([id, label]) => ({ ...on(s.timeMode === id), label, pick: () => this.setState({ timeMode: id }) })),
       seamText: s.seam, status: s.status,
-      tabs: this.TABS.map(([id, label]) => ({ label, bg: s.tab === id ? '#1f3a5f' : 'transparent', fg: s.tab === id ? '#e6edf3' : '#8b98a5', pick: () => this.setState({ tab: id }) })),
       isDial: s.tab === 'dial', isComps: s.tab === 'comps', isHands: s.tab === 'hands', isMove: s.tab === 'move', isCase: s.tab === 'case', isExport: s.tab === 'export',
-      fields, hasSel: !!sel, noSel: !sel, hasSelHead: !!sel && s.tab === 'comps',
+      fields, noSel: !sel,
       resetHands: () => this.upd((d) => { d.comps.forEach((hc) => { if (hc.type !== 'hand') return; delete hc.style; delete hc.finish; delete hc.len; delete hc.wid; delete hc.sec; delete hc.lume; delete hc.shade; }); }), selTitle: sel ? partName(sel) : '',
       dials: (ready ? Object.keys(E.PRESETS) : []).map((id) => ({
         ...on(id === s.dial), ref: this.cb('dialEls', id, (i) => this.drawDialThumb(i)), id,
@@ -4627,10 +4452,8 @@ class Component extends DCLogic {
           delLabel: armed ? 'Press again' : 'Delete', delTip: 'Take it out of the hub\u2019s library, baked theme and all (asks twice). No orb is touched.', del: () => (armed ? (this.setState({ mineDel: null }), this.forgetEntry(m.name, 'all')) : this.setState({ mineDel: m.name, mineDelAt: Date.now() })) }; }),
       mineEmpty: !this.library().length,
       resetAllLabel: s.resetArm && Date.now() - s.resetArm < 4000 ? 'Press again to reset' : 'Reset everything',
-      undo: () => this.undo(), redo: () => this.redo(), undoOp: this._undo.length ? 1 : 0.4, redoOp: this._redo.length ? 1 : 0.4,
-      undoTip: this._undo.length ? 'Undo (Ctrl+Z) \u00b7 ' + this._undo.length + ' step' + (this._undo.length > 1 ? 's' : '') + ' back' : 'Nothing to undo', redoTip: this._redo.length ? 'Redo (Ctrl+Shift+Z)' : 'Nothing to redo',
+      undo: () => this.undo(), redo: () => this.redo(),
       tabReset: () => this.resetTab(s.tab), hasTabReset: s.tab !== 'export', tabResetLabel: 'Reset ' + (this.TABS.find((t) => t[0] === s.tab) || ['', ''])[1].toLowerCase(),
-      resetComps: () => { const P = E.template(s.dial); this.upd((d) => { d.comps = JSON.parse(JSON.stringify(P.design.comps || [])); }); this.setState({ sel: null, status: 'Complications reset to ' + P.name }); },
       trainOpts: ready ? Object.entries(E.TRAINS).map(([id, t]) => ({ ...on(id === s.train), name: t.name, blurb: t.blurb, pick: () => this.setState({ train: id }) })) : [],
       compRows: D.comps.filter((c) => c.type !== 'hand').map((c, i) => ({
         ...on(c.id === s.sel), num: String(i + 1), title: compTitle(c), anchor: 'comp-' + c.id,
@@ -4641,7 +4464,6 @@ class Component extends DCLogic {
         down: (e) => { e.stopPropagation(); this.moveComp(c.id, 1); },
         del: (e) => { e.stopPropagation(); this.delComp(c.id); },
       })),
-      addOpts: ready ? Object.entries(E.COMP_TYPES).map(([t, label]) => ({ label: '+ ' + label + (sel && sel.type === 'subdial' && t !== 'subdial' ? ' on #' + num(sel.id) : ''), go: () => this.addComp(t) })) : [],
       handOpts: ['auto', ...(ready ? Object.keys(E.HAND_STYLES) : [])].map((id) => ({
         ...on(id === s.hands), ref: this.cb('handEls', id, (i) => this.drawHandOpt(i)),
         label: id === 'auto' ? 'Preset' : E.HAND_STYLES[id], pick: () => this.setState({ hands: id }),
@@ -4779,77 +4601,7 @@ class Component extends DCLogic {
       // §31: the FORMAT 3 bake, measured and split in the click path itself; the device
       // theme, with its design inside (D43 P7) so it can be opened again
       exportTheme: () => this.exportTheme3(),
-      // §31's send-to-orb round: the same bake, pushed through the hub's upload door.
-      // The button renders only under a hub (same-origin http/https); opened from the
-      // filesystem the composer has no door to dial, so isHub is false and it hides.
-      isHub: this.hubSend3(),
-      sendToOrb: () => this.sendTheme3ToOrb(),
-      sendNote: (() => {
-        if (!this.hubSend3()) return 'no hub';
-        const G = window.GorbBake;
-        if (!G || !G.bakeClock3) return 'baker not loaded';
-        if (this._replaceArmed && this._replaceArmed.nm === this.themeName()) return s.dup ? 'awaiting your choice' : 'press again to replace';
-        const tn = this.themeName();
-        if (!G.nameOk(tn)) return 'name ' + G.nameBytes(tn) + ' B; header holds ' + (G.NAME_MAX - 1);
-        const to = this.state.hubIp ? 'pushes to ' + this.state.hubIp : 'pushes to the orb this hub has loaded';
-        return this.session.orbNote ? to + ' · ' + this.session.orbNote : to;
-      })(),
-      /* §32.6: the duplicate modal. When the send stopped at a duplicate — whether the
-       * precheck caught it (s.dup.pre) or the device refused late (a same-serial,
-       * different-CRC bake) — the bake is held in _replaceArmed and this overlay asks
-       * the question in the page, never as a window.confirm or a status-line sentence.
-       * Replace ships THOSE held bytes with the overwrite flag; Cancel dismisses the
-       * arm so the next press is a fresh bake. The modal rides s.dup, so it disappears
-       * on the first setState that clears it. */
-      sendOpen: !!s.sending,
-      sendLine: s.status || 'Building the theme…',
-      sendHint: !s.sending ? '' : s.sending.cancelling ? 'Cancelling: the send stops before anything reaches the orb.'
-        : s.sending.canCancel ? 'Nothing has reached the orb yet, so Cancel stops it cleanly.'
-        : 'The orb is storing it and rebooting onto it. That cannot be stopped part way, so this waits until the orb is back.',
-      sendNoCancel: !(s.sending && s.sending.canCancel),
-      sendCancelLabel: s.sending && s.sending.cancelling ? 'Cancelling…' : 'Cancel',
-      sendCancel: () => this.cancelSend3(),
-      dupOpen: !!s.dup,
-      dupNm: s.dup ? s.dup.nm : '',
-      dupStem: s.dup ? s.dup.stem : '',
-      dupNote: s.dup ? s.dup.note : '',
-      dupPre: !!(s.dup && s.dup.pre),
-      dupReplace: () => this.replaceArmed3(),
-      dupCancel: () => this.dismissDup3(),
-      dupStop: (e) => e.stopPropagation(),
-      // FORMAT 2: the name is typed, so the field that types it sits beside the button,
-      // and the byte counter beside it is the same count the baker applies, not JS chars.
-      themeNameVal: this.state.themeName == null ? '' : this.state.themeName,
-      themeNameIn: (e) => this.setState({ themeName: e.target.value }),
-      themeNamePh: this.themeName(),
-      themeNameLen: (() => { const G = window.GorbBake; const n = G ? G.nameBytes(this.themeName()) : String(this.themeName()).length; return n + '/' + (G ? G.NAME_MAX - 1 : 55) + ' B'; })(),
-      themeNote: (() => {
-        const G = window.GorbBake;
-        if (!G) return 'baker not loaded';
-        if (D.comps && D.comps.length > G.caps.comp) return 'too many complications for the device table (max ' + G.caps.comp + ')';
-        // FORMAT 2 left one rule on the name -- the header's field size -- and it is the
-        // only refusal here the owner could not predict from the dial itself.
-        const tn = this.themeName();
-        if (!G.nameOk(tn)) return 'theme name is ' + G.nameBytes(tn) + ' B; the header holds ' + (G.NAME_MAX - 1);
-        // §31 turned the button on: the FORMAT 3 bake carries a moving train as a
-        // plate keyframe bank or a carriage bank, and measures which BEFORE baking
-        // (the split is _selftest/motion-test.html's table, exported as
-        // GorbBake.splitPolicy3). The comp table (§31's last open slice, D32's
-        // ruling A) plates every live complication as one window row the dial
-        // drives itself — the button note quotes the same compPlan3 the export
-        // runs, and only names a refusal the element row truly cannot carry.
-        const plan3 = G.compPlan3(D.comps), pp3 = this.pointerRows3(D, plan3), wp3 = G.wheelPlan3(D.comps);
-        if (plan3.refuses.length || pp3.refuses.length || wp3.refuses.length) return 'FORMAT 3 · refuses: ' + (plan3.refuses[0] || pp3.refuses[0] || wp3.refuses[0]);
-        const cost = F * 466 * 466 * 2;
-        if (wp3.rows.length) return 'FORMAT 3 · ' + (plan3.rows.length ? plan3.rows.length + ' comp' + (plan3.rows.length > 1 ? 's' : '') + ' bake as ' + plan3.rows.reduce((q, r) => q + r.count, 0) + ' plates · ' : '') +
-          wp3.rows.length + (wp3.rows.length > 1 ? ' wheels turn' : ' wheel turns') + ' as rows under one cover' + (pp3.rows.length ? ' · ' + pp3.rows.length + ' pointer plate' + (pp3.rows.length > 1 ? 's' : '') : '') + ' · ' + F + '-frame train · measures on export';
-        if (pp3.rows.length) return 'FORMAT 3 · ' + pp3.rows.length + ' hand' + (pp3.rows.length > 1 ? 's' : '') + ' beyond the three slots bake as one pointer plate each' + (plan3.rows.length ? ' · ' + plan3.rows.length + ' comp rows' : '') + ' · ' + F + '-frame train · measures on export';
-        if (plan3.rows.length) return 'FORMAT 3 · ' + plan3.rows.length + ' comp' + (plan3.rows.length > 1 ? 's' : '') +
-          ' bake as ' + plan3.rows.reduce((s, r) => s + r.count, 0) + ' plates · ' + F + '-frame train · measures on export';
-        return 'FORMAT 3 · ' + F + '-frame train · ≤' + (cost / 1048576).toFixed(1) + ' MB bank · measures on export';
-      })(),
-      // D43 P7: the design alone, as the theme carries it; and one Open for either file
-      artNote: this.artNote(this.artRefs(D)),   // missing art would leave the theme and the design incomplete
+      // E7 2d: Send, the duplicate question, the name and Render's notes are the host's (clock-host.js)
       openFile: (e) => { const f = e.target.files && e.target.files[0]; if (f) this.openFile(f); e.target.value = ''; },
     };
   }

@@ -117,13 +117,10 @@ const comps = (it) => JSON.stringify(it.design().comps);
   global.location = keepLoc; global.fetch = keepFetch;
 })().then(() => {
 
-// ?orb= names the orb; ?app= keys the browser storage
+// ?app= keys the browser storage (?orb= is the runtime sender's, tested in its own suite)
 {
   const it = mk();
-  global.location = { search: '?orb=192.168.2.34&app=clock&label=Gold', protocol: 'http:' };
-  let asked = false; global.fetch = async () => { asked = true; return { json: async () => ({ ok: true, data: { ip: '10.0.0.9' } }) }; };
-  it.hubOrbIp().then((ip) => {
-    ok(ip === '192.168.2.34' && !asked, 'the hub’s ?orb= is the address, without asking /api/orb/known', ip);
+  Promise.resolve().then(() => {
     global.location = { search: '?app=hsb', protocol: 'http:' };
     ok(it.session.slug() === 'hsb' && it.mineKey() === 'wc.mine.hsb', '?app= names the app My designs are filed under');
     global.location = { search: '?app=../x', protocol: 'http:' };

@@ -67,11 +67,10 @@
   DCLogic.prototype.componentWillUnmount = function () {};
   DCLogic.prototype.renderVals = function () { return {}; };
 
-  /* the class, hosted: the host keeps history and the size, so the class's own step aside */
+  /* the class, hosted: the host keeps history, so the class's own steps aside */
   var Base = root.ClockLogic(DCLogic);
   class Hosted extends Base {
     trackHistory() { /* the host's history (snapshots of the snapshot) */ }
-    liveSize() { /* the host's live size */ }
   }
 
   // lastKey: the watch the class holds; handedKey: the host's form of the one it was last handed

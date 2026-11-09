@@ -189,7 +189,6 @@ setTimeout(async () => {
   ok(!!it.design().comps.find((c) => c.style === 'transparent'), 'the layout accepts a transparent subdial style');
   const ex = (it.state.tab = 'export', it.renderVals());
   ok(!('designFileNote' in ex) && !('exportDesign' in ex), 'K10: no design-file download on Render');
-  ok(/MISSING/.test(ex.artNote), 'the Render step warns before a theme ships without its art', ex.artNote);
   // ---- selecting on the stage: the pane must follow what was grabbed -----------------
   global.requestAnimationFrame = () => 1;                                  // onMove defers; the test flushes by hand
   it.forceUpdate = () => { };
@@ -515,38 +514,11 @@ setTimeout(async () => {
   const r3 = panel('centre-hour');
   for (const k of ['onPivotX', 'onPivotY', 'onPivotCentre', 'onPivotHub', 'onArtFile', 'onArtClear', 'artRef', 'artLabel', 'artNote', 'onArtDown', 'onArtMove', 'hasArt'])
     ok(r3[k] !== undefined, 'handRows exposes ' + k);
-  for (const k of ['exportTheme', 'themeNote', 'openFile', 'artNote',
-    // FORMAT 2's theme-name field: the input, its live byte count and its placeholder
-    'themeNameVal', 'themeNameIn', 'themeNamePh', 'themeNameLen',
-    // §31's send-to-orb round: the hub-gated push button and its three bindings
-    'isHub', 'sendToOrb', 'sendNote',
+  // E7 2d: the name, Send and Render's notes are the host's; the clock's Export and Open stay
+  for (const k of ['exportTheme', 'openFile',
     // the three bindings the deselect/scroll row reads: a missing one renders a dead button
     'clearSel', 'clearLabel', 'clearOp', 'pickGuide', 'g', 'paneRef'])
     ok(rv[k] !== undefined, 'the template binding ' + k + ' has a backing property');
-  // §31's send-to-orb round: under a hub (http/https) the push button names the door;
-  // opened from the filesystem (no location) it hides and the note says so. The headless
-  // stub has no location, so the binding must report not-hub, never throw.
-  ok(rv.isHub === false && rv.sendNote === 'no hub',
-     'no location means no hub: the Send button stays hidden', JSON.stringify([rv.isHub, rv.sendNote]));
-  ok(typeof rv.sendToOrb === 'function', 'and the send button is still callable off-hub');
-  await (async () => {
-    // A press with no hub learned no orb: postTheme3ToOrb must report, not dial blindly.
-    const g = global, savedLoc = g.location;
-    try {
-      g.location = { protocol: 'http:' };
-      ok(it.hubSend3() === true, 'with http://location the composer reports hub mode');
-      ok(/pushes to/.test(it.renderVals().sendNote),
-         'under a hub the send note names the door it will push through', it.renderVals().sendNote);
-      // with a hub but no orb answer, the send refuses with an actionable sentence
-      it.state.hubIp = null; it.state.hubCheck = true;
-      await it.postTheme3ToOrb(new Uint8Array([1, 2, 3]), 'x', 'x', { sentence: 'still' }, 'art 3/9 B');
-      ok(/not talking to an orb/.test(it.state.status),
-         'a hub with no loaded orb is refused, with the download left as the way out', it.state.status.slice(0, 48));
-    } finally {
-      if (savedLoc === undefined) delete g.location; else g.location = savedLoc;
-      it.state.hubCheck = false; it.state.hubIp = null;
-    }
-  })();
   ok(typeof rv.clearSel === 'function' && typeof rv.pickGuide === 'function', 'and the two overlay controls are callable', JSON.stringify([typeof rv.clearSel, typeof rv.pickGuide]));
   for (const k of ['label', 'bg', 'bd', 'fg']) ok(rv.g[k] !== undefined, 'the Guide button carries its ' + k);
   // FORMAT 2's identity field: an untouched box must still name the theme after the dial,
@@ -566,17 +538,6 @@ setTimeout(async () => {
   // A button that dies silently is worse than no button: the author cannot tell a refused
   // bake from a broken page, and every refusal here is something they can act on.
   ok(typeof rv.exportTheme === 'function', 'the theme button is callable');
-  ok(/· measures on export/.test(rv.themeNote) || /comp(s)? bake as/.test(rv.themeNote) || /refuses:/.test(rv.themeNote) || /too many/.test(rv.themeNote),
-     'the theme button says what it will ship', JSON.stringify(rv.themeNote));
-  // §31 turned the button on: the FORMAT 3 bake carries the moving train as a
-  // measured keyframe/carriage bank, and §31's last slice plates the live
-  // complications: the default Skeleton's small-seconds rides 60 window plates
-  // the dial indexes itself, and the note counts them before the press — the
-  // same compPlan3 the export runs, so note and bake cannot disagree.
-  // since 2026-11-06 a sub-dial prints no scale, so its hand ships as a pointer, not as plates
-  ok(/FORMAT 3 · .*(\d+ comps? bake as \d+ plates|\d+ comp rows)/.test(rv.themeNote),
-     'and it names the comp table it will bake for a dial with live complications',
-     JSON.stringify(rv.themeNote));
   await (async () => {
     // the bake's own refusals, before a pixel is rendered: they land as sentences, never throws
     const name = { got: null };
@@ -694,126 +655,8 @@ setTimeout(async () => {
   delete hand3(it.state.designs.calendar, 'centre-hour').art;
   const nxDRow = panel('centre-hour');
   ok(nxDRow.showWid === true && nxDRow.hideWid === false, 'and the drawn hand keeps it: the slider shapes a silhouette a sprite does not have');
-  // ---- §32 the send leg: watched, modal-armed, never a browser dialog --------------
-  {
-    let confirmed = false;
-    global.confirm = () => { confirmed = true; return true; };
-    it.state.hubCheck = true; it.state.hubIp = '10.0.0.9';
-    // §32.7: a bake big enough to tell the precheck's head (the 128-byte header plus
-    // the geometry region word 5 sizes, where the owning slug lives) from the full
-    // body. The old precheck posted the WHOLE container, so every plain send moved
-    // every byte twice; this array makes the double-transfer and its fix measurable.
-    const GEOM = 40, HEAD = 128 + GEOM;
-    const bytes = Uint8Array.from({ length: 300 }, (_, i) => (i * 7 + 1) & 0xff);
-    new DataView(bytes.buffer).setUint32(20, GEOM, true);
-    const sent = [];
-    global.fetch = async (url, opt) => {
-      sent.push([url, opt && opt.body && opt.body.length]);
-      const j = /precheck=1/.test(url) ? { ok: true, data: { duplicate: scen.dup, exact: scen.exact, note: scen.note, name: 'orbital-arrow' } }
-        : { ok: true, data: { phase: 'uploading', sent: 3, total: 3 } };
-      return { ok: true, status: 200, json: async () => j, text: async () => JSON.stringify(j) };
-    };
-    let xhrUrl = null, xhrBody = null, xhrSends = 0;
-    global.XMLHttpRequest = function () {
-      this.open = (m, u) => { xhrUrl = u; };
-      this.setRequestHeader = () => { };
-      this.upload = {};
-      this.send = (b) => {
-        xhrSends++;
-        xhrBody = b;
-        this.upload.onprogress({ loaded: b.length, total: b.length });
-        this.status = 200;
-        this.responseText = JSON.stringify({ ok: true, data: { name: 'orbital-arrow', id: 'ab12cd34ef56', store: 'stored' } });
-        this.onload();
-      };
-    };
-    const scen = { dup: true, exact: false, note: undefined };
-    // the bindings the template actually reads for the modal's two buttons
-    const dupBtns = () => { const v = it.renderVals(); return { open: v.dupOpen, nm: v.dupNm, stem: v.dupStem, pre: v.dupPre, replace: v.dupReplace, cancel: v.dupCancel }; };
-    it.state.themeName = 'orbital-arrow';
-    it._replaceArmed = null; it.state.dup = null;
-    await it.postTheme3ToOrb(bytes, 'orbital-arrow', 'stem', { sentence: 'p' }, 'm', false);
-    let dv = dupBtns();
-    ok(dv.open === true && dv.nm === 'orbital-arrow' && dv.stem === 'stem', 'a duplicate opens the in-page modal naming the dial', JSON.stringify(dv.open && [dv.nm, dv.stem]));
-    ok(dv.pre === true, 'the modal says the precheck caught it before any byte crossed');
-    ok(!!it._replaceArmed && it._replaceArmed.bytes === bytes, 'the refused bake is held for the modal Replace');
-    ok(sent.length === 1 && /precheck=1/.test(sent[0][0]), 'the refusal came from the precheck alone — no whole-bake body posted', JSON.stringify(sent));
-    ok(sent.length === 1 && sent[0][1] === HEAD, '§32.7: the precheck leg carried the header and geometry region, not the bake', JSON.stringify(sent));
-    scen.dup = false;
-    await it.sendTheme3ToOrb();
-    ok(!confirmed, 'the replace flow never opens a browser dialog');
-    ok(/&overwrite=1/.test(xhrUrl || ''), 'the second press sends the held bytes with the firmware flag', xhrUrl);
-    ok(xhrBody === bytes, 'and it is the SAME bake, byte-identical, not a re-bake');
-    ok(xhrBody && xhrBody.length === 300, '§32.7: the real send ships the full bake once — the precheck was the only short body', xhrBody && xhrBody.length);
-    ok(/the orb is back drawing it/.test(it.state.status), 'the settled line quotes the store verdict, given once the orb is back', it.state.status);
-    scen.dup = true;
-    it._replaceArmed = null; it.state.dup = null;
-    await it.postTheme3ToOrb(bytes, 'orbital-arrow', 'stem', { sentence: 'p' }, 'm', false);
-    ok(!!it._replaceArmed && dupBtns().open, 'the second refusal re-arms and reopens the modal on the same name');
-    // the modal Replace ships the held bytes with the flag and closes the overlay
-    dv = dupBtns();
-    await dv.replace();
-    ok(dupBtns().open === false, 'the modal Replace closes the overlay');
-    ok(/&overwrite=1/.test(xhrUrl || '') && xhrBody === bytes, 'and the modal Replace ships those held bytes byte-identical, flagged to overwrite', xhrUrl);
-    // a Cancel discards the arm so the next press is a fresh bake
-    it._replaceArmed = null; it.state.dup = null;
-    await it.postTheme3ToOrb(bytes, 'orbital-arrow', 'stem', { sentence: 'p' }, 'm', false);
-    const sendsBefore = xhrSends;
-    await dupBtns().cancel();
-    ok(dupBtns().open === false && it._replaceArmed === null, 'Cancel closes the modal and drops the held arm');
-    ok(/Send cancelled/.test(it.state.status), 'and the status line says the card keeps its dial', it.state.status);
-    it.state.themeName = 'other-dial';
-    const urlBefore = xhrUrl;
-    await it.sendTheme3ToOrb();
-    ok(it._replaceArmed === null,
-       'after a Cancel the arm is gone, so a press has no held bytes to re-ship');
-    ok(xhrUrl === urlBefore || !/overwrite=1/.test(xhrUrl || ''),
-       'renaming and pressing after a Cancel never flags a re-send of the discarded bake', xhrUrl);
-    // §32.9: the exact-match cut. The card already holds THIS bake (name + content
-    // serial agree), so a plain re-send must stop at the precheck and upload NOTHING —
-    // the double-transfer that left two progress bars racing down the glass.
-    scen.dup = false; scen.exact = true;
-    it.state.themeName = 'orbital-arrow';
-    it._replaceArmed = null; it.state.dup = null;
-    const xhrSendsBefore = xhrSends;
-    const sentBefore = sent.length;
-    await it.postTheme3ToOrb(bytes, 'orbital-arrow', 'stem', { sentence: 'p' }, 'm', false);
-    ok(/already on the card, byte for byte/.test(it.state.status),
-       'an exact match stops at the precheck with a plain status line', it.state.status.slice(0, 52));
-    ok(!dupBtns().open && it._replaceArmed === null,
-       'an exact match arms no modal and holds no bake — there is nothing to replace');
-    ok(sent.length === sentBefore + 1 && /precheck=1/.test(sent[sentBefore][0]) && sent[sentBefore][1] === HEAD,
-       'the exact refusal cost only the header and geometry region, not the bake', JSON.stringify(sent.slice(sentBefore)));
-    ok(xhrSends === xhrSendsBefore,
-       '§32.9: and the bake never reached the transport — no second full upload', JSON.stringify([xhrSendsBefore, xhrSends]));
-    // Bug B: the precheck that CANNOT get an answer must fail CLOSED, not open. The hub
-    // spells "I could not ask the orb" as a clear verdict carrying a note (themeDuplicate).
-    // A tempo-only re-send of a banked dial whose serial the precheck never read must
-    // therefore stop BEFORE upload — not ship blind and lean on the device's late 409,
-    // which is how the duplicate modal came up AFTER the megabytes had already crossed.
-    scen.dup = false; scen.exact = false; scen.note = 'the hub could not ask the orb, so it will not promise there is no collision';
-    it.state.themeName = 'orbital-arrow';
-    it._replaceArmed = null; it.state.dup = null;
-    const xhrSendsUnread = xhrSends;
-    await it.postTheme3ToOrb(bytes, 'orbital-arrow', 'stem', { sentence: 'p' }, 'm', false);
-    ok(/Nothing sent/.test(it.state.status),
-       'Bug B: a precheck that could not read the card stops before upload and says so', it.state.status.slice(0, 60));
-    ok(/could not get a clean read/.test(it.state.status) && /could not ask the orb/.test(it.state.status),
-       'Bug B: the line names the cause and the hub\'s own reason verbatim', it.state.status.slice(0, 120));
-    ok(!!it._replaceArmed,
-       'Bug B: the refused bake is held, so a second press forces the replace over the unknown');
-    ok(xhrSends === xhrSendsUnread,
-       'Bug B: an unread card uploads NOTHING before the operator forces it', JSON.stringify([xhrSendsUnread, xhrSends]));
-    // and forcing it (overwrite) ships the held bytes once, no precheck dial on the force
-    const sentForceBefore = sent.length;
-    await it.sendTheme3ToOrb();
-    ok(/&overwrite=1/.test(xhrUrl || '') && xhrBody === bytes,
-       'Bug B: the second press ships the held bake flagged to overwrite', xhrUrl);
-    ok(sent.length === sentForceBefore,
-       'Bug B: the forced replace skips the precheck dial — overwrite is the answer already given', JSON.stringify(sent.slice(sentForceBefore)));
-    scen.note = undefined;
-    scen.exact = false;
-  }
+  // §32's send leg (precheck, duplicate, Replace, exact match, fail-closed) is the runtime's
+  // sender's, tested in its own suite: the hosted clock hands the host bytes and no longer sends
 
   // ---- D39: the Sound tab. Each preset opens on its §7.2 default, the loop's beat is
   // the hand's (never picked), and the bake carries what the tab shows. ----

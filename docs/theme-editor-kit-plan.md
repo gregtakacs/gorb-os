@@ -1244,6 +1244,23 @@ confirm. The clock's own session, history, start sheet, Render panel and top bar
     the FORMAT 3 bake's sealed walk (the layer kit retired in 825e5ee), and its mutants are
     caught by rerunning the checks rather than by a missing string.
   Gold back as before each time (Skeleton active, bench themes deleted, its list identical).
-- **Open:** a bench hub keeps a library editor in memory for ten minutes (`editorFetchTTL`):
-  a rebuilt `.orbapp` needs a hub restart to be served.
+- **The clock's frame rate on Gold (E6's owed point, 2026-11-08):** Skeleton on the glass
+  (`/api/v1/debug/dial?ms=4000`, windows kept only with the clock on the glass at both ends,
+  Gold rotating apps every 15 s): 5.75 to 6.0 fps on a 168 ms period, every commit 99 to 103 ms,
+  about 87 kpx restored and 26 kpx walked a frame. The hosted editor says "~6 of 6 fps" and
+  the bake's own estimate puts the flush at about 106 ms: the clock's estimate holds on Gold.
+- **Tidy-up after the move (2026-11-08):**
+  - *The class's retired chrome is cut* (clock-logic.js, 263 lines): the nine shell parts the
+    host replaced (top bar, start, confirm, glass, calibration, opening, send and duplicate
+    dialogs, Render), its own send path (sender, Send, the duplicate question, the hub-address
+    probe, the post branch of the bake), its live size and start state, its import, and the
+    values only those read. The panes' three parts (layers, toolbar, inspector) stay. The
+    clock's send suite retired with its path (the runtime's sender suite covers the sender);
+    `headless-flow`'s binding check names the bindings the host draws (`HOSTED`) instead of
+    pretending the class still supplies them. The class's own undo history and session stay:
+    the suites drive the class through them, and the Edit-door and bake paths use the session.
+  - *A library editor is served the moment its file changes:* the hub's editor memo keys a
+    region it read off the library on the file's size and modification time
+    (`Library.ContainerStamp`), so a rebuilt `.orbapp` is served on the next request rather
+    than after `editorFetchTTL`; benched with a marker rebuilt into the bench library.
 

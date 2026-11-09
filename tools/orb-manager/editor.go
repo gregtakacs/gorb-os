@@ -88,6 +88,7 @@ type editorSlot struct {
 	zr      *zip.Reader
 	err     error
 	fetched time.Time
+	lib     string // the library copy's stamp when the region came from it, else ""
 }
 
 // editorRegions memoises region reads per hub, behind the fetch lane so two browsers
@@ -215,7 +216,8 @@ func (s *Server) editorRegionDialed(ip, slug string, dial editorFetchFn) (*zip.R
 		if sl.err != nil && !errors.Is(sl.err, orbnet.ErrNoEditor) {
 			ttl = editorErrRetryTTL
 		}
-		if time.Since(sl.fetched) < ttl {
+		// a region served from the library holds only while that file is the one on disk
+		if time.Since(sl.fetched) < ttl && (sl.lib == "" || sl.lib == s.library().ContainerStamp(slug)) {
 			return sl.zr, sl.err
 		}
 	}
@@ -226,8 +228,9 @@ func (s *Server) editorRegionDialed(ip, slug string, dial editorFetchFn) (*zip.R
 	// second dial. A nil row, an unstamped pair or a library with no such file all
 	// fall through to the dial below, which is always correct.
 	row := s.installedRow(ip, slug)
+	stamp := s.library().ContainerStamp(slug)
 	if zr, err := s.libraryEditorRegion(row, slug); err == nil {
-		regions.slots[k] = &editorSlot{zr: zr, fetched: time.Now()}
+		regions.slots[k] = &editorSlot{zr: zr, fetched: time.Now(), lib: stamp}
 		return zr, nil
 	}
 	// Second, the disk: a region this hub already read off a dial running the same

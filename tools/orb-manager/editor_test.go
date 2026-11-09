@@ -439,3 +439,46 @@ func TestEditorIsServedFromTheLibraryWhenItIsTheOrbsRelease(t *testing.T) {
 	editorInvalidate()
 	run(t, "", true)
 }
+
+// A region served from the library holds only while that file is the one on disk: a rebuilt
+// .orbapp is served on the next request, not after the memo's ten minutes (a bench rebuilding
+// the clock's editor kept getting the old one, 2026-11-08). The rewrite here is not an app, so
+// the door falls through to the dial, and the dial ringing is the proof the memo let go.
+func TestEditorLetsGoOfALibraryRegionWhenTheFileChanges(t *testing.T) {
+	const stamp = "v1.4.2-rc.1+build.7"
+	editorInvalidate()
+	t.Cleanup(editorInvalidate)
+	dir := t.TempDir()
+	cloneFixture(t, dir, "sentinel")
+	body, err := os.ReadFile(dir + "/sentinel.orbapp")
+	if err != nil {
+		t.Skipf("no sentinel fixture: %v", err)
+	}
+	region, err := orbnet.AppEditorRegion(body)
+	if err != nil || len(region) == 0 {
+		t.Skipf("the sentinel fixture carries no editor region: %v", err)
+	}
+	orb := orbfake.New().WithCardApps(orbfake.CardApp{
+		Stem: "sentinel", Slug: "sentinel", Title: "Sentinel", Installed: true, Version: stamp, Editor: region,
+	})
+	s, ip, _, f := fakeOrbHubWith(t, orb)
+	s.lib = &Library{AppsDir: dir}
+	if rec := editorGet(t, s, "/editor/"+ip+"/sentinel/", true); rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body %s", rec.Code, rec.Body)
+	}
+	if n := calls(f, "/api/v1/apps/editor"); n != 0 {
+		t.Fatalf("the shelf's own release dialed %d times", n)
+	}
+	if rec := editorGet(t, s, "/editor/"+ip+"/sentinel/", true); rec.Code != http.StatusOK || calls(f, "/api/v1/apps/editor") != 0 {
+		t.Fatalf("an unchanged file was not served from the memo (status %d)", rec.Code)
+	}
+	later := time.Now().Add(2 * time.Second)
+	if err := os.WriteFile(dir+"/sentinel.orbapp", []byte("rebuilt, and not an app"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_ = os.Chtimes(dir+"/sentinel.orbapp", later, later)
+	editorGet(t, s, "/editor/"+ip+"/sentinel/", true)
+	if calls(f, "/api/v1/apps/editor") == 0 {
+		t.Error("a changed library file was still served from the memo")
+	}
+}

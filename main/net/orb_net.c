@@ -5435,6 +5435,20 @@ static int png_bench_row(void *ctx, int y, const uint8_t *idx, int w)
 
 /* GET /api/v1/debug/png_bench?path=REL[&n=3] — radar-plan R3: orb_png8_decode's time on the
  * S3 for an indexed PNG on the card (a LibreWXR frame), and its echo pixels. */
+/* GET /api/v1/debug/time?warp=<seconds> — every wall-clock reading moved by `seconds` (0 ends
+ * it), so a bench reaches the hour's chime without waiting for it. */
+static esp_err_t h_debug_time(httpd_req_t *req)
+{
+    char v[16];
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    httpd_resp_set_type(req, "application/json");
+    const int32_t w = q_param(req, "warp", v, sizeof v) ? (int32_t)atol(v) : 0;
+    orb_time_warp(w);
+    char b[48];
+    snprintf(b, sizeof b, "{\"warp\":%ld}", (long)w);
+    return httpd_resp_sendstr(req, b);
+}
+
 /* GET /api/v1/debug/fill?id=<stem>&chunk=<KB>&pace=<ms>&urgent=0|1 — theme-cache-plan C0: a fill's
  * copy into the pool's free space under the running dial, timed per phase into the log. */
 static esp_err_t h_debug_fill(httpd_req_t *req)
@@ -8874,6 +8888,7 @@ static esp_err_t net_start_httpd(void)
         { .uri = "/api/v1/debug/live", .method = HTTP_GET, .handler = h_debug_live },
         { .uri = "/api/v1/debug/png_bench", .method = HTTP_GET, .handler = h_debug_png_bench },
         { .uri = "/api/v1/debug/fill", .method = HTTP_GET, .handler = h_debug_fill },
+        { .uri = "/api/v1/debug/time", .method = HTTP_GET, .handler = h_debug_time },
 #endif
         /* microSD + themes. /themes is the page; the routes under /api/v1/sd are its
          * backing calls. Migration 1 deleted the flip and default doors: under the

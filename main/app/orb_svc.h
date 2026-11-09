@@ -177,7 +177,8 @@ typedef struct {
   void (*status)(orb_app_t *, const char *fmt, ...);
   /* sound — cap SOUND (owner, D39), appended. The app's OWN theme sounds, by slot
    * (its section's ORB_ASSET_SOUND rows), played by the OS engine under the owner's
-   * level and quiet hours, and silenced when the app is suspended (C7). flags:
+   * level and quiet hours; a suspend stops its loops, its one-shots play to their end
+   * (theme-cache-plan ruling 6), at most four sounding at once. flags:
    * ORB_SVC_SOUND_LOOP repeats until stopped, ORB_SVC_SOUND_SECOND (with LOOP)
    * anchors sample 0 to the wall second. sound_play answers a handle > 0, or a
    * negative esp_err_t — ESP_ERR_NOT_ALLOWED without the cap, ESP_ERR_NOT_FOUND for
@@ -232,6 +233,11 @@ const orb_svc_t *orb_svc_table(void);
  *  apps do — two anchors is the bug the extraction was for. D15: raw second
  *  plus scheduler fraction plus trust flag; conversion stays app-side. */
 void orb_time_now(time_t *sec, double *frac, bool *synced);
+#if CONFIG_ORB_DEBUG_HTTP
+/* The bench's time warp: `seconds` added to every orb_time_now reading from now on (0 ends
+ * it). The dial, the apps' clocks and the chimes all read through it. */
+void orb_time_warp(int32_t seconds);
+#endif
 
 /* For the owner's ladder (D19) and /api/v1/status (the P3 pass line). */
 const char    *orb_svc_cap_name(orb_cap_t cap);   /* log label, "power" */

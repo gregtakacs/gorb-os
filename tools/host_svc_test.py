@@ -494,7 +494,7 @@ int main(int argc, char **argv)
      * the owner and its own slug as the theme section to resolve in. */
     {
         CK("an app that did not declare sound is refused, and the engine never hears it",
-           S->sound_play(A, 3, 0, 0) == ESP_ERR_NOT_ALLOWED && g_snd_play == 0 &&
+           S->sound_play(A, 3, 0, 0) == -ESP_ERR_NOT_ALLOWED && g_snd_play == 0 &&
            (S->sound_stop(A, 7), g_snd_stop == 0) &&
            S->sound_active(A, 7) == false && g_snd_active == 0);
         orb_app_t *D = &TBL[3];

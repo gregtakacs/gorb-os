@@ -65,8 +65,9 @@ int orb_sound_play(const int16_t *pcm, uint32_t n, uint16_t gain_q12,
 #include "orb_adpcm.h"
 
 /** The same, owned: `owner` (an app row, or any stable pointer) tags the voice, so
- *  orb_sound_stop_owner() can silence everything one app started — the registry
- *  does that when it suspends the app (C7, read for audio). Quiet hours are the
+ *  orb_sound_stop_owner() can silence everything one app started, and its leases
+ *  and its share of the voices are counted by it (theme-cache-plan §2.6: a suspend
+ *  stops its loops alone; four sounding an app). Quiet hours are the
  *  OS's (orb_sound_cfg_t), applied here to every voice of every app: during them
  *  a voice without ORB_SOUND_ASKED is refused, and one already sounding is dropped
  *  at the boundary. */

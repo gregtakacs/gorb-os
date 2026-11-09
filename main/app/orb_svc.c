@@ -435,6 +435,9 @@ static esp_err_t svc_cfg_set_str(orb_app_t *a, const char *id, const char *v)
 static time_t s_epoch_base     = CLOCK_EPOCH;
 static int64_t s_t0_us         = 0;
 static bool   s_anchor_is_real = false;   /* has s_epoch_base ever come from time()? */
+#if CONFIG_ORB_DEBUG_HTTP
+static volatile int32_t s_time_warp_s;    /* debug builds: added to every reading (orb_time_warp) */
+#endif
 static bool   s_seeded         = false;   /* the first call stamps t0 — the role
                                            * stage_init's seed line played,
                                            * keeping the pair sampled together */
@@ -478,7 +481,14 @@ void orb_time_now(time_t *sec, double *frac, bool *synced)
     *sec  = s_epoch_base + (time_t)floor(el);
     *frac = el - floor(el);
     *synced = trust;
+#if CONFIG_ORB_DEBUG_HTTP
+    *sec += s_time_warp_s;           /* the bench's warp: a chime without waiting for it */
+#endif
 }
+
+#if CONFIG_ORB_DEBUG_HTTP
+void orb_time_warp(int32_t seconds) { s_time_warp_s = seconds; }
+#endif
 
 static void svc_now(orb_app_t *a, time_t *sec, double *frac, bool *synced)
 {
@@ -780,7 +790,7 @@ _Static_assert(ORB_SVC_SOUND_LOOP == ORB_SOUND_LOOP && ORB_SVC_SOUND_SECOND == O
                "orb_svc.h's sound flags must be orb_sound.h's");
 static int svc_sound_play(orb_app_t *a, uint16_t slot, uint32_t flags, uint32_t delay_ms)
 {
-    if (!orb_grant_ok(a, CAP_SOUND)) return ESP_ERR_NOT_ALLOWED;
+    if (!orb_grant_ok(a, CAP_SOUND)) return -ESP_ERR_NOT_ALLOWED;   /* negative, orb_svc.h's contract */
     return orb_sound_app_play(a, a->slug, slot, flags, delay_ms);
 }
 static void svc_sound_stop(orb_app_t *a, int handle)

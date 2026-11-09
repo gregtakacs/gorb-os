@@ -41,6 +41,12 @@ shelf's four defaults together must fit in 8 MB (Skeleton 3.48, Scope flights 1.
    send the theme again, which rebuilds both halves. A theme with no sounds lacks nothing and
    binds as before. The `.orbtheme` files on the card stay valid; no format bump.
 
+9. **The sound limit** (2026-11-08): an app sounds at most **four** at once (Skeleton at the hour
+   on the glass: the tick and three ringing strikes), and its fifth replaces its own oldest
+   one-shot; a sound queued for later waits in a schedule (32 an app), not in one of the
+   engine's 16 voices. If every voice is ever busy, the oldest one-shot of the app holding
+   the most gives way. No priority scheme beyond that.
+
 ## 1. What is there today (read 2026-11-08)
 
 - **The pool** (`main/art/orb_pool.c`, theme-pool-plan §2): up to 8 entries, one per app,
@@ -260,10 +266,24 @@ held (20 fps), 1 s windows from the dial bench:
   hour chime and its nine strikes, queued with the clock on the glass and switched to
   weather 3 s in: every one played (the owner: "every gong and the chime played while
   swapping onto the weather app").
-- **Still owed:** a per-app cap on the engine's 16 voices (a background app queueing many
-  strikes could crowd out the app on the glass), and the alerts design's arbitration
-  between apps (§55); the flights, weather and radar themes ship no sounds, so they have
-  none to play yet.
+- **The sound limit** (ruling 9, `orb_sound.c`): a sound queued more than 1.5 s ahead waits in
+  a schedule (64 entries, 32 an app) and takes a voice 1.5 s before its instant (the lead the
+  jumps used, so the amp is up); with nothing sounding the mixer sleeps until the schedule's
+  next lead instead of running the amp for a strike 20 s off. A voice starting to sound with
+  four of its app's already sounding replaces that app's oldest one-shot; a full table
+  replaces the oldest one-shot of the app holding the most. Stop, active, reanchor, leases and
+  quiet hours reach a scheduled sound as they reach a voice. The bench door's `burst` (six
+  dings at one instant, forty a second apart): two "replaced (its app's fifth sound)", four
+  and then twenty-six played, the rest refused, "32 of 46 taken". The hour on the glass, the
+  orb's clock warped to 21:58:40 (`GET /api/v1/debug/time?warp=<s>`, debug builds, moves every
+  wall-clock reading): at 22:00 the hour chime (14.7 s) and ten strikes, scheduled and promoted
+  1.5 s ahead, beside the running tick: all eleven played out, none replaced, none lapsed.
+- **Found on the way:** every refusal from the play doors was a positive `esp_err_t`
+  (ESP_ERR_NO_MEM is 0x101), against orb_sound.h's, orb_svc.h's and the SDK's "a handle > 0,
+  or a negative error": a caller reading > 0 as a handle took a refusal for a sound. The
+  engine, the app door and the svc door now answer the negated code.
+- **Still owed:** the alerts design's arbitration between apps (§55); the flights, weather
+  and radar themes ship no sounds, so they have none to play yet.
 
 ### C2 — the table's format 2 (2026-11-08)
 

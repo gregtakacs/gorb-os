@@ -18,17 +18,17 @@
 int orb_sound_app_play(const void *owner, const char *slug, uint16_t slot,
                        uint32_t flags, uint32_t delay_ms)
 {
-    if (!owner || !slug) return ESP_ERR_INVALID_ARG;
-    if (flags & ~(ORB_SOUND_LOOP | ORB_SOUND_ANCHORED)) return ESP_ERR_INVALID_ARG;
+    if (!owner || !slug) return -ESP_ERR_INVALID_ARG;
+    if (flags & ~(ORB_SOUND_LOOP | ORB_SOUND_ANCHORED)) return -ESP_ERR_INVALID_ARG;
     /* theme-cache-plan §2.6: from the app's voice bank, mapped from boot apart from the
      * display entry a bind replaces, so it plays whatever is on the glass. orb_voice_parse
      * held every sound to its bank's bounds and even offsets when boot listed it. */
     const uint8_t *bank = NULL;
     const orb_voice_t *vb = orb_theme_voice(slug, &bank);
-    if (!vb || !bank) return ESP_ERR_NOT_FOUND;
+    if (!vb || !bank) return -ESP_ERR_NOT_FOUND;
     const clk_sound_t *t = NULL;
     for (uint32_t k = 0; k < vb->n && !t; k++) if (vb->s[k].slot == slot) t = &vb->s[k];
-    if (!t) return ESP_ERR_NOT_FOUND;
+    if (!t) return -ESP_ERR_NOT_FOUND;
     const void *clip = bank + t->pcm_off;
     if (flags & ORB_SOUND_LOOP) flags |= ORB_SOUND_LEASED;   /* a loop is its app's on the glass alone */
     const int64_t now = esp_timer_get_time();

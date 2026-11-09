@@ -30,6 +30,16 @@ static const char *TAG = "sound";
 #define BLOCK      256u
 #define DESC_N     4u
 #define VOICES     16
+/* theme-cache-plan §2.6, the owner's sound limit (2026-11-08): a sound queued for later
+ * waits in the schedule, not in a voice, and takes a voice PROMOTE_US before its instant
+ * (the lead wakes the amp, as the jumps' 1.5 s did); an app sounds at most CAP_SOUNDING at
+ * once (Skeleton at the hour on the glass: the tick and three strike tails), and its next
+ * replaces its own oldest one-shot; a full table replaces the oldest one-shot of the app
+ * holding the most. */
+#define PEND_N           64
+#define PEND_PER_OWNER   32
+#define PROMOTE_US       1500000
+#define CAP_SOUNDING     4
 #define IDLE_US    2000000     /* silence this long turns the amp and I2S off */
 #define SNAP_SAMP  (ORB_SOUND_RATE / 20u)   /* 50 ms: past this a loop re-enters */
 #define QUIET_PEAK 600         /* about -35 dBFS: a block this quiet hides a nudge */
@@ -59,6 +69,9 @@ static TaskHandle_t      s_task;
  * 320 B of .bss crash-looping it, and the first flash of this engine with ~3 KB of
  * statics here starved esp_wifi_init). */
 static voice_t          *s_v;
+static voice_t          *s_p;          /* the schedule: state 1 only, never mixed */
+#define ALL_N (VOICES + PEND_N)
+static voice_t *slot_at(int k) { return k < VOICES ? &s_v[k] : &s_p[k - VOICES]; }
 static int32_t          *s_acc;
 static int16_t          *s_buf;
 static int               s_next_id = 1;
@@ -162,6 +175,59 @@ static bool quiet_ahead(voice_t *v)
     return true;
 }
 
+/* A voice for a sound about to start, the table full: the oldest one-shot of the app
+ * sounding the most is let go. -1 when every voice is a loop. Caller holds s_mx. */
+static int steal_locked(void)
+{
+    int best = -1, most = 0;
+    for (int k = 0; k < VOICES; k++) {
+        const voice_t *v = &s_v[k];
+        if (v->state != 2 || (v->flags & ORB_SOUND_LOOP)) continue;
+        int mine = 0;
+        for (int j = 0; j < VOICES; j++) mine += s_v[j].state && s_v[j].owner == v->owner;
+        if (best < 0 || mine > most || (mine == most && v->began_us < s_v[best].began_us)) { best = k; most = mine; }
+    }
+    if (best >= 0) {
+        ESP_LOGI(TAG, "voice %d replaced (every voice busy)", s_v[best].id);
+        s_v[best].state = 0;
+    }
+    return best;
+}
+
+static int free_voice_locked(void)
+{
+    for (int k = 0; k < VOICES; k++) if (!s_v[k].state) return k;
+    return steal_locked();
+}
+
+/* The schedule's due sounds into voices, PROMOTE_US ahead of their instants; a lapsed
+ * lease or the quiet hours drop them there as they would a voice. Caller holds s_mx. */
+static void promote_locked(bool lapsed, bool quiet)
+{
+    const int64_t now = esp_timer_get_time();
+    for (int i = 0; i < PEND_N; i++) {
+        voice_t *p = &s_p[i];
+        if (!p->state || p->at_us - now > PROMOTE_US) continue;
+        if ((p->flags & ORB_SOUND_LEASED) && (lapsed || p->owner != s_lease_owner)) { p->state = 0; continue; }
+        if (quiet && !(p->flags & ORB_SOUND_ASKED)) { p->state = 0; continue; }
+        const int k = free_voice_locked();
+        if (k < 0) continue;                   /* every voice a loop: it waits, and starts late */
+        s_v[k] = *p;
+        p->state = 0;
+    }
+}
+
+/* When the schedule's next sound wants a voice; INT64_MAX for an empty schedule. */
+static int64_t pending_due_us(void)
+{
+    int64_t due = INT64_MAX;
+    xSemaphoreTake(s_mx, portMAX_DELAY);
+    for (int i = 0; i < PEND_N; i++)
+        if (s_p[i].state && s_p[i].at_us - PROMOTE_US < due) due = s_p[i].at_us - PROMOTE_US;
+    xSemaphoreGive(s_mx);
+    return due;
+}
+
 /* Mix every voice into one block whose first sample sounds at `t_us`. Returns the
  * number of voices still alive after it. */
 static int mix_block(int16_t *out, int64_t t_us)
@@ -180,6 +246,7 @@ static int mix_block(int16_t *out, int64_t t_us)
         (v_)->state = 0; } while (0)
 
     xSemaphoreTake(s_mx, portMAX_DELAY);
+    promote_locked(lapsed, quiet);
     for (int k = 0; k < VOICES; k++) {
         voice_t *v = &s_v[k];
         if (!v->state) continue;
@@ -195,6 +262,16 @@ static int mix_block(int16_t *out, int64_t t_us)
                 if (d >= (int64_t)BLOCK) { alive++; continue; }   /* not yet */
                 i0 = d > 0 ? (uint32_t)d : 0;                    /* late: start now */
             }
+            /* the app's cap: a fifth sound replaces its own oldest one-shot */
+            voice_t *old = NULL;
+            int sounding = 0;
+            for (int j = 0; j < VOICES; j++) {
+                voice_t *o = &s_v[j];
+                if (o == v || o->state != 2 || o->owner != v->owner) continue;
+                sounding++;
+                if (!(o->flags & ORB_SOUND_LOOP) && (!old || o->began_us < old->began_us)) old = o;
+            }
+            if (sounding >= CAP_SOUNDING && old) END(old, 'r');
             v->state = 2;
             v->began_us = esp_timer_get_time();
             s_started++;
@@ -230,7 +307,9 @@ static int mix_block(int16_t *out, int64_t t_us)
     for (int i = 0; i < n_end; i++)
         ESP_LOGI(TAG, "voice %d %s after %u ms", ended[i].id,
                  ended[i].why == 'p' ? "played out" : ended[i].why == 'l' ? "lapsed (its app left the glass)"
-                                                     : "silenced (quiet hours)", (unsigned)ended[i].ms);
+                 : ended[i].why == 'r' ? "replaced (its app's fifth sound)"
+                 : ended[i].why == 'g' ? "replaced (every voice busy)" : "silenced (quiet hours)",
+                 (unsigned)ended[i].ms);
 
     for (uint32_t i = 0; i < BLOCK; i++) {
         const int32_t s = acc[i];
@@ -255,8 +334,16 @@ static void mixer_task(void *arg)
     const size_t buf_bytes = BLOCK * sizeof buf[0];
     const int64_t block_us = samples_to_us(BLOCK);
     for (;;) {
-        /* Idle: wait for a voice with the amp and the I2S clocks off. */
-        if (!voices_alive()) ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+        /* Idle: wait for a voice with the amp and the I2S clocks off, or for the schedule's
+         * next sound to want one. */
+        if (!voices_alive()) {
+            const int64_t due = pending_due_us(), now = esp_timer_get_time();
+            if (due == INT64_MAX) ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+            else if (due > now) ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS((due - now) / 1000 + 1));
+            xSemaphoreTake(s_mx, portMAX_DELAY);
+            promote_locked(esp_timer_get_time() - s_lease_us > LEASE_US, orb_sound_quiet_now());
+            xSemaphoreGive(s_mx);
+        }
         if (!voices_alive()) continue;
 
         i2s_channel_enable(s_tx);
@@ -318,17 +405,27 @@ int orb_sound_play_enc(const void *owner, const void *data, uint32_t n, uint8_t 
                        uint16_t gain_q12, uint32_t flags, int64_t at_us,
                        int64_t anchor_us)
 {
-    if (!s_ready) return ESP_ERR_INVALID_STATE;
-    if (!data || n < 2) return ESP_ERR_INVALID_ARG;
-    if (enc != ORB_SOUND_ENC_PCM16 && enc != ORB_SOUND_ENC_ADPCM) return ESP_ERR_INVALID_ARG;
-    if (enc == ORB_SOUND_ENC_PCM16 && ((uintptr_t)data & 1u)) return ESP_ERR_INVALID_ARG;
-    if ((flags & ORB_SOUND_ANCHORED) && !(flags & ORB_SOUND_LOOP)) return ESP_ERR_INVALID_ARG;
-    if (!(flags & ORB_SOUND_ASKED) && orb_sound_quiet_now()) return ESP_ERR_INVALID_STATE;
-    int id = ESP_ERR_NO_MEM;
+    if (!s_ready) return -ESP_ERR_INVALID_STATE;
+    if (!data || n < 2) return -ESP_ERR_INVALID_ARG;
+    if (enc != ORB_SOUND_ENC_PCM16 && enc != ORB_SOUND_ENC_ADPCM) return -ESP_ERR_INVALID_ARG;
+    if (enc == ORB_SOUND_ENC_PCM16 && ((uintptr_t)data & 1u)) return -ESP_ERR_INVALID_ARG;
+    if ((flags & ORB_SOUND_ANCHORED) && !(flags & ORB_SOUND_LOOP)) return -ESP_ERR_INVALID_ARG;
+    if (!(flags & ORB_SOUND_ASKED) && orb_sound_quiet_now()) return -ESP_ERR_INVALID_STATE;
+    /* refusals are negative (orb_sound.h's contract): an esp_err_t is positive, and a
+     * caller reading > 0 as a handle took ESP_ERR_NO_MEM for one */
+    int id = -ESP_ERR_NO_MEM;
     xSemaphoreTake(s_mx, portMAX_DELAY);
-    for (int k = 0; k < VOICES; k++) {
-        if (s_v[k].state) continue;
-        voice_t *v = &s_v[k];
+    /* later than the lead: the schedule, at most PEND_PER_OWNER an app; else a voice */
+    voice_t *v = NULL;
+    if (at_us && at_us - esp_timer_get_time() > PROMOTE_US) {
+        int mine = 0;
+        for (int i = 0; i < PEND_N; i++) mine += s_p[i].state && s_p[i].owner == owner;
+        for (int i = 0; i < PEND_N && !v && mine < PEND_PER_OWNER; i++) if (!s_p[i].state) v = &s_p[i];
+    } else {
+        const int k = free_voice_locked();
+        if (k >= 0) v = &s_v[k];
+    }
+    if (v) {
         v->owner = owner;
         v->data = data; v->n = n; v->pos = 0; v->enc = enc; v->cblk = 0;
         v->at_us = at_us; v->anchor_us = anchor_us;
@@ -336,7 +433,6 @@ int orb_sound_play_enc(const void *owner, const void *data, uint32_t n, uint8_t 
         v->began_us = 0;
         v->id = id = s_next_id++;
         if (s_next_id <= 0) s_next_id = 1;
-        break;
     }
     xSemaphoreGive(s_mx);
     if (id > 0) xTaskNotifyGive(s_task);
@@ -349,8 +445,8 @@ void orb_sound_stop(int handle)
 {
     if (!s_ready || handle <= 0) return;
     xSemaphoreTake(s_mx, portMAX_DELAY);
-    for (int k = 0; k < VOICES; k++)
-        if (s_v[k].state && s_v[k].id == handle) s_v[k].state = 0;
+    for (int k = 0; k < ALL_N; k++)
+        if (slot_at(k)->state && slot_at(k)->id == handle) slot_at(k)->state = 0;
     xSemaphoreGive(s_mx);
 }
 
@@ -358,8 +454,8 @@ void orb_sound_stop_owner(const void *owner)
 {
     if (!s_ready || !owner) return;
     xSemaphoreTake(s_mx, portMAX_DELAY);
-    for (int k = 0; k < VOICES; k++)
-        if (s_v[k].state && s_v[k].owner == owner) s_v[k].state = 0;
+    for (int k = 0; k < ALL_N; k++)
+        if (slot_at(k)->state && slot_at(k)->owner == owner) slot_at(k)->state = 0;
     xSemaphoreGive(s_mx);
 }
 
@@ -369,8 +465,8 @@ static bool owned(const void *owner, int handle)
 {
     bool yes = false;
     xSemaphoreTake(s_mx, portMAX_DELAY);
-    for (int k = 0; k < VOICES; k++)
-        if (s_v[k].state && s_v[k].id == handle && s_v[k].owner == owner) yes = true;
+    for (int k = 0; k < ALL_N; k++)
+        if (slot_at(k)->state && slot_at(k)->id == handle && slot_at(k)->owner == owner) yes = true;
     xSemaphoreGive(s_mx);
     return yes;
 }
@@ -391,7 +487,7 @@ void orb_sound_stop_all(void)
 {
     if (!s_ready) return;
     xSemaphoreTake(s_mx, portMAX_DELAY);
-    for (int k = 0; k < VOICES; k++) s_v[k].state = 0;
+    for (int k = 0; k < ALL_N; k++) slot_at(k)->state = 0;
     xSemaphoreGive(s_mx);
 }
 
@@ -400,8 +496,8 @@ bool orb_sound_active(int handle)
     if (!s_ready || handle <= 0) return false;
     bool on = false;
     xSemaphoreTake(s_mx, portMAX_DELAY);
-    for (int k = 0; k < VOICES; k++)
-        if (s_v[k].state && s_v[k].id == handle) on = true;
+    for (int k = 0; k < ALL_N; k++)
+        if (slot_at(k)->state && slot_at(k)->id == handle) on = true;
     xSemaphoreGive(s_mx);
     return on;
 }
@@ -410,8 +506,8 @@ void orb_sound_reanchor(int handle, int64_t anchor_us)
 {
     if (!s_ready || handle <= 0) return;
     xSemaphoreTake(s_mx, portMAX_DELAY);
-    for (int k = 0; k < VOICES; k++)
-        if (s_v[k].state && s_v[k].id == handle) s_v[k].anchor_us = anchor_us;
+    for (int k = 0; k < ALL_N; k++)
+        if (slot_at(k)->state && slot_at(k)->id == handle) slot_at(k)->anchor_us = anchor_us;
     xSemaphoreGive(s_mx);
 }
 
@@ -425,8 +521,8 @@ void orb_sound_stop_leased(const void *owner)
 {
     if (!s_ready || !owner) return;
     xSemaphoreTake(s_mx, portMAX_DELAY);
-    for (int k = 0; k < VOICES; k++)
-        if (s_v[k].state && s_v[k].owner == owner && (s_v[k].flags & ORB_SOUND_LEASED)) s_v[k].state = 0;
+    for (int k = 0; k < ALL_N; k++)
+        if (slot_at(k)->state && slot_at(k)->owner == owner && (slot_at(k)->flags & ORB_SOUND_LEASED)) slot_at(k)->state = 0;
     xSemaphoreGive(s_mx);
 }
 
@@ -626,7 +722,21 @@ const char *orb_sound_test(const char *which)
                                    ORB_SOUND_LOOP | ORB_SOUND_ANCHORED | ORB_SOUND_ASKED, 0, anchor);
         return s_loop_id > 0 ? NULL : "no free voice";
     }
-    return "unknown bench sound (ding, tick, loop)";
+    if (!strcmp(which, "burst")) {
+        /* theme-cache-plan §2.6's limits: six dings for one instant 3 s ahead (the schedule,
+         * then four sounding and two replacing their app's oldest), then forty a second apart
+         * (the schedule holds PEND_PER_OWNER an app: the six still waiting count) */
+        static char out[48];
+        const int64_t t0 = esp_timer_get_time() + 3000000;
+        int ok = 0;
+        for (int i = 0; i < 6; i++) ok += orb_sound_play(s_ding, s_ding_n, ORB_SOUND_GAIN_1, ORB_SOUND_ASKED, t0, 0) > 0;
+        for (int i = 0; i < 40; i++)
+            ok += orb_sound_play(s_ding, s_ding_n, ORB_SOUND_GAIN_1, ORB_SOUND_ASKED, t0 + 5000000 + i * 1000000LL, 0) > 0;
+        snprintf(out, sizeof out, "burst: %d of 46 taken", ok);
+        ESP_LOGI(TAG, "%s", out);
+        return out;
+    }
+    return "unknown bench sound (ding, tick, loop, burst)";
 }
 
 /* ---- bring-up --------------------------------------------------------------------- */
@@ -678,10 +788,11 @@ esp_err_t orb_sound_init(void)
     apply_volume();
 
     s_v   = heap_caps_calloc(VOICES, sizeof *s_v, MALLOC_CAP_SPIRAM);
+    s_p   = heap_caps_calloc(PEND_N, sizeof *s_p, MALLOC_CAP_SPIRAM);
     s_acc = heap_caps_malloc(BLOCK * sizeof *s_acc, MALLOC_CAP_SPIRAM);
     s_buf = heap_caps_malloc(BLOCK * sizeof *s_buf, MALLOC_CAP_SPIRAM);
     s_mx  = xSemaphoreCreateMutex();
-    if (!s_v || !s_acc || !s_buf) {
+    if (!s_v || !s_p || !s_acc || !s_buf) {
         ESP_LOGE(TAG, "mixer buffers: out of PSRAM — sound is off");
         return ESP_OK;
     }

@@ -18,8 +18,12 @@ What it proves:
   - a move that reads back wrong is refused rather than recorded;
   - the theme cache's eviction (docs/theme-cache-plan.md §2.2): least recently on the glass
     first, an app the order does not name older than any it does, `keep` never, a refusal
-    touching nothing, the table's eight slots, and a cut at every step of a fill that
-    evicts two themes, and of one whose eviction slides the next theme over itself.
+    touching nothing, the table's slots, and a cut at every step of a fill that evicts two
+    themes, and of one whose eviction slides the next theme over itself;
+  - the table's format 2 (theme-cache-plan §2.6): a format 1 table read as display entries
+    and written back as format 2; voice banks first, refused anywhere else; a voice bank
+    stored by lifting the display entries over themselves, never evicted, never moved by a
+    display entry's eviction or fill; and a cut at every step of a voice bank's store.
 --mutations breaks each guard in turn and checks a test notices.
 """
 import os
@@ -125,6 +129,7 @@ static int write_theme(const th_t *t, uint32_t at, orb_pool_entry_t *e)
     if (!r) r = orb_pool_crc(&IO, at + t->art_off, t->art, &e->art_crc);
     e->serial = t->seed;
     e->state = ORB_POOL_LIVE;
+    e->kind = ORB_POOL_DISPLAY;
     return r;
 }
 
@@ -201,7 +206,7 @@ static void decode_vectors(void)
     orb_pool_t p, q;
     memset(&p, 0, sizeof p);
     p.serial = 7; p.n = 2;
-    orb_pool_entry_t a = { "clock", "a", ORB_POOL_FIRST, 0x10000, ORB_POOL_FIRST, 0x1000, 1, 0x2000, 0x8000, 2, 0, 1, ORB_POOL_LIVE, 6 };
+    orb_pool_entry_t a = { "clock", "a", ORB_POOL_FIRST, 0x10000, ORB_POOL_FIRST, 0x1000, 1, 0x2000, 0x8000, 2, 0, 1, ORB_POOL_LIVE, 6, ORB_POOL_DISPLAY };
     orb_pool_entry_t b = a;
     snprintf(b.slug, sizeof b.slug, "flights");
     b.off = b.base = ORB_POOL_FIRST + 0x10000;
@@ -214,7 +219,9 @@ static void decode_vectors(void)
 #define VEC(why, body) { why, ({ void f_(orb_pool_t *x) { body; } f_; }) }
         VEC("out of order or overlapping", x->e[1].off = ORB_POOL_FIRST + 0x8000),
         VEC("out of order or overlapping", { orb_pool_entry_t s = x->e[0]; x->e[0] = x->e[1]; x->e[1] = s; }),
-        VEC("two entries for one app", snprintf(x->e[1].slug, 16, "clock")),
+        VEC("two entries of a kind for one app", snprintf(x->e[1].slug, 16, "clock")),
+        VEC("no known kind", x->e[1].kind = 7),
+        VEC("a voice bank after a display entry", x->e[1].kind = ORB_POOL_VOICE),
         VEC("no app", x->e[1].slug[0] = 0),
         VEC("sector grid", x->e[1].off += 0x800),
         VEC("sector grid", x->e[1].size = 0),
@@ -222,7 +229,7 @@ static void decode_vectors(void)
         VEC("outside it", x->e[1].geom_size = 0x3000),
         VEC("outside it", x->e[1].art_size = 0x10000),
         VEC("no known state", x->e[1].state = 9),
-        VEC("more entries", x->n = 9),
+        VEC("more entries", x->n = ORB_POOL_ENTRIES + 1),
     };
     for (size_t i = 0; i < sizeof V / sizeof V[0]; i++) {
         orb_pool_t m = p;
@@ -237,6 +244,15 @@ static void decode_vectors(void)
     orb_pool_encode(&p, t);
     t[0] ^= 1;
     CK(orb_pool_decode(t, sizeof t, &q) != NULL, "no magic, no table");
+    {   /* one app, both kinds: its voice bank first */
+        orb_pool_t v = p;
+        snprintf(v.e[1].slug, 16, "clock");
+        v.e[0].kind = ORB_POOL_VOICE;
+        orb_pool_encode(&v, t);
+        CK(orb_pool_decode(t, sizeof t, &q) == NULL && q.e[0].kind == ORB_POOL_VOICE &&
+           orb_pool_find(&q, "clock") == 1 && orb_pool_find_kind(&q, "clock", ORB_POOL_VOICE) == 0,
+           "an app's voice bank and its display entry, the voice bank first");
+    }
     printf("  decode: a good table round-trips, %zu malformed ones refused by name\n", sizeof V / sizeof V[0] + 2);
 }
 
@@ -275,16 +291,17 @@ static void basic(void)
     sound(&p, "a full pool");
 
     fresh(&p, &w);
-    char names[8][16];
+    char names[16][16];
     int r9 = 0;
-    for (int i = 0; i < 5 && !r9; i++) {
+    for (int i = 0; i < 13 && !r9; i++) {
         snprintf(names[i], 16, "app%d", i);
         th_t t = { names[i], 0x1000, 0x1000, 0x1000, (uint8_t)(70 + i) };
         r9 = store(&p, &w, &t);
     }
     th_t nine = { "ninth", 0x1000, 0x1000, 0x1000, 99 };
-    CK(!r9 && p.n == 8 && store(&p, &w, &nine) == ORB_POOL_ERR_TABLE, "a ninth app is refused: the table holds eight");
-    sound(&p, "eight apps");
+    CK(!r9 && p.n == ORB_POOL_ENTRIES && store(&p, &w, &nine) == ORB_POOL_ERR_TABLE,
+       "a seventeenth entry is refused: the table holds sixteen");
+    sound(&p, "sixteen entries");
 
     /* an overlapping move: the clock slides down by the small theme's size */
     small_first(&p, &w);
@@ -308,7 +325,7 @@ static void basic(void)
     CK(vr == ORB_POOL_ERR_VERIFY, "a move whose bytes read back wrong is refused (%d)", vr);
     CK(reboot(&p, &w) == 0 && orb_pool_find(&p, "clock") < 0 && p.n <= 2, "after it, the reboot drops what it must");
     sound(&p, "after the refused move");
-    printf("  basic: store, replace, remove, a full pool, eight apps, the newer table, a bad move\n");
+    printf("  basic: store, replace, remove, a full pool, sixteen entries, the newer table, a bad move\n");
 }
 
 /* ---- the theme cache: evictions (theme-cache-plan §2.2) ---- */
@@ -384,26 +401,137 @@ static void lru(void)
        p.e[2].serial == 44, "a replacement that fits evicts nobody");
     sound(&p, "after a replacement");
 
-    /* eight apps: a ninth evicts the least recent one */
+    /* a full table: one more evicts the least recent */
     fresh(&p, &w);
-    char names[8][16];
-    for (int i = 0; i < 5; i++) {
+    char names[16][16];
+    const char *by[16];
+    by[0] = "app3"; by[1] = "clock"; by[2] = "flights"; by[3] = "color";
+    for (int i = 0, b = 4; i < 13; i++) {
         snprintf(names[i], 16, "app%d", i);
         th_t t = { names[i], 0x1000, 0x1000, 0x1000, (uint8_t)(80 + i) };
         CK(store(&p, &w, &t) == 0, "store %s", names[i]);
+        if (i != 3) by[b++] = names[i];
     }
-    const char *const by[] = { "app3", "clock", "flights", "color", "app0", "app1", "app2", "app4" };
     th_t nine = { "ninth", 0x1000, 0x1000, 0x1000, 99 };
-    CK(store_lru(&p, &w, &nine, by, 8, NULL, ev, &nev) == 0 && nev == 1 && has(ev, nev, "app3") && p.n == 8,
-       "a ninth app evicts the least recent of eight");
-    sound(&p, "nine apps through eight slots");
+    CK(store_lru(&p, &w, &nine, by, 16, NULL, ev, &nev) == 0 && nev == 1 && has(ev, nev, "app3") &&
+       p.n == ORB_POOL_ENTRIES, "one more than the table holds evicts the least recent");
+    sound(&p, "seventeen apps through sixteen slots");
 
     /* nothing it may evict leaves room: refused */
     fresh(&p, &w);
     const th_t huge = { "huge", 0x1000, 0x1000, ORB_POOL_END, 55 };
     CK(store_lru(&p, &w, &huge, ORDER, 3, NULL, ev, &nev) == ORB_POOL_ERR_FULL && p.n == 3,
        "a theme bigger than the pool is refused, evicting nobody");
-    printf("  lru: least recent first, unnamed oldest, keep never, a ninth app, refusals untouched\n");
+    printf("  lru: least recent first, unnamed oldest, keep never, a full table, refusals untouched\n");
+}
+
+/* ---- format 2: voice banks (theme-cache-plan §2.6) ---- */
+static int store_voice(orb_pool_t *p, int *w, const th_t *t, const char *const *order, uint32_t n,
+                       const char *keep, char (*ev)[ORB_POOL_SLUG_MAX], uint32_t *nev)
+{
+    uint32_t at;
+    int r = orb_pool_reserve_voice(&IO, p, w, t->slug, t->art_off + t->art, order, n, keep, &at, ev, nev);
+    if (r) return r;
+    orb_pool_entry_t e;
+    if ((r = write_theme(t, at, &e))) return r;
+    e.kind = ORB_POOL_VOICE;
+    return orb_pool_commit(&IO, p, w, &e);
+}
+/* format 1's encoder, as v1.2.38 wrote it: 128 B entries, no kind */
+static void encode_f1(const orb_pool_t *p, uint8_t out[ORB_POOL_SECTOR])
+{
+    memset(out, 0, ORB_POOL_SECTOR);
+    const uint32_t head[5] = { ORB_POOL_MAGIC, 1, p->serial, p->n, ORB_POOL_ENTRY_BYTES_F1 };
+    memcpy(out, head, sizeof head);
+    for (uint32_t i = 0; i < p->n; i++) {
+        uint8_t *r = out + ORB_POOL_HEAD_BYTES + i * ORB_POOL_ENTRY_BYTES_F1;
+        const orb_pool_entry_t *e = &p->e[i];
+        memcpy(r, e->slug, ORB_POOL_SLUG_MAX);
+        memcpy(r + ORB_POOL_SLUG_MAX, e->name, ORB_POOL_NAME_MAX);
+        const uint32_t wd[12] = { e->off, e->size, e->base, e->geom_size, e->geom_crc, e->art_off,
+                                  e->art_size, e->art_crc, e->file_crc, e->serial, e->state, e->abi };
+        memcpy(r + ORB_POOL_SLUG_MAX + ORB_POOL_NAME_MAX, wd, sizeof wd);
+    }
+    const uint32_t used = ORB_POOL_HEAD_BYTES + p->n * ORB_POOL_ENTRY_BYTES_F1;
+    static const uint8_t z[4] = { 0 };
+    uint32_t c = esp_rom_crc32_le(0, out, 20);
+    c = esp_rom_crc32_le(c, z, 4);
+    c = esp_rom_crc32_le(c, out + 24, used - 24);
+    memcpy(out + 20, &c, 4);
+}
+static uint32_t voffs(const orb_pool_t *p, uint32_t *o)   /* every voice bank's offset */
+{
+    uint32_t n = 0;
+    for (uint32_t k = 0; k < p->n; k++) if (p->e[k].kind == ORB_POOL_VOICE) o[n++] = p->e[k].off;
+    return n;
+}
+
+static const th_t CLOCKV = { "clock", 0x1000, 0x1000, 0xD3000, 101 };   /* Skeleton's 844 KB of sounds */
+static const th_t RADARV = { "radar", 0x1000, 0x1000, 0x20000, 102 };
+
+static void voice(void)
+{
+    orb_pool_t p; int w;
+    char ev[16][ORB_POOL_SLUG_MAX]; uint32_t nev;
+
+    /* the carry: a format 1 table is read as display entries and written back as format 2 */
+    fresh(&p, &w);
+    static uint8_t t1[ORB_POOL_SECTOR];
+    orb_pool_t f1 = p;
+    encode_f1(&f1, t1);
+    power(-1);
+    f_erase(NULL, ORB_POOL_TABLE_A, ORB_POOL_SECTOR); f_write(NULL, ORB_POOL_TABLE_A, t1, ORB_POOL_SECTOR);
+    f_erase(NULL, ORB_POOL_TABLE_B, ORB_POOL_SECTOR);
+    orb_pool_t q; int qw;
+    CK(orb_pool_load(&IO, &q, &qw) == 0 && qw == 1 && q.n == 3 && q.e[0].kind == ORB_POOL_DISPLAY &&
+       q.e[2].kind == ORB_POOL_DISPLAY && orb_pool_find(&q, "flights") == 1, "a format 1 table reads as display entries");
+    sound(&q, "the format 1 carry");
+    CK(orb_pool_write(&IO, &q, &qw) == 0 && qw == 2 && fl[ORB_POOL_TABLE_B + 4] == ORB_POOL_FORMAT,
+       "and is written back as format 2");
+    CK(orb_pool_load(&IO, &p, &w) == 0 && w == 2 && p.n == 3, "the format 2 copy is the live one after");
+
+    /* a voice bank: the display entries lift by its size, the last first, over themselves */
+    fresh(&p, &w);
+    CK(store_voice(&p, &w, &CLOCKV, ORDER, 3, NULL, ev, &nev) == 0 && nev == 0 && p.n == 4 &&
+       p.e[0].kind == ORB_POOL_VOICE && p.e[0].off == ORB_POOL_FIRST &&
+       orb_pool_find(&p, "clock") == 1, "the clock's voice bank goes first, its display entry lifted");
+    sound(&p, "a voice bank stored");
+    CK(store_voice(&p, &w, &RADARV, ORDER, 3, NULL, ev, &nev) == 0 && p.e[1].kind == ORB_POOL_VOICE &&
+       !strcmp(p.e[1].slug, "radar") && p.e[2].kind == ORB_POOL_DISPLAY, "a second voice bank after the first");
+    sound(&p, "two voice banks");
+
+    /* display work never moves a voice bank */
+    uint32_t vo[16], vo2[16];
+    const uint32_t nv = voffs(&p, vo);
+    CK(orb_pool_remove(&IO, &p, &w, "clock") == 0 && orb_pool_find_kind(&p, "clock", ORB_POOL_VOICE) == 0,
+       "removing the clock's display entry keeps its voice bank");
+    CK(voffs(&p, vo2) == nv && !memcmp(vo, vo2, nv * 4), "and moves no voice bank");
+    th_t big = { "radar", 0x1000, 0x1000, ORB_POOL_END - orb_pool_used_end(&p) + 0x10000, 103 };
+    CK(store_lru(&p, &w, &big, ORDER, 3, NULL, ev, &nev) == 0 && voffs(&p, vo2) == nv && !memcmp(vo, vo2, nv * 4),
+       "a display fill that evicts moves no voice bank");
+    sound(&p, "after display work");
+
+    /* a voice bank is never evicted: a display theme that would need one out is refused */
+    th_t huge = { "flights", 0x1000, 0x1000, ORB_POOL_END - ORB_POOL_FIRST - vo2[nv - 1], 104 };
+    memcpy(snap, fl, ORB_POOL_PART_BYTES);
+    CK(store_lru(&p, &w, &huge, ORDER, 3, NULL, ev, &nev) == ORB_POOL_ERR_FULL, "no eviction takes a voice bank");
+    CK(!memcmp(snap, fl, ORB_POOL_PART_BYTES), "the refusal touched nothing");
+
+    /* a voice bank's store evicts display entries, least recent first */
+    fresh(&p, &w);
+    th_t vbig = { "color", 0x1000, 0x1000, ORB_POOL_END - orb_pool_used_end(&p) + 0x1000, 105 };
+    CK(store_voice(&p, &w, &vbig, ORDER, 3, NULL, ev, &nev) == 0 && nev == 1 && has(ev, nev, "color") &&
+       orb_pool_find_kind(&p, "color", ORB_POOL_VOICE) == 0, "a voice bank's store evicts the least recent display entry");
+    sound(&p, "a voice bank that evicted");
+
+    /* replacing a voice bank: the old one goes, the new one goes first again */
+    fresh(&p, &w);
+    CK(store_voice(&p, &w, &CLOCKV, ORDER, 3, NULL, ev, &nev) == 0, "a voice bank");
+    const th_t clockv2 = { "clock", 0x1000, 0x1000, 0x50000, 106 };
+    CK(store_voice(&p, &w, &clockv2, ORDER, 3, NULL, ev, &nev) == 0 && nev == 0 && p.e[0].serial == 106 &&
+       p.n == 4 && orb_pool_find(&p, "clock") >= 0, "a voice bank replaced in place, nothing evicted");
+    sound(&p, "a voice bank replaced");
+    printf("  format 2: the carry, voice banks first, lifted display entries, never evicted, never moved\n");
 }
 
 /* ---- a cut at every step ---- */
@@ -424,6 +552,18 @@ static int op_fill_small(orb_pool_t *p, int *w)
     const th_t t = { "radar", 0x1000, 0x1000, room(p, "clock", "flights") - 0x1000, 77 };
     return store_lru(p, w, &t, o, 3, NULL, NULL, NULL);
 }
+/* a small-first pool with the clock's voice bank already in it */
+static void small_first_v(orb_pool_t *p, int *w)
+{
+    small_first(p, w);
+    CK(store_voice(p, w, &CLOCKV, ORDER, 3, NULL, NULL, NULL) == 0, "the clock's voice bank");
+}
+/* a voice bank into it: color, then the clock and flights, each lifted */
+static int op_voice(orb_pool_t *p, int *w)
+{
+    const th_t v = { "radar", 0x1000, 0x1000, 0x8000, 107 };   /* less than color's size: color lifts over itself */
+    return store_voice(p, w, &v, ORDER, 3, NULL, NULL, NULL);
+}
 static int targeted(const char *targets, const char *slug)   /* targets: comma separated */
 {
     const size_t n = strlen(slug);
@@ -436,8 +576,18 @@ static int targeted(const char *targets, const char *slug)   /* targets: comma s
     return 0;
 }
 
+/* max_lost: other display entries a cut (and a second in its repair) may cost; a voice bank
+ * other than the target's is never lost (theme-cache-plan §2.6: a display entry is the
+ * cache's copy of a file on the card, a voice bank the app's sound). */
+static void cuts_n(const char *what, void (*setup)(orb_pool_t *, int *), op_t op,
+                   const char *target, int nested, int max_lost);
 static void cuts(const char *what, void (*setup)(orb_pool_t *, int *), op_t op,
                  const char *target, int nested)
+{
+    cuts_n(what, setup, op, target, nested, 1);
+}
+static void cuts_n(const char *what, void (*setup)(orb_pool_t *, int *), op_t op,
+                   const char *target, int nested, int max_lost)
 {
     orb_pool_t p, base;
     int w, bw;
@@ -467,15 +617,19 @@ static void cuts(const char *what, void (*setup)(orb_pool_t *, int *), op_t op,
             char ctx[96];
             snprintf(ctx, sizeof ctx, "%s cut at %ld%s", what, n, second > 0 ? " and in the repair" : "");
             sound(&q, ctx);
-            int lost = 0;
-            for (uint32_t k = 0; k < base.n; k++)
-                if (!targeted(target, base.e[k].slug) && orb_pool_find(&q, base.e[k].slug) < 0) lost++;
-            if (lost > 1) { printf("FAIL %s: %d other themes lost\n", ctx, lost); g_fail++; }
+            int lost = 0, vlost = 0;
+            for (uint32_t k = 0; k < base.n; k++) {
+                if (targeted(target, base.e[k].slug) ||
+                    orb_pool_find_kind(&q, base.e[k].slug, base.e[k].kind) >= 0) continue;
+                if (base.e[k].kind == ORB_POOL_VOICE) vlost++; else lost++;
+            }
+            if (lost > max_lost) { printf("FAIL %s: %d other themes lost\n", ctx, lost); g_fail++; }
+            if (vlost) { printf("FAIL %s: %d voice banks lost\n", ctx, vlost); g_fail++; }
             if (lost > worst) worst = lost;
             runs++;
         }
     }
-    printf("  cuts: %s, a cut at each of %ld steps%s, %ld reboots, at most %ld other theme lost\n",
+    printf("  cuts: %s, a cut at each of %ld steps%s, %ld reboots, at most %ld other display entry lost, no voice bank\n",
            what, n - 1, nested ? " and again in each repair" : "", runs, worst);
 }
 
@@ -494,6 +648,9 @@ int main(int argc, char **argv)
     cuts("a fill evicting two themes", small_first, op_fill, "radar,clock,color", !quick);
     cuts("a fill evicting the small first theme (the clock slides over itself)", small_first,
          op_fill_small, "radar,color", !quick);
+    voice();
+    cuts_n("a voice bank's store (each display entry lifted, color over itself)", small_first_v, op_voice,
+           "radar", !quick, 2);
     printf("%d failures\n", g_fail);
     return g_fail ? 1 : 0;
 }
@@ -519,8 +676,12 @@ MUTANTS = (
      "rank[k] = 99;"),
     ("the cache's table slots", "while (total > ORB_POOL_END - ORB_POOL_FIRST || count > ORB_POOL_ENTRIES) {",
      "while (total > ORB_POOL_END - ORB_POOL_FIRST) {"),
-    ("the ascending copy", "for (uint32_t o = 0; o < e->size; o += ORB_POOL_SECTOR) {",
-     "for (uint32_t o = e->size - ORB_POOL_SECTOR; o < e->size; o -= ORB_POOL_SECTOR) {"),
+    ("a voice bank is never evicted", "if (p->e[k].kind != ORB_POOL_DISPLAY) continue;          /* a voice bank is never evicted */", ""),
+    ("voice banks first", "if (i && e->kind == ORB_POOL_VOICE && out->e[i - 1].kind == ORB_POOL_DISPLAY)", "if (0)"),
+    ("the descending lift", "const uint32_t o = up ? e->size - ORB_POOL_SECTOR - i : i;", "const uint32_t o = i;"),
+    ("the format 1 carry", "if (f1) e->kind = ORB_POOL_DISPLAY;", ""),
+    ("the ascending copy", "const uint32_t o = up ? e->size - ORB_POOL_SECTOR - i : i;",
+     "const uint32_t o = e->size - ORB_POOL_SECTOR - i;"),
 )
 
 

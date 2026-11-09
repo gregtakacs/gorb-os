@@ -105,11 +105,15 @@ bool orb_sound_active(int handle);
 /** Move an anchored loop's anchor (the wall clock re-anchored under it). */
 void orb_sound_reanchor(int handle, int64_t anchor_us);
 
-/** Keep LEASED voices alive. An app renews on every tick it runs; when its ticks
- *  stop — the dial left the glass, the app was suspended — the lease lapses after
- *  1.5 s and its voices fall silent without the app having to be asked (C7, read
- *  for audio). Queued strokes that would sound after the lapse never do. */
-void orb_sound_lease_renew(void);
+/** Keep `owner`'s LEASED voices alive. The stage renews for the app it is bound to on
+ *  every tick it runs; when its ticks stop — the dial left the glass, the app was
+ *  suspended — the lease lapses after 1.5 s and its voices fall silent without the app
+ *  having to be asked (C7, read for audio). Another owner's renewal is a lapse too: a
+ *  leased voice is its app's on the glass alone (theme-cache-plan §2.6: the ticking).
+ *  Unleased voices (a chime, a strike) play to their end wherever the glass is. */
+void orb_sound_lease_renew(const void *owner);
+/** Stop `owner`'s leased voices now (its stage released); its one-shots play on. */
+void orb_sound_stop_leased(const void *owner);
 
 /* ---- owner settings: device config, like the tz (§5) ------------------------ */
 typedef struct {

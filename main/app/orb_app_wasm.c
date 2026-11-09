@@ -1488,7 +1488,10 @@ m3ApiRawFunction(imp_stage_open)              /* i32 stage_open(orb_stage_info_t
     uint8_t car, tr, sw, bg, pat = CLK_PAT_NONE;
     stage_info(&nr, &nc, &car, &tr, &sw, &bg, &tn);
     uint32_t ns = 0;
-    (void)stage_sounds(&ns, &pat);
+    {   /* theme-cache-plan §2.6: the app's sounds are its voice bank's */
+        const orb_voice_t *vb = orb_theme_voice(s->app->slug, NULL);
+        if (vb) { ns = vb->n; pat = vb->pattern; }
+    }
     memset(out, 0, 20);
     memcpy(out + 0, &nr, 2);
     memcpy(out + 2, &nc, 2);
@@ -1517,14 +1520,21 @@ m3ApiRawFunction(imp_stage_open)              /* i32 stage_open(orb_stage_info_t
 STAGE_COPY(imp_stage_row,  clk_row_t,  stage_row(i))
 STAGE_COPY(imp_stage_comp, clk_comp_t, stage_comp(i))
 
-static const clk_sound_t *stage_sound_at(int i)
+/* theme-cache-plan §2.6: an app's sounds are its voice bank's, on the glass or off it. */
+#define VOICE_ON(s) ((s) && (s)->app && orb_theme_voice((s)->app->slug, NULL))
+m3ApiRawFunction(imp_stage_sound)               /* i32 stage_sound(i32 i, clk_sound_t *out) */
 {
-    uint32_t n = 0;
-    uint8_t pat;
-    const clk_sound_t *t = stage_sounds(&n, &pat);
-    return (t && i >= 0 && (uint32_t)i < n) ? &t[i] : NULL;
+    m3ApiReturnType(int32_t);
+    CALLER();
+    m3ApiGetArg(int32_t, i);
+    m3ApiGetArgMem(uint8_t *, out);
+    m3ApiCheckMem(out, sizeof(clk_sound_t));
+    const orb_voice_t *vb = s && s->app ? orb_theme_voice(s->app->slug, NULL) : NULL;
+    if (!vb) m3ApiReturn(ESP_ERR_NOT_ALLOWED);
+    if (i < 0 || (uint32_t)i >= vb->n) m3ApiReturn(ESP_ERR_NOT_FOUND);
+    memcpy(out, &vb->s[i], sizeof(clk_sound_t));
+    m3ApiReturn(ESP_OK);
 }
-STAGE_COPY(imp_stage_sound, clk_sound_t, stage_sound_at(i))
 
 m3ApiRawFunction(imp_stage_now)               /* void stage_now(i64 *t, i32 *frac, i32 *wall) */
 {
@@ -1597,7 +1607,7 @@ m3ApiRawFunction(imp_stage_snd_ready)
 {
     m3ApiReturnType(int32_t);
     CALLER();
-    m3ApiReturn(STAGE_ON(s) && orb_sound_ready() &&
+    m3ApiReturn(VOICE_ON(s) && orb_sound_ready() &&
                 (orb_svc_grants(s->app) & (1u << CAP_SOUND)) ? 1 : 0);
 }
 
@@ -1630,7 +1640,7 @@ m3ApiRawFunction(imp_stage_snd_play)          /* i32 stage_snd_play(i, flags, i6
     m3ApiGetArg(uint32_t, flags);
     m3ApiGetArg(int64_t, at);
     m3ApiGetArg(int64_t, anchor);
-    m3ApiReturn(STAGE_ON(s) ? stage_snd_play(i, flags, at, anchor) : -1);
+    m3ApiReturn(VOICE_ON(s) ? stage_snd_play_v(s->app, i, flags, at, anchor, 100) : -1);
 }
 
 m3ApiRawFunction(imp_stage_snd_play_v)        /* i32 stage_snd_play_v(i, flags, i64 at, i64 anchor, vol) */
@@ -1642,7 +1652,7 @@ m3ApiRawFunction(imp_stage_snd_play_v)        /* i32 stage_snd_play_v(i, flags, 
     m3ApiGetArg(int64_t, at);
     m3ApiGetArg(int64_t, anchor);
     m3ApiGetArg(int32_t, vol);
-    m3ApiReturn(STAGE_ON(s) ? stage_snd_play_v(i, flags, at, anchor, vol) : -1);
+    m3ApiReturn(VOICE_ON(s) ? stage_snd_play_v(s->app, i, flags, at, anchor, vol) : -1);
 }
 
 /* §61: the app's own picture for the carousel, for an app with no theme to show: its disc,
@@ -1682,7 +1692,7 @@ m3ApiRawFunction(imp_stage_snd_stop)
 {
     CALLER();
     m3ApiGetArg(int32_t, h);
-    if (STAGE_ON(s) && h > 0) orb_sound_stop(h);
+    if (s && s->app && h > 0) orb_sound_app_stop(s->app, h);    /* its own voices, on the glass or off */
     m3ApiSuccess();
 }
 
@@ -1691,7 +1701,7 @@ m3ApiRawFunction(imp_stage_snd_active)
     m3ApiReturnType(int32_t);
     CALLER();
     m3ApiGetArg(int32_t, h);
-    m3ApiReturn(STAGE_ON(s) && h > 0 && orb_sound_active(h) ? 1 : 0);
+    m3ApiReturn(s && s->app && h > 0 && orb_sound_app_active(s->app, h) ? 1 : 0);
 }
 
 m3ApiRawFunction(imp_stage_snd_reanchor)
@@ -1699,7 +1709,7 @@ m3ApiRawFunction(imp_stage_snd_reanchor)
     CALLER();
     m3ApiGetArg(int32_t, h);
     m3ApiGetArg(int64_t, anchor);
-    if (STAGE_ON(s) && h > 0) orb_sound_reanchor(h, anchor);
+    if (s && s->app && h > 0 && orb_sound_app_active(s->app, h)) orb_sound_reanchor(h, anchor);
     m3ApiSuccess();
 }
 

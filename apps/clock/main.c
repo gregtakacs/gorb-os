@@ -510,7 +510,10 @@ static void snd_hour_pattern(const clk_sound_t *t, uint32_t n, int pat,
     }
 }
 
-static void sound_policy(const tm_t *ti, time_t t, double frac)
+/* on_glass: the dial's tick runs it. Off the glass (theme-cache-plan §2.6) the service runs it
+ * on wall time, and only the chimes and strikes sound: the tick loop and the hands' jumps are
+ * the visible mechanism's, and stop with the glass. */
+static void sound_policy(const tm_t *ti, time_t t, double frac, bool on_glass)
 {
     const bool ready = orb_stage_snd_ready();   /* the engine up and the sound cap held */
     if (!s_snd_init) { s_snd->min = s_snd->hour = s_snd->mday = -1; s_snd_init = true; }
@@ -530,7 +533,7 @@ static void sound_policy(const tm_t *ti, time_t t, double frac)
     /* The tick loop. */
     const bool relevel = snd_levels_read();
     const clk_sound_t *loop = snd_find(tab, n, CLK_SND_TICK_LOOP);
-    const bool want = loop && c.tick && !quiet && s_tick_vol > 0;
+    const bool want = on_glass && loop && c.tick && !quiet && s_tick_vol > 0;
     if (s_snd->loop && (relevel || !want || !orb_stage_snd_active(s_snd->loop))) {
         orb_stage_snd_stop(s_snd->loop);
         s_snd->loop = 0;
@@ -562,7 +565,7 @@ static void sound_policy(const tm_t *ti, time_t t, double frac)
      * the clunk's first 10 ms -- all of its energy -- and the owner heard nothing
      * (orb-B, Station, 2026-11-01). The lead is 1.5 s; the instant is exact. */
     if (!s_snd->steps_known) { snd_steps_scan(s_snd->steps); s_snd->steps_known = true; }
-    if (!quiet && n && c.jumps) {
+    if (on_glass && !quiet && n && c.jumps) {
         const int64_t minute_us = sec_us - (int64_t)ti->tm_sec * 1000000;
         const double into = ti->tm_sec + frac;
         const int64_t next_min_us = minute_us + 60000000;
@@ -830,11 +833,26 @@ ORB_EXPORT("orb_tick") void orb_tick(uint32_t now_ms)
     const double frac = frac_ns / 1e9, wall = wall_ns / 1e9;
     rows_pose(&ti, t, frac);
     comps_value(&ti, t);
-    sound_policy(&ti, t, wall);
+    sound_policy(&ti, t, wall, true);
 }
 
-ORB_EXPORT("orb_activate") void orb_activate(void) { s_shown_us = orb_uptime_us(); }
-ORB_EXPORT("orb_resume")   void orb_resume(void)   { s_shown_us = orb_uptime_us(); }
+/* theme-cache-plan §2.6 (owner, 2026-11-08: Gold swapped to weather mid-chime and cut it off):
+ * the clock chimes whatever is on the glass. Off it, the service keeps the hours. */
+static bool s_on_glass;
+ORB_EXPORT("orb_service") void orb_service(void)
+{
+    if (s_on_glass || s_info.base) return;
+    int64_t t;
+    int32_t frac_ns;
+    (void)orb_now(&t, &frac_ns);
+    tm_t ti;
+    if (!localtime_of(t, &ti)) return;
+    sound_policy(&ti, t, frac_ns / 1e9, false);
+}
+ORB_EXPORT("orb_suspend") void orb_suspend(void) { s_on_glass = false; }
+
+ORB_EXPORT("orb_activate") void orb_activate(void) { s_shown_us = orb_uptime_us(); s_on_glass = true; }
+ORB_EXPORT("orb_resume")   void orb_resume(void)   { s_shown_us = orb_uptime_us(); s_on_glass = true; }
 
 /* The dial has no armed view: a press is the repeater's, and the dial stays unarmed so
  * the turn still walks the carousel. */

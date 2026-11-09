@@ -46,7 +46,9 @@
 #include "orb_clock3.h"          /* the FORMAT 3 clock section's projection (P6.5) */
 #include "orb_sound.h"           /* D39: silence the old bank's voices before a remap */
 #include "orb_sd.h"
-#include "orb_jobs.h"      /* the two post_* calls: an install is a worker job, never a poll */
+#include "orb_jobs.h"
+#include "orb_voice.h"
+#include "orb_adpcm.h"      /* a sound's bytes from its samples */      /* theme-cache-plan §2.6: an app's voice bank */      /* the two post_* calls: an install is a worker job, never a poll */
 #include "orb_files.h"      /* the OS owns the card walk; this layer interprets what it finds */
 #include "art_bank.h"
 #include "orb_sched.h"          /* store_park_dial: the tick's park gate is the task-safe half of §6.3 */
@@ -906,7 +908,13 @@ static const orb_bundle_sec_t *sole_sec(const orb_bundle_t *b)
     return (b && b->n_sections >= 1) ? &b->sec[0] : NULL;
 }
 
-static const char *clock3_verdict(const orb_bundle_t *b)
+/* theme-cache-plan §2.6: the store's sounds, taken from its verdict's projection. */
+typedef struct { clk_sound_t s[CLK_SND_SLOTS]; uint32_t n; uint8_t pattern; } store_snd_t;
+EXT_RAM_BSS_ATTR static store_snd_t s_store_snd;
+
+static const char *clock3_verdict_ex(const orb_bundle_t *b, store_snd_t *snd);
+static const char *clock3_verdict(const orb_bundle_t *b) { return clock3_verdict_ex(b, NULL); }
+static const char *clock3_verdict_ex(const orb_bundle_t *b, store_snd_t *snd)
 {
     const orb_bundle_sec_t *sec = sole_sec(b);
     if (!sec)
@@ -923,6 +931,11 @@ static const char *clock3_verdict(const orb_bundle_t *b)
     pio.rows  = s_chk->rows;  pio.row_cap   = CLK_ROW_MAX;
     pio.sounds = s_chk->sounds; pio.sound_cap = CLK_SND_SLOTS;   /* D39 */
     const char *r = orb_clock3_parse(sec, &pio);
+    if (snd) {
+        snd->n = r ? 0 : pio.out_n_sounds;
+        snd->pattern = pio.out_pattern;
+        memcpy(snd->s, s_chk->sounds, snd->n * sizeof snd->s[0]);
+    }
     xSemaphoreGive(s_verdict_mx);
     return r;
 }
@@ -2019,6 +2032,85 @@ static void build_slot_hdr3(uint32_t hdr[W_WORDS], const orb_bundle3_hdr_t *h,
  * a duplicate of the 766 block, unreferenced, and the compile settled it). */
 
 
+/* ---- theme-cache-plan §2.6: the voice bank -------------------------------------------- */
+
+/* The bank a store's sounds make, in bytes; 0 for none, or for more than a bank holds. */
+static uint32_t voice_bank_size(const store_snd_t *snd)
+{
+    if (!snd->n) return 0;
+    orb_voice_in_t in[CLK_SND_SLOTS];
+    for (uint32_t k = 0; k < snd->n; k++) {
+        in[k].s = snd->s[k];
+        in[k].bytes = snd->s[k].enc == CLK_SND_ENC_ADPCM ? orb_adpcm_bytes(snd->s[k].n) : 2u * snd->s[k].n;
+    }
+    EXT_RAM_BSS_ATTR static uint8_t head[ORB_VOICE_HEAD_BYTES + ORB_VOICE_MAX * ORB_VOICE_REC_BYTES];
+    return orb_voice_build(in, snd->n, snd->pattern, 0, head, sizeof head);
+}
+
+/* After the display entry is committed: the app's voice bank made from it, or its old one
+ * gone for a theme with no sounds. The map is down (the store's park), so the lift that
+ * opens the bank's room moves nothing a reader holds. */
+static esp_err_t store_voice(const esp_partition_t *p, const char *slug, const char *name,
+                             uint32_t sec_art_off, uint32_t src_crc, uint32_t serial, const char **w)
+{
+    const store_snd_t *snd = &s_store_snd;
+    if (!snd->n) {
+        if (orb_pool_find_kind(s_pool, slug, ORB_POOL_VOICE) >= 0 &&
+            orb_pool_remove_kind(&s_pool_io, s_pool, &s_pool_which, slug, ORB_POOL_VOICE)) {
+            *w = "its old voice bank would not go";
+            return ESP_FAIL;
+        }
+        return ESP_OK;
+    }
+    orb_voice_in_t in[CLK_SND_SLOTS];
+    for (uint32_t k = 0; k < snd->n; k++) {
+        in[k].s = snd->s[k];
+        in[k].bytes = snd->s[k].enc == CLK_SND_ENC_ADPCM ? orb_adpcm_bytes(snd->s[k].n) : 2u * snd->s[k].n;
+    }
+    EXT_RAM_BSS_ATTR static uint8_t head[ORB_VOICE_HEAD_BYTES + ORB_VOICE_MAX * ORB_VOICE_REC_BYTES];
+    EXT_RAM_BSS_ATTR static orb_voice_t v;
+    const uint32_t total = orb_voice_build(in, snd->n, snd->pattern, src_crc, head, sizeof head);
+    if (!total || orb_voice_parse(head, total, &v)) { *w = "its sounds would not make a bank"; return ESP_ERR_INVALID_SIZE; }
+    uint32_t at = 0;
+    s_pool_io.progress = room_progress;
+    const int r = orb_pool_reserve_voice(&s_pool_io, s_pool, &s_pool_which, slug, total,
+                                         NULL, 0, slug, &at, NULL, NULL);
+    s_pool_io.progress = NULL;
+    if (r) { *w = r == ORB_POOL_ERR_FULL ? "no room for its sounds" : "the theme area would not make room for its sounds"; return ESP_FAIL; }
+    const int k = orb_pool_find(s_pool, slug);
+    if (k < 0) { *w = "its theme left the pool"; return ESP_FAIL; }
+    const uint32_t src = s_pool->e[k].off + sec_art_off;  /* the lift moved it: read it where it is */
+    const uint32_t size = orb_pool_round(total), hb = orb_voice_head_bytes(snd->n);
+    if (ensure_chunk() != ESP_OK) { *w = "out of memory for the copy"; return ESP_ERR_NO_MEM; }
+    esp_err_t e = esp_partition_erase_range(p, at, size);
+    if (e == ESP_OK) e = esp_partition_write(p, at, head, hb);
+    for (uint32_t i = 0; e == ESP_OK && i < v.n; i++) {
+        for (uint32_t done = 0; e == ESP_OK && done < v.bytes[i]; ) {
+            const uint32_t want = v.bytes[i] - done > s_chunk_bytes ? s_chunk_bytes : v.bytes[i] - done;
+            e = esp_partition_read(p, src + snd->s[i].pcm_off + done, s_chunk, want);
+            if (e == ESP_OK) e = esp_partition_write(p, at + v.s[i].pcm_off + done, s_chunk, want);
+            done += want;
+        }
+    }
+    if (e != ESP_OK) { *w = "its sounds would not copy"; return e; }
+    orb_pool_entry_t ve;
+    memset(&ve, 0, sizeof ve);
+    strlcpy(ve.slug, slug, sizeof ve.slug);
+    strlcpy(ve.name, name, sizeof ve.name);
+    ve.off = at; ve.size = size;
+    ve.geom_size = hb; ve.art_off = v.data_off; ve.art_size = v.data_bytes;
+    ve.file_crc = src_crc; ve.serial = serial; ve.kind = ORB_POOL_VOICE;
+    if (orb_pool_crc(&s_pool_io, at, ve.geom_size, &ve.geom_crc) ||
+        orb_pool_crc(&s_pool_io, at + ve.art_off, ve.art_size, &ve.art_crc) ||
+        orb_pool_commit(&s_pool_io, s_pool, &s_pool_which, &ve)) {
+        *w = "its voice bank would not be named";
+        return ESP_FAIL;
+    }
+    ESP_LOGI(TAG, "%s's voice bank: %u sounds, %u KB at 0x%x", slug, (unsigned)v.n,
+             (unsigned)(total / 1024), (unsigned)at);
+    return ESP_OK;
+}
+
 esp_err_t orb_theme_install_bundle(const char *id, char *why, size_t whysz)
 {
     if (why && whysz) why[0] = '\0';
@@ -2082,7 +2174,7 @@ esp_err_t orb_theme_install_bundle(const char *id, char *why, size_t whysz)
      * verdict where it leads everything: the page bill below, the park, the unmap,
      * and the erase all speak only after it answered yes. */
     {
-        const char *cv = clock3_verdict(&b);
+        const char *cv = clock3_verdict_ex(&b, &s_store_snd);
         if (cv) {
             heap_caps_free(region); card_close(fd);
             return install_failed(ESP_FAIL, cv, why, whysz);
@@ -2135,9 +2227,22 @@ esp_err_t orb_theme_install_bundle(const char *id, char *why, size_t whysz)
      * the slot was, so its size is the slot's head and its banks. */
     const char *slug = b.sec[0].slug;
     const uint32_t entry_size = SLOT_ART_OFF + art_span;
+    const uint32_t sec_art_off = b.sec[0].art_off;      /* the sounds' bank, inside the entry */
+    /* theme-cache-plan §2.6: its sounds become the app's voice bank, which must fit too */
+    const uint32_t voice_size = voice_bank_size(&s_store_snd);
+    if (s_store_snd.n && !voice_size) {
+        heap_caps_free(region); card_close(fd);
+        return install_failed(ESP_ERR_INVALID_SIZE, "this theme's sounds are more than an app's "
+                              "voice bank holds (1 MB)", why, whysz);
+    }
     {
-        const int f = (s_pool && pool_io(p)) ? orb_pool_fits(s_pool, slug, entry_size)
-                                             : ORB_POOL_ERR_ARG;
+        const int old_v = s_pool ? orb_pool_find_kind(s_pool, slug, ORB_POOL_VOICE) : -1;
+        int f = (s_pool && pool_io(p))
+                ? orb_pool_fits(s_pool, slug, entry_size + orb_pool_round(voice_size) -
+                                (old_v >= 0 ? s_pool->e[old_v].size : 0))
+                : ORB_POOL_ERR_ARG;
+        if (!f && voice_size && old_v < 0 && s_pool->n + (orb_pool_find(s_pool, slug) < 0) >= ORB_POOL_ENTRIES)
+            f = ORB_POOL_ERR_TABLE;
         if (f) {
             char sent[96];
             if (f == ORB_POOL_ERR_FULL)
@@ -2150,6 +2255,7 @@ esp_err_t orb_theme_install_bundle(const char *id, char *why, size_t whysz)
                 snprintf(sent, sizeof sent, f == ORB_POOL_ERR_TABLE
                          ? "the theme area holds eight apps' themes already"
                          : "the theme area's table is not loaded");
+            ESP_LOGW(TAG, "store refused: %s (its sounds %u KB)", sent, (unsigned)(voice_size / 1024));
             heap_caps_free(region); card_close(fd);
             return install_failed(ESP_ERR_NO_MEM, sent, why, whysz);
         }
@@ -2169,6 +2275,7 @@ esp_err_t orb_theme_install_bundle(const char *id, char *why, size_t whysz)
         heap_caps_free(region); card_close(fd);
         return install_failed(ESP_ERR_INVALID_STATE, "the dial would not park", why, whysz);
     }
+    orb_sound_stop_all();                  /* theme-cache-plan §2.6: voices read the voice banks it moves */
     art_bank_unmap();
     s_slot_torn = true;                    /* from here the reboot is the only way back */
 
@@ -2240,6 +2347,7 @@ esp_err_t orb_theme_install_bundle(const char *id, char *why, size_t whysz)
         pe.file_crc = file_geom_crc;
         pe.serial = serial;
         pe.abi = h.geom_abi;
+        pe.kind = ORB_POOL_DISPLAY;                /* theme-cache-plan §2.6: the theme as it draws */
         if (orb_pool_crc(&s_pool_io, tgt, pe.geom_size, &pe.geom_crc) ||
             orb_pool_commit(&s_pool_io, s_pool, &s_pool_which, &pe)) {
             e = ESP_FAIL;
@@ -2254,6 +2362,15 @@ esp_err_t orb_theme_install_bundle(const char *id, char *why, size_t whysz)
                 ESP_LOGE(TAG, "torn store but the reboot could not be armed");
         }
         return install_failed(e, w, why, whysz);
+    }
+    /* theme-cache-plan §2.6: the app's voice bank, from the entry just written (or the old
+     * one gone, for a theme with no sounds). A failure leaves the theme stored without it,
+     * which binds no more (ruling 8): the app runs bare and its log says to send it again. */
+    {
+        const char *vw = NULL;
+        if (store_voice(p, slug, h.name, sec_art_off, file_geom_crc, serial, &vw) != ESP_OK)
+            ESP_LOGE(TAG, "\"%s\": its voice bank: %s — the app runs bare until it is sent again",
+                     h.name, vw ? vw : "failed");
     }
     staged_clear();
     s_bundle_ms = (uint32_t)((esp_timer_get_time() - t0) / 1000);
@@ -2393,10 +2510,9 @@ static esp_err_t adopt_bundle3(const esp_partition_t *p, const orb_bundle3_hdr_t
      * names on this same boot. The refill figures stay 0 beside a slot source:
      * that pair is the page's proof a boot mapped rather than copied (§20.5(2)
      * reads through them, and they now read 0 by design, not by failure). */
-    /* D39: every voice reads PCM out of the bank this map is about to replace. The
-     * engine's stop returns only once the mixer is between blocks, so after this
-     * line no voice can touch the old mapping. */
-    orb_sound_stop_all();
+    /* D39 stopped every voice here, because voices read PCM out of the bank this map
+     * replaces. theme-cache-plan §2.6: they read the voice banks now, mapped apart from
+     * boot and never remapped, so a bind no longer silences a chime. */
     const esp_err_t fe = art_bank_map(slot_hdr_base + SLOT_ART_OFF, span);
     if (fe != ESP_OK) {
         heap_caps_free(region);              /* the parse's copy dies with the map */
@@ -2485,6 +2601,59 @@ static esp_err_t adopt_bundle3(const esp_partition_t *p, const orb_bundle3_hdr_t
  * — returns non-OK and the caller falls to the base face. This is the only read that
  * turns the slot's pixels into a dial; it installs and erases nothing, so the
  * no-write-in-the-fallback rule that outlived the A/B pair holds. */
+/* ---- theme-cache-plan §2.6: every app's voice bank, mapped from boot ----------------------
+ * The voice banks are packed first in the pool, so one mapping of [0, voice end) holds them
+ * all, and a voice reads its PCM through it whatever the stage is bound to. Each bank is
+ * checked against its entry's CRCs through that mapping before it is listed. Stores reboot,
+ * so the mapping is made once and never moves. */
+typedef struct { char slug[ORB_POOL_SLUG_MAX]; uint32_t src_crc; const uint8_t *bank; orb_voice_t v; } voice_reg_t;
+static voice_reg_t *s_voices;
+static uint32_t     s_nvoices;
+static const void  *s_vmap;
+static esp_partition_mmap_handle_t s_vmap_h;
+
+static void voices_map(const esp_partition_t *p)
+{
+    const uint32_t end = orb_pool_voice_end(s_pool);
+    if (end <= ORB_POOL_FIRST) return;
+    if (esp_partition_mmap(p, 0, end, ESP_PARTITION_MMAP_DATA, &s_vmap, &s_vmap_h) != ESP_OK) {
+        ESP_LOGE(TAG, "voice banks: %u B would not map — no app sounds this boot", (unsigned)end);
+        s_vmap = NULL;
+        return;
+    }
+    s_voices = heap_caps_calloc(ORB_POOL_ENTRIES, sizeof *s_voices, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    for (uint32_t k = 0; s_voices && k < s_pool->n && s_pool->e[k].kind == ORB_POOL_VOICE; k++) {
+        const orb_pool_entry_t *e = &s_pool->e[k];
+        const uint8_t *b = (const uint8_t *)s_vmap + e->off;
+        voice_reg_t *r = &s_voices[s_nvoices];
+        const char *why = esp_rom_crc32_le(0, b, e->geom_size) != e->geom_crc ||
+                          esp_rom_crc32_le(0, b + e->art_off, e->art_size) != e->art_crc
+                          ? "its bytes are not its CRCs" : orb_voice_parse(b, e->size, &r->v);
+        if (why) { ESP_LOGE(TAG, "%s's voice bank refused: %s", e->slug, why); continue; }
+        strlcpy(r->slug, e->slug, sizeof r->slug);
+        r->src_crc = e->file_crc;
+        r->bank = b;
+        s_nvoices++;
+        ESP_LOGI(TAG, "%s's voice bank: %u sounds, %u KB", e->slug, (unsigned)r->v.n, (unsigned)(e->size / 1024));
+    }
+}
+
+const orb_voice_t *orb_theme_voice(const char *slug, const uint8_t **bank)
+{
+    for (uint32_t i = 0; slug && i < s_nvoices; i++)
+        if (!strcmp(s_voices[i].slug, slug)) { if (bank) *bank = s_voices[i].bank; return &s_voices[i].v; }
+    return NULL;
+}
+
+/* Ruling 8: a theme with sounds binds only beside a voice bank made from the same file. */
+static bool voice_missing(const char *slug, uint32_t file_crc)
+{
+    if (!s_snd || !s_snd->n) return false;
+    for (uint32_t i = 0; i < s_nvoices; i++)
+        if (!strcmp(s_voices[i].slug, slug)) return s_voices[i].src_crc != file_crc;
+    return true;
+}
+
 static esp_err_t adopt_default_bundle(const esp_partition_t *p, uint32_t base)
 {
     uint32_t raw[W_WORDS];
@@ -2546,6 +2715,7 @@ static void pool_carry(const esp_partition_t *p)
         e.file_crc  = raw[W_SCR_H];
         e.serial    = h.serial;
         e.abi       = h.geom_abi;
+        e.kind      = ORB_POOL_DISPLAY;
         if (orb_pool_crc(&s_pool_io, 0, e.geom_size, &e.geom_crc) ||
             orb_pool_crc(&s_pool_io, e.art_off, e.art_size, &e.art_crc))
             why = "the slot would not read back";
@@ -2563,7 +2733,10 @@ static void pool_carry(const esp_partition_t *p)
 static int pool_live_entry(void)
 {
     const int k = orb_pool_find(s_pool, "clock");
-    return k >= 0 ? k : (s_pool->n ? 0 : -1);
+    if (k >= 0) return k;
+    for (uint32_t i = 0; i < s_pool->n; i++)          /* a voice bank draws nothing (theme-cache-plan §2.6) */
+        if (s_pool->e[i].kind == ORB_POOL_DISPLAY) return (int)i;
+    return -1;
 }
 
 bool orb_theme_pool_stem(const char *slug, char *out, size_t outsz)
@@ -2597,6 +2770,12 @@ esp_err_t orb_theme_bind(const char *slug)
         ESP_LOGE(TAG, "bind: %s's theme would not load (%s)", slug, esp_err_to_name(e));
         use_no_art();
         return e;
+    }
+    if (voice_missing(slug, s_pool->e[k].file_crc)) {
+        ESP_LOGE(TAG, "bind: %s's theme \"%s\" has sounds and was stored before voice banks "
+                      "(theme-cache-plan ruling 8) — send it again", slug, s_active_name);
+        use_no_art();
+        return ESP_ERR_INVALID_STATE;
     }
     s_live_base = s_pool->e[k].off;
     ESP_LOGI(TAG, "bound %s's theme \"%s\"", slug, s_active_name);
@@ -2673,6 +2852,7 @@ esp_err_t orb_theme_boot(void)
         pr = orb_pool_repair(&s_pool_io, s_pool, &s_pool_which);
         s_pool_io.progress = NULL;
     }
+    if (!pr) voices_map(p);                            /* theme-cache-plan §2.6 */
     const int live = pr ? -1 : pool_live_entry();
     if (pr)
         ESP_LOGE(TAG, "the theme pool would not load (%d) — base digital face", pr);
@@ -2719,7 +2899,13 @@ esp_err_t orb_theme_boot(void)
      * bundle with no clock section — is the base digital face, with the reason on the
      * serial log for whoever reflashes. There is no second slot to reach across to and
      * no factory copy to fall back on: a torn store answers one re-store. */
-    const esp_err_t de = adopt_default_bundle(p, s_live_base);
+    esp_err_t de = adopt_default_bundle(p, s_live_base);
+    if (de == ESP_OK && voice_missing(s_pool->e[live].slug, s_pool->e[live].file_crc)) {
+        ESP_LOGE(TAG, "%s's theme \"%s\" has sounds and was stored before voice banks "
+                      "(theme-cache-plan ruling 8) — send it again", s_pool->e[live].slug, s_active_name);
+        use_no_art();
+        de = ESP_ERR_INVALID_STATE;
+    }
     if (de == ESP_OK) {
         /* The C3 pass-line line: a stored theme boots MAPPED, with the page count
          * the §9 budget speaks of, and art_bank's refill line is absent. */
@@ -2850,6 +3036,7 @@ static void clear_job(void *arg)
         ESP_LOGW(TAG, "deactivate refused: the dial would not park");
         return;
     }
+    orb_sound_stop_all();                  /* theme-cache-plan §2.6: voices read the voice banks it moves */
     art_bank_unmap();
     s_slot_torn = true;                    /* from here the reboot is the only way back */
     /* The pool lets this app's theme go and packs every other app's down over it
@@ -3252,6 +3439,7 @@ int orb_theme_scan_app(const char *app, orb_theme_entry_t *out, int cap)
      * all, and this only decides what the page MARKS — the store door re-reads the
      * card's header on the worker before it writes anything. */
     for (uint32_t k = 0; s_pool && k < s_pool->n && k < ORB_POOL_ENTRIES; k++) {
+        if (s_pool->e[k].kind != ORB_POOL_DISPLAY) continue;   /* a voice bank is not a theme row */
         strlcpy(c->stored[c->n_stored].slug, s_pool->e[k].slug, sizeof c->stored[0].slug);
         strlcpy(c->stored[c->n_stored].name, s_pool->e[k].name, sizeof c->stored[0].name);
         c->stored[c->n_stored].file_crc = s_pool->e[k].file_crc;

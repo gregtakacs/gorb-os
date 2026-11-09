@@ -26,15 +26,22 @@
 #define ORB_POOL_TABLE_A     (ORB_POOL_PART_BYTES - 2u * ORB_POOL_SECTOR)
 #define ORB_POOL_TABLE_B     (ORB_POOL_PART_BYTES - 1u * ORB_POOL_SECTOR)
 #define ORB_POOL_END         ORB_POOL_TABLE_A              /* entries stop here */
-#define ORB_POOL_ENTRIES     8u                            /* B5: one per app */
+#define ORB_POOL_ENTRIES     16u                           /* theme-cache-plan §2.6: a voice bank and a display entry for each of B5's eight apps */
+#define ORB_POOL_ENTRIES_F1  8u                            /* a format 1 table's */
 #define ORB_POOL_SLUG_MAX    24u                           /* the 23-byte slug rule + NUL */
 #define ORB_POOL_NAME_MAX    56u                           /* the slot header's name */
 #define ORB_POOL_MAGIC       0x4C4F4F50u                   /* "POOL", little-endian */
-#define ORB_POOL_FORMAT      1u
+#define ORB_POOL_FORMAT      2u                            /* format 1 still reads (§2.6's carry) */
 #define ORB_POOL_HEAD_BYTES  32u
-#define ORB_POOL_ENTRY_BYTES 128u
+#define ORB_POOL_ENTRY_BYTES 132u                          /* format 1's 128 and the kind */
+#define ORB_POOL_ENTRY_BYTES_F1 128u
 
 enum { ORB_POOL_LIVE = 1, ORB_POOL_MOVING = 2 };
+/* An entry's kind (theme-cache-plan §2.6): an app's voice bank, resident while its theme is
+ * chosen, or its display entry, the cache's to drop. Voice banks are packed first, display
+ * entries after them, so a display entry's eviction or fill never moves a voice bank. A
+ * format 1 table's entries are display entries. */
+enum { ORB_POOL_DISPLAY = 1, ORB_POOL_VOICE = 2 };
 
 /* One app's theme in the pool. Its head (header sector and index) is [off, off +
  * geom_size); its banks are [off + art_off, off + art_off + art_size). The index records
@@ -47,6 +54,7 @@ typedef struct {
     uint32_t geom_size, geom_crc;
     uint32_t art_off, art_size, art_crc;
     uint32_t file_crc, serial, state, abi;
+    uint32_t kind;                          /* ORB_POOL_DISPLAY or ORB_POOL_VOICE */
 } orb_pool_entry_t;
 
 typedef struct {
@@ -80,10 +88,11 @@ typedef struct {
 /* Encode into one sector's worth of bytes (the rest zero). */
 void orb_pool_encode(const orb_pool_t *p, uint8_t out[ORB_POOL_SECTOR]);
 
-/* Decode and check: magic, format, count, CRC, and every entry well formed, in pool
- * order, inside [ORB_POOL_FIRST, ORB_POOL_END), not overlapping, slugs unique. Gaps are
- * allowed (a compaction cut between moves leaves them); orb_pool_packed() asks for
- * none. NULL on success, else the refusal. */
+/* Decode and check: magic, format (2, or 1 read as display entries), count, CRC, and every
+ * entry well formed, in pool order, inside [ORB_POOL_FIRST, ORB_POOL_END), not overlapping,
+ * one entry of a kind an app, every voice bank before every display entry. Gaps are
+ * allowed (a compaction cut between moves leaves them); orb_pool_packed() asks for none.
+ * NULL on success, else the refusal. Encoding always writes format 2. */
 const char *orb_pool_decode(const uint8_t *in, size_t len, orb_pool_t *out);
 
 /* No holes: the entries run from ORB_POOL_FIRST, each where the last one ended. */
@@ -92,11 +101,15 @@ bool orb_pool_packed(const orb_pool_t *p);
 /* Where the packed run ends (ORB_POOL_FIRST for an empty pool). */
 uint32_t orb_pool_used_end(const orb_pool_t *p);
 
-/* The entry for `slug`, or -1. */
+/* `slug`'s display entry (its theme as the stage binds it), or -1. */
 int orb_pool_find(const orb_pool_t *p, const char *slug);
+/* `slug`'s entry of `kind`, or -1. */
+int orb_pool_find_kind(const orb_pool_t *p, const char *slug, uint32_t kind);
+/* Where the voice banks end and the display entries begin (packed). */
+uint32_t orb_pool_voice_end(const orb_pool_t *p);
 
-/* Whether `slug`'s theme of `size` bytes fits once `slug`'s old entry is gone: 0, or
- * ORB_POOL_ERR_FULL (no room), or ORB_POOL_ERR_TABLE (a ninth app). Pure: a store asks
+/* Whether `slug`'s display entry of `size` bytes fits once `slug`'s old one is gone: 0, or
+ * ORB_POOL_ERR_FULL (no room), or ORB_POOL_ERR_TABLE (the table's slots). Pure: a store asks
  * it before it parks the dial, and orb_pool_reserve asks it again. */
 int orb_pool_fits(const orb_pool_t *p, const char *slug, uint32_t size);
 
@@ -118,10 +131,13 @@ int orb_pool_repair(const orb_pool_io_t *io, orb_pool_t *p, int *which);
 /* Move every entry down until the pool is packed. */
 int orb_pool_compact(const orb_pool_io_t *io, orb_pool_t *p, int *which);
 
-/* Remove `slug`'s entry, then compact. Absent is not a failure. */
+/* Remove `slug`'s display entry, then compact. Absent is not a failure. */
 int orb_pool_remove(const orb_pool_io_t *io, orb_pool_t *p, int *which, const char *slug);
+/* Remove `slug`'s entry of `kind`, then compact. Absent is not a failure. */
+int orb_pool_remove_kind(const orb_pool_io_t *io, orb_pool_t *p, int *which, const char *slug,
+                         uint32_t kind);
 
-/* Make room for `slug`'s new theme of `size` bytes: refuse with ORB_POOL_ERR_FULL,
+/* Make room for `slug`'s new display entry of `size` bytes: refuse with ORB_POOL_ERR_FULL,
  * touching nothing, if it cannot fit once `slug`'s old entry is gone; else remove that
  * entry, compact, and answer in *at where the new bytes go (the packed run's end). The
  * caller writes them and calls orb_pool_commit. */
@@ -137,6 +153,11 @@ int orb_pool_reserve(const orb_pool_io_t *io, orb_pool_t *p, int *which,
 int orb_pool_evictions(const orb_pool_t *p, const char *slug, uint32_t size,
                        const char *const *order, uint32_t n_order, const char *keep,
                        uint32_t *mask);
+/* The same for a new entry of `kind`: `slug`'s own old entry of that kind always goes, and
+ * only display entries are ever evicted. orb_pool_evictions is this with ORB_POOL_DISPLAY. */
+int orb_pool_evictions_kind(const orb_pool_t *p, const char *slug, uint32_t kind, uint32_t size,
+                            const char *const *order, uint32_t n_order, const char *keep,
+                            uint32_t *mask);
 
 /* orb_pool_reserve, evicting as orb_pool_evictions says: refuse with ORB_POOL_ERR_FULL,
  * touching nothing; else drop every evicted entry in one table write, compact, and answer
@@ -148,8 +169,20 @@ int orb_pool_reserve_lru(const orb_pool_io_t *io, orb_pool_t *p, int *which,
                          const char *const *order, uint32_t n_order, const char *keep,
                          uint32_t *at, char (*evicted)[ORB_POOL_SLUG_MAX], uint32_t *n_evicted);
 
-/* Append the entry the caller wrote at orb_pool_reserve's *at, LIVE, and write the
- * table. e->off must be that offset and e->slug absent from the table. */
+/* A voice bank of `size` bytes for `slug` (§2.6): evict as orb_pool_evictions_kind says
+ * (display entries only, least recent first, never `keep`), drop `slug`'s old voice bank,
+ * compact, then lift every display entry by the new bank's size, the last first, so the gap
+ * opens at the voice banks' end; *at is that gap. Refuses with ORB_POOL_ERR_FULL touching
+ * nothing. The lift moves display entries: nothing may read the pool through a mapping. */
+int orb_pool_reserve_voice(const orb_pool_io_t *io, orb_pool_t *p, int *which,
+                           const char *slug, uint32_t size,
+                           const char *const *order, uint32_t n_order, const char *keep,
+                           uint32_t *at, char (*evicted)[ORB_POOL_SLUG_MAX], uint32_t *n_evicted);
+
+/* Add the entry the caller wrote at a reserve's *at, LIVE, in pool order, and write the
+ * table: a display entry at the packed run's end, a voice bank at the voice banks' end
+ * with the gap open; e->slug must have no entry of e->kind. ORB_POOL_ERR_ARG for anything
+ * else. */
 int orb_pool_commit(const orb_pool_io_t *io, orb_pool_t *p, int *which,
                     const orb_pool_entry_t *e);
 

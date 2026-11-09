@@ -288,7 +288,7 @@ bool gfx_prim_ctx_init(struct gfx_paint_ctx *pc, const orb_prim_arg_t *a,
                        uint8_t *plane, uint32_t plane_cap, uint8_t role)
 { (void)pc; (void)a; (void)plane; (void)plane_cap; (void)role; return false; }
 /* D39's engine, behind the sound entries: what the gate let through, and to whom. */
-int g_snd_play, g_snd_stop, g_snd_active, g_snd_stop_owner;
+int g_snd_play, g_snd_stop, g_snd_active, g_snd_stop_owner, g_snd_stop_leased;
 const void *g_snd_owner; const char *g_snd_slug; unsigned g_snd_slot, g_snd_flags, g_snd_delay;
 int orb_sound_app_play(const void *o, const char *slug, uint16_t slot, uint32_t flags,
                        uint32_t delay_ms)
@@ -297,6 +297,7 @@ int orb_sound_app_play(const void *o, const char *slug, uint16_t slot, uint32_t 
 void orb_sound_app_stop(const void *o, int h) { (void)o; (void)h; g_snd_stop++; }
 bool orb_sound_app_active(const void *o, int h) { (void)o; (void)h; g_snd_active++; return true; }
 void orb_sound_stop_owner(const void *o) { g_snd_stop_owner++; g_snd_owner = o; }
+void orb_sound_stop_leased(const void *o) { g_snd_stop_leased++; g_snd_owner = o; }
 void *heap_caps_malloc(size_t n, uint32_t f) { (void)f; return malloc(n); }
 void heap_caps_free(void *p) { free(p); }
 static int g_caps_fail;                    /* arm: the next SPIRAM calloc says no */
@@ -504,12 +505,14 @@ int main(int argc, char **argv)
            g_snd_delay == 250);
         S->sound_stop(D, h);
         CK("stop and active reach it too", g_snd_stop == 1 && S->sound_active(D, h) && g_snd_active == 1);
-        const int so = g_snd_stop_owner;
+        const int so = g_snd_stop_owner, sl = g_snd_stop_leased;
         const int rel0 = g_rel_calls;          /* the suspend also releases power:  */
         orb_svc_app_suspended(D);              /* the power checks below count it    */
         g_rel_calls = rel0;
-        CK("an app sent behind the dial is silenced, by its own row (C7)",
-           g_snd_stop_owner == so + 1 && g_snd_owner == D);
+        /* theme-cache-plan ruling 6: its loops stop with the glass, by its own row (C7);
+         * its one-shots play to their end */
+        CK("an app sent behind the dial has its loops stopped, its own and not its one-shots",
+           g_snd_stop_leased == sl + 1 && g_snd_stop_owner == so && g_snd_owner == D);
     }
 
     /* The LOCATION door (flight-tracker-design §6.4): an app that never

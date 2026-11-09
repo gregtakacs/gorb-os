@@ -1,11 +1,10 @@
 /* orb_sound_app.c — an app's own theme sounds, by slot (D39's service surface).
  *
  * The svc entries (orb_svc.c, cap SOUND) land here. An app never hands the engine a
- * pointer: it names a slot, and the sound is the (ORB_ASSET_SOUND, slot) row of THAT
- * app's section in the adopted theme, resolved through the same orb_elems join every
- * plane goes through. The bank stays mapped for the life of the adoption (a flip
- * reboots), and orb_theme stops every voice before it remaps, so the pointer handed
- * to the engine outlives the voice. See orb_sound.h for the contract. */
+ * pointer: it names a slot, and the sound is that slot's in THAT app's voice bank
+ * (theme-cache-plan §2.6), which boot maps apart from the display entry and never remaps
+ * (a store reboots, and stops every voice first), so the pointer handed to the engine
+ * outlives the voice whatever the glass binds. See orb_sound.h for the contract. */
 #include "orb_sound.h"
 #include "orb_adpcm.h"
 
@@ -21,21 +20,17 @@ int orb_sound_app_play(const void *owner, const char *slug, uint16_t slot,
 {
     if (!owner || !slug) return ESP_ERR_INVALID_ARG;
     if (flags & ~(ORB_SOUND_LOOP | ORB_SOUND_ANCHORED)) return ESP_ERR_INVALID_ARG;
-    const orb_bundle_sec_t *sec = NULL;
-    uint32_t bank_off = 0;
-    const uint8_t *base = art_bank_ptr();
-    if (!base || !orb_theme_live_sec(slug, &sec, &bank_off)) return ESP_ERR_NOT_FOUND;
-    orb_elem_t e;
-    if (orb_elems_at(sec, ORB_ASSET_SOUND, slot, 0, &e, NULL, 0) != ORB_ELEMS_OK)
-        return ESP_ERR_NOT_FOUND;
-    /* The clock's projection refuses an odd plane at the door; another app's section
-     * has no such reader, so the rule is held here, where the load would fault. */
-    const uint32_t want = e.src == ORB_SOUND_ENC_ADPCM ? orb_adpcm_bytes(e.plane_w)
-                        : e.src == ORB_SOUND_ENC_PCM16 ? e.plane_w * 2u : 0u;
-    if (e.plane_h != 1 || !want || e.size != want ||
-        (e.src == ORB_SOUND_ENC_PCM16 && ((bank_off + e.off) & 1u)))
-        return ESP_ERR_INVALID_SIZE;
-    const void *clip = base + bank_off + e.off;
+    /* theme-cache-plan §2.6: from the app's voice bank, mapped from boot apart from the
+     * display entry a bind replaces, so it plays whatever is on the glass. orb_voice_parse
+     * held every sound to its bank's bounds and even offsets when boot listed it. */
+    const uint8_t *bank = NULL;
+    const orb_voice_t *vb = orb_theme_voice(slug, &bank);
+    if (!vb || !bank) return ESP_ERR_NOT_FOUND;
+    const clk_sound_t *t = NULL;
+    for (uint32_t k = 0; k < vb->n && !t; k++) if (vb->s[k].slot == slot) t = &vb->s[k];
+    if (!t) return ESP_ERR_NOT_FOUND;
+    const void *clip = bank + t->pcm_off;
+    if (flags & ORB_SOUND_LOOP) flags |= ORB_SOUND_LEASED;   /* a loop is its app's on the glass alone */
     const int64_t now = esp_timer_get_time();
     int64_t anchor = 0;
     if (flags & ORB_SOUND_ANCHORED) {
@@ -43,6 +38,6 @@ int orb_sound_app_play(const void *owner, const char *slug, uint16_t slot,
         orb_time_now(&sec_now, &frac, &synced);
         anchor = now - (int64_t)(frac * 1e6);
     }
-    return orb_sound_play_enc(owner, clip, e.plane_w, e.src, ORB_SOUND_GAIN_1, flags,
+    return orb_sound_play_enc(owner, clip, t->n, t->enc, ORB_SOUND_GAIN_1, flags,
                               delay_ms ? now + (int64_t)delay_ms * 1000 : 0, anchor);
 }

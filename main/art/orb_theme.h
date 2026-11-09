@@ -46,6 +46,7 @@
 #endif
 #include "clk_types.h"   /* clk_theme_t, clk_bg_rect_t + the baked-in fallback */
 #include "orb_clock3.h"  /* clk_sound_t, CLK_SND_*: orb_theme_sounds() answers in them */
+#include "orb_voice.h"   /* orb_voice_t: an app's voice bank (theme-cache-plan §2.6) */
 #include "orb_bundle.h"  /* orb_bundle_sec_t — orb_theme_live_sec() hands one back */
 #include "orb_assets.h"  /* orb_asset_ans_t, ORB_ASSET_PREVIEW — orb_theme_preview_read answers */
 
@@ -219,6 +220,10 @@ orb_asset_ans_t orb_theme_design_stream(const char *handle,
 esp_err_t orb_theme_bench_fill(const char *id, uint32_t chunk_kb, uint32_t pace_ms, bool urgent);
 const char *orb_theme_bench_fill_last(void);   /* the last run's line, "" before one */
 #endif
+
+/* theme-cache-plan §2.6: `slug`'s voice bank, mapped from boot whatever the stage is bound to,
+ * and its start in *bank; NULL for an app with none. A sound's PCM is bank + s[k].pcm_off. */
+const orb_voice_t *orb_theme_voice(const char *slug, const uint8_t **bank);
 
 orb_asset_ans_t orb_theme_preview_read(const char *handle,
                                        uint8_t *buf, size_t cap,

@@ -1373,8 +1373,10 @@ void orb_svc_app_suspended(const orb_app_t *a)
     const int slot = orb_app_index_of(a);
     if (slot < 0) return;                      /* not a registered entry */
     idle_dim_app_release(a->slug);
-    orb_sound_stop_owner(a);                   /* D39: C7 read for audio — an app
-                                                * behind the dial makes no sound */
+    /* D39 stopped every voice here ("an app behind the dial makes no sound"); the owner
+     * ruled otherwise (theme-cache-plan ruling 6): its loops stop with the glass, its
+     * one-shots (a chime, a strike) play to their end. */
+    orb_sound_stop_leased(a);
     if (s_row[slot].layers)                    /* P5.5: an app behind the dial
                                               * holding rows on the glass is
                                               * §4.2's clause's other half. The

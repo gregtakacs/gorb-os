@@ -30,6 +30,17 @@ shelf's four defaults together must fit in 8 MB (Skeleton 3.48, Scope flights 1.
    the glass**; **a voice bank is capped at 1 MB an app**; **the display tier stays until a
    fill needs its room** (least recently on the glass first), never dropped just for leaving.
 
+7. **The flash copies follow the card file** (2026-11-08). An app's voice bank and display
+   entry are both made from one card file and carry its identity (the header's geometry
+   CRC: `src_crc` in the bank, `file_crc` in the entry). A store builds both, so every send,
+   editor commit or overwrite rebuilds them; at boot and when a card is mounted, an app whose
+   card file no longer matches is rebuilt from the card, and one whose file is gone loses
+   both copies.
+8. **No migration: old flash copies are refused** (2026-11-08). A theme stored before voice
+   banks, whose theme carries sounds, does not bind: the app runs bare and its log says to
+   send the theme again, which rebuilds both halves. A theme with no sounds lacks nothing and
+   binds as before. The `.orbtheme` files on the card stay valid; no format bump.
+
 ## 1. What is there today (read 2026-11-08)
 
 - **The pool** (`main/art/orb_pool.c`, theme-pool-plan §2): up to 8 entries, one per app,
@@ -162,8 +173,8 @@ carries is read off the glass (its values blob draws; the preview is the card's)
 |---|---|---|
 | **C0** | Measure a live copy on Bronze: a card→pool copy with the radar's sweep on the glass (fps, longest stall, copy time) | numbers in §6 before C3 is built — **measured 2026-11-08** (§6) |
 | **C1** | `orb_pool_evictions`, `orb_pool_reserve_lru` (pure C; the table format unchanged) | `host_pool_test.py`: the order, keep, the table's slots, refusals untouched, a cut at every step of two fills — **built 2026-11-08** (§6) |
-| **C2** | The table's format 2 (an entry's kind, voice or display; sixteen entries; the carry from format 1); voice banks packed first, never moved by an eviction | `host_pool_test.py`: the carry under every cut, evictions that never take or move a voice bank |
-| **C3** | Sound off the glass: a store writes the voice bank (≤ 1 MB), boot maps every voice bank, a bind no longer stops voices, one-shots unleased and loops leased to the glass, a sound import that needs no stage; the clock chimes from its service | bench: the clock chiming through a switch to weather, and on the hour with weather on the glass; the tick stopping when the clock leaves |
+| **C2** | The table's format 2 (an entry's kind, voice or display; sixteen entries; the carry from format 1); voice banks packed first, never moved by an eviction | `host_pool_test.py`: the carry, evictions that never take or move a voice bank, a cut at every step of a voice bank's store — **built 2026-11-08** (§6) |
+| **C3** | Sound off the glass: a store writes the voice bank (≤ 1 MB), boot maps every voice bank, a bind no longer stops voices, one-shots unleased and loops leased to the glass, a sound import that needs no stage; the clock chimes from its service | bench: the clock chiming through a switch to weather, and on the hour with weather on the glass; the tick stopping when the clock leaves — **built and benched on Bronze 2026-11-08** (§6) |
 | **C4** | The choice record (NVS), the last-on-glass order, stores that make room instead of refusing, the shelf's budgets per theme | bench: a theme stored into a full pool evicts the least recent display entry |
 | **C5** | The fill on arrival behind the preview and its slice (full speed, block by block, heavy I/O), the zoom into the app, the pause on leaving, the card-missing case | bench: four apps cycled through a pool that holds three; leaving mid-fill; a card pulled mid-fill |
 | **C6** | The hub: "in the pool / on the card only" on the Themes page | the hub's lists still parse |
@@ -210,6 +221,83 @@ held (20 fps), 1 s windows from the dial bench:
   of ~33, the paced fills at 5-9 fps (20 ms) and 3-6 fps (1 ms). Each cache miss suspends
   and resumes the operation, so the operation stretches and the frame waits on it.
   Reverted; Bronze is back on the build without it.
+
+### C3 — sound off the glass (2026-11-08, Bronze)
+
+- **The voice bank** (`main/art/orb_voice.c`): a 32 B head, a 24 B record a sound, the PCM or
+  ADPCM after, everything addressed from the bank's start; `orb_voice_parse` is the one gate
+  between a bank's bytes and the mixer. `tools/host_voice_test.py`: a bank round-trips; 14
+  malformed ones refused by name; the builder refuses what the parser would (bytes that are
+  not a sound's samples', none, more than 16, over 1 MB); 20,000 random corruptions, none
+  parsed into a sound past its bytes; 10 of 10 mutants.
+- **The store:** its verdict hands back the projection's sound table (`clock3_verdict_ex`);
+  the fit counts the bank beside the display entry, and a theme whose sounds pass 1 MB is
+  refused by name. After the display entry is committed, `store_voice` reserves the bank
+  (display entries lifted, this app's never evicted), copies each sound out of the entry
+  just written, flash to flash, and commits it; a theme with no sounds drops the old bank.
+  The store stops every voice before its unmap: the voice banks are what it moves.
+- **Boot** maps [0, the voice banks' end) once and keeps it, checks each bank against its
+  entry's CRCs through the mapping, and lists it by app (`orb_theme_voice`). A theme with
+  sounds and no bank from the same file does not bind (ruling 8), at boot or at a bind.
+- **Playback:** every sound door answers from the calling app's voice bank, gated on the
+  bank, not on the stage: `stage_sound`, `stage_snd_ready/play/play_v`, and the svc
+  `sound_play` by slot (which had read through the display mapping). Stop, active and
+  reanchor act on the app's own voices. The display remap no longer stops voices (D39's
+  stop retired), nor does a stage release or an app's suspend (D39's "an app behind the
+  dial makes no sound", overruled by ruling 6): both stop the app's leased voices alone.
+- **Leases by owner:** `orb_sound_lease_renew(owner)`; a leased voice lapses when its
+  owner is not the app the stage is ticking. Only a loop is leased.
+- **The clock** (v1.2.30) runs its sound policy from `orb_service` on wall time when it is
+  off the glass, chimes and strikes alone (the tick loop and the hands' jumps stay with the
+  visible dial).
+- **The engine logs each voice** (its start, and how it ended: played out, lapsed, quiet
+  hours), the evidence below.
+- **Bronze:** Skeleton stored with its bank (the table read over USB: the clock's voice bank
+  868 KB at 0, the display entries lifted after it). Bronze's clock runs 23 s behind the
+  host's. At its 20:30 the half chime was started by the clock's service with weather on the
+  glass and played out (8,452 ms). At 20:45 the Q3 chime was cut 2.5 s in by the switch to
+  weather (the owner heard it): the suspend's stop-everything, fixed above. At 21:00, the
+  hour chime and its nine strikes, queued with the clock on the glass and switched to
+  weather 3 s in: every one played (the owner: "every gong and the chime played while
+  swapping onto the weather app").
+- **Still owed:** a per-app cap on the engine's 16 voices (a background app queueing many
+  strikes could crowd out the app on the glass), and the alerts design's arbitration
+  between apps (§55); the flights, weather and radar themes ship no sounds, so they have
+  none to play yet.
+
+### C2 — the table's format 2 (2026-11-08)
+
+- **The table:** an entry is 132 B, format 1's 128 and its kind (`ORB_POOL_DISPLAY`,
+  `ORB_POOL_VOICE`); sixteen entries (32 B head + 16 × 132 B, one sector). A format 1 table
+  still decodes, its entries display entries, and the next table write is format 2: the
+  carry is that write, nothing more. Decode refuses a voice bank after a display entry, two
+  entries of one kind for an app, and a kind it does not know.
+- **The code:** `orb_pool_find` keeps its meaning (an app's display entry), so every
+  firmware caller is unchanged; `orb_pool_find_kind`, `orb_pool_remove_kind`,
+  `orb_pool_voice_end`, `orb_pool_evictions_kind`, and `orb_pool_reserve_voice`, which
+  evicts display entries if it must, drops the app's old voice bank, compacts, then lifts
+  every display entry by the new bank's size, the last first. `move_entry` copies
+  descending for a move up, ascending for a move down. `orb_pool_commit` places either kind.
+  The firmware's two entry builders (a store, the one-slot carry) mark a display entry; boot's
+  fallback and the themes listing pass over voice banks.
+- **The promise under cuts:** no voice bank but the one being stored is ever lost. A display
+  entry may be: a voice bank's store lifts the display entries over themselves, and a cut
+  in a lift plus a second in the repair's compaction can cost two display entries, which the
+  cache refills from the card. Every other operation keeps the pool's old bound of one.
+- **Host suite:** the carry (a format 1 table read, written back as format 2), voice banks
+  first and lifted display entries intact, a voice bank never evicted (a display fill that
+  would need one out is refused, flash untouched), display work that never moves a voice
+  bank, a voice bank's store that evicts the least recent display entry, a voice bank
+  replaced; a cut at every one of a voice bank store's 1,574 steps, each again in its repair,
+  with the clock's voice bank already in the pool: no voice bank lost, at most two display
+  entries. Four new mutants (never evicted, voice banks first, the descending lift, the
+  format 1 carry) beside the copy's direction rewritten for the two-way loop.
+- **Bronze:** the build read its format 1 table (both themes bound, the radar's 17 rows);
+  re-storing flights' Blueprint wrote format 2, read back over USB with esptool: both copies
+  format 2, the live one (serial 100) the radar's Scope at 0 and flights' Blueprint after it,
+  display entries.
+- **A downgrade** to a firmware before format 2 reads no table ("a pool table of another
+  format") and boots every app bare until a store; the themes are on the card.
 
 ### C1 — the eviction (2026-11-08)
 

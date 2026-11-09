@@ -965,7 +965,7 @@ def install_lint():
         print("FAIL orb_theme_install_bundle(): no header erase — the commit that makes a "
               "slot live has gone missing along with the discipline around it"); rc = 1
     for need in ("card_open_verified_id3(", "orb_bundle_parse_region(",
-                 "clock3_verdict(", "copy_bundle3("):
+                 "clock3_verdict", "copy_bundle3("):   # clock3_verdict( or _ex(: the sounds' too
         at = body.find(need)
         if at < 0:
             print("FAIL orb_theme_install_bundle(): never calls %s — it can commit a slot "

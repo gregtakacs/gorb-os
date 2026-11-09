@@ -1749,7 +1749,7 @@ static void compose_now(void)
     /* The app's frame: it poses every row and sets every complication off this one
      * reading. Its voices are leased, so renewing here is what keeps them sounding
      * exactly as long as the dial keeps ticking. */
-    if (orb_sound_ready()) orb_sound_lease_renew();
+    if (orb_sound_ready()) orb_sound_lease_renew(s_lay_app);   /* the bound app's loops alone */
     if (s_lay_app) orb_wasm_tick(s_lay_app, lv_tick_get());
 #if CONFIG_ORB_DEBUG_HTTP
     live_bench_step();
@@ -2670,7 +2670,9 @@ static void stage_release(void)
 {
     if (!s_opened) return;
     stage_run(false);                              /* frames and voices parked */
-    orb_sound_stop_all();
+    /* theme-cache-plan §2.6: its loops stop with the glass; its one-shots play on, from its
+     * voice bank, which no bind moves */
+    if (s_lay_app) orb_sound_stop_leased(s_lay_app);
     if (!s_base) {
         const orb_svc_t *svc = orb_svc_table();
         if (s_lay_app && orb_svc_layers_live(s_lay_app) > 0)
@@ -3169,7 +3171,7 @@ void stage_comp_set(int i, int32_t value, bool live)
  * frame, not a stream of refusals. */
 int stage_snd_play(int i, uint32_t flags, int64_t at_us, int64_t anchor_us)
 {
-    return stage_snd_play_v(i, flags, at_us, anchor_us, 100);
+    return stage_snd_play_v(s_lay_app, i, flags, at_us, anchor_us, 100);
 }
 
 /* §59: the same, at the app's own level for this voice (the clock's tick and chime
@@ -3183,15 +3185,19 @@ uint16_t stage_snd_gain(int vol)
     return (uint16_t)(ORB_SOUND_GAIN_1 * powf(10.0f, -(float)(100 - vol) * 0.5f / 20.0f) + 0.5f);
 }
 
-int stage_snd_play_v(int i, uint32_t flags, int64_t at_us, int64_t anchor_us, int vol)
+/* theme-cache-plan §2.6: from the app's voice bank, mapped from boot, so it plays whatever is
+ * on the glass. A loop is leased to the app's ticks on the glass (the ticking stops when it
+ * leaves); a one-shot is not (a chime plays to its end, and may start off the glass). */
+int stage_snd_play_v(orb_app_t *app, int i, uint32_t flags, int64_t at_us, int64_t anchor_us, int vol)
 {
-    if (!s_lay_app || !(orb_svc_grants(s_lay_app) & (1u << CAP_SOUND))) return -1;
-    uint32_t n = 0;
-    uint8_t pat;
-    const clk_sound_t *t = stage_sounds(&n, &pat);
-    if (!t || i < 0 || (uint32_t)i >= n) return -1;
-    const uint32_t f = ORB_SOUND_LEASED | (flags & (ORB_SOUND_LOOP | ORB_SOUND_ANCHORED |
-                                                    ORB_SOUND_ASKED));
-    return orb_sound_play_enc(s_lay_app, blob() + t[i].pcm_off, t[i].n, t[i].enc,
+    if (!app || !(orb_svc_grants(app) & (1u << CAP_SOUND))) return -1;
+    const uint8_t *bank = NULL;
+    const orb_voice_t *vb = orb_theme_voice(app->slug, &bank);
+    if (!vb || !bank || i < 0 || (uint32_t)i >= vb->n) return -1;
+    const clk_sound_t *t = &vb->s[i];
+    const bool loop = (flags & ORB_SOUND_LOOP) || (t->flags & CLK_SND_F_LOOP);
+    const uint32_t f = (loop ? ORB_SOUND_LEASED : 0u) |
+                       (flags & (ORB_SOUND_LOOP | ORB_SOUND_ANCHORED | ORB_SOUND_ASKED));
+    return orb_sound_play_enc(app, bank + t->pcm_off, t->n, t->enc,
                               stage_snd_gain(vol), f, at_us, anchor_us);
 }

@@ -23,22 +23,26 @@ static uint32_t get32(const uint8_t *p)
 /* The head's words, and an entry's after its two strings. */
 enum { H_MAGIC, H_FORMAT, H_SERIAL, H_N, H_ENTRY_BYTES, H_CRC };
 #define E_WORDS_AT (ORB_POOL_SLUG_MAX + ORB_POOL_NAME_MAX)
-_Static_assert(E_WORDS_AT + 12 * 4 <= ORB_POOL_ENTRY_BYTES, "an entry's words must fit its record");
+#define E_WORDS    13                       /* format 2: format 1's twelve and the kind */
+#define E_WORDS_F1 12
+_Static_assert(E_WORDS_AT + E_WORDS * 4 <= ORB_POOL_ENTRY_BYTES, "an entry's words must fit its record");
+_Static_assert(E_WORDS_AT + E_WORDS_F1 * 4 <= ORB_POOL_ENTRY_BYTES_F1, "format 1's words fit its record");
+_Static_assert(ORB_POOL_HEAD_BYTES + ORB_POOL_ENTRIES * ORB_POOL_ENTRY_BYTES <= ORB_POOL_SECTOR,
+               "the table is one sector");
 
 static uint32_t *entry_word(orb_pool_entry_t *e, int k)
 {
     uint32_t *w[] = { &e->off, &e->size, &e->base, &e->geom_size, &e->geom_crc,
                       &e->art_off, &e->art_size, &e->art_crc, &e->file_crc, &e->serial,
-                      &e->state, &e->abi };
+                      &e->state, &e->abi, &e->kind };
     return w[k];
 }
-#define E_WORDS 12
 
 /* The CRC over a table's used bytes with its own CRC word read as zero. */
-static uint32_t table_crc(const uint8_t *t, uint32_t n)
+static uint32_t table_crc(const uint8_t *t, uint32_t n, uint32_t width)
 {
     static const uint8_t zero[4] = { 0 };
-    const uint32_t used = ORB_POOL_HEAD_BYTES + n * ORB_POOL_ENTRY_BYTES;
+    const uint32_t used = ORB_POOL_HEAD_BYTES + n * width;
     uint32_t c = esp_rom_crc32_le(0, t, H_CRC * 4u);
     c = esp_rom_crc32_le(c, zero, 4u);
     return esp_rom_crc32_le(c, t + (H_CRC + 1) * 4u, used - (H_CRC + 1) * 4u);
@@ -59,7 +63,8 @@ void orb_pool_encode(const orb_pool_t *p, uint8_t out[ORB_POOL_SECTOR])
         memcpy(r + ORB_POOL_SLUG_MAX, e.name, ORB_POOL_NAME_MAX);
         for (int k = 0; k < E_WORDS; k++) put32(r + E_WORDS_AT + 4 * k, *entry_word(&e, k));
     }
-    put32(out + H_CRC * 4, table_crc(out, p->n < ORB_POOL_ENTRIES ? p->n : ORB_POOL_ENTRIES));
+    put32(out + H_CRC * 4, table_crc(out, p->n < ORB_POOL_ENTRIES ? p->n : ORB_POOL_ENTRIES,
+                                     ORB_POOL_ENTRY_BYTES));
 }
 
 static bool str_ok(const char *s, size_t cap, bool need)
@@ -73,24 +78,31 @@ const char *orb_pool_decode(const uint8_t *in, size_t len, orb_pool_t *out)
     memset(out, 0, sizeof *out);
     if (len < ORB_POOL_SECTOR) return "a table is one sector";
     if (get32(in + H_MAGIC * 4) != ORB_POOL_MAGIC) return "no pool table here";
-    if (get32(in + H_FORMAT * 4) != ORB_POOL_FORMAT) return "a pool table of another format";
+    const uint32_t fmt = get32(in + H_FORMAT * 4);
+    if (fmt != ORB_POOL_FORMAT && fmt != 1u) return "a pool table of another format";
+    const bool f1 = fmt == 1u;                    /* §2.6's carry: read, written back as 2 */
+    const uint32_t width = f1 ? ORB_POOL_ENTRY_BYTES_F1 : ORB_POOL_ENTRY_BYTES;
     const uint32_t n = get32(in + H_N * 4);
-    if (n > ORB_POOL_ENTRIES) return "more entries than the pool holds";
-    if (get32(in + H_ENTRY_BYTES * 4) != ORB_POOL_ENTRY_BYTES) return "entries of another width";
-    if (get32(in + H_CRC * 4) != table_crc(in, n)) return "the table's CRC is wrong";
+    if (n > (f1 ? ORB_POOL_ENTRIES_F1 : ORB_POOL_ENTRIES)) return "more entries than the pool holds";
+    if (get32(in + H_ENTRY_BYTES * 4) != width) return "entries of another width";
+    if (get32(in + H_CRC * 4) != table_crc(in, n, width)) return "the table's CRC is wrong";
     out->serial = get32(in + H_SERIAL * 4);
     out->n = n;
     uint32_t end = ORB_POOL_FIRST;
     for (uint32_t i = 0; i < n; i++) {
-        const uint8_t *r = in + ORB_POOL_HEAD_BYTES + i * ORB_POOL_ENTRY_BYTES;
+        const uint8_t *r = in + ORB_POOL_HEAD_BYTES + i * width;
         orb_pool_entry_t *e = &out->e[i];
         memcpy(e->slug, r, ORB_POOL_SLUG_MAX);
         memcpy(e->name, r + ORB_POOL_SLUG_MAX, ORB_POOL_NAME_MAX);
-        for (int k = 0; k < E_WORDS; k++) *entry_word(e, k) = get32(r + E_WORDS_AT + 4 * k);
+        for (int k = 0; k < (f1 ? E_WORDS_F1 : E_WORDS); k++) *entry_word(e, k) = get32(r + E_WORDS_AT + 4 * k);
+        if (f1) e->kind = ORB_POOL_DISPLAY;
         if (!str_ok(e->slug, ORB_POOL_SLUG_MAX, true)) return "an entry with no app";
         if (!str_ok(e->name, ORB_POOL_NAME_MAX, false)) return "an entry's name runs on";
+        if (e->kind != ORB_POOL_DISPLAY && e->kind != ORB_POOL_VOICE) return "an entry of no known kind";
+        if (i && e->kind == ORB_POOL_VOICE && out->e[i - 1].kind == ORB_POOL_DISPLAY)
+            return "a voice bank after a display entry";
         for (uint32_t j = 0; j < i; j++)
-            if (!strcmp(out->e[j].slug, e->slug)) return "two entries for one app";
+            if (!strcmp(out->e[j].slug, e->slug) && out->e[j].kind == e->kind) return "two entries of a kind for one app";
         if (e->state != ORB_POOL_LIVE && e->state != ORB_POOL_MOVING)
             return "an entry in no known state";
         if (e->off % ORB_POOL_SECTOR || e->size % ORB_POOL_SECTOR || !e->size)
@@ -120,11 +132,23 @@ uint32_t orb_pool_used_end(const orb_pool_t *p)
     return p->n ? p->e[p->n - 1].off + p->e[p->n - 1].size : ORB_POOL_FIRST;
 }
 
-int orb_pool_find(const orb_pool_t *p, const char *slug)
+int orb_pool_find_kind(const orb_pool_t *p, const char *slug, uint32_t kind)
 {
     for (uint32_t i = 0; i < p->n; i++)
-        if (!strncmp(p->e[i].slug, slug, ORB_POOL_SLUG_MAX)) return (int)i;
+        if (p->e[i].kind == kind && !strncmp(p->e[i].slug, slug, ORB_POOL_SLUG_MAX)) return (int)i;
     return -1;
+}
+
+int orb_pool_find(const orb_pool_t *p, const char *slug)
+{
+    return orb_pool_find_kind(p, slug, ORB_POOL_DISPLAY);
+}
+
+uint32_t orb_pool_voice_end(const orb_pool_t *p)
+{
+    uint32_t end = ORB_POOL_FIRST;
+    for (uint32_t i = 0; i < p->n && p->e[i].kind == ORB_POOL_VOICE; i++) end = p->e[i].off + p->e[i].size;
+    return end;
 }
 
 uint32_t orb_pool_round(uint32_t n)
@@ -187,9 +211,9 @@ int orb_pool_write(const orb_pool_io_t *io, orb_pool_t *p, int *which)
     return 0;
 }
 
-/* Entry k down to dst: MOVING, the bytes sector by sector in ascending order (so an
- * overlapping move downward never erases a sector it has not copied), read back
- * against its CRCs, then LIVE at dst. */
+/* Entry k to dst: MOVING, the bytes sector by sector, ascending for a move down and
+ * descending for a move up (so an overlapping move never erases a sector it has not
+ * copied), read back against its CRCs, then LIVE at dst. */
 static int move_entry(const orb_pool_io_t *io, orb_pool_t *p, int *which, uint32_t k,
                       uint32_t dst)
 {
@@ -198,12 +222,14 @@ static int move_entry(const orb_pool_io_t *io, orb_pool_t *p, int *which, uint32
     e->state = ORB_POOL_MOVING;
     int r = orb_pool_write(io, p, which);
     if (r) return r;
-    for (uint32_t o = 0; o < e->size; o += ORB_POOL_SECTOR) {
+    const bool up = dst > src;
+    for (uint32_t i = 0; i < e->size; i += ORB_POOL_SECTOR) {
+        const uint32_t o = up ? e->size - ORB_POOL_SECTOR - i : i;
         if ((r = io->read(io->ctx, src + o, io->buf, ORB_POOL_SECTOR)) ||
             (r = io->erase(io->ctx, dst + o, ORB_POOL_SECTOR)) ||
             (r = io->write(io->ctx, dst + o, io->buf, ORB_POOL_SECTOR)))
             return r;
-        if (io->progress) io->progress(io->ctx, o + ORB_POOL_SECTOR, e->size);
+        if (io->progress) io->progress(io->ctx, i + ORB_POOL_SECTOR, e->size);
     }
     uint32_t gc, ac;
     if ((r = orb_pool_crc(io, dst, e->geom_size, &gc)) ||
@@ -262,7 +288,13 @@ int orb_pool_repair(const orb_pool_io_t *io, orb_pool_t *p, int *which)
 
 int orb_pool_remove(const orb_pool_io_t *io, orb_pool_t *p, int *which, const char *slug)
 {
-    const int k = orb_pool_find(p, slug);
+    return orb_pool_remove_kind(io, p, which, slug, ORB_POOL_DISPLAY);
+}
+
+int orb_pool_remove_kind(const orb_pool_io_t *io, orb_pool_t *p, int *which, const char *slug,
+                         uint32_t kind)
+{
+    const int k = orb_pool_find_kind(p, slug, kind);
     if (k >= 0) {
         drop(p, (uint32_t)k);
         const int r = orb_pool_write(io, p, which);
@@ -298,13 +330,20 @@ int orb_pool_evictions(const orb_pool_t *p, const char *slug, uint32_t size,
                        const char *const *order, uint32_t n_order, const char *keep,
                        uint32_t *mask)
 {
+    return orb_pool_evictions_kind(p, slug, ORB_POOL_DISPLAY, size, order, n_order, keep, mask);
+}
+
+int orb_pool_evictions_kind(const orb_pool_t *p, const char *slug, uint32_t kind, uint32_t size,
+                            const char *const *order, uint32_t n_order, const char *keep,
+                            uint32_t *mask)
+{
     *mask = 0;
     if (!size || !slug) return ORB_POOL_ERR_ARG;
     uint64_t total = orb_pool_round(size);
     uint32_t count = 1;                              /* the new entry */
     int rank[ORB_POOL_ENTRIES];
     for (uint32_t k = 0; k < p->n; k++) {
-        if (!strcmp(p->e[k].slug, slug)) { *mask |= 1u << k; rank[k] = -2; continue; }   /* its own old */
+        if (p->e[k].kind == kind && !strcmp(p->e[k].slug, slug)) { *mask |= 1u << k; rank[k] = -2; continue; }   /* its own old */
         total += p->e[k].size;
         count++;
         rank[k] = -1;                                /* not named: older than any named */
@@ -316,6 +355,7 @@ int orb_pool_evictions(const orb_pool_t *p, const char *slug, uint32_t size,
         int pick = -1;
         for (uint32_t k = 0; k < p->n; k++) {
             if ((*mask >> k) & 1u) continue;
+            if (p->e[k].kind != ORB_POOL_DISPLAY) continue;          /* a voice bank is never evicted */
             if (keep && !strcmp(p->e[k].slug, keep)) continue;
             if (pick < 0 || rank[k] < rank[pick]) pick = (int)k;
         }
@@ -327,19 +367,19 @@ int orb_pool_evictions(const orb_pool_t *p, const char *slug, uint32_t size,
     return 0;
 }
 
-int orb_pool_reserve_lru(const orb_pool_io_t *io, orb_pool_t *p, int *which,
-                         const char *slug, uint32_t size,
-                         const char *const *order, uint32_t n_order, const char *keep,
-                         uint32_t *at, char (*evicted)[ORB_POOL_SLUG_MAX], uint32_t *n_evicted)
+/* Drop what orb_pool_evictions_kind chose, in one table write, then compact. */
+static int evict(const orb_pool_io_t *io, orb_pool_t *p, int *which, const char *slug,
+                 uint32_t kind, uint32_t size, const char *const *order, uint32_t n_order,
+                 const char *keep, char (*evicted)[ORB_POOL_SLUG_MAX], uint32_t *n_evicted)
 {
     uint32_t mask;
     if (n_evicted) *n_evicted = 0;
-    const int f = orb_pool_evictions(p, slug, size, order, n_order, keep, &mask);
+    const int f = orb_pool_evictions_kind(p, slug, kind, size, order, n_order, keep, &mask);
     if (f) return f;
     if (mask) {
         for (uint32_t k = p->n; k-- > 0;) {
             if (!((mask >> k) & 1u)) continue;
-            if (n_evicted && strcmp(p->e[k].slug, slug)) {
+            if (n_evicted && (p->e[k].kind != kind || strcmp(p->e[k].slug, slug))) {
                 if (evicted) memcpy(evicted[*n_evicted], p->e[k].slug, ORB_POOL_SLUG_MAX);
                 (*n_evicted)++;
             }
@@ -348,22 +388,65 @@ int orb_pool_reserve_lru(const orb_pool_io_t *io, orb_pool_t *p, int *which,
         const int r = orb_pool_write(io, p, which);  /* every eviction in one table write */
         if (r) return r;
     }
-    const int r = orb_pool_compact(io, p, which);
+    return orb_pool_compact(io, p, which);
+}
+
+int orb_pool_reserve_lru(const orb_pool_io_t *io, orb_pool_t *p, int *which,
+                         const char *slug, uint32_t size,
+                         const char *const *order, uint32_t n_order, const char *keep,
+                         uint32_t *at, char (*evicted)[ORB_POOL_SLUG_MAX], uint32_t *n_evicted)
+{
+    const int r = evict(io, p, which, slug, ORB_POOL_DISPLAY, size, order, n_order, keep,
+                        evicted, n_evicted);
     if (r) return r;
     *at = orb_pool_used_end(p);
+    return 0;
+}
+
+int orb_pool_reserve_voice(const orb_pool_io_t *io, orb_pool_t *p, int *which,
+                           const char *slug, uint32_t size,
+                           const char *const *order, uint32_t n_order, const char *keep,
+                           uint32_t *at, char (*evicted)[ORB_POOL_SLUG_MAX], uint32_t *n_evicted)
+{
+    int r = evict(io, p, which, slug, ORB_POOL_VOICE, size, order, n_order, keep,
+                  evicted, n_evicted);
+    if (r) return r;
+    /* the gap at the voice banks' end: every display entry lifted by the new bank's size,
+     * the last first, each copied from its end down (move_entry), so none overwrites
+     * another before it has moved */
+    const uint32_t lift = orb_pool_round(size);
+    for (uint32_t k = p->n; k-- > 0 && p->e[k].kind == ORB_POOL_DISPLAY;)
+        if ((r = move_entry(io, p, which, k, p->e[k].off + lift))) return r;
+    *at = orb_pool_voice_end(p);
     return 0;
 }
 
 int orb_pool_commit(const orb_pool_io_t *io, orb_pool_t *p, int *which,
                     const orb_pool_entry_t *e)
 {
-    if (p->n >= ORB_POOL_ENTRIES || orb_pool_find(p, e->slug) >= 0 ||
-        e->off != orb_pool_used_end(p))
+    if (p->n >= ORB_POOL_ENTRIES || orb_pool_find_kind(p, e->slug, e->kind) >= 0) return ORB_POOL_ERR_ARG;
+    /* where it goes: a display entry last, at the run's end; a voice bank after the others,
+     * at their end, where the reserve opened its gap */
+    uint32_t at = 0;
+    if (e->kind == ORB_POOL_DISPLAY) {
+        at = p->n;
+        if (e->off != orb_pool_used_end(p)) return ORB_POOL_ERR_ARG;
+    } else if (e->kind == ORB_POOL_VOICE) {
+        while (at < p->n && p->e[at].kind == ORB_POOL_VOICE) at++;
+        if (e->off != orb_pool_voice_end(p) ||
+            (at < p->n && p->e[at].off < e->off + e->size)) return ORB_POOL_ERR_ARG;
+    } else {
         return ORB_POOL_ERR_ARG;
-    p->e[p->n] = *e;
-    p->e[p->n].state = ORB_POOL_LIVE;
+    }
+    memmove(&p->e[at + 1], &p->e[at], (p->n - at) * sizeof p->e[0]);
+    p->e[at] = *e;
+    p->e[at].state = ORB_POOL_LIVE;
     p->n++;
     const int r = orb_pool_write(io, p, which);
-    if (r) { p->n--; memset(&p->e[p->n], 0, sizeof p->e[0]); }
+    if (r) {
+        p->n--;
+        memmove(&p->e[at], &p->e[at + 1], (p->n - at) * sizeof p->e[0]);
+        memset(&p->e[p->n], 0, sizeof p->e[0]);
+    }
     return r;
 }

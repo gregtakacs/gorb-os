@@ -48,6 +48,7 @@ typedef struct {
     uint16_t gain;
     uint8_t  flags;
     uint8_t  state;            /* 0 free, 1 queued, 2 sounding */
+    int64_t  began_us;         /* when it started sounding: its end's line says for how long */
 } voice_t;
 
 static i2s_chan_handle_t s_tx;
@@ -78,6 +79,7 @@ static volatile bool s_running;
 static volatile bool s_pa;
 static uint32_t s_blocks, s_started, s_nudges, s_snaps;
 static volatile int64_t s_lease_us;
+static const void *volatile s_lease_owner;   /* theme-cache-plan §2.6: whose leases the renewals keep */
 static int32_t  s_loop_err;
 
 static bool on_sent(i2s_chan_handle_t h, i2s_event_data_t *ev, void *ctx)
@@ -170,13 +172,19 @@ static int mix_block(int16_t *out, int64_t t_us)
     const bool lapsed = esp_timer_get_time() - s_lease_us > LEASE_US;
     const bool quiet = orb_sound_quiet_now();
     int alive = 0;
+    /* theme-cache-plan §2.6's evidence: each voice's end, said after the lock */
+    struct { int id; char why; uint32_t ms; } ended[VOICES];
+    int n_end = 0;
+#define END(v_, c_) do { if (n_end < VOICES) { ended[n_end].id = (v_)->id; ended[n_end].why = (c_); \
+        ended[n_end].ms = (v_)->began_us ? (uint32_t)((esp_timer_get_time() - (v_)->began_us) / 1000) : 0; n_end++; } \
+        (v_)->state = 0; } while (0)
 
     xSemaphoreTake(s_mx, portMAX_DELAY);
     for (int k = 0; k < VOICES; k++) {
         voice_t *v = &s_v[k];
         if (!v->state) continue;
-        if ((v->flags & ORB_SOUND_LEASED) && lapsed) { v->state = 0; continue; }
-        if (quiet && !(v->flags & ORB_SOUND_ASKED)) { v->state = 0; continue; }   /* the OS's quiet hours */
+        if ((v->flags & ORB_SOUND_LEASED) && (lapsed || v->owner != s_lease_owner)) { END(v, 'l'); continue; }
+        if (quiet && !(v->flags & ORB_SOUND_ASKED)) { END(v, 'q'); continue; }   /* the OS's quiet hours */
         uint32_t i0 = 0;
         const bool anchored = (v->flags & ORB_SOUND_ANCHORED) != 0;
         if (v->state == 1) {
@@ -188,6 +196,7 @@ static int mix_block(int16_t *out, int64_t t_us)
                 i0 = d > 0 ? (uint32_t)d : 0;                    /* late: start now */
             }
             v->state = 2;
+            v->began_us = esp_timer_get_time();
             s_started++;
         } else if (anchored) {
             const uint32_t want = loop_phase(v, t_us, off_us);
@@ -213,10 +222,15 @@ static int mix_block(int16_t *out, int64_t t_us)
                 else { done = true; break; }
             }
         }
-        if (done) v->state = 0;
+        if (done) END(v, 'p');
         else alive++;
     }
     xSemaphoreGive(s_mx);
+#undef END
+    for (int i = 0; i < n_end; i++)
+        ESP_LOGI(TAG, "voice %d %s after %u ms", ended[i].id,
+                 ended[i].why == 'p' ? "played out" : ended[i].why == 'l' ? "lapsed (its app left the glass)"
+                                                     : "silenced (quiet hours)", (unsigned)ended[i].ms);
 
     for (uint32_t i = 0; i < BLOCK; i++) {
         const int32_t s = acc[i];
@@ -319,12 +333,15 @@ int orb_sound_play_enc(const void *owner, const void *data, uint32_t n, uint8_t 
         v->data = data; v->n = n; v->pos = 0; v->enc = enc; v->cblk = 0;
         v->at_us = at_us; v->anchor_us = anchor_us;
         v->gain = gain_q12; v->flags = (uint8_t)flags; v->state = 1;
+        v->began_us = 0;
         v->id = id = s_next_id++;
         if (s_next_id <= 0) s_next_id = 1;
         break;
     }
     xSemaphoreGive(s_mx);
     if (id > 0) xTaskNotifyGive(s_task);
+    if (id > 0) ESP_LOGI(TAG, "voice %d: %u samples%s%s", id, (unsigned)n,
+                         flags & ORB_SOUND_LOOP ? ", a loop" : "", flags & ORB_SOUND_LEASED ? ", leased" : "");
     return id;
 }
 
@@ -398,7 +415,20 @@ void orb_sound_reanchor(int handle, int64_t anchor_us)
     xSemaphoreGive(s_mx);
 }
 
-void orb_sound_lease_renew(void) { s_lease_us = esp_timer_get_time(); }
+void orb_sound_lease_renew(const void *owner)
+{
+    s_lease_owner = owner;
+    s_lease_us = esp_timer_get_time();
+}
+
+void orb_sound_stop_leased(const void *owner)
+{
+    if (!s_ready || !owner) return;
+    xSemaphoreTake(s_mx, portMAX_DELAY);
+    for (int k = 0; k < VOICES; k++)
+        if (s_v[k].state && s_v[k].owner == owner && (s_v[k].flags & ORB_SOUND_LEASED)) s_v[k].state = 0;
+    xSemaphoreGive(s_mx);
+}
 
 bool orb_sound_ready(void) { return s_ready; }
 

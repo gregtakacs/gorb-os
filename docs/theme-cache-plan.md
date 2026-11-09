@@ -183,7 +183,7 @@ carries is read off the glass (its values blob draws; the preview is the card's)
 | **C2** | The table's format 2 (an entry's kind, voice or display; sixteen entries; the carry from format 1); voice banks packed first, never moved by an eviction | `host_pool_test.py`: the carry, evictions that never take or move a voice bank, a cut at every step of a voice bank's store — **built 2026-11-08** (§6) |
 | **C3** | Sound off the glass: a store writes the voice bank (≤ 1 MB), boot maps every voice bank, a bind no longer stops voices, one-shots unleased and loops leased to the glass, a sound import that needs no stage; the clock chimes from its service | bench: the clock chiming through a switch to weather, and on the hour with weather on the glass; the tick stopping when the clock leaves — **built and benched on Bronze 2026-11-08** (§6) |
 | **C4** | The choice record (NVS), the last-on-glass order, stores that make room instead of refusing, the shelf's budgets per theme | bench: a theme stored into a full pool evicts the least recent display entry — **built and benched on Bronze 2026-11-08** (§6) |
-| **C5** | The fill on arrival behind the preview and its slice (full speed, block by block, heavy I/O), the zoom into the app, the pause on leaving, the card-missing case | bench: four apps cycled through a pool that holds three; leaving mid-fill; a card pulled mid-fill — **C5a, the engine, C5b, the face and the pause, C5c, the card file followed, built 2026-11-08** (§6); a card pulled mid-fill not benched (needs hands) |
+| **C5** | The fill on arrival behind the preview and its slice (full speed, block by block, heavy I/O), the zoom into the app, the pause on leaving, the card-missing case | bench: four apps cycled through a pool that holds three; leaving mid-fill; a card pulled mid-fill — **C5a, the engine, C5b, the face and the pause, C5c, the card file followed, built 2026-11-08** (§6); a card pulled mid-fill benched by the owner 2026-11-09 (§6) |
 | **C6** | The hub: "in the pool / on the card only" on the Themes page | the hub's lists still parse — **built 2026-11-09** (§6) |
 
 ## 5. Open
@@ -260,7 +260,8 @@ held (20 fps), 1 s windows from the dial bench:
   dead handle, so every read timed out (0x107) until a reboot. A mounted card is now asked
   its status (`sdmmc_get_status`) at most every 2 s when a caller asks for the mount; one
   that does not answer is unmounted and mounted afresh at once. The remount counts as a
-  mount, so the reconcile runs again. Not yet re-benched by hand.
+  mount, so the reconcile runs again. **Re-benched by the owner the same day: passed** (a
+  pull mid-fill, the card back, radar's theme back without a reboot, the carousel over radar).
 - **The carousel had fallen back to the text list:** with radar on the glass PSRAM held
   295 KB and the carousel's 434 KB snapshot would not come. The carousel now opens without
   the snapshot when it must (its zoom starts from the app's preview), allocates its name

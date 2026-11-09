@@ -184,7 +184,7 @@ carries is read off the glass (its values blob draws; the preview is the card's)
 | **C3** | Sound off the glass: a store writes the voice bank (≤ 1 MB), boot maps every voice bank, a bind no longer stops voices, one-shots unleased and loops leased to the glass, a sound import that needs no stage; the clock chimes from its service | bench: the clock chiming through a switch to weather, and on the hour with weather on the glass; the tick stopping when the clock leaves — **built and benched on Bronze 2026-11-08** (§6) |
 | **C4** | The choice record (NVS), the last-on-glass order, stores that make room instead of refusing, the shelf's budgets per theme | bench: a theme stored into a full pool evicts the least recent display entry — **built and benched on Bronze 2026-11-08** (§6) |
 | **C5** | The fill on arrival behind the preview and its slice (full speed, block by block, heavy I/O), the zoom into the app, the pause on leaving, the card-missing case | bench: four apps cycled through a pool that holds three; leaving mid-fill; a card pulled mid-fill — **C5a, the engine, C5b, the face and the pause, C5c, the card file followed, built 2026-11-08** (§6); a card pulled mid-fill benched by the owner 2026-11-09 (§6) |
-| **C7** | Scattered pages (§4.1): no entry ever moves | host_pool_test format 3; Bronze: four apps through the pool with no move, a fill that makes a voice bank, the carry from format 2 |
+| **C7** | Scattered pages (§4.1): no entry ever moves | host_pool_test format 3; Bronze: four apps through the pool with no move, a fill that makes a voice bank, the carry from format 2 — **built and benched on Bronze 2026-11-09** (§6) |
 | **C6** | The hub: "in the pool / on the card only" on the Themes page | the hub's lists still parse — **built 2026-11-09** (§6) |
 
 ## 4.1 C7 — scattered pages (owner, 2026-11-09: "do the 64k scattered pages")
@@ -227,6 +227,7 @@ happens only when they are not. No first fit, no compaction, no MOVING state.
 
 ## 5. Open
 
+- **Closed by C7 (§6):** the two items below.
 - **An arrival is mostly moving, not copying** (C5c, §6): evicting an entry in the middle
   of the packed pool moves every entry above it down before the copy starts, ~30 s of a
   40-55 s arrival when Skeleton's 3.4 MB sits above the hole. A fill placed in the hole an
@@ -258,6 +259,45 @@ happens only when they are not. No first fit, no compaction, no MOVING state.
   (`orb_input: [trap] …`), so the next one says what it was.
 
 ## 6. As built
+
+### C7 — scattered pages (2026-11-09, Bronze)
+
+- **The table, format 3** (`orb_pool.c`): 127 pages of 64 KB, a page id per entry and a
+  127-byte page map; reserve answers the lowest free pages after any eviction, commit names
+  them in one table write, a removal frees them in one. No compaction, no MOVING, no repair.
+  `orb_pool_pread/pwrite/perase/pcrc` reach an entry's bytes through its pages.
+  `tools/host_pool_test.py` was rewritten for it: decode refusals by sentence, a format 2
+  table read then reset, bytes across page boundaries landing on their pages and no others,
+  a hole's pages taken with no other entry's flash changed, the eviction rules, commit's
+  refusals, and a cut at every one of the 2,244 steps of a store that evicts two (the old
+  set whole or the new set, the survivor's pages untouched); 17 of 17 mutants caught.
+- **The window** (`orb_pagemap.c`): `esp_mmu_map` of a placeholder run 512 MB up (one 8 MB
+  slot per window, so no placeholder is ever inside another mapped block), then its MMU
+  entries pointed at the entry's pages with the caches off. The display entry binds through
+  one (`art_bank_map_pages`), each voice bank has its own, made at boot or by the fill that
+  made the bank. Always remapped, so the one path is the tested one.
+- **The theme module on pages:** the store, the fill (and its pause mark), the voice bank,
+  the bind ("already bound" is the entry's pages and CRCs now, `s_live_key`, since a refilled
+  theme can land on the same first page), boot, the factory slot's carry. C0's copy bench is
+  retired (it wrote by offset; its figures stand above). A fill makes a voice bank for an app
+  that has none; one made from another file is the reconcile's (a store).
+- **Bronze:**
+  - **The carry:** the first boot found the format 2 table (5 entries), kept every choice,
+    started an empty pool, and the clock filled at boot, its voice bank made by the fill
+    (41 + 11 pages).
+  - **Fills:** weather 6.8 s, radar 9.6 s, flights 6.5 s with nothing evicted (C5c: 39-55 s).
+  - **Skeleton stored over Neon Moon:** 27 s, store to reboot (C5c: ~3 min of "making
+    room"); weather evicted, nothing moved; Skeleton landed on pages 0-40 and 52-65, its
+    voice bank on 41-51 and 66-68, and drew right through the window.
+  - **Four apps through a pool that holds three:** weather 7.0 s, radar 8.3 s, flights
+    6.9 s, the clock 14.4 s (3.4 MB, back on three runs of pages), weather 6.4 s; each
+    evicting the least recently worn, every layer claimed.
+  - **The voice bank on scattered pages:** the quarter chime played out (8.45 s) under a
+    warped clock.
+  - `GET /api/v1/theme_cache` lists each entry's page runs and the pool's free bytes.
+- **Not reliable this session:** the hub-style OTA upload to Bronze failed twice mid-body
+  (once on the old firmware: "upload aborted by client" with the internal DMA RAM short);
+  C7 went on over USB. Watch it.
 
 ### C0 — a fill under a running dial (2026-11-08, Bronze, XMC flash 0x204018)
 

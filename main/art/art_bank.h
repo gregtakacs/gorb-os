@@ -234,6 +234,11 @@ esp_err_t art_bank_fill(size_t offset, size_t need_bytes, bool verify,
  *  Same arguments, same release-and-remap behaviour, same failure codes. */
 esp_err_t art_bank_map(size_t offset, size_t need_bytes);
 
+/** The primary bank from `n` pool pages (partition offsets of 64 KB pages, in the theme's
+ *  byte order) as one window, `need_bytes` of it the theme's (theme-cache-plan §4.1). Always
+ *  maps anew: the previous primary is released first. */
+esp_err_t art_bank_map_pages(const uint32_t *page_off, uint32_t n, size_t need_bytes);
+
 /**
  * Release the primary bank, by whichever mechanism currently holds it, and
  * leave the bank unresident: art_bank_ptr() answers NULL and art_bank_ready()

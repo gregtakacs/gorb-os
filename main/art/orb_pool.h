@@ -1,19 +1,26 @@
 #pragma once
 /**
- * orb_pool — the theme pool's table and its compaction (docs/theme-pool-plan.md §2).
+ * orb_pool — the theme pool's table (docs/theme-pool-plan.md §2, theme-cache-plan.md §4.1).
  *
- * The `assets` partition holds several apps' themes, packed from ORB_POOL_FIRST with no
- * holes, and two copies of a table saying what is where in its last two sectors. This
- * file is the table's format and the only code that moves an entry. It knows nothing of
- * a theme's insides: an entry is an extent with a head at its start (the slot header's
- * sector and the bundle's index, as the one slot laid them out) and a run of banks
- * after it, each with a CRC. Every flash access goes through orb_pool_io_t, so
- * tools/host_pool_test.py drives this exact file over a simulated flash that loses
- * power at every step, and the device drives it over esp_partition.
+ * The `assets` partition holds several apps' themes and, in its last two sectors, two
+ * copies of a table saying what is where. Format 3 (C7, the owner's 2026-11-09 choice):
+ * the pool is ORB_POOL_PAGES whole 64 KB pages (the S3's MMU page), and every entry is a
+ * set of them, wherever they were free. An entry's pages in ascending flash order are its
+ * bytes in order, so its page i is the i-th page it owns. Nothing ever moves: a new entry
+ * is written into free pages no table names, then one table write names them; an eviction
+ * or a removal is one table write that frees pages. A cut at any step leaves the last
+ * table whole and nothing torn (the half-written pages are free space), so there is
+ * nothing to repair.
  *
- * A table write goes to the copy that is not live, so it is atomic: a cut leaves the
- * other copy. An entry is marked MOVING before its bytes move and LIVE at its new
- * offset after they are read back, so a cut costs at most that one entry.
+ * It knows nothing of a theme's insides: an entry is a head (the slot header's sector and
+ * the bundle's index) and a run of banks after it, each with a CRC. Every flash access
+ * goes through orb_pool_io_t, so tools/host_pool_test.py drives this exact file over a
+ * simulated flash that loses power at every step, and the device drives it over
+ * esp_partition.
+ *
+ * A table write goes to the copy that is not live, so it is atomic. Formats 1 and 2 (a
+ * packed pool on the 4 KB grid) still decode, so boot can read what they said, but their
+ * entries are not carried: they do not sit on pages (§4.1's carry).
  */
 
 #include <stdbool.h>
@@ -21,32 +28,37 @@
 #include <stdint.h>
 
 #define ORB_POOL_SECTOR      0x1000u                       /* the erase unit */
+#define ORB_POOL_PAGE        0x10000u                      /* the MMU page: an entry's unit */
 #define ORB_POOL_PART_BYTES  0x800000u                     /* partitions.csv `assets` */
 #define ORB_POOL_FIRST       0x0u                          /* the one slot is entry 0 */
 #define ORB_POOL_TABLE_A     (ORB_POOL_PART_BYTES - 2u * ORB_POOL_SECTOR)
 #define ORB_POOL_TABLE_B     (ORB_POOL_PART_BYTES - 1u * ORB_POOL_SECTOR)
 #define ORB_POOL_END         ORB_POOL_TABLE_A              /* entries stop here */
+#define ORB_POOL_PAGES       (ORB_POOL_END / ORB_POOL_PAGE)   /* 127 whole pages */
+#define ORB_POOL_CAP         (ORB_POOL_PAGES * ORB_POOL_PAGE) /* 8,323,072 B */
 #define ORB_POOL_ENTRIES     16u                           /* theme-cache-plan §2.6: a voice bank and a display entry for each of B5's eight apps */
 #define ORB_POOL_ENTRIES_F1  8u                            /* a format 1 table's */
 #define ORB_POOL_SLUG_MAX    24u                           /* the 23-byte slug rule + NUL */
 #define ORB_POOL_NAME_MAX    56u                           /* the slot header's name */
 #define ORB_POOL_MAGIC       0x4C4F4F50u                   /* "POOL", little-endian */
-#define ORB_POOL_FORMAT      2u                            /* format 1 still reads (§2.6's carry) */
+#define ORB_POOL_FORMAT      3u                            /* formats 1 and 2 decode, not carried */
 #define ORB_POOL_HEAD_BYTES  32u
-#define ORB_POOL_ENTRY_BYTES 132u                          /* format 1's 128 and the kind */
+#define ORB_POOL_ENTRY_BYTES 136u                          /* format 2's 132 and the page id */
+#define ORB_POOL_ENTRY_BYTES_F2 132u
 #define ORB_POOL_ENTRY_BYTES_F1 128u
+#define ORB_POOL_MAP_AT      (ORB_POOL_HEAD_BYTES + ORB_POOL_ENTRIES * ORB_POOL_ENTRY_BYTES)
 
-enum { ORB_POOL_LIVE = 1, ORB_POOL_MOVING = 2 };
+enum { ORB_POOL_LIVE = 1, ORB_POOL_MOVING = 2 };           /* MOVING: formats 1 and 2 only */
 /* An entry's kind (theme-cache-plan §2.6): an app's voice bank, resident while its theme is
- * chosen, or its display entry, the cache's to drop. Voice banks are packed first, display
- * entries after them, so a display entry's eviction or fill never moves a voice bank. A
- * format 1 table's entries are display entries. */
+ * chosen, or its display entry, the cache's to drop. A format 1 table's entries are display
+ * entries. */
 enum { ORB_POOL_DISPLAY = 1, ORB_POOL_VOICE = 2 };
 
-/* One app's theme in the pool. Its head (header sector and index) is [off, off +
- * geom_size); its banks are [off + art_off, off + art_off + art_size). The index records
- * bank offsets as they were when the entry stood at `base`, so a bank is at record -
- * base + off. */
+/* One app's theme (or voice bank) in the pool. Offsets inside it are the entry's own: its
+ * head is [0, geom_size), its banks [art_off, art_off + art_size), and byte x of it is at
+ * page x / ORB_POOL_PAGE of its pages (orb_pool_pages). `off` is its first page, kept for
+ * the log and the hub; `size` is whole pages. The index records bank offsets as they were
+ * when the entry stood at `base` (the slot's own layout). */
 typedef struct {
     char     slug[ORB_POOL_SLUG_MAX];
     char     name[ORB_POOL_NAME_MAX];
@@ -55,13 +67,22 @@ typedef struct {
     uint32_t art_off, art_size, art_crc;
     uint32_t file_crc, serial, state, abi;
     uint32_t kind;                          /* ORB_POOL_DISPLAY or ORB_POOL_VOICE */
+    uint32_t pid;                           /* format 3: its pages' owner, 1..255 */
 } orb_pool_entry_t;
 
 typedef struct {
     uint32_t         serial;
     uint32_t         n;
-    orb_pool_entry_t e[ORB_POOL_ENTRIES];   /* in pool order */
+    uint32_t         format;                /* as decoded: 3, or 1/2 (not carried) */
+    orb_pool_entry_t e[ORB_POOL_ENTRIES];
+    uint8_t          owner[ORB_POOL_PAGES]; /* each page's entry pid, 0 = free */
 } orb_pool_t;
+
+/* An entry's pages as flash offsets, in its byte order. */
+typedef struct {
+    uint32_t n;
+    uint32_t off[ORB_POOL_PAGES];
+} orb_pool_pages_t;
 
 /* Flash access. Offsets are partition-relative; erase is whole sectors. Each answers 0
  * or a negative failure. `buf` is the caller's scratch, at least one sector. */
@@ -72,119 +93,107 @@ typedef struct {
     int    (*write)(void *ctx, uint32_t off, const void *src, uint32_t n);
     uint8_t *buf;
     uint32_t buf_bytes;
-    /* Optional: called after each sector a move copies, with the bytes of the entry
-     * moved so far and its size, so a long compaction can show it is moving. */
+    /* Unused since format 3 (nothing moves); kept so a caller's progress hook compiles. */
     void   (*progress)(void *ctx, uint32_t done, uint32_t total);
 } orb_pool_io_t;
 
 /* Failures, beside the io's own negatives. */
 #define ORB_POOL_ERR_FULL    (-1001)   /* the theme does not fit, nothing touched */
 #define ORB_POOL_ERR_TABLE   (-1002)   /* the table is full or would be invalid */
-#define ORB_POOL_ERR_VERIFY  (-1003)   /* a moved entry read back wrong */
+#define ORB_POOL_ERR_VERIFY  (-1003)   /* bytes read back wrong */
 #define ORB_POOL_ERR_ARG     (-1004)
 
 /* ---- the table, as bytes (pure) ---- */
 
-/* Encode into one sector's worth of bytes (the rest zero). */
+/* Encode into one sector's worth of bytes (the rest zero). Always format 3. */
 void orb_pool_encode(const orb_pool_t *p, uint8_t out[ORB_POOL_SECTOR]);
 
-/* Decode and check: magic, format (2, or 1 read as display entries), count, CRC, and every
- * entry well formed, in pool order, inside [ORB_POOL_FIRST, ORB_POOL_END), not overlapping,
- * one entry of a kind an app, every voice bank before every display entry. Gaps are
- * allowed (a compaction cut between moves leaves them); orb_pool_packed() asks for none.
- * NULL on success, else the refusal. Encoding always writes format 2. */
+/* Decode and check. Format 3: magic, count, CRC, every entry well formed (a known kind and
+ * state LIVE, one entry of a kind an app, a unique page id, whole pages, its index and
+ * banks inside it), and the page map naming exactly each entry's pages. Formats 1 and 2
+ * decode as they always did (out->format says which), for boot to read, never to use.
+ * NULL on success, else the refusal. */
 const char *orb_pool_decode(const uint8_t *in, size_t len, orb_pool_t *out);
-
-/* No holes: the entries run from ORB_POOL_FIRST, each where the last one ended. */
-bool orb_pool_packed(const orb_pool_t *p);
-
-/* Where the packed run ends (ORB_POOL_FIRST for an empty pool). */
-uint32_t orb_pool_used_end(const orb_pool_t *p);
 
 /* `slug`'s display entry (its theme as the stage binds it), or -1. */
 int orb_pool_find(const orb_pool_t *p, const char *slug);
 /* `slug`'s entry of `kind`, or -1. */
 int orb_pool_find_kind(const orb_pool_t *p, const char *slug, uint32_t kind);
-/* Where the voice banks end and the display entries begin (packed). */
-uint32_t orb_pool_voice_end(const orb_pool_t *p);
+
+/* Entry k's pages, in its byte order. */
+void orb_pool_pages(const orb_pool_t *p, uint32_t k, orb_pool_pages_t *out);
+/* Pages no entry owns. */
+uint32_t orb_pool_free_pages(const orb_pool_t *p);
+/* Bytes the entries hold (whole pages). */
+uint32_t orb_pool_used(const orb_pool_t *p);
 
 /* Whether `slug`'s display entry of `size` bytes fits once `slug`'s old one is gone: 0, or
- * ORB_POOL_ERR_FULL (no room), or ORB_POOL_ERR_TABLE (the table's slots). Pure: a store asks
- * it before it parks the dial, and orb_pool_reserve asks it again. */
+ * ORB_POOL_ERR_FULL (no room), or ORB_POOL_ERR_TABLE (the table's slots). Pure. */
 int orb_pool_fits(const orb_pool_t *p, const char *slug, uint32_t size);
 
-/* A sector-rounded size. */
+/* A size rounded up to whole pages. */
 uint32_t orb_pool_round(uint32_t n);
+
+/* ---- an entry's bytes, through its pages (pure but for io) ---- */
+
+/* Read, write, erase or checksum [off, off + n) of the entry whose pages are `pg`, split at
+ * page boundaries. Erase wants a sector-aligned range. */
+int orb_pool_pread(const orb_pool_io_t *io, const orb_pool_pages_t *pg, uint32_t off,
+                   void *dst, uint32_t n);
+int orb_pool_pwrite(const orb_pool_io_t *io, const orb_pool_pages_t *pg, uint32_t off,
+                    const void *src, uint32_t n);
+int orb_pool_perase(const orb_pool_io_t *io, const orb_pool_pages_t *pg, uint32_t off,
+                    uint32_t n);
+int orb_pool_pcrc(const orb_pool_io_t *io, const orb_pool_pages_t *pg, uint32_t off,
+                  uint32_t n, uint32_t *crc);
 
 /* ---- the pool on flash (through io) ---- */
 
-/* Read both copies and take the valid one with the higher serial. *which is 0 for
- * none (an empty pool, serial 0), 1 for A, 2 for B. */
+/* Read both copies and take the valid one with the higher serial. *which is 0 for none
+ * (an empty pool, serial 0), 1 for A, 2 for B. A table of format 1 or 2 is answered as
+ * read (p->format says so): the caller reads what it needs from it and calls
+ * orb_pool_reset. */
 int orb_pool_load(const orb_pool_io_t *io, orb_pool_t *p, int *which);
 
 /* Bump the serial and write the table to the copy that is not live. */
 int orb_pool_write(const orb_pool_io_t *io, orb_pool_t *p, int *which);
 
-/* After a cut: drop any MOVING entry (its bytes are torn), then compact. */
-int orb_pool_repair(const orb_pool_io_t *io, orb_pool_t *p, int *which);
+/* An empty format 3 pool over whatever was there, its serial past the old one's, written. */
+int orb_pool_reset(const orb_pool_io_t *io, orb_pool_t *p, int *which);
 
-/* Move every entry down until the pool is packed. */
-int orb_pool_compact(const orb_pool_io_t *io, orb_pool_t *p, int *which);
-
-/* Remove `slug`'s display entry, then compact. Absent is not a failure. */
+/* Remove `slug`'s display entry: one table write, its pages free. Absent is not a failure. */
 int orb_pool_remove(const orb_pool_io_t *io, orb_pool_t *p, int *which, const char *slug);
-/* Remove `slug`'s entry of `kind`, then compact. Absent is not a failure. */
+/* Remove `slug`'s entry of `kind`. Absent is not a failure. */
 int orb_pool_remove_kind(const orb_pool_io_t *io, orb_pool_t *p, int *which, const char *slug,
                          uint32_t kind);
 
-/* Make room for `slug`'s new display entry of `size` bytes: refuse with ORB_POOL_ERR_FULL,
- * touching nothing, if it cannot fit once `slug`'s old entry is gone; else remove that
- * entry, compact, and answer in *at where the new bytes go (the packed run's end). The
- * caller writes them and calls orb_pool_commit. */
-int orb_pool_reserve(const orb_pool_io_t *io, orb_pool_t *p, int *which,
-                     const char *slug, uint32_t size, uint32_t *at);
-
-/* The theme cache (docs/theme-cache-plan.md §2.2): the entries a theme of `size` bytes for
- * `slug` evicts, least recently on the glass first. `order` lists slugs from least to most
- * recent; an entry it does not name counts as older than any it does, in pool order. `keep`
- * (may be NULL) is never evicted; `slug`'s own old entry always goes. Pure: sets bit k of
- * *mask for each entry k to drop, and answers 0, or ORB_POOL_ERR_FULL when even every
- * entry it may evict leaves no room (or no table slot). */
-int orb_pool_evictions(const orb_pool_t *p, const char *slug, uint32_t size,
-                       const char *const *order, uint32_t n_order, const char *keep,
-                       uint32_t *mask);
-/* The same for a new entry of `kind`: `slug`'s own old entry of that kind always goes, and
- * only display entries are ever evicted. orb_pool_evictions is this with ORB_POOL_DISPLAY. */
+/* The theme cache (docs/theme-cache-plan.md §2.2): the entries a new entry of `kind` and
+ * `size` bytes for `slug` evicts, least recently on the glass first. `order` lists slugs
+ * from least to most recent; an entry it does not name counts as older than any it does,
+ * in table order. `keep` (may be NULL) is never evicted; `slug`'s own old entry of `kind`
+ * always goes; only display entries are ever evicted. Pure: sets bit k of *mask for each
+ * entry k to drop, and answers 0, or ORB_POOL_ERR_FULL when even every entry it may evict
+ * leaves too few pages (or no table slot). */
 int orb_pool_evictions_kind(const orb_pool_t *p, const char *slug, uint32_t kind, uint32_t size,
                             const char *const *order, uint32_t n_order, const char *keep,
                             uint32_t *mask);
+int orb_pool_evictions(const orb_pool_t *p, const char *slug, uint32_t size,
+                       const char *const *order, uint32_t n_order, const char *keep,
+                       uint32_t *mask);
 
-/* orb_pool_reserve, evicting as orb_pool_evictions says: refuse with ORB_POOL_ERR_FULL,
- * touching nothing; else drop every evicted entry in one table write, compact, and answer
- * in *at where the new bytes go. The compaction may MOVE `keep`: the caller makes sure
- * nothing reads the pool through a mapping while this runs. *evicted (may be NULL) gets
- * the evicted slugs, `slug`'s own old entry not among them; *n_evicted their count. */
-int orb_pool_reserve_lru(const orb_pool_io_t *io, orb_pool_t *p, int *which,
-                         const char *slug, uint32_t size,
-                         const char *const *order, uint32_t n_order, const char *keep,
-                         uint32_t *at, char (*evicted)[ORB_POOL_SLUG_MAX], uint32_t *n_evicted);
+/* Room for a new entry of `kind`: refuse with ORB_POOL_ERR_FULL, touching nothing; else drop
+ * every evicted entry (and `slug`'s own old one of `kind`) in one table write, and answer in
+ * *pg the free pages the new bytes go to (the lowest free ones). Nothing names those pages
+ * until orb_pool_commit. *evicted (may be NULL) gets the evicted slugs, `slug`'s own old
+ * entry not among them; *n_evicted their count. */
+int orb_pool_reserve(const orb_pool_io_t *io, orb_pool_t *p, int *which,
+                     const char *slug, uint32_t kind, uint32_t size,
+                     const char *const *order, uint32_t n_order, const char *keep,
+                     orb_pool_pages_t *pg, char (*evicted)[ORB_POOL_SLUG_MAX], uint32_t *n_evicted);
 
-/* A voice bank of `size` bytes for `slug` (§2.6): evict as orb_pool_evictions_kind says
- * (display entries only, least recent first, never `keep`), drop `slug`'s old voice bank,
- * compact, then lift every display entry by the new bank's size, the last first, so the gap
- * opens at the voice banks' end; *at is that gap. Refuses with ORB_POOL_ERR_FULL touching
- * nothing. The lift moves display entries: nothing may read the pool through a mapping. */
-int orb_pool_reserve_voice(const orb_pool_io_t *io, orb_pool_t *p, int *which,
-                           const char *slug, uint32_t size,
-                           const char *const *order, uint32_t n_order, const char *keep,
-                           uint32_t *at, char (*evicted)[ORB_POOL_SLUG_MAX], uint32_t *n_evicted);
-
-/* Add the entry the caller wrote at a reserve's *at, LIVE, in pool order, and write the
- * table: a display entry at the packed run's end, a voice bank at the voice banks' end
- * with the gap open; e->slug must have no entry of e->kind. ORB_POOL_ERR_ARG for anything
- * else. */
+/* Name entry `e` (its size whole pages) on pages `pg`, all free, in one table write: it gets
+ * a page id, its `off` is its first page. Refuses ORB_POOL_ERR_ARG for a full table, a page
+ * already owned, a page count that is not its size, or an app that already has one of its
+ * kind. On a refusal or a failed write the table in RAM is as it was. */
 int orb_pool_commit(const orb_pool_io_t *io, orb_pool_t *p, int *which,
-                    const orb_pool_entry_t *e);
-
-/* CRC of [off, off + n) on flash, read through io->buf. */
-int orb_pool_crc(const orb_pool_io_t *io, uint32_t off, uint32_t n, uint32_t *crc);
+                    const orb_pool_entry_t *e, const orb_pool_pages_t *pg);

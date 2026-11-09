@@ -960,7 +960,7 @@ def install_lint():
     ba, bb = spans["orb_theme_install_bundle"]
     body = "\n".join(lines[ba:bb + 1])
     rc = 0
-    erase = body.find("esp_partition_erase_range")
+    erase = body.find("pg_erase(pg, SLOT_HDR, THEME_SECTOR)")   # theme-cache-plan §4.1: through its pages
     if erase < 0:
         print("FAIL orb_theme_install_bundle(): no header erase — the commit that makes a "
               "slot live has gone missing along with the discipline around it"); rc = 1
@@ -992,13 +992,16 @@ def install_lint():
         # the table names the entry only after its header is written.
         import re as _re
         # theme-cache-plan C4: the pool reserves by eviction, least recently worn first
-        rsv = body.find("ord, nord, NULL, &tgt, gone, &ngone);")
-        sets = _re.findall(r"\btgt\s*[-+]?=[^=]", body)
-        if rsv < 0 or len(sets) != 1:
+        # theme-cache-plan §4.1: the target is the free pages orb_pool_reserve answers, and
+        # nothing in the store writes the page list but that call
+        rsv = body.find("entry_size, ord, nord, NULL, pg, gone, &ngone);")
+        sets = _re.findall(r"\bpg\s*=[^=]", body)
+        writes = _re.findall(r"\bpg->(?:off\[[^\]]*\]|n)\s*[-+]?=[^=]", body)
+        if rsv < 0 or len(sets) != 1 or writes:
             print("FAIL orb_theme_install_bundle(): the target is not the pool's answer alone "
-                  "(%s, %d assignments) — a theme written where the table does not say is "
-                  "free space the next store writes over" % ("reserved" if rsv >= 0 else
-                  "no orb_pool_reserve_lru", len(sets))); rc = 1
+                  "(%s, %d assignments, %d page writes) — a theme written where the table does "
+                  "not say is free space the next store writes over" % ("reserved" if rsv >= 0 else
+                  "no orb_pool_reserve", len(sets), len(writes))); rc = 1
         fit, park = body.find("orb_pool_evictions_kind("), body.find("store_park_dial(")
         if fit < 0 or park < 0 or fit > park:
             print("FAIL orb_theme_install_bundle(): the fit is not asked before the dial parks "

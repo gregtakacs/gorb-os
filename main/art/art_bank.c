@@ -2,6 +2,7 @@
  * art_bank.c — see art_bank.h for the contract and the rationale.
  */
 #include "art_bank.h"
+#include "orb_pagemap.h"   /* §4.1: a theme's scattered pages */
 
 #include "esp_err.h"
 #include "esp_log.h"
@@ -33,6 +34,9 @@ static size_t                      s_bytes;
 static size_t                      s_off;      /* partition offset s_map points at */
 static esp_partition_mmap_handle_t s_handle;
 static const esp_partition_t      *s_part;
+/* theme-cache-plan §4.1 (C7): the primary bank's third form, a pool entry's scattered pages
+ * as one window (orb_pagemap). s_map points into it; s_pm says it is not a partition map. */
+static orb_pagemap_t               s_pm = { NULL, 0, -1 };
 
 /* The primary bank's second form (D30): a PSRAM arena copy made by
  * art_bank_fill() instead of a flash map. Exactly one of s_map / s_plane is set
@@ -66,7 +70,8 @@ static void art_bank_primary_release(void)
         s_plane = NULL;
     }
     if (s_map) {
-        esp_partition_munmap(s_handle);
+        if (s_pm.ptr) orb_pageunmap(&s_pm);
+        else          esp_partition_munmap(s_handle);
         s_map    = NULL;
         s_handle = 0;
     }
@@ -229,6 +234,28 @@ esp_err_t art_bank_map(size_t offset, size_t need_bytes)
     ESP_LOGI(TAG, "bank \"%s\" @0x%x, %u B mapped of %u B (theme blob %u B), %u MMU pages",
              s_part->label, (unsigned)(s_part->address + offset), (unsigned)s_bytes,
              (unsigned)s_part->size, (unsigned)need_bytes,
+             (unsigned)art_bank_mmu_pages());
+    return ESP_OK;
+}
+
+esp_err_t art_bank_map_pages(const uint32_t *page_off, uint32_t n, size_t need_bytes)
+{
+    if (!need_bytes || !page_off || !n || need_bytes > (size_t)n * ORB_PAGEMAP_PAGE)
+        return ESP_ERR_INVALID_ARG;
+    if (art_bank_primary_live()) art_bank_primary_release();   /* a bind always maps anew */
+    s_part = bank_partition();
+    if (!s_part) return ESP_ERR_NOT_FOUND;
+    const esp_err_t err = orb_pagemap(s_part, page_off, n, &s_pm);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "a %u-page window for the theme would not map: %s", (unsigned)n, esp_err_to_name(err));
+        return err;
+    }
+    s_map   = (const uint8_t *)s_pm.ptr;
+    s_bytes = need_bytes;
+    s_off   = page_off[0];
+    art_consume_reservation(art_round_pages(need_bytes));
+    ESP_LOGI(TAG, "bank \"%s\": %u B mapped from %u pages (first 0x%x), %u MMU pages",
+             s_part->label, (unsigned)need_bytes, (unsigned)n, (unsigned)page_off[0],
              (unsigned)art_bank_mmu_pages());
     return ESP_OK;
 }

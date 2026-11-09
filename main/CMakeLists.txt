@@ -79,6 +79,7 @@ idf_component_register(
         # through an io the caller supplies. tools/host_pool_test.py drives this exact
         # file over a simulated flash that loses power at every step.
         "art/orb_pool.c"
+        "art/orb_pagemap.c"
         "art/orb_voice.c"
         # P6.5 §25.5(2): the FORMAT 3 clock section's projection. Separate from
         # orb_bundle.c on purpose — that file is the format mirror of
@@ -159,6 +160,8 @@ idf_component_register(
         esp_hw_support
         esp_psram
         esp_partition          # art bank: find + mmap the `assets` partition
+        esp_mm                 # orb_pagemap: a theme's scattered pages as one window (C7)
+        hal                    # "
         spi_flash              # "
         esp_wifi               # config page: STA + first-boot provisioning SoftAP
         esp_netif              # "

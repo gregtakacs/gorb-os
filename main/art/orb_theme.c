@@ -42,6 +42,7 @@
 #include "orb_theme.h"
 #include "orb_bundle.h"
 #include "orb_pool.h"
+#include "orb_pagemap.h"     /* §4.1: an entry's pages as one window */
 #include "orb_elems.h"      /* orb_elems_at(), and the answers read_one_plane maps onto the registry's */
 #include "orb_clock3.h"          /* the FORMAT 3 clock section's projection (P6.5) */
 #include "orb_sound.h"           /* D39: silence the old bank's voices before a remap */
@@ -566,20 +567,20 @@ static const char *slot_name(uint32_t hdr_base)
     return "slot";
 }
 
-/* ---- the theme pool (docs/theme-pool-plan.md) --------------------------------------
+/* ---- the theme pool (docs/theme-pool-plan.md, theme-cache-plan.md §4.1) ----------------
  *
- * Several apps' themes, packed from offset 0, with orb_pool.c's table in the area's last
- * two sectors. Each entry is laid out as the one slot was, so every SLOT_* offset in
- * this file is relative to an entry: its header at the entry's offset, its index at
- * +SLOT_GEOM_OFF, its banks at +SLOT_ART_OFF. The one slot of Migration 1 IS entry 0,
- * which is why boot can carry it into the pool without moving a byte. s_live_base is
- * the entry this boot adopted; the stage still draws one theme per boot (P4 binds one
- * per app). */
+ * Several apps' themes, each on whole 64 KB pages wherever they were free, with orb_pool.c's
+ * table in the area's last two sectors. Each entry is laid out as the one slot was, so every
+ * SLOT_* offset in this file is the entry's own, reached through its pages (pg_read and the
+ * rest): its header at SLOT_HDR, its index at SLOT_GEOM_OFF, its banks at SLOT_ART_OFF. The
+ * one slot of Migration 1 sits on the first pages, which is why boot can carry it into the
+ * pool without moving a byte. s_live_key names the entry the stage is bound to: its pages
+ * and its CRCs, since a refilled theme can land on the same first page. */
 static orb_pool_t    *s_pool;          /* PSRAM: the table as last read or written */
 static int            s_pool_which;    /* the live copy, orb_pool_load's answer */
 static uint8_t       *s_pool_buf;      /* PSRAM: one sector, the pool's scratch */
 static orb_pool_io_t  s_pool_io;
-static uint32_t       s_live_base;     /* the adopted entry's offset in the area */
+static uint32_t       s_live_key;      /* the bound entry's pages and CRCs, 0 = none */
 
 static int pool_read(void *c, uint32_t off, void *d, uint32_t n)
 {
@@ -986,11 +987,22 @@ size_t orb_theme_cache_json(char *b, size_t cap)
     PUT("],\"order\":[");
     for (uint32_t i = 0; i < s_cache.n_order; i++) PUT("%s\"%s\"", i ? "," : "", s_cache.order[i]);
     PUT("],\"pool\":[");
-    for (uint32_t k = 0; s_pool && k < s_pool->n; k++)
-        PUT("%s{\"app\":\"%s\",\"name\":\"%s\",\"kind\":\"%s\",\"off\":%lu,\"size\":%lu,\"file_crc\":%lu}", k ? "," : "",
-            s_pool->e[k].slug, s_pool->e[k].name, s_pool->e[k].kind == ORB_POOL_VOICE ? "voice" : "display",
+    for (uint32_t k = 0; s_pool && k < s_pool->n; k++) {
+        PUT("%s{\"app\":\"%s\",\"name\":\"%s\",\"kind\":\"%s\",\"off\":%lu,\"size\":%lu,\"file_crc\":%lu,\"pages\":[",
+            k ? "," : "", s_pool->e[k].slug, s_pool->e[k].name, s_pool->e[k].kind == ORB_POOL_VOICE ? "voice" : "display",
             (unsigned long)s_pool->e[k].off, (unsigned long)s_pool->e[k].size, (unsigned long)s_pool->e[k].file_crc);
-    PUT("],\"capacity\":%lu", (unsigned long)(ORB_POOL_END - ORB_POOL_FIRST));
+        /* §4.1: its pages, as runs "first-last" (a scattered entry has several) */
+        int n = 0;
+        for (uint32_t pg = 0; pg < ORB_POOL_PAGES; pg++) {
+            if (s_pool->owner[pg] != s_pool->e[k].pid || (pg && s_pool->owner[pg - 1] == s_pool->e[k].pid)) continue;
+            uint32_t end = pg;
+            while (end + 1 < ORB_POOL_PAGES && s_pool->owner[end + 1] == s_pool->e[k].pid) end++;
+            PUT("%s\"%lu-%lu\"", n++ ? "," : "", (unsigned long)pg, (unsigned long)end);
+        }
+        PUT("]}");
+    }
+    PUT("],\"capacity\":%lu,\"free\":%lu", (unsigned long)ORB_POOL_CAP,
+        (unsigned long)(s_pool ? orb_pool_free_pages(s_pool) * ORB_POOL_PAGE : 0));
     if (s_fill_slug[0])                        /* §2.4: the fill running, as its face shows it */
         PUT(",\"fill\":{\"app\":\"%s\",\"done\":%lu,\"total\":%lu}", s_fill_slug,
             (unsigned long)s_fill_done, (unsigned long)s_fill_total);
@@ -1996,12 +2008,6 @@ static void room_progress(void *ctx, uint32_t done, uint32_t total)
     pool_progress("making room", done, total);
 }
 
-static void repair_progress(void *ctx, uint32_t done, uint32_t total)
-{
-    (void)ctx;
-    pool_progress("repairing themes", done, total);
-}
-
 bool orb_theme_store_torn(void)
 {
     return s_slot_torn;
@@ -2015,6 +2021,15 @@ bool orb_theme_store_torn(void)
  * the next one is touched, and once from the partition afterwards, which proves the
  * flash wrote what it was given and produces the installed art region's own
  * checksum for the header. */
+/* theme-cache-plan §4.1 (C7): an entry's bytes go through its pages, the pool's io under
+ * them; esp_err_t answers, as the partition calls they replace gave. */
+static esp_err_t pg_read(const orb_pool_pages_t *pg, uint32_t off, void *dst, uint32_t n)
+{ return orb_pool_pread(&s_pool_io, pg, off, dst, n) ? ESP_FAIL : ESP_OK; }
+static esp_err_t pg_write(const orb_pool_pages_t *pg, uint32_t off, const void *src, uint32_t n)
+{ return orb_pool_pwrite(&s_pool_io, pg, off, src, n) ? ESP_FAIL : ESP_OK; }
+static esp_err_t pg_erase(const orb_pool_pages_t *pg, uint32_t off, uint32_t n)
+{ return orb_pool_perase(&s_pool_io, pg, off, n) ? ESP_FAIL : ESP_OK; }
+
 /* theme-cache-plan §2.4: how far a fill got, so one paused when the owner left its app goes
  * on from there when they come back (ruling 5). The worker is never held for a pause — a
  * store or a settings write would queue behind it — so the job ends and this stays. Good
@@ -2033,8 +2048,8 @@ static volatile bool s_fill_stop;              /* the owner left the app being f
 #define FILL_ERASE_STEP (64u * 1024u)          /* a fill erases this far ahead of its writes */
 
 static esp_err_t copy_bundle3(int fd, const orb_bundle_t *b, const uint8_t *region,
-                              uint32_t file_art_base, const esp_partition_t *p,
-                              uint32_t hdr_base, uint32_t *out_art_crc,
+                              uint32_t file_art_base, const orb_pool_pages_t *pg,
+                              uint32_t *out_art_crc,
                               const char **why,
                               void (*progress)(void *arg, uint32_t done, uint32_t total),
                               void *parg, fill_mark_t *mark)
@@ -2068,9 +2083,9 @@ static esp_err_t copy_bundle3(int fd, const orb_bundle_t *b, const uint8_t *regi
     const bool resume = mark && mark->valid;
     esp_err_t e = ESP_OK;
     if (!resume) {
-        e = esp_partition_erase_range(p, hdr_base, THEME_SECTOR);
-        if (e == ESP_OK) e = esp_partition_erase_range(p, hdr_base + SLOT_GEOM_OFF, geom_len);
-        if (e == ESP_OK && !mark) e = esp_partition_erase_range(p, hdr_base + SLOT_ART_OFF, art_len);
+        e = pg_erase(pg, SLOT_HDR, THEME_SECTOR);
+        if (e == ESP_OK) e = pg_erase(pg, SLOT_GEOM_OFF, geom_len);
+        if (e == ESP_OK && !mark) e = pg_erase(pg, SLOT_ART_OFF, art_len);
         if (e != ESP_OK) { *why = "flash erase failed"; return e; }
         if (mark) { mark->erased = 0; mark->sec = 0; mark->sec_done = 0; }
     }
@@ -2079,7 +2094,7 @@ static esp_err_t copy_bundle3(int fd, const orb_bundle_t *b, const uint8_t *regi
     for (uint32_t done = 0; !resume && done < b->region_size; ) {
         const uint32_t want = (b->region_size - done > s_chunk_bytes) ? s_chunk_bytes
                                                                       : (b->region_size - done);
-        e = esp_partition_write(p, hdr_base + SLOT_GEOM_OFF + done, region + done, want);
+        e = pg_write(pg, SLOT_GEOM_OFF + done, region + done, want);
         if (e != ESP_OK) { *why = "flash write failed on the geometry"; return e; }
         done += want;
     }
@@ -2093,7 +2108,7 @@ static esp_err_t copy_bundle3(int fd, const orb_bundle_t *b, const uint8_t *regi
         const uint32_t kept = !resume || i > mark->sec ? 0 : (i < mark->sec ? s->art_size : mark->sec_done);
         while (done < kept) {
             const uint32_t want = (kept - done > s_chunk_bytes) ? s_chunk_bytes : (kept - done);
-            if (esp_partition_read(p, hdr_base + s->art_off + done, s_chunk, want) != ESP_OK) {
+            if (pg_read(pg, s->art_off + done, s_chunk, want) != ESP_OK) {
                 *why = "could not read the paused fill back"; return ESP_FAIL;
             }
             crc = esp_rom_crc32_le(crc, s_chunk, want);
@@ -2114,7 +2129,7 @@ static esp_err_t copy_bundle3(int fd, const orb_bundle_t *b, const uint8_t *regi
                 while (mark->erased < need && mark->erased < art_len) {
                     const uint32_t n = art_len - mark->erased > FILL_ERASE_STEP ? FILL_ERASE_STEP
                                                                                 : art_len - mark->erased;
-                    e = esp_partition_erase_range(p, hdr_base + SLOT_ART_OFF + mark->erased, n);
+                    e = pg_erase(pg, SLOT_ART_OFF + mark->erased, n);
                     if (e != ESP_OK) { *why = "flash erase failed"; return e; }
                     mark->erased += n;
                 }
@@ -2123,7 +2138,7 @@ static esp_err_t copy_bundle3(int fd, const orb_bundle_t *b, const uint8_t *regi
                 *why = "bundle ended before its declared pixels"; return ESP_ERR_INVALID_SIZE;
             }
             crc = esp_rom_crc32_le(crc, s_chunk, want);
-            e = esp_partition_write(p, hdr_base + s->art_off + done, s_chunk, want);
+            e = pg_write(pg, s->art_off + done, s_chunk, want);
             if (e != ESP_OK) { *why = "flash write failed on the pixels"; return e; }
             done += want;
             if (progress) progress(parg, s->art_off - SLOT_ART_OFF + done, art_len);
@@ -2134,7 +2149,7 @@ static esp_err_t copy_bundle3(int fd, const orb_bundle_t *b, const uint8_t *regi
     /* the padding past the last section reads back erased, as a store's does */
     while (mark && mark->erased < art_len) {
         const uint32_t n = art_len - mark->erased > FILL_ERASE_STEP ? FILL_ERASE_STEP : art_len - mark->erased;
-        e = esp_partition_erase_range(p, hdr_base + SLOT_ART_OFF + mark->erased, n);
+        e = pg_erase(pg, SLOT_ART_OFF + mark->erased, n);
         if (e != ESP_OK) { *why = "flash erase failed"; return e; }
         mark->erased += n;
     }
@@ -2143,7 +2158,7 @@ static esp_err_t copy_bundle3(int fd, const orb_bundle_t *b, const uint8_t *regi
     uint32_t acrc = 0;
     for (uint32_t done = 0; done < art_len; ) {
         const uint32_t want = (art_len - done > s_chunk_bytes) ? s_chunk_bytes : (art_len - done);
-        if (esp_partition_read(p, hdr_base + SLOT_ART_OFF + done, s_chunk, want) != ESP_OK) {
+        if (pg_read(pg, SLOT_ART_OFF + done, s_chunk, want) != ESP_OK) {
             *why = "could not read the installed pixels back"; return ESP_FAIL;
         }
         acrc = esp_rom_crc32_le(acrc, s_chunk, want);
@@ -2155,8 +2170,6 @@ static esp_err_t copy_bundle3(int fd, const orb_bundle_t *b, const uint8_t *regi
 
 #if CONFIG_ORB_DEBUG_HTTP
 /* ---- theme-cache-plan C0: a fill's cost under a running dial ------------------------- */
-typedef struct { char id[48]; uint32_t chunk_kb, pace_ms; bool urgent; } bench_fill_arg_t;   /* ORB_JOB_ARG_MAX 64 */
-static volatile bool s_bench_fill_busy;
 static char s_bench_fill_last[400];        /* the last run's line, for the door */
 const char *orb_theme_bench_fill_last(void) { return s_bench_fill_last; }
 
@@ -2200,107 +2213,13 @@ esp_err_t orb_theme_bench_evict(const char *slug)
     return orb_jobs_post(bench_evict_job, a, sizeof a);
 }
 
-static void bench_fill_job(void *arg)
-{
-    const bench_fill_arg_t *a = arg;
-    const esp_partition_t *p = art_bank_partition();
-    char path[ORB_SD_PATH_MAX];
-    uint8_t *buf = NULL;
-    int fd = -1;
-    const char *why = NULL;
-    const uint32_t chunk = a->chunk_kb * 1024u;
-    if (!p || !s_pool) { why = "no pool"; goto out; }
-    if (!theme_file(a->id, path, sizeof path)) { why = "not a theme name"; goto out; }
-    buf = heap_caps_malloc(chunk, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    if (!buf) { why = "no buffer"; goto out; }
-    if (orb_sd_ensure_mounted() != ESP_OK) { why = "no card in the socket"; goto out; }
-    orb_sd_lock();
-    fd = open(path, O_RDONLY);
-    struct stat st;
-    const bool sized = fd >= 0 && fstat(fd, &st) == 0 && st.st_size > 0;
-    orb_sd_unlock();
-    if (!sized) { why = "no such file on the card"; goto out; }
-    const uint32_t size = (uint32_t)st.st_size, n = orb_pool_round(size);
-    const uint32_t dst = orb_pool_used_end(s_pool);
-    if (dst + n > ORB_POOL_END) { why = "no free room past the packed run"; goto out; }
-    if (a->urgent) display_ring_urgent_for(DISPLAY_URGENT_FILL, true);
-
-    const int64_t t0 = esp_timer_get_time();
-    /* paced: no erase up front; each 4 KB sector erased, written, then pace_ms for the dial */
-    if (!a->pace_ms && esp_partition_erase_range(p, dst, n) != ESP_OK) { why = "erase failed"; goto out; }
-    const int64_t t1 = esp_timer_get_time();
-    int64_t card_us = 0, flash_us = 0, worst_card = 0, worst_flash = 0;
-    uint32_t crc = 0, done = 0;
-    size_t pos = 0;
-    while (done < size) {
-        const uint32_t want = size - done > chunk ? chunk : size - done;
-        const int64_t c0 = esp_timer_get_time();
-        orb_sd_lock();
-        const ssize_t got = rd_at(fd, &pos, buf, want);
-        orb_sd_unlock();
-        const int64_t c1 = esp_timer_get_time();
-        if (got != (ssize_t)want) { why = "short card read"; goto out; }
-        crc = esp_rom_crc32_le(crc, buf, want);
-        int64_t fl = 0;
-        if (!a->pace_ms) {
-            if (esp_partition_write(p, dst + done, buf, want) != ESP_OK) { why = "write failed"; goto out; }
-            fl = esp_timer_get_time() - c1;
-            if (fl > worst_flash) worst_flash = fl;
-        } else {
-            for (uint32_t o = 0; o < want; o += ORB_POOL_SECTOR) {
-                const uint32_t m = want - o > ORB_POOL_SECTOR ? ORB_POOL_SECTOR : want - o;
-                const int64_t f0 = esp_timer_get_time();
-                if (esp_partition_erase_range(p, dst + done + o, ORB_POOL_SECTOR) != ESP_OK ||
-                    esp_partition_write(p, dst + done + o, buf + o, m) != ESP_OK) { why = "erase or write failed"; goto out; }
-                const int64_t f1 = esp_timer_get_time() - f0;
-                fl += f1;
-                if (f1 > worst_flash) worst_flash = f1;
-                vTaskDelay(pdMS_TO_TICKS(a->pace_ms));
-            }
-        }
-        const int64_t c2 = esp_timer_get_time();
-        (void)c2;
-        card_us += c1 - c0; flash_us += fl;
-        if (c1 - c0 > worst_card) worst_card = c1 - c0;
-        done += want;
-    }
-    const int64_t t2 = esp_timer_get_time();
-    uint32_t back = 0;
-    for (uint32_t o = 0; o < size; ) {
-        const uint32_t want = size - o > chunk ? chunk : size - o;
-        if (esp_partition_read(p, dst + o, buf, want) != ESP_OK) { why = "read-back failed"; goto out; }
-        back = esp_rom_crc32_le(back, buf, want);
-        o += want;
-    }
-    const int64_t t3 = esp_timer_get_time();
-    uint32_t jedec = 0;
-    (void)esp_flash_read_id(NULL, &jedec);
-    snprintf(s_bench_fill_last, sizeof s_bench_fill_last,
-             "flash %06x | %u B at 0x%x, %u KB chunks, pace %u ms%s | erase %d ms, copy %d ms (card %d ms, worst %d ms; "
-             "flash %d ms, worst %d ms), read-back %d ms %s | %d ms in all, %.2f s/MB", (unsigned)jedec, (unsigned)size, (unsigned)dst, (unsigned)a->chunk_kb, (unsigned)a->pace_ms, a->urgent ? ", ring urgent" : "",
-             (int)((t1 - t0) / 1000), (int)((t2 - t1) / 1000), (int)(card_us / 1000), (int)(worst_card / 1000),
-             (int)(flash_us / 1000), (int)(worst_flash / 1000), (int)((t3 - t2) / 1000),
-             back == crc ? "matches" : "DIFFERS", (int)((t3 - t0) / 1000), (double)(t3 - t0) / 1e6 / ((double)size / 1048576.0));
-    ESP_LOGI(TAG, "C0 fill %s: %s", a->id, s_bench_fill_last);
-out:
-    if (why) { ESP_LOGW(TAG, "C0 fill %s: %s", a->id, why); snprintf(s_bench_fill_last, sizeof s_bench_fill_last, "refused: %s", why); }
-    display_ring_urgent_for(DISPLAY_URGENT_FILL, false);
-    if (fd >= 0) { orb_sd_lock(); close(fd); orb_sd_unlock(); }
-    heap_caps_free(buf);
-    s_bench_fill_busy = false;
-}
-
 esp_err_t orb_theme_bench_fill(const char *id, uint32_t chunk_kb, uint32_t pace_ms, bool urgent)
 {
-    if (s_bench_fill_busy) return ESP_ERR_INVALID_STATE;
-    bench_fill_arg_t a = { .chunk_kb = chunk_kb < 4 ? 4 : chunk_kb > 64 ? 64 : chunk_kb,
-                           .pace_ms = pace_ms > 200 ? 200 : pace_ms, .urgent = urgent };
-    snprintf(a.id, sizeof a.id, "%s", id);
-    s_bench_fill_last[0] = '\0';
-    s_bench_fill_busy = true;
-    const esp_err_t e = orb_jobs_post(bench_fill_job, &a, sizeof a);
-    if (e != ESP_OK) s_bench_fill_busy = false;
-    return e;
+    /* C0's copy bench wrote into the packed pool's free run by offset; its figures are in
+     * theme-cache-plan §6, and under format 3 (§4.1) a fill is the thing to time. */
+    (void)id; (void)chunk_kb; (void)pace_ms; (void)urgent;
+    snprintf(s_bench_fill_last, sizeof s_bench_fill_last, "retired with format 3: time a fill");
+    return ESP_ERR_NOT_SUPPORTED;
 }
 #endif
 
@@ -2366,10 +2285,13 @@ static uint32_t voice_bank_size(const store_snd_t *snd)
     return orb_voice_build(in, snd->n, snd->pattern, 0, head, sizeof head);
 }
 
-/* After the display entry is committed: the app's voice bank made from it, or its old one
- * gone for a theme with no sounds. The map is down (the store's park), so the lift that
- * opens the bank's room moves nothing a reader holds. */
-static esp_err_t store_voice(const esp_partition_t *p, const char *slug, const char *name,
+/* After the display entry is committed: the app's voice bank made from it (its pages `src`),
+ * or its old one gone for a theme with no sounds. Format 3 (§4.1): the bank's pages are free
+ * pages, so nothing a reader holds moves, and a fill can make one as well as a store. */
+EXT_RAM_BSS_ATTR static orb_pool_pages_t s_voice_pg;
+EXT_RAM_BSS_ATTR static orb_pool_pages_t s_job_pg;      /* the install's entry, old then new */
+static void voice_add(const char *slug);
+static esp_err_t store_voice(const char *slug, const char *name, const orb_pool_pages_t *src,
                              uint32_t sec_art_off, uint32_t src_crc, uint32_t serial, const char **w)
 {
     const store_snd_t *snd = &s_store_snd;
@@ -2390,30 +2312,25 @@ static esp_err_t store_voice(const esp_partition_t *p, const char *slug, const c
     EXT_RAM_BSS_ATTR static orb_voice_t v;
     const uint32_t total = orb_voice_build(in, snd->n, snd->pattern, src_crc, head, sizeof head);
     if (!total || orb_voice_parse(head, total, &v)) { *w = "its sounds would not make a bank"; return ESP_ERR_INVALID_SIZE; }
-    uint32_t at = 0;
-    s_pool_io.progress = room_progress;
     const char *ord[CACHE_APPS];
     const uint32_t nord = order_list(ord);
     char gone[ORB_POOL_ENTRIES][ORB_POOL_SLUG_MAX];
     uint32_t ngone = 0;
-    const int r = orb_pool_reserve_voice(&s_pool_io, s_pool, &s_pool_which, slug, total,
-                                         ord, nord, slug, &at, gone, &ngone);
+    orb_pool_pages_t *pg = &s_voice_pg;
+    const int r = orb_pool_reserve(&s_pool_io, s_pool, &s_pool_which, slug, ORB_POOL_VOICE, total,
+                                   ord, nord, slug, pg, gone, &ngone);
     for (uint32_t i = 0; i < ngone; i++)
         ESP_LOGI(TAG, "making room for %s's sounds: %s's theme left the pool", slug, gone[i]);
-    s_pool_io.progress = NULL;
     if (r) { *w = r == ORB_POOL_ERR_FULL ? "no room for its sounds" : "the theme area would not make room for its sounds"; return ESP_FAIL; }
-    const int k = orb_pool_find(s_pool, slug);
-    if (k < 0) { *w = "its theme left the pool"; return ESP_FAIL; }
-    const uint32_t src = s_pool->e[k].off + sec_art_off;  /* the lift moved it: read it where it is */
     const uint32_t size = orb_pool_round(total), hb = orb_voice_head_bytes(snd->n);
     if (ensure_chunk() != ESP_OK) { *w = "out of memory for the copy"; return ESP_ERR_NO_MEM; }
-    esp_err_t e = esp_partition_erase_range(p, at, size);
-    if (e == ESP_OK) e = esp_partition_write(p, at, head, hb);
+    esp_err_t e = pg_erase(pg, 0, size);
+    if (e == ESP_OK) e = pg_write(pg, 0, head, hb);
     for (uint32_t i = 0; e == ESP_OK && i < v.n; i++) {
         for (uint32_t done = 0; e == ESP_OK && done < v.bytes[i]; ) {
             const uint32_t want = v.bytes[i] - done > s_chunk_bytes ? s_chunk_bytes : v.bytes[i] - done;
-            e = esp_partition_read(p, src + snd->s[i].pcm_off + done, s_chunk, want);
-            if (e == ESP_OK) e = esp_partition_write(p, at + v.s[i].pcm_off + done, s_chunk, want);
+            e = pg_read(src, sec_art_off + snd->s[i].pcm_off + done, s_chunk, want);
+            if (e == ESP_OK) e = pg_write(pg, v.s[i].pcm_off + done, s_chunk, want);
             done += want;
         }
     }
@@ -2422,17 +2339,17 @@ static esp_err_t store_voice(const esp_partition_t *p, const char *slug, const c
     memset(&ve, 0, sizeof ve);
     strlcpy(ve.slug, slug, sizeof ve.slug);
     strlcpy(ve.name, name, sizeof ve.name);
-    ve.off = at; ve.size = size;
+    ve.size = size;
     ve.geom_size = hb; ve.art_off = v.data_off; ve.art_size = v.data_bytes;
     ve.file_crc = src_crc; ve.serial = serial; ve.kind = ORB_POOL_VOICE;
-    if (orb_pool_crc(&s_pool_io, at, ve.geom_size, &ve.geom_crc) ||
-        orb_pool_crc(&s_pool_io, at + ve.art_off, ve.art_size, &ve.art_crc) ||
-        orb_pool_commit(&s_pool_io, s_pool, &s_pool_which, &ve)) {
+    if (orb_pool_pcrc(&s_pool_io, pg, 0, ve.geom_size, &ve.geom_crc) ||
+        orb_pool_pcrc(&s_pool_io, pg, ve.art_off, ve.art_size, &ve.art_crc) ||
+        orb_pool_commit(&s_pool_io, s_pool, &s_pool_which, &ve, pg)) {
         *w = "its voice bank would not be named";
         return ESP_FAIL;
     }
-    ESP_LOGI(TAG, "%s's voice bank: %u sounds, %u KB at 0x%x", slug, (unsigned)v.n,
-             (unsigned)(total / 1024), (unsigned)at);
+    ESP_LOGI(TAG, "%s's voice bank: %u sounds, %u KB on %u pages from 0x%x", slug, (unsigned)v.n,
+             (unsigned)(total / 1024), (unsigned)pg->n, (unsigned)pg->off[0]);
     return ESP_OK;
 }
 
@@ -2446,25 +2363,11 @@ static esp_err_t store_voice(const esp_partition_t *p, const char *slug, const c
 static volatile bool s_glass_up, s_glass_owed;
 void orb_theme_fill_glass(bool up, bool owed) { s_glass_up = up; s_glass_owed = owed; }
 
-/* The face's ring counts the room a fill makes as well as its copy: the entries an eviction
- * moves down come first (Bronze 2026-11-08: ~30 s of a 40 s arrival moving Skeleton's 3.4 MB,
- * the ring at nought throughout), the copy after, offset by them. */
-static uint32_t s_fill_base;                   /* the copy's offset: the bytes the room moved */
-static uint32_t s_room_acc, s_room_last, s_room_last_n, s_room_total;
-
 static void fill_show(uint32_t done, uint32_t total);
 static void fill_progress(void *arg, uint32_t done, uint32_t total)
 {
     (void)arg;
-    fill_show(s_fill_base + done, s_fill_base + total);
-}
-
-static void fill_room_progress(void *ctx, uint32_t done, uint32_t total)
-{
-    (void)ctx;
-    if (done < s_room_last) s_room_acc += s_room_last_n;     /* the next entry's move */
-    s_room_last = done; s_room_last_n = total;
-    fill_show(s_room_acc + done, s_room_total);
+    fill_show(done, total);     /* §4.1: nothing moves, so the copy is the whole of a fill */
 }
 
 static void fill_show(uint32_t done, uint32_t total)
@@ -2619,6 +2522,8 @@ esp_err_t orb_theme_install_bundle(const char *id, char *why, size_t whysz)
     }
     {
         const int old_v = s_pool ? orb_pool_find_kind(s_pool, slug, ORB_POOL_VOICE) : -1;
+        /* a fill makes a voice bank only for an app with none (§4.1); a store makes it anew */
+        const uint32_t v_need = (s_install_fill && old_v >= 0) ? 0 : orb_pool_round(voice_size);
         /* theme-cache-plan C4: a full pool is not a refusal. The least recently worn
          * apps' display entries give way (their files stay on the card); only a theme
          * bigger than the pool with every voice bank in it is refused. */
@@ -2627,8 +2532,8 @@ esp_err_t orb_theme_install_bundle(const char *id, char *why, size_t whysz)
         uint32_t mask = 0;
         int f = (s_pool && pool_io(p))
                 ? orb_pool_evictions_kind(s_pool, slug, ORB_POOL_DISPLAY,
-                                          entry_size + orb_pool_round(voice_size) -
-                                          (old_v >= 0 ? s_pool->e[old_v].size : 0),
+                                          orb_pool_round(entry_size) + v_need -
+                                          (old_v >= 0 && v_need ? s_pool->e[old_v].size : 0),
                                           ord, nord, NULL, &mask)
                 : ORB_POOL_ERR_ARG;
         if (f) {
@@ -2636,7 +2541,7 @@ esp_err_t orb_theme_install_bundle(const char *id, char *why, size_t whysz)
             if (f == ORB_POOL_ERR_FULL)
                 snprintf(sent, sizeof sent, "this theme needs %u KB and the theme area has "
                          "%u KB free", (unsigned)(entry_size / 1024),
-                         (unsigned)((ORB_POOL_END - ORB_POOL_FIRST - orb_pool_used_end(s_pool) +
+                         (unsigned)((ORB_POOL_CAP - orb_pool_used(s_pool) +
                                      (orb_pool_find(s_pool, slug) >= 0
                                       ? s_pool->e[orb_pool_find(s_pool, slug)].size : 0)) / 1024));
             else
@@ -2681,66 +2586,49 @@ esp_err_t orb_theme_install_bundle(const char *id, char *why, size_t whysz)
     uint32_t serial = 1;
     {
         const int old = orb_pool_find(s_pool, slug);
-        if (old >= 0 && esp_partition_read(p, s_pool->e[old].off + SLOT_HDR, raw, sizeof raw) == ESP_OK) {
+        if (old >= 0) orb_pool_pages(s_pool, (uint32_t)old, &s_job_pg);
+        if (old >= 0 && pg_read(&s_job_pg, SLOT_HDR, raw, sizeof raw) == ESP_OK) {
             orb_bundle3_hdr_t o3;
             if (orb_bundle3_hdr_parse(raw, &o3) == NULL)   serial = o3.serial + 1;
         }
     }
 
-    /* The target: the pool takes this app's old theme out, packs every other app's down
-     * over the gap (the map is down, so nothing reads a byte it moves), and answers
-     * where the packed run ends. Every SLOT_* offset below is relative to it. */
+    /* The target (theme-cache-plan §4.1): the pool lets this app's old theme go, evicts the
+     * least recently worn if it must, and answers free pages for the new bytes. Nothing
+     * moves; the pages are free space until the commit names them. Every SLOT_* offset below
+     * is the entry's own, through its pages. */
     if (!s_install_fill) staged_mark(id);
-    uint32_t tgt = 0;
-    s_pool_io.progress = s_install_fill ? fill_room_progress : room_progress;
-    if (s_install_fill) {
-        /* what the eviction will move: every kept entry above the lowest one it drops */
-        const char *o2[CACHE_APPS];
-        const uint32_t n2 = order_list(o2);
-        uint32_t m = 0, moves = 0, low = UINT32_MAX;
-        if (orb_pool_evictions_kind(s_pool, slug, ORB_POOL_DISPLAY, entry_size, o2, n2, NULL, &m) == 0) {
-            for (uint32_t k = 0; k < s_pool->n; k++)
-                if ((m >> k) & 1u && s_pool->e[k].off < low) low = s_pool->e[k].off;
-            for (uint32_t k = 0; k < s_pool->n; k++)
-                if (!((m >> k) & 1u) && s_pool->e[k].off > low) moves += s_pool->e[k].size;
-        }
-        s_room_acc = s_room_last = s_room_last_n = 0;
-        s_room_total = moves + entry_size;
-        s_fill_base = 0;
-        fill_show(0, s_room_total);
-    }
+    orb_pool_pages_t *pg = &s_job_pg;
     const char *ord[CACHE_APPS];
     const uint32_t nord = order_list(ord);
     char gone[ORB_POOL_ENTRIES][ORB_POOL_SLUG_MAX];
     uint32_t ngone = 0;
-    const int pr = orb_pool_reserve_lru(&s_pool_io, s_pool, &s_pool_which, slug, entry_size,
-                                        ord, nord, NULL, &tgt, gone, &ngone);
+    const int pr = orb_pool_reserve(&s_pool_io, s_pool, &s_pool_which, slug, ORB_POOL_DISPLAY,
+                                    entry_size, ord, nord, NULL, pg, gone, &ngone);
     for (uint32_t i = 0; i < ngone; i++)
         ESP_LOGI(TAG, "making room: %s's theme left the pool (least recently on the glass; its file "
                       "stays on the card)", gone[i]);
-    s_pool_io.progress = NULL;
     uint32_t art_crc = 0;
     esp_err_t e = pr ? ESP_FAIL : ESP_OK;
     if (pr) w = "the theme area would not make room";
     fill_mark_t *mark = NULL;
     if (s_install_fill && e == ESP_OK) {
-        /* theme-cache-plan §2.4: the copy writes free space alone, so the other apps bind
+        /* theme-cache-plan §2.4: the copy writes free pages alone, so the other apps bind
          * again now; and a fill paused here before goes on from its mark, if the table is the
-         * one it left and the room is where it was */
+         * one it left (so the free pages it answered are the same) */
         s_pool_busy = false;
-        s_fill_base = s_room_total > entry_size ? s_room_total - entry_size : 0;
         const uint32_t tcrc = esp_rom_crc32_le(0, (const uint8_t *)s_pool, sizeof *s_pool);
         mark = &s_fill_mark;
         if (mark->valid && (strcmp(mark->slug, slug) || mark->file_crc != file_geom_crc ||
-                            mark->at != tgt || mark->table_crc != tcrc || ngone))
+                            mark->at != pg->off[0] || mark->table_crc != tcrc || ngone))
             mark->valid = false;
         if (mark->valid)
             ESP_LOGI(TAG, "fill: %s goes on from %u KB (paused there)", slug, (unsigned)(mark->erased / 1024));
         strlcpy(mark->slug, slug, sizeof mark->slug);
-        mark->file_crc = file_geom_crc; mark->at = tgt; mark->table_crc = tcrc;
+        mark->file_crc = file_geom_crc; mark->at = pg->off[0]; mark->table_crc = tcrc;
     }
     if (e == ESP_OK)
-        e = copy_bundle3(fd, &b, region, file_art_base, p, tgt,
+        e = copy_bundle3(fd, &b, region, file_art_base, pg,
                          &art_crc, &w, s_install_fill ? fill_progress : store_progress, NULL, mark);
     if (mark && e != ESP_OK && e != ESP_ERR_TIMEOUT) mark->valid = false;   /* only a pause goes on */
     card_close(fd);
@@ -2758,11 +2646,11 @@ esp_err_t orb_theme_install_bundle(const char *id, char *why, size_t whysz)
         return install_failed(e, w, why, whysz);
     }
 
-    const esp_err_t ee = esp_partition_erase_range(p, tgt, THEME_SECTOR);
+    const esp_err_t ee = pg_erase(pg, SLOT_HDR, THEME_SECTOR);
     if (ee == ESP_OK) {
         uint32_t hdr[W_WORDS];
         build_slot_hdr3(hdr, &h, art_crc, serial, file_geom_crc);
-        e = esp_partition_write(p, tgt, hdr, sizeof(hdr));
+        e = pg_write(pg, SLOT_HDR, hdr, sizeof(hdr));
         if (e != ESP_OK) w = "could not make the new slot live";
     } else {
         e = ee;
@@ -2775,8 +2663,7 @@ esp_err_t orb_theme_install_bundle(const char *id, char *why, size_t whysz)
         memset(&pe, 0, sizeof pe);
         strlcpy(pe.slug, slug, sizeof pe.slug);
         strlcpy(pe.name, h.name, sizeof pe.name);
-        pe.off = tgt;
-        pe.size = entry_size;
+        pe.size = orb_pool_round(entry_size);
         pe.geom_size = SLOT_GEOM_OFF + h.geom_size;
         pe.art_off = SLOT_ART_OFF;
         pe.art_size = art_span;
@@ -2785,8 +2672,8 @@ esp_err_t orb_theme_install_bundle(const char *id, char *why, size_t whysz)
         pe.serial = serial;
         pe.abi = h.geom_abi;
         pe.kind = ORB_POOL_DISPLAY;                /* theme-cache-plan §2.6: the theme as it draws */
-        if (orb_pool_crc(&s_pool_io, tgt, pe.geom_size, &pe.geom_crc) ||
-            orb_pool_commit(&s_pool_io, s_pool, &s_pool_which, &pe)) {
+        if (orb_pool_pcrc(&s_pool_io, pg, 0, pe.geom_size, &pe.geom_crc) ||
+            orb_pool_commit(&s_pool_io, s_pool, &s_pool_which, &pe, pg)) {
             e = ESP_FAIL;
             w = "the theme area's table would not take the new theme";
         }
@@ -2805,15 +2692,25 @@ esp_err_t orb_theme_install_bundle(const char *id, char *why, size_t whysz)
      * which binds no more (ruling 8): the app runs bare and its log says to send it again. */
     if (s_install_fill) {
         s_pool_busy = false;
-        ESP_LOGI(TAG, "fill: %s's theme \"%s\" is back in the pool (%u KB in %u ms)", slug, h.name,
-                 (unsigned)(entry_size / 1024), (unsigned)((esp_timer_get_time() - t0) / 1000));
+        ESP_LOGI(TAG, "fill: %s's theme \"%s\" is back in the pool (%u KB on %u pages in %u ms)",
+                 slug, h.name, (unsigned)(entry_size / 1024), (unsigned)pg->n,
+                 (unsigned)((esp_timer_get_time() - t0) / 1000));
+        /* §4.1: an app with sounds and no voice bank at all gets one from the entry just
+         * written, mapped now; one made from another file is the reconcile's (a store) */
+        if (s_store_snd.n && orb_pool_find_kind(s_pool, slug, ORB_POOL_VOICE) < 0) {
+            const char *vw = NULL;
+            if (store_voice(slug, h.name, pg, sec_art_off, file_geom_crc, serial, &vw) != ESP_OK)
+                ESP_LOGE(TAG, "fill: %s's voice bank: %s", slug, vw ? vw : "failed");
+            else
+                voice_add(slug);
+        }
         return ESP_OK;
     }
     {
         const char *vw = NULL;
         choice_set(slug, id, file_geom_crc);       /* theme-cache-plan §2.1: what it wears */
         order_touch(slug);
-        if (store_voice(p, slug, h.name, sec_art_off, file_geom_crc, serial, &vw) != ESP_OK)
+        if (store_voice(slug, h.name, pg, sec_art_off, file_geom_crc, serial, &vw) != ESP_OK)
             ESP_LOGE(TAG, "\"%s\": its voice bank: %s — the app runs bare until it is sent again",
                      h.name, vw ? vw : "failed");
     }
@@ -2822,7 +2719,7 @@ esp_err_t orb_theme_install_bundle(const char *id, char *why, size_t whysz)
     s_bundle_bytes = h.art_size;
     orb_boot_overlay("stored, rebooting", h.art_size, h.art_size, 0);
     ESP_LOGI(TAG, "bundle \"%s\" (%s) in %s in %u ms — stored, drawn on the next boot",
-             h.name, id, slot_name(tgt), (unsigned)s_bundle_ms);
+             h.name, id, slot_name(pg->off[0]), (unsigned)s_bundle_ms);
     return ESP_OK;
 }
 
@@ -2873,13 +2770,12 @@ static clk_comp_t s_b3_comps[CLK_COMP_MAX];   /* D32 slice 2: the FORMAT 3 dial'
                                                * and a dial's tables outlive its
                                                * themes. */
 
-static esp_err_t adopt_bundle3(const esp_partition_t *p, const orb_bundle3_hdr_t *h,
-                               const uint32_t *raw, const char *src_name,
-                               uint32_t slot_hdr_base)
+static esp_err_t adopt_bundle3(const orb_bundle3_hdr_t *h, const uint32_t *raw,
+                               const char *src_name, const orb_pool_pages_t *pg)
 {
     uint8_t *region = heap_caps_malloc(h->geom_size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (!region) return ESP_ERR_NO_MEM;
-    if (esp_partition_read(p, slot_hdr_base + SLOT_GEOM_OFF, region, h->geom_size) != ESP_OK) {
+    if (pg_read(pg, SLOT_GEOM_OFF, region, h->geom_size) != ESP_OK) {
         heap_caps_free(region);
         return ESP_FAIL;
     }
@@ -2958,7 +2854,10 @@ static esp_err_t adopt_bundle3(const esp_partition_t *p, const orb_bundle3_hdr_t
     /* D39 stopped every voice here, because voices read PCM out of the bank this map
      * replaces. theme-cache-plan §2.6: they read the voice banks now, mapped apart from
      * boot and never remapped, so a bind no longer silences a chime. */
-    const esp_err_t fe = art_bank_map(slot_hdr_base + SLOT_ART_OFF, span);
+    /* §4.1: the banks' pages, from the entry's second page on, as one window */
+    const uint32_t first = SLOT_ART_OFF / ORB_POOL_PAGE, npg = (span + ORB_POOL_PAGE - 1) / ORB_POOL_PAGE;
+    const esp_err_t fe = first + npg <= pg->n ? art_bank_map_pages(&pg->off[first], npg, span)
+                                              : ESP_ERR_INVALID_SIZE;
     if (fe != ESP_OK) {
         heap_caps_free(region);              /* the parse's copy dies with the map */
         return fe;
@@ -3047,40 +2946,55 @@ static esp_err_t adopt_bundle3(const esp_partition_t *p, const orb_bundle3_hdr_t
  * turns the slot's pixels into a dial; it installs and erases nothing, so the
  * no-write-in-the-fallback rule that outlived the A/B pair holds. */
 /* ---- theme-cache-plan §2.6: every app's voice bank, mapped from boot ----------------------
- * The voice banks are packed first in the pool, so one mapping of [0, voice end) holds them
- * all, and a voice reads its PCM through it whatever the stage is bound to. Each bank is
- * checked against its entry's CRCs through that mapping before it is listed. Stores reboot,
- * so the mapping is made once and never moves. */
-typedef struct { char slug[ORB_POOL_SLUG_MAX]; uint32_t src_crc; const uint8_t *bank; orb_voice_t v; } voice_reg_t;
+ * Each voice bank has a window of its own (§4.1: its pages are wherever they were free), made
+ * at boot or when a fill makes the bank, and checked against its entry's CRCs through it
+ * before it is listed. A voice reads its PCM through it whatever the stage is bound to. A
+ * store reboots, so a bank is never replaced under a voice. */
+typedef struct {
+    char slug[ORB_POOL_SLUG_MAX]; uint32_t src_crc; const uint8_t *bank; orb_voice_t v;
+    orb_pagemap_t pm;
+} voice_reg_t;
 static voice_reg_t *s_voices;
-static uint32_t     s_nvoices;
-static const void  *s_vmap;
-static esp_partition_mmap_handle_t s_vmap_h;
+static volatile uint32_t s_nvoices;
 
-static void voices_map(const esp_partition_t *p)
+static void voice_add(const char *slug)
 {
-    const uint32_t end = orb_pool_voice_end(s_pool);
-    if (end <= ORB_POOL_FIRST) return;
-    if (esp_partition_mmap(p, 0, end, ESP_PARTITION_MMAP_DATA, &s_vmap, &s_vmap_h) != ESP_OK) {
-        ESP_LOGE(TAG, "voice banks: %u B would not map — no app sounds this boot", (unsigned)end);
-        s_vmap = NULL;
+    const esp_partition_t *p = art_bank_partition();
+    const int k = s_pool ? orb_pool_find_kind(s_pool, slug, ORB_POOL_VOICE) : -1;
+    if (!p || k < 0) return;
+    if (!s_voices) s_voices = heap_caps_calloc(ORB_POOL_ENTRIES, sizeof *s_voices, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!s_voices || s_nvoices >= ORB_POOL_ENTRIES) return;
+    for (uint32_t i = 0; i < s_nvoices; i++) if (!strcmp(s_voices[i].slug, slug)) return;
+    const orb_pool_entry_t *e = &s_pool->e[k];
+    EXT_RAM_BSS_ATTR static orb_pool_pages_t vpg;
+    orb_pool_pages(s_pool, (uint32_t)k, &vpg);
+    voice_reg_t *r = &s_voices[s_nvoices];
+    memset(r, 0, sizeof *r);
+    if (orb_pagemap(p, vpg.off, vpg.n, &r->pm) != ESP_OK) {
+        ESP_LOGE(TAG, "%s's voice bank: %u pages would not map — no sounds for it this boot", e->slug, (unsigned)vpg.n);
         return;
     }
-    s_voices = heap_caps_calloc(ORB_POOL_ENTRIES, sizeof *s_voices, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    for (uint32_t k = 0; s_voices && k < s_pool->n && s_pool->e[k].kind == ORB_POOL_VOICE; k++) {
-        const orb_pool_entry_t *e = &s_pool->e[k];
-        const uint8_t *b = (const uint8_t *)s_vmap + e->off;
-        voice_reg_t *r = &s_voices[s_nvoices];
-        const char *why = esp_rom_crc32_le(0, b, e->geom_size) != e->geom_crc ||
-                          esp_rom_crc32_le(0, b + e->art_off, e->art_size) != e->art_crc
-                          ? "its bytes are not its CRCs" : orb_voice_parse(b, e->size, &r->v);
-        if (why) { ESP_LOGE(TAG, "%s's voice bank refused: %s", e->slug, why); continue; }
-        strlcpy(r->slug, e->slug, sizeof r->slug);
-        r->src_crc = e->file_crc;
-        r->bank = b;
-        s_nvoices++;
-        ESP_LOGI(TAG, "%s's voice bank: %u sounds, %u KB", e->slug, (unsigned)r->v.n, (unsigned)(e->size / 1024));
+    const uint8_t *b = r->pm.ptr;
+    const char *why = esp_rom_crc32_le(0, b, e->geom_size) != e->geom_crc ||
+                      esp_rom_crc32_le(0, b + e->art_off, e->art_size) != e->art_crc
+                      ? "its bytes are not its CRCs" : orb_voice_parse(b, e->size, &r->v);
+    if (why) {
+        ESP_LOGE(TAG, "%s's voice bank refused: %s", e->slug, why);
+        orb_pageunmap(&r->pm);
+        return;
     }
+    strlcpy(r->slug, e->slug, sizeof r->slug);
+    r->src_crc = e->file_crc;
+    r->bank = b;
+    s_nvoices++;                                   /* listed last: a reader sees it whole */
+    ESP_LOGI(TAG, "%s's voice bank: %u sounds, %u KB on %u pages", e->slug, (unsigned)r->v.n,
+             (unsigned)(e->size / 1024), (unsigned)vpg.n);
+}
+
+static void voices_map(void)
+{
+    for (uint32_t k = 0; k < s_pool->n; k++)
+        if (s_pool->e[k].kind == ORB_POOL_VOICE) voice_add(s_pool->e[k].slug);
 }
 
 const orb_voice_t *orb_theme_voice(const char *slug, const uint8_t **bank)
@@ -3099,17 +3013,28 @@ static bool voice_missing(const char *slug, uint32_t file_crc)
     return true;
 }
 
-static esp_err_t adopt_default_bundle(const esp_partition_t *p, uint32_t base)
+/* Entry k's identity for "already bound": its pages and its CRCs (never 0). */
+EXT_RAM_BSS_ATTR static orb_pool_pages_t s_bind_pg;
+static uint32_t entry_key(uint32_t k)
+{
+    orb_pool_pages_t *pg = &s_bind_pg;
+    orb_pool_pages(s_pool, k, pg);
+    const uint32_t c = esp_rom_crc32_le(s_pool->e[k].geom_crc, (const uint8_t *)pg->off, pg->n * 4u);
+    return (c ^ s_pool->e[k].art_crc) | 1u;
+}
+
+static esp_err_t adopt_default_bundle(uint32_t k)
 {
     uint32_t raw[W_WORDS];
-    if (esp_partition_read(p, base + SLOT_HDR, raw, sizeof raw) != ESP_OK)
+    orb_pool_pages(s_pool, k, &s_bind_pg);
+    if (pg_read(&s_bind_pg, SLOT_HDR, raw, sizeof raw) != ESP_OK)
         return ESP_FAIL;
     if (raw[W_MAGIC] != THEME_MAGIC || raw[W_FORMAT] != ORB_BUNDLE3_FORMAT)
         return ESP_ERR_NOT_FOUND;           /* not a bundle: erased, or a FORMAT 2 blob */
     orb_bundle3_hdr_t h;
     if (orb_bundle3_hdr_parse(raw, &h) != NULL)
         return ESP_ERR_INVALID_CRC;         /* claims 3, header will not check */
-    return adopt_bundle3(p, &h, raw, "slot", base + SLOT_HDR);
+    return adopt_bundle3(&h, raw, "slot", &s_bind_pg);
 }
 
 /* One slot's header, read and classified. Returns whether the slot holds a parseable
@@ -3117,11 +3042,11 @@ static esp_err_t adopt_default_bundle(const esp_partition_t *p, uint32_t base)
  * bundle, the header checksum says torn. Boot and the scan probe the ONE slot at
  * offset 0 with it; the `staged` witness expires only against this header, the header
  * the store actually wrote. */
-static bool slot_probe3(const esp_partition_t *p, uint32_t base, orb_bundle3_hdr_t *b3,
+static bool slot_probe3(const orb_pool_pages_t *pg, orb_bundle3_hdr_t *b3,
                         uint32_t raw[W_WORDS], bool *claims3)
 {
     *claims3 = false;
-    if (esp_partition_read(p, base, raw, W_WORDS * 4) != ESP_OK) return false;
+    if (pg_read(pg, SLOT_HDR, raw, W_WORDS * 4) != ESP_OK) return false;
     if (raw[W_MAGIC] != THEME_MAGIC || raw[W_FORMAT] != ORB_BUNDLE3_FORMAT) return false;
     *claims3 = true;
     return orb_bundle3_hdr_parse(raw, b3) == NULL;
@@ -3134,14 +3059,17 @@ static bool slot_probe3(const esp_partition_t *p, uint32_t base, orb_bundle3_hdr
  * nothing is erased: a cut before the table lands leaves the slot to carry again. */
 static void pool_carry(const esp_partition_t *p)
 {
+    (void)p;
     orb_bundle3_hdr_t h;
     uint32_t raw[W_WORDS];
     bool claims;
-    if (!slot_probe3(p, SLOT_HDR, &h, raw, &claims)) return;   /* an empty pool */
+    EXT_RAM_BSS_ATTR static orb_pool_pages_t cpg;    /* the slot's own pages: from page 0 on */
+    cpg.n = 1; cpg.off[0] = 0;
+    if (!slot_probe3(&cpg, &h, raw, &claims)) return;   /* an empty pool */
     uint8_t *region = heap_caps_malloc(h.geom_size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (!region) { ESP_LOGE(TAG, "pool carry: no memory for the slot's index"); return; }
     orb_bundle_t b;
-    const char *why = esp_partition_read(p, SLOT_GEOM_OFF, region, h.geom_size) != ESP_OK
+    const char *why = pg_read(&cpg, SLOT_GEOM_OFF, region, h.geom_size) != ESP_OK
                     ? "the slot's index would not read"
                     : orb_bundle_parse_region(&h, region, h.geom_size, SLOT_CAP, &b);
     if (!why && b.n_sections < 1) why = "the slot carries no section";
@@ -3155,18 +3083,21 @@ static void pool_carry(const esp_partition_t *p)
             if (b.sec[i].art_off + b.sec[i].art_size > end) end = b.sec[i].art_off + b.sec[i].art_size;
         e.geom_size = SLOT_GEOM_OFF + h.geom_size;
         e.art_off   = SLOT_ART_OFF;
-        e.art_size  = orb_pool_round(end - SLOT_ART_OFF);
-        e.size      = SLOT_ART_OFF + e.art_size;
+        e.art_size  = (end - SLOT_ART_OFF + THEME_SECTOR - 1) & ~(THEME_SECTOR - 1);
+        e.size      = orb_pool_round(SLOT_ART_OFF + e.art_size);
         e.file_crc  = raw[W_SCR_H];
         e.serial    = h.serial;
         e.abi       = h.geom_abi;
         e.kind      = ORB_POOL_DISPLAY;
-        if (orb_pool_crc(&s_pool_io, 0, e.geom_size, &e.geom_crc) ||
-            orb_pool_crc(&s_pool_io, e.art_off, e.art_size, &e.art_crc))
+        cpg.n = e.size / ORB_POOL_PAGE;
+        for (uint32_t i = 0; i < cpg.n && i < ORB_POOL_PAGES; i++) cpg.off[i] = i * ORB_POOL_PAGE;
+        if (cpg.n > ORB_POOL_PAGES) why = "the slot is bigger than the pool";
+        else if (orb_pool_pcrc(&s_pool_io, &cpg, 0, e.geom_size, &e.geom_crc) ||
+                 orb_pool_pcrc(&s_pool_io, &cpg, e.art_off, e.art_size, &e.art_crc))
             why = "the slot would not read back";
     }
     heap_caps_free(region);
-    if (!why && orb_pool_commit(&s_pool_io, s_pool, &s_pool_which, &e) != 0)
+    if (!why && orb_pool_commit(&s_pool_io, s_pool, &s_pool_which, &e, &cpg) != 0)
         why = "the pool's table would not write";
     if (why) { ESP_LOGE(TAG, "pool carry: %s — the slot stays as it is", why); return; }
     ESP_LOGI(TAG, "pool: carried the one slot into the pool as %s's theme \"%s\" (%u B)",
@@ -3223,13 +3154,13 @@ esp_err_t orb_theme_bind(const char *slug)
          * mid-fill, "Cache disabled but cached memory region accessed"). */
         if (s_active_valid) use_no_art();
         art_bank_unmap();
-        s_live_base = 0;
+        s_live_key = 0;
         return ESP_ERR_NOT_FOUND;
     }
-    if (s_active_valid && s_live_base == s_pool->e[k].off && s_live_sec &&
-        !strcmp(s_live_sec->slug, slug))
+    const uint32_t key = entry_key((uint32_t)k);
+    if (s_active_valid && s_live_key == key && s_live_sec && !strcmp(s_live_sec->slug, slug))
         return ESP_OK;
-    const esp_err_t e = adopt_default_bundle(p, s_pool->e[k].off);
+    const esp_err_t e = adopt_default_bundle((uint32_t)k);
     if (e != ESP_OK) {
         ESP_LOGE(TAG, "bind: %s's theme would not load (%s)", slug, esp_err_to_name(e));
         use_no_art();
@@ -3242,7 +3173,7 @@ esp_err_t orb_theme_bind(const char *slug)
         use_no_art();
         return ESP_ERR_INVALID_STATE;
     }
-    s_live_base = s_pool->e[k].off;
+    s_live_key = key;
     order_touch(slug);                               /* theme-cache-plan §2.1 */
     ESP_LOGI(TAG, "bound %s's theme \"%s\"", slug, s_active_name);
     return ESP_OK;
@@ -3301,26 +3232,35 @@ esp_err_t orb_theme_boot(void)
     /* The pool (docs/theme-pool-plan.md): its table, the one slot carried into it on
      * the first boot that finds none, a cut store's or compaction's repair, then the
      * entry this boot draws. No pool, no theme: the base face, as an empty slot was. */
-    s_live_base = 0;
+    s_live_key = 0;
     int pr = pool_io(p) ? orb_pool_load(&s_pool_io, s_pool, &s_pool_which) : ORB_POOL_ERR_ARG;
-    if (!pr && !s_pool_which) pool_carry(p);
-    /* A cut store or compaction leaves a theme mid-move, or a hole: the repair reads
-     * the moving one back and packs the pool before anything draws. Said here, because
-     * a repair that moves megabytes holds the boot dark for seconds (Bronze, 2026-11-04:
-     * 23 s for a 2.8 MB theme). */
-    for (uint32_t k = 0; !pr && k < s_pool->n; k++)
-        if (s_pool->e[k].state != ORB_POOL_LIVE)
-            ESP_LOGW(TAG, "pool: %s's theme was mid-move when the power went; reading it back",
-                     s_pool->e[k].slug);
-    if (!pr && !orb_pool_packed(s_pool))
-        ESP_LOGW(TAG, "pool: a store or removal was cut; packing the pool before the dial draws");
-    if (!pr) {
-        s_pool_io.progress = repair_progress;
-        pr = orb_pool_repair(&s_pool_io, s_pool, &s_pool_which);
-        s_pool_io.progress = NULL;
-    }
     cache_load();                                      /* theme-cache-plan §2.1 */
     gone_load();                                       /* why a theme is missing */
+    if (!pr && s_pool_which && s_pool->format != ORB_POOL_FORMAT) {
+        /* §4.1's carry: a packed pool on the 4 KB grid is not on pages, so it is not carried.
+         * What it says each app wears is kept (the choices, seeded below from its entries if
+         * missing), and the pool starts empty: each app's theme, voice bank and all, fills
+         * from the card the first time it opens. */
+        ESP_LOGW(TAG, "pool: a format %u table with %u entries — not on pages; every theme fills "
+                      "again from the card as its app opens", (unsigned)s_pool->format, (unsigned)s_pool->n);
+        bool seeded = false;
+        for (uint32_t k = 0; k < s_pool->n; k++) {
+            const orb_pool_entry_t *e = &s_pool->e[k];
+            if (e->kind != ORB_POOL_DISPLAY) continue;
+            uint32_t c = 0;
+            while (c < s_cache.n_choice && strcmp(s_cache.c[c].slug, e->slug)) c++;
+            if (c < s_cache.n_choice || s_cache.n_choice >= CACHE_APPS) continue;
+            strlcpy(s_cache.c[c].slug, e->slug, sizeof s_cache.c[c].slug);
+            theme_stem(e->slug, e->name, s_cache.c[c].stem, sizeof s_cache.c[c].stem);
+            s_cache.c[c].file_crc = e->file_crc;
+            s_cache.n_choice++;
+            seeded = true;
+        }
+        if (seeded) cache_save();
+        pr = orb_pool_reset(&s_pool_io, s_pool, &s_pool_which);
+    } else if (!pr && !s_pool_which) {
+        pool_carry(p);
+    }
     if (!pr) {
         /* a theme stored before the choices were kept: its entry says what it wears, so
          * the choice is seeded from it while the entry is still here to say it */
@@ -3340,14 +3280,14 @@ esp_err_t orb_theme_boot(void)
         }
         if (seeded) cache_save();
     }
-    if (!pr) voices_map(p);                            /* theme-cache-plan §2.6 */
+    if (!pr) voices_map();                             /* theme-cache-plan §2.6 */
     const int live = pr ? -1 : pool_live_entry();
     if (pr)
         ESP_LOGE(TAG, "the theme pool would not load (%d) — base digital face", pr);
     else
         ESP_LOGI(TAG, "pool: %u theme%s, %u of %u B used", (unsigned)s_pool->n,
-                 s_pool->n == 1 ? "" : "s", (unsigned)orb_pool_used_end(s_pool),
-                 (unsigned)ORB_POOL_END);
+                 s_pool->n == 1 ? "" : "s", (unsigned)orb_pool_used(s_pool),
+                 (unsigned)ORB_POOL_CAP);
     if (live < 0) {
         /* Nothing to draw. A store's witness that outlived it says which store did
          * not land: no entry can answer it, so it stays up for the row to read. */
@@ -3357,12 +3297,12 @@ esp_err_t orb_theme_boot(void)
         use_no_art();
         return ESP_OK;
     }
-    s_live_base = s_pool->e[live].off;
+    s_live_key = entry_key((uint32_t)live);          /* and s_bind_pg is its pages */
 
     orb_bundle3_hdr_t b3;
     uint32_t raw3[W_WORDS];
     bool claims3 = false;
-    const bool slot_is_bundle = slot_probe3(p, s_live_base + SLOT_HDR, &b3, raw3, &claims3);
+    const bool slot_is_bundle = slot_probe3(&s_bind_pg, &b3, raw3, &claims3);
 
     /* The witness is the card STEM the store was asked for. Its slug is the one
      * the install hashed with, so the landing test re-derives the id from the
@@ -3387,7 +3327,7 @@ esp_err_t orb_theme_boot(void)
      * bundle with no clock section — is the base digital face, with the reason on the
      * serial log for whoever reflashes. There is no second slot to reach across to and
      * no factory copy to fall back on: a torn store answers one re-store. */
-    esp_err_t de = adopt_default_bundle(p, s_live_base);
+    esp_err_t de = adopt_default_bundle((uint32_t)live);
     if (de == ESP_OK && voice_missing(s_pool->e[live].slug, s_pool->e[live].file_crc)) {
         ESP_LOGE(TAG, "%s's theme \"%s\" has sounds and was stored before voice banks "
                       "(theme-cache-plan ruling 8) — send it again", s_pool->e[live].slug, s_active_name);

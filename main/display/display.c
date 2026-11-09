@@ -1972,6 +1972,12 @@ void display_glass_hold(bool on)
                                        MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
 #endif
     s_glass_held = on;
+#if CONFIG_ORB_DEBUG_HTTP
+    /* the bench's copy of the held frames goes with the hold: kept, it was 434 KB of PSRAM
+     * for every boot after the carousel's first open (owner, 2026-11-09). Its readers and
+     * writers run on this task, while the glass is held. */
+    if (!on && s_fx_shadow) { heap_caps_free(s_fx_shadow); s_fx_shadow = NULL; }
+#endif
     if (!on) {
         memset(s_push_row, 1, sizeof(s_push_row));
         lv_obj_invalidate(lv_screen_active());

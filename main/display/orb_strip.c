@@ -22,6 +22,8 @@
 #include "orb_jobs.h"
 #include "orb_sd.h"
 #include "orb_theme.h"
+#include "orb_inflate.h"     /* a thumbnail shrunk as it streams */
+#include "orb_disc.h"
 #include "orb_ui_icons.h"   /* §61: the drawn Settings card */
 #include "orb_app_wasm.h"   /* §61: an app's own icon */
 
@@ -99,7 +101,7 @@ static volatile uint32_t s_thumb_gen; /* bumped at each thumbnail built */
 static uint32_t  s_thumb_seen;
 EXT_RAM_BSS_ATTR static StaticSemaphore_t s_pv_mx_buf;
 static SemaphoreHandle_t s_pv_mx;   /* a thumbnail's publish against the close's free */
-static uint16_t *s_snap;        /* W x H: the glass at open */
+static bool      s_in_wait;     /* IN: waiting (0.4 s at most) for the centre's full picture */
 static uint16_t *s_names;       /* MAX_ITEMS name planes, back to back */
 
 static item_t    s_it[MAX_ITEMS];
@@ -276,10 +278,103 @@ static uint16_t *pv_inflate(const char *slug, uint16_t *w_out)
     return pv_read(stem, w_out, slug);                  /* a raw preview, an older bake */
 }
 
+/* A thumbnail shrunk as the preview streams out of the inflater (owner, 2026-11-09): each
+ * disc row is averaged into its PV row on the way, the same box as box_down over the
+ * expanded square (a corner pixel counts as black), so no full-glass buffer is ever held. */
+typedef struct {
+    uint32_t side, y, x, x1;    /* the source row, the next pixel in it, its span's end */
+    int      dy;                /* the thumbnail row being summed */
+    uint32_t y_hi;              /* the first source row past it */
+    uint32_t y_lo;
+    int      have;              /* a pixel's first byte, split across two sink calls */
+    uint8_t  lo;
+    uint16_t *dst;
+    uint8_t  xmap[W];           /* source column -> thumbnail column */
+    uint8_t  cw[PV];            /* source columns a thumbnail column takes */
+    uint32_t acc[PV][3];
+} shrink_t;
+
+static void box_of(uint32_t d, uint32_t sw, uint32_t *lo, uint32_t *hi)
+{
+    *lo = d * sw / PV;
+    *hi = (d + 1) * sw / PV;
+    if (*hi < *lo + 1) *hi = *lo + 1;
+}
+
+static void shrink_row_done(shrink_t *k)
+{
+    const uint32_t rows = k->y_hi - k->y_lo;
+    for (int d = 0; d < PV; d++) {
+        const uint32_t n = (uint32_t)k->cw[d] * rows;
+        const uint32_t r = n ? k->acc[d][0] / n : 0, g = n ? k->acc[d][1] / n : 0, b = n ? k->acc[d][2] / n : 0;
+        k->dst[(size_t)k->dy * PV + d] = wire((uint16_t)((r << 11) | (g << 5) | b));
+    }
+    memset(k->acc, 0, sizeof k->acc);
+    k->dy++;
+    if (k->dy < PV) box_of((uint32_t)k->dy, k->side, &k->y_lo, &k->y_hi);
+}
+
+static void shrink_sink(void *ctx, const uint8_t *p, size_t n)
+{
+    shrink_t *k = ctx;
+    for (size_t i = 0; i < n; i++) {
+        if (!k->have) { k->lo = p[i]; k->have = 1; continue; }
+        k->have = 0;
+        if (k->y >= k->side || k->dy >= PV) return;
+        const uint16_t c = (uint16_t)(k->lo | (p[i] << 8));
+        uint32_t *a = k->acc[k->xmap[k->x]];
+        a[0] += c >> 11; a[1] += (c >> 5) & 63; a[2] += c & 31;
+        if (k->x++ < k->x1) continue;
+        k->y++;                                          /* the row's span is done */
+        if (k->y >= k->y_hi) shrink_row_done(k);
+        if (k->y < k->side) { uint32_t x0; orb_disc_span_n(k->side, k->y, &x0, &k->x1); k->x = x0; }
+    }
+}
+
+/* A deflated disc of `side` (>= PV) straight into a PV thumbnail, or NULL. */
+static uint16_t *shrink_disc(const uint8_t *z, uint32_t n, uint16_t side)
+{
+    if (side < PV || side > W) return NULL;
+    shrink_t *k = heap_caps_calloc(1, sizeof *k, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    uint16_t *dst = heap_caps_malloc((size_t)PV * PV * 2, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    bool ok = false;
+    if (k && dst) {
+        k->side = side;
+        k->dst = dst;
+        for (uint32_t d = 0; d < PV; d++) {
+            uint32_t lo, hi;
+            box_of(d, side, &lo, &hi);
+            for (uint32_t x = lo; x < hi && x < side; x++) k->xmap[x] = (uint8_t)d;
+            k->cw[d] = (uint8_t)((hi < side ? hi : side) - lo);
+        }
+        box_of(0, side, &k->y_lo, &k->y_hi);
+        uint32_t x0;
+        orb_disc_span_n(side, 0, &x0, &k->x1);
+        k->x = x0;
+        ok = orb_inflate_stream(z, n, orb_disc_px(side) * 2u, shrink_sink, k) && k->dy == PV;
+    }
+    heap_caps_free(k);
+    if (!ok) { heap_caps_free(dst); return NULL; }
+    return dst;
+}
+
 /* One app's thumbnail: its preview boxed down to PV, wire order. */
 static uint16_t *pv_thumb(const char *slug)
 {
     const int64_t t0 = esp_timer_get_time();
+    {   /* from flash, shrunk on the way: no full-glass buffer */
+        uint32_t n = 0;
+        uint16_t side = 0;
+        const uint8_t *z = orb_theme_preview_hold(slug, &n, &side);
+        if (z) {
+            uint16_t *t = side >= PV ? shrink_disc(z, n, side) : NULL;
+            orb_theme_preview_release();
+            if (t) {
+                ESP_LOGI(TAG, "thumbnail %s: %d ms (streamed)", slug, (int)((esp_timer_get_time() - t0) / 1000));
+                return t;
+            }
+        }
+    }
     uint16_t w = 0;
     uint16_t *buf = pv_inflate(slug, &w);
     if (buf && w > PV) {
@@ -621,7 +716,7 @@ static void layout(float pos, float z, float k)
         q->px = it->px;
         q->side = it->side;
         /* §60: the centre growing toward the glass draws from its full plane once it is in */
-        if (ad < 0.5f && z > 0.0f && it->px != s_snap && it->app && s_hi_ready && s_hi &&
+        if (ad < 0.5f && z > 0.0f && it->app && s_hi_ready && s_hi &&
             strcmp(it->app->slug, s_hi_slug) == 0) {
             q->px = s_hi;
             q->side = W;
@@ -639,18 +734,6 @@ static struct {
     int64_t  last_poll_us;
 } s_m;
 
-/* The glass as the carousel found it is spent once it opens an app: freed, not kept for the
- * next open (one malloc then). Kept, its 434 KB of PSRAM starved the opened app — a fill
- * landing under the face found no room for the app's layer table (Bronze 2026-11-08: 15 of
- * 15 rows refused). */
-static void snap_free(void)
-{
-    if (!s_snap) return;
-    for (int i = 0; i < s_n; i++)
-        if (s_it[i].px == s_snap) { s_it[i].px = NULL; }
-    heap_caps_free(s_snap);
-    s_snap = NULL;
-}
 
 /* At close the carousel gives back what only it draws: its name planes (made anew at each
  * open) and the centre app's full plane (the preview task inflates it again, ~110 ms, on the
@@ -667,7 +750,6 @@ static void strip_give_back(void)
     for (int i = 0; i < MAX_ITEMS; i++) s_it[i].px = NULL;
     heap_caps_free(s_gear);
     s_gear = NULL;
-    snap_free();
     for (int i = 0; i < MAX_ITEMS; i++) s_it[i].name = NULL;
     heap_caps_free(s_names);
     s_names = NULL;
@@ -728,10 +810,6 @@ bool orb_strip_open(const orb_app_t *from, int step)
     const bool from_fill = from && from->slug && orb_theme_fill_progress(from->slug, &fd, &ft);
     const uint16_t *mirror = display_fb_mirror();
     if (!mirror) return false;
-    /* The glass as found, for the zoom down from it. Optional: with radar on the glass PSRAM
-     * held 295 KB, the snapshot's 434 KB would not come, and the carousel fell back to the
-     * text list (owner's bench, 2026-11-09); without it the zoom starts from the preview. */
-    if (!s_snap) s_snap = heap_caps_malloc((size_t)W * H * 2, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
 
     s_n = 0;
     s_from_i = 0;
@@ -748,16 +826,11 @@ bool orb_strip_open(const orb_app_t *from, int step)
     if (from == NULL || from->kind == ORB_APP_KIND_SHELL) s_from_i = s_n;
     s_n++;
 
-    /* The app the carousel opens on wears the glass itself until the strip moves off
-     * it, so the zoom down starts from exactly what was showing. */
-    if (s_snap) memcpy(s_snap, mirror, (size_t)W * H * 2);
-    /* §61: Settings wears its own card, never a picture of the menu it was opened over: a
-     * snapshot only comes off an app's card when the strip moves (start_turn), so the
-     * Settings card kept the black MENU landing for the whole visit (owner, 2026-11-08). */
-    if (s_it[s_from_i].app && !from_fill && s_snap) {
-        s_it[s_from_i].px = s_snap;
-        s_it[s_from_i].side = W;
-    }
+    /* Owner, 2026-11-09: no snapshot of the glass (434 KB). The zoom down starts from the app's
+     * own full preview, inflated from flash; the IN waits for it (0.4 s at most) under the held
+     * glass, which still shows the app. */
+    if (s_it[s_from_i].app && !from_fill) hi_want(s_it[s_from_i].app);
+    s_in_wait = s_it[s_from_i].app && !from_fill;
     /* theme-cache-plan §2.4: opened over the fill's face, the zoom down starts from the face
      * (its preview, not the bare app under it) */
     s_in_z = from_fill ? FACE_Z : 1.0f;
@@ -806,7 +879,6 @@ static void finish(int64_t now)
         uint32_t d, t;
         s_dirty = true;
         s_st = orb_theme_fill_progress(it->app->slug, &d, &t) ? ST_FILL : ST_GROW;
-        snap_free();                           /* the face draws from the previews alone */
     }
 }
 
@@ -861,6 +933,9 @@ static void start_out(int64_t now)
     s_face_app = a && a->slug && (orb_theme_fill_wanted(a->slug) ||
                                   orb_theme_fill_progress(a->slug, &fd, &ft)) ? a : NULL;
     s_out_z = s_face_app ? FACE_Z : 1.0f;
+    /* the full picture only on the way to a zoom (owner, 2026-11-09): inflated from flash in
+     * ~0.15 s, it takes over from the thumbnail partway through the zoom */
+    hi_want(a);
     s_st = ST_OUT;
     s_t0 = now;
 }
@@ -921,7 +996,6 @@ static void start_turn(int steps, int64_t now)
     }
     /* Once the strip leaves the app it opened on, that app wears its preview again. */
     item_t *f = &s_it[s_from_i];
-    if (f->px == s_snap && f->app) item_face(f);
     thumbs_window(wrap(s_target));             /* the window goes where the strip is going */
     s_st = ST_TURN;
     s_t0 = now;
@@ -935,12 +1009,25 @@ static void step_once(int32_t delta, bool pressed, bool lpress, int64_t now)
     switch (s_st) {
     case ST_IN: {
         s_pending += knob_col_step(delta) * (delta < 0 ? -delta : delta);
+        if (s_in_wait) {
+            const orb_app_t *a = s_it[s_from_i].app;
+            if (!(s_hi_ready && a && a->slug && !strcmp(a->slug, s_hi_slug)) &&
+                now - s_t0 < 400000)
+                return;                         /* the glass still shows the app meanwhile */
+            s_in_wait = false;
+            s_t0 = now;
+        }
         const float t = (float)(now - s_t0) / (ZOOM_MS * 1000.0f);
         const float p = ease(t);
         /* the glass shrinks from full to the centre slot; the neighbours slide in */
         layout(s_pos, s_in_z * (1.0f - p), 1.0f + (1.0f - p) * 1.4f);
         frame();
         if (t >= 1.0f) {
+            /* the zoom down is done with the full picture: browsing holds thumbnails only */
+            s_hi_ready = false;
+            s_hi_want[0] = '\0';
+            s_hi_drop = true;
+            if (s_pv_th) xTaskNotifyGive(s_pv_th);
             layout(s_pos, 0.0f, 1.0f);
             s_dirty = !frame_kept(true);
             s_st = ST_IDLE;
@@ -953,9 +1040,6 @@ static void step_once(int32_t delta, bool pressed, bool lpress, int64_t now)
     case ST_TURN:
         if (lpress) {                           /* a hold leaves where it came from */
             s_pos = (float)s_from_i;
-            if (s_it[s_from_i].app && s_snap) {
-                s_it[s_from_i].px = s_snap; s_it[s_from_i].side = W;
-            }
             start_out(now);
             break;
         }
@@ -969,8 +1053,7 @@ static void step_once(int32_t delta, bool pressed, bool lpress, int64_t now)
             s_pos = s_pos0 + ((float)s_target - s_pos0) * p;
             if (t >= 1.0f) {
                 s_pos = (float)s_target;
-                s_st = ST_IDLE;
-                hi_want(s_it[wrap(s_target)].app);   /* §60: fetch its full plane for the zoom */
+                s_st = ST_IDLE;                 /* the full plane waits for a zoom (start_out) */
             }
             layout(s_pos, 0.0f, 1.0f);
             s_dirty = !frame_kept(s_st == ST_IDLE) && s_st == ST_IDLE;   /* a skipped last frame is owed */
@@ -1074,7 +1157,7 @@ void orb_strip_poll(int32_t delta, bool pressed, bool lpress, int64_t now)
         s_thumb_seen = s_thumb_gen;
         for (int i = 0; i < s_n; i++) {
             item_t *it = &s_it[i];
-            if (!it->app || it->px == s_snap) continue;
+            if (!it->app) continue;
             const pv_t *pv = pv_for(it->app);
             if (pv && it->px != pv->px) { it->px = pv->px; it->side = pv->side; s_dirty = true; }
         }

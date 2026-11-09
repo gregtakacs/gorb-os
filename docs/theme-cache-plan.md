@@ -264,6 +264,29 @@ happens only when they are not. No first fit, no compaction, no MOVING state.
 
 ## 6. As built
 
+### The carousel keeps nothing while shut (2026-11-09, owner's rulings, Bronze)
+
+- **Previews resident in flash:** a third entry kind, `ORB_POOL_PREVIEW`, one per chosen app,
+  never evicted: the theme's full-glass preview as its bundle deflated it (2-4 pages). A
+  store writes it; the reconcile makes any that are missing. Each is mapped as a window
+  (`orb_pagemap`), so the carousel's preview task, whose stack is PSRAM and may not read
+  flash through the driver, reads it as plain memory (`orb_theme_preview_hold`, under a lock
+  a store takes to unmap it). Flights' Blueprint has no deflated preview (an old bake): its
+  thumbnail still comes off the card.
+- **Three thumbnails at most** (owner: "only load 3 ... make sure this does not grow"): the
+  centre app and one either side, built when the carousel opens and as it turns, freed as
+  they leave the window and all at close, on the drawing task. Each is shrunk as the preview
+  streams out of the inflater (`shrink_disc`: the old box filter, a corner counting black), so
+  no full-glass buffer is held for it (109-148 ms each). A disc with none yet wears its app's
+  icon or nothing; the Settings card is made per open.
+- **The full-glass plane only for a zoom**: inflated from flash for the zoom in (and dropped
+  when it ends) and for the zoom out, never on a turn's settle. **No snapshot of the glass**:
+  the zoom down starts from the app's own preview; the IN waits up to 0.4 s for it under the
+  held glass. The debug build's shadow of held frames is freed with the hold.
+- **Bronze, Skeleton on the clock:** free PSRAM with the carousel shut 2.09 MB (largest block
+  2.06 MB), back to exactly that after a visit; 1.10-1.21 MB free while browsing; the low
+  water since boot 716 KB (it had been 14 KB, and 25 KB was seen mid-browse).
+
 ### The freeze after it, and the clock's re-read done right (2026-11-09, Bronze)
 
 - **The panel froze a few seconds after boot**, the dial composing frames that never left

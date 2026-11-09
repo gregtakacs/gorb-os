@@ -852,6 +852,30 @@ The default `-mode probe` only enters download mode, syncs, reads the chip id an
 eFuse MAC, then hard-resets back to the app. `-mac` applies the eFuse gate even
 headless; a mismatch aborts before erasing.
 
+## Headless commands
+
+Two commands the orb-os-net release pull runs (design §6.1, ruling 15) so the site unpacks
+the shelf with the hub's own readers instead of a second implementation of the container
+format in TypeScript. Both run before any flag is parsed, before the log file, the instance
+lock and the port, so they work while a hub is serving on the same machine.
+
+```
+orb-manager extract-editors <dir of .orbapp files | file.orbapp> <out dir>
+orb-manager export-runtime <out dir>
+```
+
+`extract-editors` writes `<out>/<slug>/` for every container whose editor this hub would
+serve, plus `<out>/editors.json` (`format`, `hub`, `runtime`, `apps`): one row per input
+file, each with status `ok` / `skipped` / `no-editor` / `unreadable`, a reason for anything
+but `ok`, and the file list — name, bytes, sha256 — a site publishes beside them.
+`export-runtime` writes `<out>/<id>/` for every runtime id this binary carries, with the
+same bytes and cache rules the dial gets, plus `<out>/runtime.json` (`format`, `hub`,
+`ids`). Both write into a fresh `<out>` only (files 0o644, folders 0o755, one app's tree
+renamed into place when complete) and every write is confined to it, so a member named
+`../x` costs a row and not a file elsewhere. Exit 0 is a completed run (rows may still be
+skipped), 1 an input or output problem, 2 wrong usage; stdout is one line per app or id and
+everything else goes to stderr prefixed `orb-manager: `.
+
 ## Endpoints
 
 | Route | Purpose |

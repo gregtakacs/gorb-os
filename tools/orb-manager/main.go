@@ -409,6 +409,13 @@ func (s *Server) bootFor(mac string) *bootVerdict {
 }
 
 func main() {
+	// The headless commands answer first (extract.go): a release pull must work while a hub
+	// is running on this machine, must not bind a port, claim the one-hub lock or take a
+	// flag set it does not use, and must not redirect the log a job is reading.
+	if code, ok := runSubcommand(os.Args[1:], os.Stdout, os.Stderr); ok {
+		os.Exit(code)
+	}
+
 	var addr, browser, repo, fwPath, orbPort, onlyOrb string
 	var libPath, libApps, libThemes string
 	var noAutoInstall bool

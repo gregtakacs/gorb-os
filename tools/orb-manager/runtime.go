@@ -174,14 +174,22 @@ func (s *Server) editorVersions(ip, slug string) editorVersionPair {
 	return v
 }
 
+// runtimeMissingSentence is the one line that names an editor's runtime problem: the ids
+// it asks for and the ids this binary carries. runtimeRefused answers it to a browser and
+// `orb-manager extract-editors` writes it into a report, so a site's release pull and the
+// hub's own refusal cannot drift apart.
+func runtimeMissingSentence(slug string, missing []string) string {
+	return fmt.Sprintf("the %s editor needs %s, and this hub carries %s",
+		slug, strings.Join(missing, ", "), strings.Join(runtimeIDs(), ", "))
+}
+
 // runtimeRefused answers an editor this hub cannot run: a page for the frame, JSON for
 // anything else. When the cause is an orb running an older release of the app than the
 // hub's shelf carries — the ordinary case after a hub update — the page says so in those
 // words and offers the fix: a button that asks the hub page (the frame's parent) to run
 // the Apps face's own Update for this app on this orb, then reopen the editor.
 func runtimeRefused(w http.ResponseWriter, r *http.Request, slug string, missing []string, v editorVersionPair) {
-	have := strings.Join(runtimeIDs(), ", ")
-	sentence := fmt.Sprintf("the %s editor needs %s, and this hub carries %s", slug, strings.Join(missing, ", "), have)
+	sentence := runtimeMissingSentence(slug, missing)
 	cmp, comparable := orbnet.AppVersionCompare(v.hub, v.orb)
 	orbOlder := comparable && cmp > 0
 	w.Header().Set("Cache-Control", "no-store")

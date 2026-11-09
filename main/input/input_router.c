@@ -328,7 +328,11 @@ static void open_switcher(int step)
     /* §54: the carousel, when its previews are in, takes the glass from here; the app
      * under it stays the screen until the carousel opens one (input_router_show or
      * input_router_open_settings). The text list stays the answer without it. */
-    if (orb_strip_open(from, step)) {
+    /* `step` is a row step (the text list's, below); the carousel moves in columns, which
+     * knob.h defines as the row axis turned round — so the flick that opened it from a dial
+     * with no list of its own moved it the wrong way, every later turn the right one (owner,
+     * 2026-11-09) */
+    if (orb_strip_open(from, -step)) {
         ESP_LOGI(TAG, "carousel from %s, step %d", screen_name(from), step);
         return;
     }

@@ -12,6 +12,7 @@
  */
 
 #include "orb_gfx.h"
+#include "orb_live_work.h"    /* radar-plan §7.7: the build-ahead is the live worker's job */
 
 #include <math.h>
 #include "esp_attr.h"           /* EXT_RAM_BSS_ATTR: pre-paint's zone tables */
@@ -994,6 +995,31 @@ static const gfx_paint_ctx_t *s_pp_jc;                /* the last commit's job l
 static int       s_pp_jn;
 static const uint16_t *s_pp_canvas;
 static uint16_t  s_pp_row[CLK_SCR_W];
+/* radar-plan §7.7: a live layer's next swap, built ahead (owner, 2026-11-09: the arm hitched
+ * ~120 ms at every rain step over a storm). While the present is paced, the live worker, on
+ * the other core, builds a whole pair of planes for the picture waiting in the layer's back
+ * copy: its changed rows composed from a snapshot of the job list, the rest copied from the
+ * front planes. The swap exchanges the plane pointers, so the glass still changes in one
+ * commit and that commit composes from planes. A row the LVGL task wrote or marked stale after
+ * the snapshot (s_ah_bad: the time's label, the track's cursor) is rebuilt at the swap; a
+ * rebuild of every plane (s_pp_gen) voids it all. */
+enum { AH_IDLE, AH_RUN, AH_DONE };
+#define AH_PSRAM_FLOOR (1024u * 1024u)                /* general PSRAM a spare pair leaves free */
+static volatile int  s_ah_state = AH_IDLE;
+static volatile bool s_ah_cancel;
+static uint16_t *s_ah_pb, *s_ah_pf;                   /* the spare pair (lean mode's own) */
+EXT_RAM_BSS_ATTR static volatile uint8_t s_ah_bad[CLK_SCR_H];
+EXT_RAM_BSS_ATTR static int16_t s_ah_x0[CLK_SCR_H], s_ah_x1[CLK_SCR_H];
+/* the snapshot the worker builds from */
+EXT_RAM_BSS_ATTR static gfx_paint_ctx_t s_ah_jc[PP_JOBS];
+EXT_RAM_BSS_ATTR static bool    s_ah_fast[PP_JOBS];
+EXT_RAM_BSS_ATTR static int16_t s_ah_pzcx[PP_JOBS], s_ah_pzcy[PP_JOBS], s_ah_pzr[PP_JOBS];
+static int       s_ah_jn, s_ah_low;
+static const uint16_t *s_ah_canvas;
+static const uint16_t *s_ah_src_pb, *s_ah_src_pf;
+static const uint8_t *s_ah_alp;
+static uint32_t  s_ah_gen;
+static uint32_t  s_ah_used, s_ah_mism;                /* the bench's account */
 /* the frame being built ahead */
 static gfx_prep_rect_t s_pp_nx[PP_RECTS];
 static int       s_pp_nnx, s_pp_nx_frame = -1, s_pp_prep_y;
@@ -1069,6 +1095,7 @@ static void pp_bk_settle(int32_t y);
 static void pp_stale_add(int32_t y, int32_t a, int32_t b)
 {
     if (y < 0 || y >= CLK_SCR_H) return;
+    if (s_ah_state != AH_IDLE) s_ah_bad[y] = 1;                    /* §7.7: rebuilt at the swap */
     pp_bk_settle(y);
     if (a < 0) a = 0;
     if (b > CLK_SCR_W - 1) b = CLK_SCR_W - 1;
@@ -1118,6 +1145,12 @@ void gfx_prep_mode(int mode)
         orb_glass_free(s_pfn); orb_glass_free(s_pbn);
         s_pf = s_pb = s_pfn = s_pbn = NULL;
     }
+    if (s_ah_state == AH_RUN) s_ah_cancel = true;      /* §7.7: the worker stops at its next row */
+    else s_ah_state = AH_IDLE;
+    if ((!s_pp_mode || !s_pp_lean) && (s_ah_pb || s_ah_pf) && s_ah_state == AH_IDLE) {   /* lean's alone */
+        orb_glass_free(s_ah_pb); orb_glass_free(s_ah_pf);
+        s_ah_pb = s_ah_pf = NULL;
+    }
     if (s_pp_mode && s_pp_lean && s_pfn) {            /* §6.27: lean keeps the fronts alone */
         orb_glass_free(s_pfn); orb_glass_free(s_pbn);
         s_pfn = s_pbn = NULL;
@@ -1158,6 +1191,94 @@ bool gfx_prep_swap(const int16_t *x0, const int16_t *x1, const uint8_t *alp)
     s_pps.swaps++;
     return true;
 }
+static int ah_segs(int32_t y, int32_t a, int32_t b, int32_t *sx, int *lo, int32_t *pt);
+static void ah_build_row(int32_t y, int32_t a, int32_t b, uint16_t *row);
+
+bool gfx_prep_ahead(int layer, const int16_t *x0, const int16_t *x1, const uint8_t *front_alp,
+                    const uint16_t *back_col, const uint8_t *back_alp)
+{
+    if (!s_pp_mode || !s_pp_lean || !s_pp_valid || !s_pp_jc || !x0 || !x1 || !s_pb || !s_pf) return false;
+    if (s_ah_state == AH_RUN) return true;
+    if (s_ah_state == AH_DONE && s_ah_alp == back_alp && s_ah_gen == s_pp_gen) return true;
+    if (!s_ah_pb || !s_ah_pf) {
+        const size_t n = (size_t)CLK_SCR_W * CLK_SCR_H * 2;
+        /* The glass region first; else the general PSRAM heap, only while 1 MB of it stays
+         * free after (Bronze: a pair taken regardless left PSRAM's low water at 204 KB). Freed
+         * whenever pre-paint goes off (the carousel, another app). */
+        if (!s_ah_pb) s_ah_pb = orb_glass_alloc_only(n);
+        if (!s_ah_pf) s_ah_pf = orb_glass_alloc_only(n);
+        const size_t want = (s_ah_pb ? 0 : n) + (s_ah_pf ? 0 : n);
+        if (want && heap_caps_get_free_size(MALLOC_CAP_SPIRAM) >= want + AH_PSRAM_FLOOR) {
+            if (!s_ah_pb) s_ah_pb = heap_caps_malloc(n, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+            if (!s_ah_pf) s_ah_pf = heap_caps_malloc(n, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        }
+        if (!s_ah_pb || !s_ah_pf) {
+            orb_glass_free(s_ah_pb); orb_glass_free(s_ah_pf);
+            s_ah_pb = s_ah_pf = NULL;
+            return false;                                 /* the swap composes as before */
+        }
+    }
+    int live = -1;
+    for (int i = 0; i < s_pp_jn && i < PP_JOBS; i++) {
+        if (s_pp_jc[i].drum) return false;                /* not built off the LVGL task */
+        if (s_pp_jc[i].alp == front_alp) live = i;
+    }
+    if (live < 0 || s_pp_fast[live] || s_pp_jn > PP_JOBS) return false;
+    memcpy(s_ah_jc, s_pp_jc, (size_t)s_pp_jn * sizeof *s_ah_jc);
+    s_ah_jc[live].col = back_col;
+    s_ah_jc[live].alp = back_alp;
+    memcpy(s_ah_fast, s_pp_fast, sizeof s_ah_fast);
+    memcpy(s_ah_pzcx, s_pz_cx, sizeof s_ah_pzcx);
+    memcpy(s_ah_pzcy, s_pz_cy, sizeof s_ah_pzcy);
+    memcpy(s_ah_pzr, s_pz_r, sizeof s_ah_pzr);
+    s_ah_jn = s_pp_jn;
+    s_ah_low = s_pp_low;
+    s_ah_canvas = s_pp_canvas;
+    s_ah_src_pb = s_pb;
+    s_ah_src_pf = s_pf;
+    memcpy(s_ah_x0, x0, sizeof s_ah_x0);
+    memcpy(s_ah_x1, x1, sizeof s_ah_x1);
+    memset((void *)s_ah_bad, 0, sizeof s_ah_bad);
+    s_ah_alp = back_alp;
+    s_ah_gen = s_pp_gen;
+    s_ah_cancel = false;
+    s_ah_state = AH_RUN;
+    lw_job_t j = { .op = LW_AHEAD, .layer = (uint8_t)layer };
+    if (orb_live_work_post(&j) != ESP_OK) { s_ah_state = AH_IDLE; return false; }
+    return true;
+}
+
+/* The live worker's half: the spare planes, row by row. */
+void gfx_prep_ahead_run(void)
+{
+    if (s_ah_state != AH_RUN) return;
+    static uint16_t *row;
+    if (!row) row = heap_caps_malloc(CLK_SCR_W * 2, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    if (!row) row = heap_caps_malloc(CLK_SCR_W * 2, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!row) { s_ah_state = AH_IDLE; return; }
+    const size_t rb = (size_t)CLK_SCR_W * 2;
+    for (int32_t y = 0; y < CLK_SCR_H; y++) {
+        if (s_ah_cancel) { s_ah_state = AH_IDLE; return; }
+        const size_t off = (size_t)y * CLK_SCR_W;
+        memcpy(s_ah_pb + off, s_ah_src_pb + off, rb);
+        memcpy(s_ah_pf + off, s_ah_src_pf + off, rb);
+        if (s_ah_x0[y] <= s_ah_x1[y]) ah_build_row(y, s_ah_x0[y], s_ah_x1[y], row);
+    }
+    s_ah_state = AH_DONE;
+}
+
+bool gfx_prep_ahead_ready(const uint8_t *back_alp)
+{
+    return s_ah_state == AH_DONE && s_ah_alp == back_alp && s_ah_gen == s_pp_gen;
+}
+
+void gfx_prep_ahead_drop(const uint8_t *back_alp)
+{
+    if (back_alp && back_alp != s_ah_alp) return;     /* built from the other buffer: it stands */
+    if (s_ah_state == AH_RUN) s_ah_cancel = true;
+    else s_ah_state = AH_IDLE;
+}
+
 void gfx_prep_stale(int32_t y0, int32_t y1, int32_t x0, int32_t x1)
 {
     if (!s_pp_mode || !s_pp_valid) return;
@@ -1270,6 +1391,7 @@ static void pp_paint(const gfx_paint_ctx_t *pc, int32_t y, int32_t a, int32_t b,
 static void pp_build_row(int32_t y, int32_t a, int32_t b, uint16_t *pb, uint16_t *pf,
                          const gfx_prep_rect_t *ov, int nov)
 {
+    if (pb == s_pb && s_ah_state != AH_IDLE) s_ah_bad[y] = 1;   /* §7.7: the copy is older */
     const uint16_t *cv = s_pp_canvas + (size_t)y * CLK_SCR_W;
     for (int32_t x = a; x <= b; x++) { const uint16_t v = cv[x]; s_pp_row[x] = (uint16_t)((v >> 8) | (v << 8)); }
     for (int r = 0; r < nov; r++) {
@@ -1290,6 +1412,54 @@ static void pp_build_row(int32_t y, int32_t a, int32_t b, uint16_t *pb, uint16_t
         memcpy(pb + (size_t)y * CLK_SCR_W + sa, &s_pp_row[sa], (size_t)(sb - sa + 1) * 2);
         for (int i = lo[k]; i < s_pp_jn; i++) if (!s_pp_fast[i]) pp_paint(&s_pp_jc[i], y, sa, sb, s_pp_row);
         memcpy(pf + (size_t)y * CLK_SCR_W + sa, &s_pp_row[sa], (size_t)(sb - sa + 1) * 2);
+    }
+}
+
+/* §7.7: pp_segs and pp_build_row over the snapshot, for the live worker: its own row and
+ * scratch, the zones and fast set as they were at the ask, and every job painted the long way
+ * (gfx_paint_row_ctx; the span cache is the LVGL task's). */
+static int ah_segs(int32_t y, int32_t a, int32_t b, int32_t *sx, int *lo, int32_t *pt)
+{
+    int32_t c0[PP_JOBS], c1[PP_JOBS];
+    int zi[PP_JOBS];
+    int np = 0, nz = 0;
+    pt[np++] = a; pt[np++] = b + 1;
+    for (int i = s_ah_low; i < s_ah_jn && i < PP_JOBS; i++) {
+        if (!s_ah_fast[i] || !s_ah_pzr[i]) continue;
+        const int32_t dy = y - s_ah_pzcy[i], r = s_ah_pzr[i];
+        if (dy < -r || dy > r) continue;
+        const int32_t hw = (int32_t)sqrtf((float)(r * r - dy * dy)) + 1;
+        c0[nz] = s_ah_pzcx[i] - hw; c1[nz] = s_ah_pzcx[i] + hw; zi[nz] = i; nz++;
+        if (c0[nz - 1] > a && c0[nz - 1] <= b) pt[np++] = c0[nz - 1];
+        if (c1[nz - 1] + 1 > a && c1[nz - 1] + 1 <= b) pt[np++] = c1[nz - 1] + 1;
+    }
+    for (int i = 1; i < np; i++) for (int k = i; k > 0 && pt[k - 1] > pt[k]; k--) { int32_t t = pt[k]; pt[k] = pt[k - 1]; pt[k - 1] = t; }
+    int n = 0;
+    for (int k = 0; k + 1 < np; k++) {                  /* as pp_segs */
+        if (pt[k] >= pt[k + 1]) continue;
+        int l = s_ah_jn;
+        for (int z = 0; z < nz; z++)
+            if (pt[k] >= c0[z] && pt[k] <= c1[z] && zi[z] < l) l = zi[z];
+        if (n && lo[n - 1] == l) continue;              /* same cut: one segment */
+        sx[n] = pt[k]; lo[n] = l; n++;
+    }
+    sx[n] = b + 1;
+    return n;
+}
+
+static void ah_build_row(int32_t y, int32_t a, int32_t b, uint16_t *row)
+{
+    const uint16_t *cv = s_ah_canvas + (size_t)y * CLK_SCR_W;
+    for (int32_t x = a; x <= b; x++) { const uint16_t v = cv[x]; row[x] = (uint16_t)((v >> 8) | (v << 8)); }
+    int32_t sx[PP_SEG_MAX + 1], pt[PP_SEG_MAX];
+    int lo[PP_SEG_MAX];
+    const int ns = ah_segs(y, a, b, sx, lo, pt);
+    for (int k = 0; k < ns; k++) {
+        const int32_t sa = sx[k], sb = sx[k + 1] - 1;
+        for (int i = 0; i < lo[k]; i++) if (!s_ah_fast[i]) gfx_paint_row_ctx(&s_ah_jc[i], y, sa, sb, row);
+        memcpy(s_ah_pb + (size_t)y * CLK_SCR_W + sa, &row[sa], (size_t)(sb - sa + 1) * 2);
+        for (int i = lo[k]; i < s_ah_jn; i++) if (!s_ah_fast[i]) gfx_paint_row_ctx(&s_ah_jc[i], y, sa, sb, row);
+        memcpy(s_ah_pf + (size_t)y * CLK_SCR_W + sa, &row[sa], (size_t)(sb - sa + 1) * 2);
     }
 }
 
@@ -1371,6 +1541,9 @@ static void pp_commit(int nj, const gfx_paint_ctx_t *jc, const uint16_t *canvas,
                       const gfx_spans_t *const *bsp)
 {
     s_pp_jc = jc; s_pp_jn = nj; s_pp_canvas = canvas;
+    /* §7.7: rows built ahead for this swap hold only if nothing went stale since they began */
+    const bool ahead_ok = s_sw_rows && s_ah_state == AH_DONE && s_ah_gen == s_pp_gen &&
+                          s_lg_alp == s_ah_alp;
     s_lg_wait = false;                                /* §6.27: the job list reads the new pixels */
     pp_classify(nj, jc);
     {
@@ -1380,8 +1553,9 @@ static void pp_commit(int nj, const gfx_paint_ctx_t *jc, const uint16_t *canvas,
             s_said = now;
             int nf = 0;
             for (int i = 0; i < nj; i++) nf += s_pp_fast[i];
-            ESP_LOGI("gfx", "pre-paint%s: %d jobs, %d fast (%d by motion) | %llu swaps, the last a %u ms blip | stale %llu rows, %d behind | %llu slow moves | live %llu px, copied %llu px",
+            ESP_LOGI("gfx", "pre-paint%s: %d jobs, %d fast (%d by motion) | %llu swaps (%llu built ahead), the last a %u ms blip | stale %llu rows, %d behind | %llu slow moves | live %llu px, copied %llu px",
                      s_pp_lean ? " (lean)" : "", nj, nf, s_pp_nmoved, (unsigned long long)s_pps.swaps,
+                     (unsigned long long)s_pps.swaps_ahead,
                      (unsigned)(gfx_swap_blip_us() / 1000), (unsigned long long)s_pps.rows_sync, s_st_rows,
                      (unsigned long long)s_pps.rebuilds,
                      (unsigned long long)s_pps.live_px, (unsigned long long)s_pps.copy_px);
@@ -1446,8 +1620,38 @@ static void pp_commit(int nj, const gfx_paint_ctx_t *jc, const uint16_t *canvas,
      * the whole of it, and no row is left stale for the frames after to compose the long way
      * (a storm's ~300 stale rows held the sweep at 13 fps between steps, Bronze 2026-11-08) */
     if (s_sw_rows) {
-        for (int32_t y = 0; y < CLK_SCR_H; y++)
-            if (s_sw0[y] <= s_sw1[y]) { pp_build_row(y, s_sw0[y], s_sw1[y], s_pb, s_pf, NULL, 0); s_pps.rows_sync++; }
+        /* §7.7: built ahead, the swap is the spare planes; rows written or gone stale since
+         * the snapshot are built again from this commit's jobs. The first three after a boot
+         * (and every one in the exactness mode) are also built the long way into the old
+         * planes and compared: the log's proof that the two ways agree (Bronze: 0 px). */
+        const bool use = ahead_ok && s_ah_gen == s_pp_gen;
+        if (use) {
+            uint16_t *t;
+            t = s_pb; s_pb = s_ah_pb; s_ah_pb = t;
+            t = s_pf; s_pf = s_ah_pf; s_ah_pf = t;
+            s_ah_state = AH_IDLE;
+            for (int32_t y = 0; y < CLK_SCR_H; y++)
+                if (s_ah_bad[y]) { pp_build_row(y, 0, CLK_SCR_W - 1, s_pb, s_pf, NULL, 0); s_pps.rows_sync++; }
+            if (++s_ah_used <= 3 || s_pp_mode == 2) {
+                uint32_t bad = 0;
+                for (int32_t y = 0; y < CLK_SCR_H; y++) {
+                    if (s_sw0[y] > s_sw1[y]) continue;
+                    pp_build_row(y, s_sw0[y], s_sw1[y], s_ah_pb, s_ah_pf, NULL, 0);
+                    const size_t o = (size_t)y * CLK_SCR_W;
+                    for (int32_t x = s_sw0[y]; x <= s_sw1[y]; x++)
+                        bad += (s_ah_pb[o + x] != s_pb[o + x]) + (s_ah_pf[o + x] != s_pf[o + x]);
+                }
+                s_ah_mism += bad;
+                ESP_LOGI("gfx", "ahead swap %u checked: %u px differ from the long way (%u in all)",
+                         (unsigned)s_ah_used, (unsigned)bad, (unsigned)s_ah_mism);
+            }
+            s_pps.swaps_ahead++;
+        } else {
+            if (s_ah_state == AH_RUN) s_ah_cancel = true;
+            else s_ah_state = AH_IDLE;
+            for (int32_t y = 0; y < CLK_SCR_H; y++)
+                if (s_sw0[y] <= s_sw1[y]) { pp_build_row(y, s_sw0[y], s_sw1[y], s_pb, s_pf, NULL, 0); s_pps.rows_sync++; }
+        }
         s_sw_rows = false;
     }
     /* The frame that landed on the canvas this tick: swap in its rows if they were built

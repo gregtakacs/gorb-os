@@ -7,6 +7,7 @@
  * task compare back and front (LW_DIFF), so the compositor lays in only the rows the new
  * picture changed: a rain frame moves a fraction of the disc, the map under it none. */
 #include "orb_live_work.h"
+#include "orb_gfx.h"          /* radar-plan §7.7: LW_AHEAD */
 
 #include <stdatomic.h>
 #include <string.h>
@@ -27,6 +28,9 @@ static const char *TAG = "livework";
 #define LW_QUEUE   16
 #define LW_STACK   6144
 #define LW_PRIO    2                 /* under the LVGL task, as the map's renders */
+/* radar-plan §7.7: the core LVGL is not on (DISPLAY_LCD_CORE 1): a decode or a swap's planes
+ * built ahead take none of the frame's own core */
+#define LW_CORE    0
 
 static QueueHandle_t s_q;
 static atomic_int    s_pending[4];
@@ -95,6 +99,7 @@ static void run(lw_job_t *j)
         atomic_store(&s_diff_ready[l], true);
         break;
     }
+    case LW_AHEAD: gfx_prep_ahead_run(); break;      /* reads the back under its lock */
     case LW_RING: orb_ui_tgt_ring(&t, j->a[0], j->a[1], j->a[2], j->argb); break;
     case LW_LINE: orb_ui_tgt_line(&t, j->a[0], j->a[1], j->a[2], j->a[3], j->argb); break;
     default: break;
@@ -131,7 +136,7 @@ static bool started(void)
      * driver's transmit buffers come from (gorb-os-internal-ram-under-clock). */
     StackType_t *stk = heap_caps_malloc(LW_STACK, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     StaticTask_t *tcb = heap_caps_calloc(1, sizeof *tcb, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
-    if (!stk || !tcb || !xTaskCreateStaticPinnedToCore(task, "livework", LW_STACK, NULL, LW_PRIO, stk, tcb, tskNO_AFFINITY)) {
+    if (!stk || !tcb || !xTaskCreateStaticPinnedToCore(task, "livework", LW_STACK, NULL, LW_PRIO, stk, tcb, LW_CORE)) {
         heap_caps_free(stk);
         heap_caps_free(tcb);
         vQueueDelete(s_q);
@@ -158,6 +163,16 @@ int orb_live_work_diff(int l, const int16_t **x0, const int16_t **x1)
     if (l < 0 || l >= 4 || !atomic_exchange(&s_diff_ready[l], false)) return 0;
     *x0 = s_dx0[l] && s_dx1[l] ? s_dx0[l] : NULL;
     *x1 = s_dx0[l] && s_dx1[l] ? s_dx1[l] : NULL;
+    return 1;
+}
+
+/* The comparison's rows without taking them (radar-plan §7.7: the swap's build-ahead reads
+ * them while the present is still paced). Valid until the next comparison. */
+int orb_live_work_diff_peek(int l, const int16_t **x0, const int16_t **x1)
+{
+    if (l < 0 || l >= 4 || !atomic_load(&s_diff_ready[l]) || !s_dx0[l] || !s_dx1[l]) return 0;
+    *x0 = s_dx0[l];
+    *x1 = s_dx1[l];
     return 1;
 }
 

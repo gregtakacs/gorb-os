@@ -100,6 +100,11 @@ esp_err_t stage_live_back_ensure(int l);
 bool stage_live_back_lock(int l, uint16_t **px, uint8_t **a, uint16_t **src_px, uint8_t **src_a, int src);
 void stage_live_back_unlock(void);
 esp_err_t stage_live_present(int l, const int16_t *x0, const int16_t *x1);
+/* radar-plan §7.7: build the waiting swap's rows ahead in the slack; drop that when the back
+ * is drawn again. */
+bool stage_live_ahead(int l, const int16_t *x0, const int16_t *x1);
+void stage_live_ahead_drop(int l);
+bool stage_live_ahead_ready(int l);
 /* theme-cache-plan §2.4: bind `app` again, its bare-face binding let go first. */
 esp_err_t stage_rebind(orb_app_t *app);
 /* The last swap's blip has been paid for: the next may go (stage_live_present's pace). */

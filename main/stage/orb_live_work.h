@@ -11,7 +11,8 @@
 
 #include "esp_err.h"
 
-enum { LW_BEGIN, LW_PNG8, LW_RING, LW_LINE, LW_DIFF };
+enum { LW_BEGIN, LW_PNG8, LW_RING, LW_LINE, LW_DIFF,
+       LW_AHEAD };           /* radar-plan §7.7: the next swap's planes (gfx_prep_ahead_run) */
 
 typedef struct {
     uint8_t  op, layer;
@@ -36,3 +37,5 @@ int orb_live_work_pending(int l);
 int orb_live_work_diff(int l, const int16_t **x0, const int16_t **x1);
 /* The same answer, the diff left in place. */
 bool orb_live_work_diff_ready(int l);
+/* radar-plan §7.7: the rows without taking them; 0 when none are ready. */
+int  orb_live_work_diff_peek(int l, const int16_t **x0, const int16_t **x1);

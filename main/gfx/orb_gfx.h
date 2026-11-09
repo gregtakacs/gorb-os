@@ -265,6 +265,19 @@ int  gfx_prep_on(void);                           /* the mode, GFX_PREP_LEAN inc
  * rebuilds the planes after. False when pre-paint is not holding the job's planes (the
  * caller damages the rows as before). */
 bool gfx_prep_swap(const int16_t *x0, const int16_t *x1, const uint8_t *alp);
+/* radar-plan §7.7: the swap waiting in a live layer's back copy (its pixels `back_col`, alpha
+ * `back_alp`; the front's alpha `front_alp`), its changed rows x0/x1: composed ahead in the
+ * slack (gfx_prep_idle) so that swap copies them. False when it cannot be (pre-paint off or
+ * not lean, the job not found, no PSRAM for the planes): the swap composes as before. */
+bool gfx_prep_ahead(int layer, const int16_t *x0, const int16_t *x1, const uint8_t *front_alp,
+                    const uint16_t *back_col, const uint8_t *back_alp);
+/* The live worker's half of gfx_prep_ahead (its LW_AHEAD job). */
+void gfx_prep_ahead_run(void);
+/* Whether the planes for the swap from that back copy are built. */
+bool gfx_prep_ahead_ready(const uint8_t *back_alp);
+/* The back copy at `back_alp` is being drawn again: what was built ahead from it is void (one
+ * built from the other buffer, the front since its swap, stands). NULL drops any. */
+void gfx_prep_ahead_drop(const uint8_t *back_alp);
 /* radar-plan §2.9: a slow job's pixels changed under a pose that did not (the live layer):
  * rebuild the box from them and repaint it this tick. A no-op while pre-paint is off. */
 void gfx_prep_stale(int32_t y0, int32_t y1, int32_t x0, int32_t x1);
@@ -275,6 +288,7 @@ void gfx_prep_landed(int frame, const gfx_prep_rect_t *cur, int ncur,
 bool gfx_prep_idle(int64_t deadline_us);
 typedef struct {
     uint64_t rows_ahead, rows_sync, swaps_ready, swaps_late, rebuilds, mismatch_px, checked_px;
+    uint64_t swaps_ahead;                  /* §7.7: swaps whose planes were built ahead */
     uint64_t live_px, copy_px;
     uint64_t swaps, promoted;                         /* §6.27: live swaps, jobs made fast */
 } gfx_prep_stats_t;

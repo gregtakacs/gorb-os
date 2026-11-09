@@ -3108,6 +3108,33 @@ esp_err_t stage_live_present(int l, const int16_t *x0, const int16_t *x1)
     return ESP_OK;
 }
 
+/* radar-plan §7.7: the swap waiting in layer l's back copy, its changed rows x0/x1, built
+ * ahead while its present is paced (the same planes and conditions the present's own path
+ * takes). A new back drops it (stage_live_ahead_drop). */
+bool stage_live_ahead(int l, const int16_t *x0, const int16_t *x1)
+{
+#if CLK_BG_DIRECT_PUSH && CONFIG_ORB_DEBUG_HTTP
+    if (l < 0 || l >= STAGE_LIVE_N || !s_live[l] || !s_live_back[l] || !x0 || !x1) return false;
+    if (!orb_sched_l4_active() || (s_live_merged && l == 0)) return false;
+    const size_t n = (size_t)CLK_SCR_W * CLK_SCR_H;
+    return gfx_prep_ahead(l, x0, x1, s_live[l] + LIVE_OFF + 2 * n,
+                          (const uint16_t *)(void *)(s_live_back[l] + LIVE_OFF), s_live_back[l] + LIVE_OFF + 2 * n);
+#else
+    (void)l; (void)x0; (void)x1;
+    return false;
+#endif
+}
+void stage_live_ahead_drop(int l)
+{
+    gfx_prep_ahead_drop(l >= 0 && l < STAGE_LIVE_N && s_live_back[l]
+                        ? s_live_back[l] + LIVE_OFF + 2 * (size_t)CLK_SCR_W * CLK_SCR_H : NULL);
+}
+bool stage_live_ahead_ready(int l)
+{
+    if (l < 0 || l >= STAGE_LIVE_N || !s_live_back[l]) return false;
+    return gfx_prep_ahead_ready(s_live_back[l] + LIVE_OFF + 2 * (size_t)CLK_SCR_W * CLK_SCR_H);
+}
+
 void stage_live_damage(int32_t x, int32_t y, int32_t w, int32_t h)
 {
     if ((!s_live[0] && !s_live[1]) || !s_scr || w < 1 || h < 1) return;

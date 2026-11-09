@@ -1453,6 +1453,7 @@ m3ApiRawFunction(imp_stage_live_back)
     if (orb_live_work_pending(layer)) m3ApiReturn(ESP_ERR_INVALID_STATE);
     const esp_err_t e = stage_live_back_ensure(layer);
     if (e != ESP_OK) m3ApiReturn(e);
+    stage_live_ahead_drop(layer);                 /* §7.7: built from the picture this replaces */
     lw_job_t j = { .op = LW_BEGIN, .layer = (uint8_t)layer, .src = (int8_t)(src < 0 ? -1 : src), .argb = argb };
     m3ApiReturn(orb_live_work_post(&j));
 }
@@ -1480,7 +1481,13 @@ m3ApiRawFunction(imp_stage_live_present)
         const esp_err_t e = orb_live_work_post(&j);
         m3ApiReturn(e == ESP_OK ? 0 : e);
     }
+    /* §7.7: the swap's planes are built ahead on the live worker, the other core, and a paced
+     * swap waits for them (~70-100 ms) rather than compose its rows in the frame; a scrub's
+     * step (NOW) takes them if they are ready and goes at once if not */
+    const int16_t *ax0, *ax1;
+    const bool ahead = orb_live_work_diff_peek(layer, &ax0, &ax1) && stage_live_ahead(layer, ax0, ax1);
     if (arg & LIVE_PREPARE) m3ApiReturn(0);       /* compared and held (§6.28) */
+    if (!(arg & LIVE_NOW) && ahead && !stage_live_ahead_ready(layer)) m3ApiReturn(0);
     if (!(arg & LIVE_NOW) && !stage_live_swap_due()) m3ApiReturn(0);  /* paced by the last blip (§6.27) */
     const int16_t *x0 = NULL, *x1 = NULL;
     (void)orb_live_work_diff(layer, &x0, &x1);

@@ -2077,3 +2077,34 @@ a frame is drawn from (`orb_cv_png8`), and the app says which bodies it wants th
 
 - The tile-lent write that wedged the card: to be reproduced in small steps (4 KB from internal,
   8 KB, then 18 KB) before any write uses a tile.
+
+### 7.7 As built, and the arm's hitch at a step (2026-11-09, Bronze, OS v1.6.1, radar v1.6.2)
+
+- **The card tier as planned** (§7.3, §7.4). Bronze, Austin Region on a wet list: all 18 frames
+  held (17 on the card, 1.46 MB), the loop from -110; parks 250-680 ms, loads 155-280 ms; eight
+  carousel opens during a burst of parks logged "a park stands aside for the carousel" and 0
+  skipped frames. `blobio` runs at priority 1 on core 0.
+- **The owner: "the radar arm over austin with a lot of rain today feels jerky now on the
+  refresh."** The loop had held Now most of the time while only -20 to Now fit; with every frame
+  it steps, and every step is a blip (§6.27). Measured per swap (a debug line, removed): 135-157k
+  px change; the commit 113-134 ms (the swap's rows built 54-72, the sweep composed live 16-26,
+  the rest 13-19), then the push ~50 ms: a 170-190 ms stall. The swap pacing (4 blips) spaced
+  steps ~700 ms apart.
+- **The card's own share** (an A/B with parking off): ~35 ms a swap at first, from the live
+  worker running on the LVGL core beside the card's reads. The live worker is pinned to core 0
+  now (`LW_CORE`); with it, a swap's commit is the same with parking and without (median 68 and
+  69 ms, Bronze).
+- **The swap built ahead** (`gfx_prep_ahead`, `LW_AHEAD`): while a swap is paced, the live
+  worker builds a whole spare pair of planes from a snapshot of the job list, the waiting
+  picture's changed rows composed and the rest copied; the swap exchanges the plane pointers,
+  and rows the LVGL task wrote or marked stale since the snapshot (the time's label, the track's
+  cursor) are rebuilt then. Still one commit on the glass. A paced swap waits for its planes
+  (~70-100 ms on the other core). The first three after a boot are also built the long way and
+  compared: 0 px differ. Used, the commit is 47-84 ms and the worst gap a second 120-155 ms
+  (was 170-190).
+- **Its cost is a spare pair, 868 KB of PSRAM**, and under radar the orb rarely has it: the glass
+  region's largest block was 360-400 KB, and taken from the general heap regardless the PSRAM
+  low water fell to 204 KB, at a 512 KB floor to 92 KB after two carousel opens. Shipped with a
+  1 MB floor, so it runs only where it costs no one, which under radar today is rarely.
+- **Open, the owner's call:** room for the spare pair (radar's PSRAM window of frames, now that
+  they are on the card; the live layers' copies), or the stall as it is.

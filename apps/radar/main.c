@@ -1087,8 +1087,20 @@ ORB_EXPORT("orb_tick") void orb_tick(uint32_t now)
 {
     (void)now;
     if (R_sweep >= 0 && V.sweep_s && s_themed && s_visible) {      /* Scope's sweep: one turn a sweep_s */
-        const int64_t per = (int64_t)V.sweep_s * 1000;
-        orb_stage_pose(R_sweep, (int32_t)((up_ms() % per) * 3600 / per), 0, 0);
+        /* radar-plan §7.8 (owner, 2026-11-09): the arm turns slower while the OS paces its
+         * frames slower (a storm's steps), by the theme's frame over the frame now, so it moves
+         * as far a frame as at the theme's pace: smoother, and less of the glass to draw. The
+         * angle is integrated, so a change of speed never jumps it. */
+        static int64_t s_sw_ms;
+        static int64_t s_sw_a;                                       /* milli-tenths of a degree */
+        const int64_t t = up_ms(), per = (int64_t)V.sweep_s * 1000;
+        int64_t dt = s_sw_ms ? t - s_sw_ms : 0;
+        if (dt < 0 || dt > 500) dt = 0;                              /* back on the glass: as it was */
+        s_sw_ms = t;
+        const int64_t now_ms = orb_frame_ms(0), own_ms = orb_frame_ms(1);
+        const int64_t k = now_ms > own_ms && own_ms > 0 ? own_ms * 1000 / now_ms : 1000;   /* permille */
+        s_sw_a = (s_sw_a + dt * 3600 * 1000 / per * k / 1000) % 3600000;
+        orb_stage_pose(R_sweep, (int32_t)(s_sw_a / 1000), 0, 0);
     }
     zoom_step();
     loop_step();

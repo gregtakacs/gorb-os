@@ -1187,6 +1187,17 @@ m3ApiRawFunction(imp_blob_len)                /* u32 blob_len(u32 slot) */
     m3ApiReturn(orb_blob_len(slot_index(s), (int)i));   /* radar-plan §7: on the card too */
 }
 
+/* radar-plan §7.8 (OS v1.6.1): the frame period the app's sweep is paced to (0) and its
+ * theme's own (1), ms. */
+m3ApiRawFunction(imp_frame_ms)                /* u32 frame_ms(i32 which) */
+{
+    m3ApiReturnType(uint32_t);
+    CALLER();
+    m3ApiGetArg(int32_t, which);
+    (void)s;
+    m3ApiReturn(orb_sched_frame_ms(which ? 1 : 0));
+}
+
 /* radar-plan §7 (OS v1.6.1): a kept body parked on the card, loaded back, and its tier. */
 m3ApiRawFunction(imp_blob_park)               /* i32 blob_park(u32 slot) */
 {
@@ -1814,6 +1825,7 @@ typedef struct {
 
 static const wasm_bind_t s_binds[] = {
     { "orb", "now",           "i(ii)",     imp_now },
+    { "orb", "frame_ms",      "i(i)",      imp_frame_ms },
     { "orb", "uptime_ms",     "i()",       imp_uptime_ms },
     { "orb", "uptime_us",     "I()",       imp_uptime_us },
     { "orb", "localtime",     "i(Ii)",     imp_localtime },

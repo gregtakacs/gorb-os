@@ -365,6 +365,15 @@ Read it in pieces with `orb_net_read`, or tokenize it in place with
 carry keys up to 31 bytes and strings up to 95. Longer text is cut, and
 `key_trunc` / `str_trunc` say so.
 
+### Pacing an arm (OS v1.6.1)
+
+The OS paces a theme's sweep (a radar's arm, a tracker's) no faster than its live layer's
+steps cost: on a storm, frames come every ~160 ms instead of every 66. `orb_frame_ms(0)` is
+the period now and `orb_frame_ms(1)` the theme's own. Turn the arm by its speed times
+own / now, integrating the angle rather than computing it from the clock, so a change of pace
+never makes it jump: it then moves as far a frame as at the theme's pace, which looks
+smoother and leaves less of the glass to repaint.
+
 ### Kept bodies on the card (OS v1.6.1)
 
 `orb_net_keep(slot)` moves a landed body into one of 24 OS-owned slots, 768 KB of PSRAM

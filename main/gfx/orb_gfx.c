@@ -1004,14 +1004,14 @@ static uint16_t  s_pp_row[CLK_SCR_W];
  * on (the time, the cursor, the glass: pp_build_row's own second half), so the glass still
  * changes in one commit. One plane, not a pair: 434 KB (owner, 2026-11-09: PSRAM under
  * radar would not hold two). A row the LVGL task wrote or marked stale after
- * the snapshot (s_ah_bad: the time's label, the track's cursor) is rebuilt at the swap; a
+ * the snapshot (s_ah_b0/b1: the time's label, the track's cursor) is rebuilt at the swap; a
  * rebuild of every plane (s_pp_gen) voids it all. */
 enum { AH_IDLE, AH_RUN, AH_DONE };
 #define AH_PSRAM_FLOOR (1024u * 1024u)                /* general PSRAM a spare pair leaves free */
 static volatile int  s_ah_state = AH_IDLE;
 static volatile bool s_ah_cancel;
 static uint16_t *s_ah_pb;                             /* the spare PB (lean mode's own) */
-EXT_RAM_BSS_ATTR static volatile uint8_t s_ah_bad[CLK_SCR_H];
+EXT_RAM_BSS_ATTR static volatile int16_t s_ah_b0[CLK_SCR_H], s_ah_b1[CLK_SCR_H];   /* a row's span written since the snapshot */
 EXT_RAM_BSS_ATTR static int16_t s_ah_x0[CLK_SCR_H], s_ah_x1[CLK_SCR_H];
 /* the snapshot the worker builds from */
 EXT_RAM_BSS_ATTR static gfx_paint_ctx_t s_ah_jc[PP_JOBS];
@@ -1023,6 +1023,16 @@ static const uint16_t *s_ah_src_pb;
 static const uint8_t *s_ah_alp;
 static uint32_t  s_ah_gen;
 static uint32_t  s_ah_used, s_ah_mism;                /* the bench's account */
+/* A row's span the LVGL task wrote or marked stale since the snapshot: rebuilt at the swap over
+ * that span alone (the time's label, the track's cursor), not the whole row. */
+static inline void ah_bad(int32_t y, int32_t a, int32_t b)
+{
+    if (a < 0) a = 0;
+    if (b > CLK_SCR_W - 1) b = CLK_SCR_W - 1;
+    if (a > b) return;
+    if (a < s_ah_b0[y]) s_ah_b0[y] = (int16_t)a;
+    if (b > s_ah_b1[y]) s_ah_b1[y] = (int16_t)b;
+}
 /* the frame being built ahead */
 static gfx_prep_rect_t s_pp_nx[PP_RECTS];
 static int       s_pp_nnx, s_pp_nx_frame = -1, s_pp_prep_y;
@@ -1098,7 +1108,7 @@ static void pp_bk_settle(int32_t y);
 static void pp_stale_add(int32_t y, int32_t a, int32_t b)
 {
     if (y < 0 || y >= CLK_SCR_H) return;
-    if (s_ah_state != AH_IDLE) s_ah_bad[y] = 1;                    /* §7.7: rebuilt at the swap */
+    if (s_ah_state != AH_IDLE) ah_bad(y, a, b);                     /* §7.7: rebuilt at the swap */
     pp_bk_settle(y);
     if (a < 0) a = 0;
     if (b > CLK_SCR_W - 1) b = CLK_SCR_W - 1;
@@ -1232,7 +1242,7 @@ bool gfx_prep_ahead(int layer, const int16_t *x0, const int16_t *x1, const uint8
     s_ah_src_pb = s_pb;
     memcpy(s_ah_x0, x0, sizeof s_ah_x0);
     memcpy(s_ah_x1, x1, sizeof s_ah_x1);
-    memset((void *)s_ah_bad, 0, sizeof s_ah_bad);
+    for (int32_t y = 0; y < CLK_SCR_H; y++) { s_ah_b0[y] = INT16_MAX; s_ah_b1[y] = -1; }
     s_ah_alp = back_alp;
     s_ah_gen = s_pp_gen;
     s_ah_cancel = false;
@@ -1384,7 +1394,7 @@ static void pp_paint(const gfx_paint_ctx_t *pc, int32_t y, int32_t a, int32_t b,
 static void pp_build_row(int32_t y, int32_t a, int32_t b, uint16_t *pb, uint16_t *pf,
                          const gfx_prep_rect_t *ov, int nov)
 {
-    if (pb == s_pb && s_ah_state != AH_IDLE) s_ah_bad[y] = 1;   /* §7.7: the copy is older */
+    if (pb == s_pb && s_ah_state != AH_IDLE) ah_bad(y, a, b);   /* §7.7: the copy is older */
     const uint16_t *cv = s_pp_canvas + (size_t)y * CLK_SCR_W;
     for (int32_t x = a; x <= b; x++) { const uint16_t v = cv[x]; s_pp_row[x] = (uint16_t)((v >> 8) | (v << 8)); }
     for (int r = 0; r < nov; r++) {
@@ -1636,8 +1646,13 @@ static void pp_commit(int nj, const gfx_paint_ctx_t *jc, const uint16_t *canvas,
             uint16_t *t = s_pb; s_pb = s_ah_pb; s_ah_pb = t;
             s_ah_state = AH_IDLE;
             for (int32_t y = 0; y < CLK_SCR_H; y++) {
-                if (s_ah_bad[y]) { pp_build_row(y, 0, CLK_SCR_W - 1, s_pb, s_pf, NULL, 0); s_pps.rows_sync++; }
-                else if (s_sw0[y] <= s_sw1[y]) pp_pf_from_pb(y, s_sw0[y], s_sw1[y]);
+                /* PF of the changed span from the new PB, then the span written since the
+                 * snapshot built again, both planes, from this commit's jobs */
+                if (s_sw0[y] <= s_sw1[y]) pp_pf_from_pb(y, s_sw0[y], s_sw1[y]);
+                if (s_ah_b0[y] <= s_ah_b1[y]) {
+                    pp_build_row(y, s_ah_b0[y], s_ah_b1[y], s_pb, s_pf, NULL, 0);
+                    s_pps.rows_sync++;
+                }
             }
             if (++s_ah_used <= 3 || s_pp_mode == 2) {
                 /* the long way into the old PB (PB) and a row of scratch (PF), compared */

@@ -196,6 +196,8 @@ void orb_sched_reset_fps(void);
  * bg_rate() picks the fastest period that divides the background's frame
  * period, holding *every ticks per frame. */
 uint32_t orb_sched_tick_base_ms(void);
+/* radar-plan §7.8: the frame period an app's sweep is paced to now (0) and the theme's own (1). */
+uint32_t orb_sched_frame_ms(int which);
 uint32_t orb_sched_bg_rate(uint32_t base, uint32_t *every);
 
 /* The dial's smoothness, as a reader with no serial line can price it

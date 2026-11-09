@@ -27,6 +27,7 @@
   "cv_ring": "v(iiiii)",
   "cv_text": "v(iiiiiii)",
   "fmod": "F(FF)",
+  "frame_ms": "i(i)",
   "home": "i(i)",
   "home_gen": "i()",
   "icon": "i(iii)",

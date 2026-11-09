@@ -2133,3 +2133,14 @@ a frame is drawn from (`orb_cv_png8`), and the app says which bodies it wants th
   second now the frame itself (~120-140 ms DFW, ~170-190 ms Austin), the same every frame. The
   rates are what today's step costs give; the indexed live layers (owed, the owner's next) are to
   bring a storm's step to ~115 ms, ~9 fps.
+- **Only a costly step paces** (owner, London's clear sky: "the sweep does not feel as smooth as it
+  did before"): a step costs about a frame there (49-90 ms), and pacing to it took the arm from 15
+  to 10-12 fps. A step must pass 1.5 frames of the theme's pace now (`DYN_OVER`), and the rows the
+  LVGL task wrote since a build-ahead's snapshot are rebuilt over their own span, not the whole row
+  (`s_ah_b0/b1`). London: 16.7 fps, the worst gap a second 67-101 ms; the owner: "now it looks
+  smooth". The slow-fast-slow on the way there was a place change's full-disc steps and the loop's
+  wrap from Now to its oldest frame, each holding the slow pace 10 s.
+- **The arm turns slower with its frames** (owner: "the less it moves the less area it covers so
+  the less to draw and the closer it is to where it was"): `orb_frame_ms(0/1)` (OS v1.6.1, SDK)
+  answers the frame period the sweep is paced to and the theme's own; radar integrates its sweep's
+  angle at its theme's speed times own/now, so it moves as far a frame as at the theme's pace.

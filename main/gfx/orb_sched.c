@@ -744,6 +744,7 @@ void orb_sched_plan_restore(void) { s_plan_valid = false; sched_plan_from_theme(
  * back to the theme's own after a quiet DYN_HOLD_MS. */
 #define DYN_HOLD_MS   10000u
 #define DYN_MIN_FPS   5u
+#define DYN_OVER      15u                     /* in tenths: a step past 1.5 frames paces the sweep */
 static uint64_t s_dyn_swaps;
 static uint32_t s_dyn_blip_us, s_dyn_at_ms, s_dyn_last_ms;   /* the max, its time, the last step's */
 static int sched_dyn_pace10(int base)
@@ -761,6 +762,10 @@ static int sched_dyn_pace10(int base)
     }
     if (now - s_dyn_last_ms >= DYN_HOLD_MS) s_dyn_blip_us = 0;   /* no steps for that long: the plan's own */
     const uint32_t te = display_te_period_us();
+    /* Only a step well past a frame of the theme's own pace slows the sweep: on clear skies a
+     * step costs about a frame, and pacing to it took London's arm from 15 to 10 fps (owner,
+     * 2026-11-09: "does not feel as smooth as it did before"). */
+    if ((uint64_t)s_dyn_blip_us * 10u < (uint64_t)base * te * DYN_OVER / 10u) return base;
     int p = (int)((s_dyn_blip_us + te - 1) / te) * 10;          /* whole scans */
     const int pmax = (int)(10000000u / (DYN_MIN_FPS * te)) * 10 / 10;
     if (p > pmax) p = pmax;
@@ -788,6 +793,22 @@ void orb_sched_bench(uint32_t rate_fps, bool freeze, uint32_t gif_x)
     s_bench_gif_x = gif_x < 1 ? 1 : (gif_x > 8 ? 8 : gif_x);
 }
 #endif
+
+/* radar-plan §7.8: the frame period an app's sweep is paced to now (which 0), and the theme's
+ * own (which 1), in ms, so an app turns its arm at the speed the pace can draw smoothly (the
+ * owner: the less it moves a frame, the less it covers and the closer to where it was). */
+uint32_t orb_sched_frame_ms(int which)
+{
+#if CONFIG_ORB_DEBUG_HTTP
+    const uint32_t te = display_te_period_us();
+    if (s_plan_live && s_plan_pace10 && te) {
+        const int p = which ? s_plan_pace10 : (s_dyn_pace10 ? s_dyn_pace10 : s_plan_pace10);
+        return (uint32_t)((uint64_t)p * te / 10000u);
+    }
+#endif
+    (void)which;
+    return s_rung_period ? s_rung_period : 66;
+}
 
 static uint32_t sched_tick_period_ms(void)
 {

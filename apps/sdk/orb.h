@@ -337,6 +337,11 @@ ORB_IMPORT("blob_free") void     orb_blob_free(uint32_t slot);
 #define ORB_BLOB_RAM    1               /* in PSRAM: drawable */
 #define ORB_BLOB_CARD   2               /* on the card only: load it first */
 #define ORB_BLOB_MOVING 3               /* being parked or loaded */
+/* OS v1.6.1: the frame period, ms, the app's sweep is paced to now (which 0) and its theme's own
+ * (1). The OS slows a sweep's frames while its live layer's steps are costly (a storm's rain);
+ * turn the arm in proportion (own / now), and it moves as far a frame as at the theme's pace:
+ * smoother, and less to draw (README "Off the glass" neighbours "Pacing"). */
+ORB_IMPORT("frame_ms")   uint32_t orb_frame_ms(int32_t which);
 ORB_IMPORT("blob_park")  int32_t orb_blob_park(uint32_t slot);
 ORB_IMPORT("blob_load")  int32_t orb_blob_load(uint32_t slot);
 ORB_IMPORT("blob_state") int32_t orb_blob_state(uint32_t slot);

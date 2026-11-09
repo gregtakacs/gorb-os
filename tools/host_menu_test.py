@@ -256,6 +256,10 @@ def lifts(src):
         'int themes_page_count_for(const char *s) { (void)s; return g_th_n; }',
         'const char *themes_page_active_for(const char *s) { (void)s; return g_th_active; }',
         'void themes_page_walk(void) { g_th_walks++; }',
+        # theme-cache-plan (2026-11-09): why an app's theme is missing; none by default.
+        'static bool g_th_absent;',
+        'bool orb_theme_absent(const char *s, const char **b, char *w, size_t n) '
+        '{ (void)s; (void)w; (void)n; if (b) *b = g_th_absent ? "no card" : NULL; return g_th_absent; }',
         # §61: the theme carousel, answered by a switch: off, the text list stands in.
         '#include "theme_strip.h"',
         'static bool g_ts_ok; static const orb_app_t *g_ts_app; static int g_ts_opens;',
@@ -387,6 +391,7 @@ struct lv_obj_t; typedef struct lv_obj_t lv_obj_t;
                                 * esp_err.h spells it rather than as a bare -1 */
 #define ESP_LOGI(tag, ...) ((void)0)
 #define ESP_LOGW(tag, ...) ((void)0)
+#define EXT_RAM_BSS_ATTR                /* PSRAM placement: nothing on a host */
 static const char *TAG __attribute__((unused)) = "menu";
 __SLUGDEF__
 __UNUSED_OK__
@@ -2443,8 +2448,8 @@ MUTATIONS = [
      "    if (s_pg == P(PG_CAPS)) {                  /* the Permissions sub-menu likewise */\n        reopen_app(orb_app_row((size_t)s_perm_slot), OWN_PERMS);",
      "    if (s_pg == P(PG_CAPS)) {                  /* the Permissions sub-menu likewise */\n        go_to(PG_APPS, 0);"),
     ("an app with no themes keeps an empty Themes row",
-     "static bool own_has_themes(const orb_app_t *a) { return themes_page_count_for(a->slug) > 0; }",
-     "static bool own_has_themes(const orb_app_t *a) { (void)a; return true; }"),
+     "    return themes_page_count_for(a->slug) > 0 || orb_theme_absent(a->slug, NULL, NULL, 0);",
+     "    (void)a; return true;"),
     ("the Permissions row counts grants it never asked for",
      "            if ((orb_svc_declared(s_app) & bit) && (orb_svc_grants(s_app) & bit)) ng++;",
      "            if (orb_svc_grants(s_app) & bit) ng++;"),

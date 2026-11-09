@@ -34,7 +34,7 @@ GFXH = os.path.join(ROOT, "main", "gfx", "orb_gfx.h")
 # stop at the two lifted layers: they carry no tag, so the tag test stops there too.
 MUTATIONS = [
     (UI, "static inline bool hatched_out(int32_t X, int32_t Y) { return ((X + Y) & 7) >= 5; }", "static inline bool hatched_out(int32_t X, int32_t Y) { return ((X - Y) & 7) >= 5; }"),
-    (UI, "if (e.a && !(p->hatch && hatched_out(X, Y))) over(", "if (e.a) over("),
+    (UI, "if (!e.a || (p->hatch && hatched_out(X, Y))) continue;", "if (!e.a) continue;"),
     (UI, "const int32_t half = k2 * k2 / 2,", "const int32_t half = 0,"),
     (GFX, "row[x] = (uint16_t)((v >> 8) | (v << 8)); }", "row[x] = v; }"),
     (GFX, "for (int32_t x = xa; x <= xb; x++) { const uint16_t v = *src++;", "for (int32_t x = xa - 1; x <= xb; x++) { const uint16_t v = *src++;"),

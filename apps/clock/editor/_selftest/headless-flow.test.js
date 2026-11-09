@@ -10,12 +10,12 @@ const path = require('path');
 require('./headless-stub.js');
 const E = global.WatchEngine;
 global.React = { createRef: () => ({ current: null }) };
-require('./component.js');
+require('../clock-logic.js');
 let fails = 0, checked = 0;
 const ok = (c, n, x) => { checked++; if (!c || process.env.VERBOSE) console.log((c ? 'PASS ' : 'FAIL ') + n + (x ? '  [' + x + ']' : '')); if (!c) fails++; };
 const DCLogic = function () { };
 DCLogic.prototype.setState = function (p) { Object.assign(this.state, typeof p === 'function' ? p(this.state) : p); };
-const Comp = global.COMP_CLASS(DCLogic);
+const Comp = global.ClockLogic(DCLogic);
 const mount = (dial) => {
   const it = new Comp({});
   it.ready = true; it.rendering = false; it.budget = () => ({ fps: 8, dev: { pace: 8, cross: 0, cov: 0, why: '' } });
@@ -151,8 +151,9 @@ const stepOf = (it) => it.stepNow()[0];
   ok(V().handGrid && !V().handRows.length && V().fields.some((f) => f.label === 'Cast shadows'), 'the Dial step\u2019s Hand style shows the default-style grid and the shared settings, and no hand panels');
   ok(V().subOpts.map((t) => t.label).join() === 'Dial,Hand set,Timing', 'the Dial step offers Dial, Hand set and Timing', V().subOpts.map((t) => t.label).join());
   it.setState({ sel: null, selKind: null });
-  const html = fs.readFileSync(path.join(__dirname, '..', 'Watch Composer.dc.html'), 'utf8');
-  ok(html.indexOf('<sc-for list="{{ handRows }}"') < 0 && html.indexOf('class="wc-row') < 0, 'no hand-written hand pane is left: one kind of element, one kind of pane');
+  // E7 Stage 2: the panes are clock-host.js's React
+  const panes = fs.readFileSync(path.join(__dirname, '..', 'clock-host.js'), 'utf8');
+  ok(panes.indexOf('handRows') < 0 && panes.indexOf('wc-row') < 0, 'no hand-written hand pane is left: one kind of element, one kind of pane');
 }
 
 // ---- from a preset ------------------------------------------------------------
@@ -205,9 +206,15 @@ const stepOf = (it) => it.stepNow()[0];
     mech: 'mechCls', stackCap: 'stackCapShort', themeNameLen: 'themeNameTip',
     // owner, 2026-11-05: a hand's pane is the kit's rows, so it rides the inspector's fields
     handRows: 'studioFields', isHands: 'studioFields' };
-  const html = fs.readFileSync(path.join(__dirname, '..', 'Watch Composer.dc.html'), 'utf8');
-  const tpl = html.slice(html.indexOf('<x-dc>'), html.indexOf('</x-dc>'));
-  const bound = new Set((tpl.match(/\{\{\s*([A-Za-z_][A-Za-z0-9_]*)/g) || []).map((m) => m.replace(/\{\{\s*/, '')));
+  // E7 Stage 2: what the panes read (clock-host.js's Rv.<name>) is the template's bindings now
+  const panes = fs.readFileSync(path.join(__dirname, '..', 'clock-host.js'), 'utf8');
+  const html = fs.readFileSync(path.join(__dirname, '..', 'clock-logic.js'), 'utf8');
+  const bound = new Set((panes.match(/\bRv\.([A-Za-z_][A-Za-z0-9_]*)/g) || []).map((m) => m.slice(3)));
+  // the panes also take the shell's parts (ctl.studioVals(Rv).studio<Part>) and the canvases' refs (ctl.<ref>)
+  (panes.match(/\)\.studio[A-Z][A-Za-z0-9_]*|\bctl\.[a-z][A-Za-z0-9_]*Ref\b/g) || []).forEach((m) => bound.add(m.replace(/^\)\.|^ctl\./, '')));
+  // and the host draws the steps (isStart, stepOpts, the Render step that was isExport), the duplicate question (its StartFlow and
+  // Confirm) and the true-size caption and ruler (its views) from the app's own answers
+  ['isStart', 'stepOpts', 'isExport', 'studioDup', 'studioCal'].forEach((k) => bound.add(k));
   // K6: the chrome is the OS's shell (studio@1). A value the clock hands it through
   // studioVals (R.<name>) is still bound; the duplicate question and the true-size caption
   // and ruler the shell builds from the services' own answers, so they ride the studio
@@ -239,7 +246,6 @@ const stepOf = (it) => it.stepNow()[0];
      rowsD.filter((f) => (f.rowCls === 'wide') === !!f.isRange).map((f) => f.label).join());
   ok(V().viewOpts.map((o) => o.label).join() === 'Fit,1:1,True size,Magnify', 'the four view stops', V().viewOpts.map((o) => o.label).join());
   ok(V().inFrame === false && V().notHub === true && /Clock/.test(V().crumbLabel), 'standalone: no back arrow, the download in the top bar', V().crumbLabel);
-  const html = fs.readFileSync(path.join(__dirname, '..', 'Watch Composer.dc.html'), 'utf8');
   // K6: the shell's parts carry the clock's own values: the send modal says what the clock's
   // send lines say in every state, and the top bar holds the clock's steps and primary action
   [null, { canCancel: true, cancelling: false }, { canCancel: false, cancelling: false }, { canCancel: false, cancelling: true }].forEach((sd) => {
@@ -276,12 +282,11 @@ const stepOf = (it) => it.stepNow()[0];
     it._quietBake = true; it.setState({ status: 'Drawing 3 baked parts…' }); it.setState({ status: 'x', sel: null }); it._quietBake = false;
     ok(it._quietLast === 'Drawing 3 baked parts…' && it.state.status === 'x', 'the quiet bake keeps its status lines and lets every other update through', it.state.status);
     it.setState({ status: '' }); }
-  // K6: the one title bar is the shell's TopBar; the clock's page draws none of its own
+  // K6, E7 Stage 2: the one title bar is the shell's TopBar, drawn by the host; the clock's panes draw none
   const studioJs = fs.readFileSync(require('./runtime-paths.js').STUDIO, 'utf8');
-  ok(html.indexOf('Watch composer') < 0 && !(html.match(/<header/g) || []).length && (studioJs.match(/h\('header'/g) || []).length === 1 && html.includes('OrbStudio.TopBar'),
-     'one title bar: the studio\u2019s own, no second heading');
-  ok(/<link href="ui.css" rel="stylesheet">/.test(html), 'the look is the runtime\u2019s ui@1 sheet');
-  ok(!/#c9a25a|#f0d79a|#2a2316/.test(html.slice(html.indexOf('<x-dc>'), html.indexOf('</x-dc>'))), 'no gold left in the studio\u2019s chrome');
+  const panes2 = fs.readFileSync(path.join(__dirname, '..', 'clock-host.js'), 'utf8');
+  ok(!/h\('header'/.test(panes2) && (studioJs.match(/h\('header'/g) || []).length === 1, 'one title bar: the studio\u2019s own, no second heading');
+  ok(!/#c9a25a|#f0d79a|#2a2316/.test(panes2), 'no gold left in the clock\u2019s panes');
 }
 
 // ---- a sub-dial prints nothing; the hand aligned to it prints in its own units ---------

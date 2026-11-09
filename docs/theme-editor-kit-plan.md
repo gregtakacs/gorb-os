@@ -766,7 +766,7 @@ size and fps readouts) is the host's, done once.
 | **E4** | declared views in the centre pane, for all three | the same controls in every app; each view reaches the glass — **built 2026-11-08**, benched on the bench fake with home and two places (§8.7) |
 | **E5** | the live size readout; Check the bake goes | the clock's bake timed first; a readout that matches the bake's bytes — **built 2026-11-08** (§8.8) |
 | **E6** | frame rate per view, every app | an estimate shown for each view; checked against Gold for at least one view per app — **built 2026-11-08** (§8.9); checked on Gold for Flights and Weather (Radar has no moving view; the clock is E7's) |
-| **E7** | the clock on the host | the clock's headless suites (about 1,500 checks) green; nothing lost against the P5 checklist — **in two stages (owner, 2026-11-08): Stage 1, the clock's own page given the shared start, import, Render and live size, built 2026-11-08 (§8.11); Stage 2, the move onto the host, not started** |
+| **E7** | the clock on the host | the clock's headless suites (about 1,500 checks) green; nothing lost against the P5 checklist — **in two stages (owner, 2026-11-08): Stage 1, the clock's own page given the shared start, import, Render and live size, built 2026-11-08 (§8.11); Stage 2, the move onto the host: 2a–2d built 2026-11-08 (§8.13), the Gold bench (2e) left** |
 
 The clock goes last. It is the largest editor and the one where the frame rate matters
 most, so it moves after the contract has carried the other three.
@@ -1117,9 +1117,9 @@ confirm. The clock's own session, history, start sheet, Render panel and top bar
 | Step | Content | Gate |
 |---|---|---|
 | 2a | the stateful contract in `host@1`, proven by a made-up stateful app | the host suite drives it: create, panes, history through snapshot and restore, a library open through apply, the bake |
-| 2b | `clock-logic.js`: the class out of the `.dc.html`, the suites' extract pointed at it | the 20 clock suites green on the module; the `.dc.html` still runs it unchanged |
-| 2c | `clock-panes.js`: the template as React in the host's slots, the clock's controller | the clock's pages and UI suites ported; every binding of the template still in a pane |
-| 2d | the switch: `editor.json` hosted, `make_clock_region.py` packs the module, the `.dc.html` and its session, history and start retired | the region suite and the packer's checks; the shelf rebaked if a bake changes |
+| 2b | `clock-logic.js`: the class out of the `.dc.html`, the suites' extract pointed at it — **folded into 2d** (§8.13) | the 20 clock suites green on the module; the `.dc.html` still runs it unchanged |
+| 2c | `clock-panes.js` (built as `clock-host.js`): the template as React in the host's slots, the clock's controller — **built 2026-11-08** | the clock's pages and UI suites ported; every binding of the template still in a pane |
+| 2d | the switch: `editor.json` hosted, the packer packs the module, the `.dc.html` and its session, history and start retired — **built 2026-11-08** (§8.13; the clock's own packer retired with the page) | the packer's checks and a `clock-host.js` suite; the shelf rebaked if a bake changes |
 | 2e | the bench | on Gold: start, every step, layers drag, art and sound uploads, diagnostics, Send, the size and pace readouts |
 
 ### 8.13 E7 Stage 2 so far (2026-11-08)
@@ -1155,10 +1155,33 @@ confirm. The clock's own session, history, start sheet, Render panel and top bar
   taking the watch from 5 parts to 6 with the new hand's fields shown, the host's Undo back
   to 5 and Redo to 6; Finish's Light, Case & glass and Sound; the diagnostics overlay with
   its frame stepping and seam check; Send to orb storing 3,461 KB; no script errors.
-- **Left for 2d and 2e:** `make_clock_region.py` packing the hosted region; `clock-logic.js`
-  as the source and the `.dc.html` retired with the class's own session boot, history,
-  start sheet, Render panel and top bar; the suites that read the `.dc.html`
-  (`headless-flow`'s binding check, the region suite, `rebake_shelf.py`'s stage) moved to
-  the module; a suite for `clock-host.js`; then the bench on Gold (layers drag, art and
-  sound uploads, the Edit door, Rebake all).
+- **2d, built 2026-11-08: the switch.** `clock-logic.js` is the source: the class, wrapped
+  `window.ClockLogic = function (DCLogic) { ... }`, which the suites, the probe pages and
+  `clock-host.js` all load. `Watch Composer.dc.html` is gone, and with it the clock's own
+  packer: `apps/clock/editor/editor.json` names the hosted page (`"host": 1`, the six
+  modules, the runtimes) as the other apps' do, `app.json`'s `editor` is the `editor` dir,
+  and `make_factory_apps.py` packs it like any app's, so `make_clock_region.py` and its
+  region suite retired with the page. The selftest deployer moved into `_selftest/` and
+  stages `clock-logic.js`; `rebake_shelf.py`'s clock bake stages through it (no extract cut
+  from the html); `headless-pages` checks the host page's runtime tags in place of the dc
+  page's; `headless-flow`'s binding check reads the panes (`Rv.<name>`, the shell's parts
+  and the canvases' refs) and counts what the host now draws (the steps, the Render step,
+  the duplicate question, the true-size caption) as bound. A new `headless-host` suite (21
+  checks) drives `clock-host.js`: the contract and the five panes, every template and New
+  passing the clock's check, a hand-over not handed back (nor the same watch in another
+  field order), an edit the class makes pushed once, the file round trip, the fit; two
+  mutants caught (keys in the object's own order; a push every draw). The 21 clock suites,
+  `check-host`, `check-apps` (the shelf current) and `check-editor` green; the hub's Go
+  suite has only the two release failures it had before (the built-in bundle at v1.2.37
+  under the apps' v1.2.38 floor). The class still carries its retired start sheet, Render
+  panel and top-bar values, unused by the panes; cutting them is a tidy-up, not a gate.
+- **Found in 2d: Stage 1 had broken the shelf's clock bake.** Stage 1's Export asks a Save
+  dialog where the browser has one (`OrbTheme.saveFile`); `bank3-drive.html` caught only
+  the old download, so under headless Chrome's virtual clock the bake waited on a dialog
+  nobody answers until `rebake_shelf.py` timed it out at 20 minutes. The drive page and the
+  three browser probes (`theme-check`, `probe-bake-motion`, `probe-coverage`) now catch
+  `saveFile` too; the bake runs in 6 s again, and a dry run (not installed) passes
+  `make_default_theme.py`'s gate. The shipped Skeleton is unchanged and still current.
+- **Left for 2e:** the bench on Gold: start, every step, layers drag, art and sound
+  uploads, diagnostics, the Edit door, Rebake all, Send, the size and pace readouts.
 

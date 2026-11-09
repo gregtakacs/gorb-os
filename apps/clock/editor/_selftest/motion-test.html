@@ -35,7 +35,7 @@
 <script src="../session.js"></script>
 <script src="../preview.js"></script>
 <script src="../measure.js"></script>
-<script src="component.js"></script>
+<script src="../clock-logic.js"></script>
 <script>
 (function () {
   const out = document.getElementById('out'), L = [];
@@ -48,7 +48,7 @@
   const cv = (w, h) => { const c = document.createElement('canvas'); c.width = w; c.height = h || w; return c; };
   const pix = (c) => new Uint8Array(c.getContext('2d').getImageData(0, 0, c.width, c.height).data.slice().buffer);
   const still = (M, gt, F) => { const c = cv(466); E.compose(c.getContext('2d'), M, gt, F, E.previewDate(), { hands: 1, glass: 1, outer: 1 }); return c; };
-  const IT = new (window.COMP_CLASS(DCLogic))({});
+  const IT = new (window.ClockLogic(DCLogic))({});
   IT.forceUpdate = () => { };
   IT.state.playing = false; IT.state.hidden = {}; IT.state.tab = 'export';
   const wait = (ms) => new Promise((r) => setTimeout(r, ms));

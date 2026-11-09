@@ -7,7 +7,7 @@
 // whole file the cancel locks, because the orb's store cannot be stopped part way.
 require('./headless-stub.js');
 global.React = { createRef: () => ({ current: null }) };
-require('./component.js');
+require('../clock-logic.js');
 let fails = 0, checked = 0;
 const ok = (c, n, x) => { checked++; if (!c || process.env.VERBOSE) console.log((c ? 'PASS ' : 'FAIL ') + n + (x ? '  [' + x + ']' : '')); if (!c) fails++; };
 
@@ -37,7 +37,7 @@ const progress = (loaded, total) => xhr.upload.onprogress({ loaded, total });
 const tick = () => new Promise((r) => setImmediate(r));
 
 const mk = () => {
-  const it = new (global.COMP_CLASS(DCLogic))({});
+  const it = new (global.ClockLogic(DCLogic))({});
   it.hubOrbIp = async () => '192.0.2.7';
   // the bake is not this suite's subject: a send press goes straight to the post
   it.exportTheme3 = async () => it.postTheme3ToOrb(new Uint8Array(4096), 'Test', 'clock-test-000000000000', { sentence: 'p' }, 'm', false);

@@ -4,12 +4,12 @@ require('./headless-stub.js');
 const S = require('./headless-stub.js');
 const E = global.WatchEngine;
 global.React = { createRef: () => ({ current: null }) };
-require('./component.js');
+require('../clock-logic.js');
 let fails = 0, checked = 0;
 const ok = (c, n, x) => { checked++; console.log((c ? 'PASS ' : 'FAIL ') + n + (x ? '  [' + x + ']' : '')); if (!c) fails++; };
 const DCLogic = function () { };
 DCLogic.prototype.setState = function (p) { Object.assign(this.state, typeof p === 'function' ? p(this.state) : p); };
-const Comp = global.COMP_CLASS(DCLogic);
+const Comp = global.ClockLogic(DCLogic);
 const u = (tag, w, h) => { const x = 'data:image/png;base64,' + Buffer.from(tag).toString('base64'); S.SIZES[x] = [w, h]; return x; };
 E.assetRestore([{ id: 'ui-art', name: 'art.png', kind: 'png', dataUrl: u('ui', 300, 300) },
   { id: 'ui-big', name: 'big.png', kind: 'png', dataUrl: u('big', 600, 600) }]);

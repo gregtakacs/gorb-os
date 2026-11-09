@@ -11,7 +11,7 @@
      "unit": "%", "default": 100,
      "help": "How loud the quarter chimes, the hour strikes and the repeater are, under the orb's own volume. Each step is half a decibel; 0 is silent."}
   ],
-  "editor": "clock",
+  "editor": "editor",
   "shelf": true,
   "os_min": "v1.2.20"
 }

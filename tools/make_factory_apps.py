@@ -34,14 +34,9 @@ _spec = importlib.util.spec_from_file_location("orbapp", os.path.join(HERE, "orb
 orbapp = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(orbapp)
 
-# S4: the clock's editor travels inside its own container. The region builder is
-# its own tool (make_clock_region) because the composer sources are tracked and
-# the region is derived bytes; importing it here keeps this file the one author
-# of every factory container, so --check covers the region for free.
-_cr = importlib.util.spec_from_file_location("make_clock_region",
-                                             os.path.join(HERE, "make_clock_region.py"))
-clock_region = importlib.util.module_from_spec(_cr)
-_cr.loader.exec_module(clock_region)
+# S4: the clock's editor travels inside its own container. Since E7 Stage 2
+# (theme-editor-kit-plan §8.12) it is a hosted editor directory like every other
+# app's, packed by orbsdk; make_clock_region and its derived dc document retired.
 
 # §43: an app's code is a wasm module built from apps/<slug>/ against apps/sdk and
 # nothing else. orbsdk is the one compiler and packer of those modules; this file picks
@@ -99,8 +94,6 @@ def editor_region(slug, m):
     names a builder this tree owns, or a directory of the app, which orbsdk packs
     (flight-tracker-design §12.2)."""
     key = m.get("editor")
-    if key == "clock":
-        return clock_region.make_region()
     if key and orbsdk.editor_dir(os.path.join(APPS_DIR, slug), m):
         return b""                      # orbsdk.container packs the directory
     if key:

@@ -36,7 +36,7 @@
 <script src="../session.js"></script>
 <script src="../preview.js"></script>
 <script src="../measure.js"></script>
-<script src="component.js"></script>
+<script src="../clock-logic.js"></script>
 <script>
 (function () {
   const out = document.getElementById('out'), L = [];
@@ -47,7 +47,7 @@
   let fails = 0;
   const ok = (n, c, x) => { say((c ? 'PASS ' : 'FAIL ') + n + (x !== undefined ? '  [' + x + ']' : '')); if (!c) fails++; };
 
-  const IT = new (window.COMP_CLASS(DCLogic))({});
+  const IT = new (window.ClockLogic(DCLogic))({});
   IT.forceUpdate = () => { };
   // The D34 tripwire prices the walk against gt.length: a loop with frames still arriving
   // reads as zero motion. The button bakes with the ticker running, so the ticker runs here.
@@ -136,10 +136,13 @@
       if (!await settle()) throw new Error('did not settle after the strip');
     }
     // Intercept the download rather than clicking an <a>: headless Chrome has no save dir.
-    // The ticker runs through the bake the way it runs under a live button press: settled3()
+    // Export asks a Save dialog where the browser has one (E7 Stage 1, OrbTheme.saveFile),
+    // and headless Chrome never answers it: on a virtual clock the bake waits forever. The
+    // ticker runs through the bake the way it runs under a live button press: settled3()
     // prices the walk against a half-filled loop, and the D34 tripwire says so in words.
     let blob = null, fname = null;
     IT.download = (b, n) => { blob = b; fname = n; };
+    IT.saveFile = async (b, n) => { blob = b; fname = n; return 'downloaded'; };
     // ?plate=1 (D43 P0): also print the plate exactly as bakeClock3 received it — 8-bit
     // RGBA before any RGB565 quantization — so the stored bytes and the glass can be
     // measured against the pixels the composer drew. Keyframe 0 when the plate is a bank.

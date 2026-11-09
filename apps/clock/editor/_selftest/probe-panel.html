@@ -29,7 +29,7 @@
 <script src="../session.js"></script>
 <script src="../preview.js"></script>
 <script src="../measure.js"></script>
-<script src="component.js"></script>
+<script src="../clock-logic.js"></script>
 <script>
 (function () {
   const out = document.getElementById('out'), L = [];
@@ -43,7 +43,7 @@
   const DIAL = q.get('dial') || 'skeleton', FRAMES = (q.get('frames') || '').split(',').filter(Boolean);
   const FROM = +q.get('from'), TO = +q.get('to');
 
-  const IT = new (window.COMP_CLASS(DCLogic))({});
+  const IT = new (window.ClockLogic(DCLogic))({});
   IT.forceUpdate = () => { };
   IT.state.playing = false; IT.state.hidden = {}; IT.state.tab = 'export'; IT.state.render = 'panel';
   const settle = async () => {

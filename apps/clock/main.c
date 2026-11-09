@@ -819,16 +819,14 @@ static void base_show(bool on)
  * evicted theme back from the card, or a store chooses another without a reboot; OS
  * theme-cache-plan §2.4, §4.1), and a dial read once kept its base face over the new theme
  * with no hands (owner, 2026-11-09). */
-static int32_t stage_read(void)
+static void stage_apply(const orb_stage_info_t *in)
 {
-    if (orb_stage_open(&s_info) != ORB_OK) return ORB_ERR_NOT_ALLOWED;
-    if (s_info.base) {
-        base_show(true);
-        orb_set_beat(1000);               /* the readout keeps itself current */
-        return ORB_OK;
-    }
-    base_show(false);
-    orb_set_beat(0);                      /* the stage's frames tick the dial */
+    s_info = *in;
+    base_show(s_info.base);
+    /* the manifest's beat ticks the base face's readout and a themed dial's hands alike: at 0
+     * the hands stood still (Bronze, 2026-11-09) */
+    orb_set_beat(1000);
+    if (s_info.base) return;
     G.n_rows = s_info.n_rows < CLK_ROW_MAX ? s_info.n_rows : CLK_ROW_MAX;
     G.n_comps = s_info.n_comps < CLK_COMP_MAX ? s_info.n_comps : CLK_COMP_MAX;
     for (int i = 0; i < G.n_rows; i++) orb_stage_row(i, &G.rows[i]);
@@ -838,6 +836,13 @@ static int32_t stage_read(void)
     s_pattern = s_info.pattern;
     orb_logf("dial: %u rows, %u comps, %u sounds", (unsigned)G.n_rows, (unsigned)G.n_comps,
              (unsigned)s_nsnd);
+}
+
+static int32_t stage_read(void)
+{
+    orb_stage_info_t in;
+    if (orb_stage_open(&in) != ORB_OK) return ORB_ERR_NOT_ALLOWED;
+    stage_apply(&in);
     return ORB_OK;
 }
 
@@ -845,8 +850,28 @@ ORB_EXPORT("orb_init") int32_t orb_init(void) { return stage_read(); }
 
 /* The stage calls this every frame it composes; the base face gets the one-second
  * beat instead. */
+/* Set at every arrival; the next tick re-reads the stage. Not in the hooks themselves: the
+ * OS calls them before it binds the stage, so they would read the last app's binding. A
+ * tick comes from the stage's frames (or the base face's beat), once the stage is bound. */
+static bool s_reread;
+
 ORB_EXPORT("orb_tick") void orb_tick(uint32_t now_ms)
 {
+    if (s_reread) {
+        /* A stage still binding answers "no theme" for a moment, and ticks come from inside
+         * the bind (Bronze, 2026-11-09: a dial that believed it lost its hands, and three ticks
+         * in a row came within one bind). A themed dial believes "no theme" only once it is
+         * still the answer 2 s after the arrival. */
+        orb_stage_info_t in;
+        if (orb_stage_open(&in) == ORB_OK) {
+            if (in.base && !s_info.base && orb_uptime_us() - s_shown_us < 2000000) {
+                /* ask again next tick */
+            } else {
+                s_reread = false;
+                if (memcmp(&in, &s_info, sizeof in)) stage_apply(&in);   /* only what changed */
+            }
+        }
+    }
     if (s_info.base) { base_tick(); return; }
     int64_t t;
     int32_t frac_ns, wall_ns;
@@ -874,8 +899,8 @@ ORB_EXPORT("orb_service") void orb_service(void)
 }
 ORB_EXPORT("orb_suspend") void orb_suspend(void) { s_on_glass = false; }
 
-ORB_EXPORT("orb_activate") void orb_activate(void) { s_shown_us = orb_uptime_us(); s_on_glass = true; (void)stage_read(); }
-ORB_EXPORT("orb_resume")   void orb_resume(void)   { s_shown_us = orb_uptime_us(); s_on_glass = true; (void)stage_read(); }
+ORB_EXPORT("orb_activate") void orb_activate(void) { s_shown_us = orb_uptime_us(); s_on_glass = true; s_reread = true; }
+ORB_EXPORT("orb_resume")   void orb_resume(void)   { s_shown_us = orb_uptime_us(); s_on_glass = true; s_reread = true; }
 
 /* The dial has no armed view: a press is the repeater's, and the dial stays unarmed so
  * the turn still walks the carousel. */

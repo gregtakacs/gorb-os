@@ -972,9 +972,9 @@ static volatile bool s_fill_changed;          /* a fill found its file changed: 
 static uint32_t s_reconciled_gen;             /* the card mount the reconcile last ran on  */
 static volatile bool s_pool_busy;             /* a fill is moving entries: binds wait     */
 static volatile uint32_t s_fill_done, s_fill_total;   /* the fill's progress, for its face */
-static char s_fill_slug[ORB_POOL_SLUG_MAX];   /* the app being filled, "" for none        */
-static char s_hide_slug[ORB_POOL_SLUG_MAX];   /* a store is choosing for it: binds see none */
-static char s_refill_slug[ORB_POOL_SLUG_MAX]; /* chosen while on the glass: fill it there    */
+EXT_RAM_BSS_ATTR static char s_fill_slug[ORB_POOL_SLUG_MAX];   /* the app being filled, "" for none        */
+EXT_RAM_BSS_ATTR static char s_hide_slug[ORB_POOL_SLUG_MAX];   /* a store is choosing for it: binds see none */
+EXT_RAM_BSS_ATTR static char s_refill_slug[ORB_POOL_SLUG_MAX]; /* chosen while on the glass: fill it there    */
 
 /* The cache as the hub reads it (GET /api/v1/theme_cache): each app's choice, the order of
  * the glass, and the pool's entries. Answers the bytes written. */
@@ -2044,7 +2044,7 @@ typedef struct {
     uint32_t sec, sec_done;     /* the section being copied, and its bytes written */
     bool     valid;
 } fill_mark_t;
-static fill_mark_t s_fill_mark;
+EXT_RAM_BSS_ATTR static fill_mark_t s_fill_mark;
 static volatile bool s_fill_stop;              /* the owner left the app being filled */
 
 #define FILL_ERASE_STEP (64u * 1024u)          /* a fill erases this far ahead of its writes */

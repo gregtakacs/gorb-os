@@ -20,6 +20,7 @@ static const char *TAG = "pagemap";
 #define PH_BASE    0x20000000u               /* 512 MB: no flash there, none mapped */
 
 static SemaphoreHandle_t s_mx;
+EXT_RAM_BSS_ATTR static StaticSemaphore_t s_mx_buf;   /* PSRAM: internal RAM is the board's cliff */
 static uint16_t s_slots;                     /* placeholder slots in use */
 static uint32_t s_pages;                     /* pages mapped through windows */
 
@@ -54,7 +55,7 @@ esp_err_t orb_pagemap(const esp_partition_t *p, const uint32_t *page_off, uint32
         paddr[i] = p->address + page_off[i];
         if (paddr[i] % ORB_PAGEMAP_PAGE) return ESP_ERR_INVALID_ARG;   /* the partition is page-aligned */
     }
-    if (!s_mx) s_mx = xSemaphoreCreateMutex();
+    if (!s_mx) s_mx = xSemaphoreCreateMutexStatic(&s_mx_buf);
     if (!s_mx) return ESP_ERR_NO_MEM;
     xSemaphoreTake(s_mx, portMAX_DELAY);
     int slot = -1;

@@ -254,8 +254,8 @@ happens only when they are not. No first fit, no compaction, no MOVING state.
   (§6, "A store chooses").
 - **The display stall guard rebooted Bronze twice on a screen switch** shortly after a boot
   that started a fill (switch to weather unpainted 7.6 s, "card idle"; the stage rendering
-  16-27 fps with no LVGL flush, and no ring loan logged in the window). Not reproduced on
-  demand; leaving a fill face mid-fill was clean three times. Open.
+  16-27 fps with no LVGL flush, and no ring loan logged in the window). Likely the same
+  internal-RAM shortfall that froze the panel (§6, "The freeze after it"); watch for it.
 
 - **A trap not reproduced:** on the C0 bench day the radar failed with two faults, "wasm
   trapped in orb_input", at the first knob turns after a reboot, before any fill; three
@@ -263,6 +263,23 @@ happens only when they are not. No first fit, no compaction, no MOVING state.
   (`orb_input: [trap] …`), so the next one says what it was.
 
 ## 6. As built
+
+### The freeze after it, and the clock's re-read done right (2026-11-09, Bronze)
+
+- **The panel froze a few seconds after boot**, the dial composing frames that never left
+  (the owner saw it; the log's flush counter could not tell — it read 0 under the working C7
+  build too, so it is no witness of a frozen panel). The internal heap's largest free block
+  was 18,432 B, under the 18,640 B the display's DMA ring needs back after the card first
+  borrows it; a few hundred bytes of today's internal statics (the fill's slugs and mark,
+  the page map's mutex) had tipped it. They live in PSRAM now. The margin stays thin.
+- **Binding the stage before an app's arrival hook froze the panel too** (tried so the clock
+  would read its own theme): reverted. The OS calls the hook first, as before.
+- **The clock re-reads its stage on its first tick after an arrival**, not in the hook (the
+  stage is not yet bound there). A tick can come from inside the bind, where the stage
+  answers "no theme": a themed clock believes that only if it is still the answer 2 s after
+  the arrival. The themed dial keeps the manifest's 1 s beat (at 0 the hands stood still).
+- **Bronze, by the owner's eye:** the dial runs with hands after boot; Skeleton stored with
+  the clock on the glass loaded behind its face and runs, no reboot.
 
 ### A store chooses, and does not reboot (2026-11-09, Bronze)
 

@@ -5186,9 +5186,15 @@ async function loadLibThemes() {
 // and a list that interpolated them would let a design's name write this page.
 async function loadUpdates() {
   const list = $("#mn-updates-list"), state = $("#mn-updates-state"), count = $("#mn-updates-count");
+  const section = $("#mn-updates");
   let data = null;
   try {
     const r = await hubFetch("/api/updates");
+    // The Updates list asks the site, so it lives behind the same door as Import (-site):
+    // with the door shut the hub has no /api/updates, and the section stays hidden rather
+    // than telling everyone a list they were never offered could not be read.
+    if (r.status === 404) { if (section) section.hidden = true; return; }
+    if (section) section.hidden = false;
     const j = await r.json().catch(() => ({}));
     if (!r.ok || !j || j.ok !== true) throw new Error((j && j.error) || ("HTTP " + r.status));
     data = j.data || {};

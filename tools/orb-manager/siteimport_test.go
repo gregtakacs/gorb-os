@@ -839,6 +839,19 @@ func TestSiteDoorShutWithoutTheFlag(t *testing.T) {
 			t.Errorf("POST %s on a shut hub = %d, want 404", p, rec.Code)
 		}
 	}
+	// G3's release check and Updates list ask the site too, so they wait behind the same door,
+	// and the page keeps the Updates section hidden until /api/updates answers.
+	for _, p := range []string{"/api/release/latest", "/api/updates"} {
+		if rec := rawCall(t, s, http.MethodGet, p, nil); rec.Code != http.StatusNotFound {
+			t.Errorf("GET %s on a shut hub = %d, want 404", p, rec.Code)
+		}
+	}
+	if b := blockOfLine(t, readWebFile(t, "index.html"), `id="mn-updates"`); !strings.Contains(b, "hidden") {
+		t.Error("#mn-updates is not hidden in the markup, so a shut hub shows an Updates list it can't read")
+	}
+	if !strings.Contains(readAppJS(t), "if (r.status === 404) { if (section) section.hidden = true; return; }") {
+		t.Error("loadUpdates no longer hides the section when the door is shut")
+	}
 	page, app := readWebFile(t, "index.html"), readAppJS(t)
 	for _, id := range []string{"mn-site-btn", "mn-lib-upload"} {
 		if b := blockOfLine(t, page, `id="`+id+`"`); !strings.Contains(b, "hidden") {

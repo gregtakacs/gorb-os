@@ -356,7 +356,7 @@ func TestTheRunSaysItsPlanFirst(t *testing.T) {
 	// them so its one restart boots the app already wearing its face (owner, 2026-11-09)
 	planIDs := func(chooses bool, seeded map[string]bool) string {
 		var out []string
-		for _, p := range installPlan(&Library{}, []string{"clock"}, true, chooses, seeded) {
+		for _, p := range installPlan(&Library{}, []string{"clock"}, true, chooses, false, nil, seeded) {
 			out = append(out, p.ID)
 		}
 		return strings.Join(out, " ")
@@ -1129,6 +1129,369 @@ func TestAThemeForAMissingAppSaysSo(t *testing.T) {
 			t.Errorf("%s: note %q does not say the app is missing", tc.what, last.Note)
 		} else if tc.want == "" && strings.Contains(last.Note, want) {
 			t.Errorf("%s: note %q says the app is missing when it should not", tc.what, last.Note)
+		}
+	}
+}
+
+// The five tests below are §63 / step D: what the hub does with the two facts step C's firmware
+// now reports — a top-level `live_install:true` and a per-row `built:true|false`. They script the
+// ledger by hand, exactly as the reboot tests above do, because the awkward states (a landing
+// still in flight, one that never finishes) are what a fixture would paper over.
+
+// TestALiveInstallWaitsForTheRowBuilt: a NEW app on step C firmware lands without a reboot, and
+// the ledger says so two ways over a couple of reads — first `built:false` (the load is in
+// flight), then `built:true`. The hub must wait through the unbuilt reads, say the load is
+// happening once and not twice, then end on a `loaded` step, and it must never ask for the reboot
+// the release before step C owed.
+func TestALiveInstallWaitsForTheRowBuilt(t *testing.T) {
+	old, oh := installPoll, installHard
+	installPoll, installHard = 10*time.Millisecond, 5*time.Second
+	defer func() { installPoll, installHard = old, oh }()
+	var mu sync.Mutex
+	installed, unbuiltLeft, reboots := false, 2, 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/v1/apps":
+			owed := `,"restart_owed":[],"live_install":true`
+			if !installed {
+				w.Write([]byte(`{"mounted":true,"apps":[{"stem":"sentinel","ok":true}],"installed":[]` + owed + `}`))
+				return
+			}
+			built := "true"
+			if unbuiltLeft > 0 {
+				unbuiltLeft--
+				built = "false"
+			}
+			w.Write([]byte(`{"mounted":true,"apps":[{"stem":"sentinel","ok":true}],"installed":[{"slug":"sentinel","built":` +
+				built + `}]` + owed + `}`))
+		case "/api/v1/apps/install":
+			installed = true
+			w.Write([]byte(`{"state":"installing"}`))
+		case "/api/v1/reboot":
+			reboots++
+			w.Write([]byte(`{"state":"rebooting"}`))
+		default:
+			w.Write([]byte(`{}`))
+		}
+	}))
+	defer srv.Close()
+	s := newHub()
+	s.lib = &Library{}
+	s.device = orbnet.NewClient(deviceTimeout)
+	s.device.DevicePort = portOf(srv.URL)
+	var acts []string
+	loadingNotes := 0
+	err := s.installOneApp(context.Background(), "127.0.0.1", "sentinel", nil, false, false, func(st installStep) {
+		acts = append(acts, st.Action)
+		if st.Action == "installing" && strings.Contains(st.Note, "loading it on the glass") {
+			loadingNotes++
+		}
+	})
+	if err != nil {
+		t.Fatalf("the live install refused: %v", err)
+	}
+	if !slices.Contains(acts, "loaded") {
+		t.Errorf("a live landing ended on %v; want a loaded step", acts)
+	}
+	if slices.Contains(acts, "installed") {
+		t.Errorf("a live landing must not claim the installed/reboot word: %v", acts)
+	}
+	if loadingNotes != 1 {
+		t.Errorf("the in-flight load was announced %d times, want one line across both unbuilt reads", loadingNotes)
+	}
+	if reboots != 0 {
+		t.Errorf("a new app on step C firmware asked for %d reboots, want none", reboots)
+	}
+}
+
+// TestALiveBatchRestartsNothing: "Update everything" on step C firmware installs a run of NEW
+// apps and reboots the dial zero times — the whole promise of the step. It mirrors
+// TestABatchRestartsTheOrbOnce on the same shipped containers, but the board answers live_install
+// and lands each row built, so every landing says loaded and no restart row is ever planned.
+func TestALiveBatchRestartsNothing(t *testing.T) {
+	op, ow, og, oh := installPoll, installRebootWait, cycleQuietGrace, installHard
+	installPoll, installRebootWait, cycleQuietGrace, installHard = 10*time.Millisecond, 200*time.Millisecond, 50*time.Millisecond, 3*time.Second
+	defer func() { installPoll, installRebootWait, cycleQuietGrace, installHard = op, ow, og, oh }()
+	lib := t.TempDir()
+	for _, slug := range []string{"clock", "weather"} {
+		b, err := fs.ReadFile(shippedLib, path.Join(libAppsSubdir, slug+".orbapp"))
+		if err != nil {
+			t.Skipf("no shipped %s: %v", slug, err)
+		}
+		os.WriteFile(filepath.Join(lib, slug+".orbapp"), b, 0o644)
+	}
+	var mu sync.Mutex
+	var installs []string
+	installed := map[string]bool{}
+	reboots := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/v1/status":
+			w.Write([]byte(`{"state":"connected","fw":"v1.6.4+aaaaaaa"}`))
+		case "/api/v1/theme/list":
+			w.Write([]byte(`{"themes":[],"card_count":1}`))
+		case "/api/v1/sd/app":
+			io.Copy(io.Discard, r.Body)
+			w.Write([]byte(`{"state":"stored"}`))
+		case "/api/v1/apps/install":
+			id := r.URL.Query().Get("id")
+			installed[id] = true
+			installs = append(installs, id+map[bool]string{true: "+defer", false: ""}[r.URL.Query().Get("defer") == "1"])
+			w.Write([]byte(`{"state":"installing"}`))
+		case "/api/v1/reboot":
+			reboots++
+			w.Write([]byte(`{"state":"rebooting"}`))
+		case "/api/v1/apps":
+			rows := []string{}
+			for _, slug := range []string{"clock", "weather"} {
+				if installed[slug] {
+					rows = append(rows, `{"slug":"`+slug+`","built":true}`)
+				}
+			}
+			w.Write([]byte(`{"mounted":true,"apps":[{"stem":"clock","ok":true},{"stem":"weather","ok":true}],` +
+				`"installed":[` + strings.Join(rows, ",") + `],"restart_owed":[],"live_install":true}`))
+		default:
+			w.Write([]byte(`{}`))
+		}
+	}))
+	defer srv.Close()
+	s := newHub()
+	s.lib = &Library{AppsDir: lib}
+	s.device = orbnet.NewClient(deviceTimeout)
+	s.device.DevicePort = portOf(srv.URL)
+	s.ota = orbnet.NewClient(otaTimeout)
+	s.ota.DevicePort = portOf(srv.URL)
+	var steps []installStep
+	err := s.installRun(context.Background(), "127.0.0.1", "clock,weather", true, false,
+		func(st installStep) { steps = append(steps, st) })
+	// A clock seed on a hub with no theme library is the run's own shortfall, said on the seed's
+	// row and returned at the end; it does not stop the apps landing (mirrors
+	// TestABatchRestartsTheOrbOnce, which ignores it). Anything else is the batch refusing.
+	if err != nil && !strings.Contains(err.Error(), "theme") && !strings.Contains(err.Error(), "seed") {
+		t.Fatalf("the live batch refused: %v", err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if want := []string{"clock+defer", "weather+defer"}; !slices.Equal(installs, want) {
+		t.Errorf("live batch installs %v, want %v (deferred so the run is one job, then landed live)", installs, want)
+	}
+	if reboots != 0 {
+		t.Errorf("a live batch of new apps asked for %d reboots, want none", reboots)
+	}
+	loaded, restartRow, restartingWord := 0, false, false
+	for _, st := range steps {
+		if st.Action == "loaded" {
+			loaded++
+		}
+		if st.Action == "plan" {
+			for _, p := range st.Plan {
+				if p.ID == "restart" {
+					restartRow = true
+				}
+			}
+		}
+		if st.Action == "restarting" || st.Action == "restarted" {
+			restartingWord = true
+		}
+	}
+	if loaded != 2 {
+		t.Errorf("a live batch said loaded %d times, want once per app", loaded)
+	}
+	if restartRow {
+		t.Error("a live batch of new apps planned a restart row it cannot owe")
+	}
+	if restartingWord {
+		t.Error("a live batch of new apps spoke a restart the firmware did not start")
+	}
+}
+
+// TestALiveLandingThatNeverBuildsNamesItsRow: a load that died between the copy and init leaves
+// the row standing at built:false forever. That is not "did not land" — the bytes crossed — so
+// when the hub's patience runs out it must say the copied-but-never-loaded sentence and name the
+// row, not the generic timeout a pre-step-C board gets.
+func TestALiveLandingThatNeverBuildsNamesItsRow(t *testing.T) {
+	old, oh := installPoll, installHard
+	installPoll, installHard = 5*time.Millisecond, 200*time.Millisecond
+	defer func() { installPoll, installHard = old, oh }()
+	var mu sync.Mutex
+	installed := false
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/v1/apps":
+			if !installed {
+				w.Write([]byte(`{"mounted":true,"apps":[{"stem":"sentinel","ok":true}],"installed":[],"restart_owed":[],"live_install":true}`))
+				return
+			}
+			w.Write([]byte(`{"mounted":true,"apps":[{"stem":"sentinel","ok":true}],"installed":[{"slug":"sentinel","built":false}],"restart_owed":[],"live_install":true}`))
+		case "/api/v1/apps/install":
+			installed = true
+			w.Write([]byte(`{"state":"installing"}`))
+		default:
+			w.Write([]byte(`{}`))
+		}
+	}))
+	defer srv.Close()
+	s := newHub()
+	s.lib = &Library{}
+	s.device = orbnet.NewClient(deviceTimeout)
+	s.device.DevicePort = portOf(srv.URL)
+	err := s.installOneApp(context.Background(), "127.0.0.1", "sentinel", nil, false, false, func(installStep) {})
+	if err == nil {
+		t.Fatal("a load that never finished must not report success")
+	}
+	if !strings.Contains(err.Error(), "sentinel") {
+		t.Errorf("the refusal does not name the row: %v", err)
+	}
+	if !strings.Contains(err.Error(), "never loaded") {
+		t.Errorf("a copied-but-unbuilt timeout must say never loaded, not the generic did-not-land: %v", err)
+	}
+}
+
+// TestAnUpdateOnLiveFirmwareStillOwesItsRestart: step C keeps the reboot for the one case a
+// live page cannot serve — an app already built this boot, whose row cannot be refilled under it.
+// The ledger says so by putting the slug in restart_owed even while live_install is on, and the
+// hub must then use the installed/restart word, not loaded, so the run behind it still restarts
+// onto the update.
+func TestAnUpdateOnLiveFirmwareStillOwesItsRestart(t *testing.T) {
+	old, oh := installPoll, installHard
+	installPoll, installHard = 10*time.Millisecond, 5*time.Second
+	defer func() { installPoll, installHard = old, oh }()
+	var mu sync.Mutex
+	installed, owed := false, false
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/v1/apps":
+			if !installed {
+				w.Write([]byte(`{"mounted":true,"apps":[{"stem":"sentinel","ok":true}],"installed":[],"restart_owed":[],"live_install":true}`))
+				return
+			}
+			ow := `[]`
+			if owed {
+				ow = `["sentinel"]`
+			}
+			w.Write([]byte(`{"mounted":true,"apps":[{"stem":"sentinel","ok":true}],"installed":[{"slug":"sentinel","built":true}],` +
+				`"restart_owed":` + ow + `,"live_install":true}`))
+		case "/api/v1/apps/install":
+			installed, owed = true, true
+			w.Write([]byte(`{"state":"installing"}`))
+		default:
+			w.Write([]byte(`{}`))
+		}
+	}))
+	defer srv.Close()
+	s := newHub()
+	s.lib = &Library{}
+	s.device = orbnet.NewClient(deviceTimeout)
+	s.device.DevicePort = portOf(srv.URL)
+	var acts []string
+	note := ""
+	err := s.installOneApp(context.Background(), "127.0.0.1", "sentinel", nil, false, true, func(st installStep) {
+		acts = append(acts, st.Action)
+		if st.Action == "installed" {
+			note = st.Note
+		}
+	})
+	if err != nil {
+		t.Fatalf("an owed update refused: %v", err)
+	}
+	if !slices.Contains(acts, "installed") {
+		t.Errorf("an owed update on live firmware must report installed (restart coming), got %v", acts)
+	}
+	if slices.Contains(acts, "loaded") {
+		t.Errorf("an owed update must not claim a live landing it did not make: %v", acts)
+	}
+	if !strings.Contains(note, "restart") {
+		t.Errorf("the owed update's note %q does not say the restart is coming", note)
+	}
+}
+
+// TestOldFirmwareSawNoChange: the whole point of keying on the ledger's word instead of a version
+// constant is that a board without live_install behaves exactly as it did before step D. A row
+// with no built key on firmware that says nothing lands on the old installed word, never loaded,
+// proving the new branch changed nothing for the releases behind it.
+func TestOldFirmwareSawNoChange(t *testing.T) {
+	old := installPoll
+	installPoll = 10 * time.Millisecond
+	defer func() { installPoll = old }()
+	var mu sync.Mutex
+	installed := false
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/v1/apps":
+			if installed {
+				w.Write([]byte(`{"mounted":true,"apps":[{"stem":"sentinel","ok":true}],"installed":[{"slug":"sentinel"}],"restart_owed":[]}`))
+				return
+			}
+			w.Write([]byte(`{"mounted":true,"apps":[{"stem":"sentinel","ok":true}],"installed":[],"restart_owed":[]}`))
+		case "/api/v1/apps/install":
+			installed = true
+			w.Write([]byte(`{"state":"installing"}`))
+		default:
+			w.Write([]byte(`{}`))
+		}
+	}))
+	defer srv.Close()
+	s := newHub()
+	s.lib = &Library{}
+	s.device = orbnet.NewClient(deviceTimeout)
+	s.device.DevicePort = portOf(srv.URL)
+	var acts []string
+	err := s.installOneApp(context.Background(), "127.0.0.1", "sentinel", nil, false, false, func(st installStep) {
+		acts = append(acts, st.Action)
+	})
+	if err != nil {
+		t.Fatalf("the old-firmware install refused: %v", err)
+	}
+	if !slices.Contains(acts, "installed") {
+		t.Errorf("old firmware ended on %v; want the installed word it has always used", acts)
+	}
+	if slices.Contains(acts, "loaded") {
+		t.Errorf("a board with no live_install was read as step C firmware: %v", acts)
+	}
+}
+
+// TestAPlanOnLiveFirmwareSaysNoRestart: the plan is the first line an owner sees, and a run of new
+// apps on firmware that lands them live must not promise a restart it will not make. The one
+// update in the run (its slug already on the dial) brings the row back, and an old board keeps it
+// whatever the run installs.
+func TestAPlanOnLiveFirmwareSaysNoRestart(t *testing.T) {
+	// card install, no theme seeded on the card (seeded names a different slug), so the plan is
+	// only the check, the install and — when it is owed — the restart row.
+	ids := func(live bool, installed map[string]bool) []string {
+		var out []string
+		for _, p := range installPlan(&Library{}, []string{"weather"}, true, false, live, installed, map[string]bool{"clock": true}) {
+			out = append(out, p.ID)
+		}
+		return out
+	}
+	for _, c := range []struct {
+		what      string
+		live      bool
+		installed map[string]bool
+		want      bool
+	}{
+		{"live, all new", true, map[string]bool{}, false},
+		{"live, one already on the dial (an update)", true, map[string]bool{"weather": true}, true},
+		{"old firmware, all new", false, map[string]bool{}, true},
+	} {
+		got := slices.Contains(ids(c.live, c.installed), "restart")
+		if got != c.want {
+			t.Errorf("%s: plan carries a restart row = %v, want %v (%v)", c.what, got, c.want, ids(c.live, c.installed))
 		}
 	}
 }

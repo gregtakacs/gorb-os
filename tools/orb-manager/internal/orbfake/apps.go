@@ -91,8 +91,13 @@ type CardApp struct {
 	Schema string
 
 	Installed bool
-	Failed    bool
-	OnGlass   bool
+	// Built is the row's load state, §63's `init_done`: the word step C's ledger sends for
+	// every installed row, and the one a live landing turns from false to true. Set it on a
+	// seeded row to model an app already running this boot; leave it false on one the test
+	// expects an install to bring up. Only a LiveInstall double reports it.
+	Built   bool
+	Failed  bool
+	OnGlass bool
 	// Status is the app's own runtime line as h_status reports it. The device sends "" for
 	// a built-in that never reported one, so the double sends "" and a caller sets it
 	// deliberately rather than the formatter inventing a word.
@@ -352,10 +357,11 @@ const appSlugMax = 24 // ORB_APP_SLUG_MAX, orb_app_manifest.h
 func (o *Orb) serveApps(w http.ResponseWriter) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
+	o.settleLoadsLocked()
 	installed := o.installedJSONLocked()
 	if !o.Mounted {
 		writeJSON(w, 200, `{"mounted":false,"count":-1,"apps":[],"installed":[`+
-			installed+`]}`)
+			installed+`]`+o.liveWord()+`}`)
 		return
 	}
 	var rows []string
@@ -378,8 +384,39 @@ func (o *Orb) serveApps(w http.ResponseWriter) {
 		owed = `,"restart_owed":[` + strings.Join(q, ",") + `],"try_stem":"","try_why":""`
 	}
 	writeJSON(w, 200, fmt.Sprintf(
-		`{"mounted":true,"card":%q,"count":%d,"apps":[%s],"installed":[%s]%s}`,
-		jsonSafe(o.Card), len(rows), strings.Join(rows, ","), installed, owed))
+		`{"mounted":true,"card":%q,"count":%d,"apps":[%s],"installed":[%s]%s%s}`,
+		jsonSafe(o.Card), len(rows), strings.Join(rows, ","), installed, o.liveWord(), owed))
+}
+
+// liveWord is step C's top-level fact, spelled where the device spells it: after the
+// installed array and before the owed pair, which is h_apps_list's word for a firmware that
+// lands a new app with no restart. Every release before it — and every double with the knob
+// down — sends nothing here, which is the reading the hub is asked to fall back to.
+func (o *Orb) liveWord() string {
+	if !o.LiveInstall {
+		return ""
+	}
+	return `,"live_install":true`
+}
+
+// settleLoadsLocked runs the scripted live load's clock: a new app under BuiltPolls stands
+// unbuilt for the next N ledger reads and is built after them, which is the only way a hub
+// test ever meets a landing in flight. BuiltForever never settles it, because a load that
+// died mid-flight is a state no amount of polling ends and the hub's refusal has words for.
+func (o *Orb) settleLoadsLocked() {
+	if !o.LiveInstall || o.BuiltForever || o.BuiltPolls <= 0 {
+		return
+	}
+	o.BuiltPolls--
+	if o.BuiltPolls > 0 {
+		return
+	}
+	for slug := range o.loading {
+		if a := o.apps[slug]; a != nil && a.Installed {
+			a.Built = true
+		}
+		delete(o.loading, slug)
+	}
 }
 
 // installedJSONLocked formats the flash tier as h_apps's installed rows do. walkable is
@@ -401,16 +438,29 @@ func (o *Orb) installedJSONLocked() string {
 		// Mirrors apps_send_installed: the built-in row carries "compiled":true and a
 		// "reason", and NO identity tuple or version, because a compiled row was never a
 		// container and printing a zero version claims an answer about no file.
-		tail := "}"
-		if a.Builtin {
-			tail = fmt.Sprintf(`,"compiled":true,"reason":"%s"}`, jsonSafe(a.Why))
-		} else {
-			ids := make([]string, 0, len(a.Secrets))
-			for id := range a.Secrets {
-				ids = append(ids, strconv.Quote(id))
+		//
+		// Step C adds "built" to both arms where the double is that firmware, and the device
+		// puts it after on_glass and before whatever the row carries next, which is what
+		// splicing the head of each arm's tail buys: the identity tuple keeps its order. A
+		// compiled row was built at boot, so it reports true and the knob cannot say otherwise.
+		built := ""
+		if o.LiveInstall {
+			if a.Builtin { // a compiled row was built at boot, whatever a fixture says
+				built = `,"built":true`
+			} else {
+				built = `,"built":` + tf(a.Built)
 			}
-			slices.Sort(ids)
-			tail = fmt.Sprintf(`,"geom_crc":%d,"code_crc":%d,"code_size":%d,"serial":%d,`+
+		}
+		ids := make([]string, 0, len(a.Secrets))
+		for id := range a.Secrets {
+			ids = append(ids, strconv.Quote(id))
+		}
+		slices.Sort(ids)
+		tail := built + "}"
+		if a.Builtin {
+			tail = built + fmt.Sprintf(`,"compiled":true,"reason":"%s"}`, jsonSafe(a.Why))
+		} else {
+			tail = built + fmt.Sprintf(`,"geom_crc":%d,"code_crc":%d,"code_size":%d,"serial":%d,`+
 				`"editor_crc":%d,"version":"%s","secrets":[%s]}`,
 				a.GeomCRC, a.CodeCRC, a.CodeSize, a.Serial, editorCRC(a.Editor), jsonSafe(a.Version),
 				strings.Join(ids, ","))
@@ -515,7 +565,23 @@ func (o *Orb) serveAppInstall(w http.ResponseWriter, r *http.Request) {
 	}
 	o.mu.Lock()
 	defer o.mu.Unlock()
+	// §63 on a step C double: the row this call replaces decides the whole answer. No row, or
+	// a row that was not built, is a NEW app — it lands live, owes nothing even under
+	// ?defer=1, and its load is what BuiltPolls keeps in flight. A row already built is an
+	// update, whose card cannot be refilled under a live page: owed with defer, rebooted
+	// without, exactly as the release before step C did.
+	fresh := o.LiveInstall && (!row.Installed || !row.Built)
 	row.Installed, row.Failed = true, row.Why != ""
+	if fresh && !row.Failed {
+		row.Built = o.BuiltPolls <= 0 && !o.BuiltForever
+		if !row.Built {
+			if o.loading == nil {
+				o.loading = map[string]bool{}
+			}
+			o.loading[row.Slug] = true
+		}
+		return
+	}
 	if r.URL.Query().Get("defer") == "1" && !o.NoDefer && !row.Failed && !slices.Contains(o.Owed, stem) {
 		o.Owed = append(o.Owed, stem)
 	}

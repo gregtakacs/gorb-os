@@ -216,7 +216,7 @@ func (p *runPhases) phaseOf(st installStep) string {
 		switch st.Action {
 		case "uploading":
 			return "send:" + st.Step
-		case "uploaded", "installing", "installed", "skipped":
+		case "uploaded", "installing", "installed", "loaded", "skipped":
 			return "install:" + st.Step
 		case "restarted":
 			return "restart"
@@ -233,7 +233,13 @@ func (p *runPhases) phaseOf(st installStep) string {
 // A theme seed's rows are listed only for an app whose card carries no theme of its own
 // (seeded names the ones that do): on a card with themes every seed row read "not needed"
 // under every app (owner, 2026-11-09). seeded nil (the card did not answer) lists them all.
-func installPlan(lib *Library, slugs []string, card, chooses bool, seeded map[string]bool) []planStep {
+//
+// The restart row follows the same rule one step further (§63): on firmware that lands a new
+// app live, a run of new apps cannot owe a restart at all, and a plan row that can only end
+// "not needed" is a row the owner should never have been shown. installed names the run's
+// slugs that already have a row — the updates, whose restart step C keeps owed — so live
+// firmware lists the row only when the run can still reach it.
+func installPlan(lib *Library, slugs []string, card, chooses, live bool, installed map[string]bool, seeded map[string]bool) []planStep {
 	titles := map[string]string{}
 	p := &LibraryPayload{}
 	listAppLibrary(lib.AppsDir, p)
@@ -277,11 +283,42 @@ func installPlan(lib *Library, slugs []string, card, chooses bool, seeded map[st
 		}
 		plan = append(plan, planStep{ID: "install:" + slug, Label: "Installing " + title(slug), Kind: "wait", Budget: secs(installHard)})
 	}
-	plan = append(plan, planStep{ID: "restart", Label: "Restarting the orb to load it", Kind: "wait", Budget: restart})
+	if !live || owesOne(slugs, installed) {
+		plan = append(plan, planStep{ID: "restart", Label: "Restarting the orb to load it", Kind: "wait", Budget: restart})
+	}
 	if !chooses {
 		plan = append(plan, seedRows()...)
 	}
 	return plan
+}
+
+// owesOne reports whether any slug in the run already has a row on the dial, which on live
+// firmware is the one case that still ends in a restart: an app built this boot cannot have
+// its row refilled under a live page, so its update is owed and rebooted as before §63.
+func owesOne(slugs []string, installed map[string]bool) bool {
+	for _, slug := range slugs {
+		if installed[slug] {
+			return true
+		}
+	}
+	return false
+}
+
+// installedSet narrows a ledger to the run's own question: which of these slugs already have
+// a row on this dial, and so would be an update rather than a first landing.
+func installedSet(list *orbnet.AppList, slugs []string) map[string]bool {
+	set := map[string]bool{}
+	if list == nil {
+		return set
+	}
+	for _, row := range list.Installed {
+		for _, slug := range slugs {
+			if row.Slug == slug {
+				set[slug] = true
+			}
+		}
+	}
+	return set
 }
 
 // seedSlug is the seed gate, written once because the plan, the pre-app seed and the
@@ -648,7 +685,18 @@ func (s *Server) installRun(ctx context.Context, ip, only string, force, card bo
 			}
 		}
 	}
-	send(installStep{Step: "install", Action: "plan", Phase: "check", Plan: installPlan(lib, slugs, card, phases.chooses, seeded)})
+	// The plan's restart row is decided by the same fact the run's waits are gated on, and the
+	// plan is the run's first streamed line, so the ledger is asked before the plan is written.
+	// The read below stays the run's authority — it is the one that waits a boot out and
+	// refuses an unusable card — and this one answers only the question the plan must already
+	// answer: a board that will not say is read as the firmware that reboots.
+	preRead, preErr := s.device.AppsList(ip)
+	live := preErr == nil && preRead.LandsLive()
+	var installed map[string]bool
+	if preErr == nil {
+		installed = installedSet(preRead, slugs)
+	}
+	send(installStep{Step: "install", Action: "plan", Phase: "check", Plan: installPlan(lib, slugs, card, phases.chooses, live, installed, seeded)})
 	send = phases.stamp(send)
 	st, err := s.device.Status(ip)
 	if err != nil {
@@ -744,7 +792,8 @@ func (s *Server) installRun(ctx context.Context, ip, only string, force, card bo
 	// run restarts the orb once when the last has landed (owner, 2026-11-09: Update
 	// everything restarted the orb after every app). Older firmware restarts per app.
 	batch := len(slugs) > 1 && listing.Defers()
-	owed := 0 // deferred installs that landed and wait on the one restart
+	live = listing.LandsLive() // the run's own word, from the read that gates the batch too
+	owed := 0                  // deferred installs that landed and wait on the one restart
 	restartOwed := func() error {
 		if owed == 0 {
 			return nil
@@ -870,6 +919,15 @@ func (s *Server) installRun(ctx context.Context, ip, only string, force, card bo
 	// An install with no theme behind it still reboots the orb, and a run that said done
 	// into that gap let the page re-read a board that was mid-boot (owner, 2026-11-06: done
 	// means the orb is back). The same cycle-shaped wait, once.
+	//
+	// A live run never reaches this line, and the load-bearing inch of §63 is which step word
+	// lets it: waited is !rebooted || cycled, rebooted is set only by sendOne reading an
+	// "installed" line as a slot written, and installOneApp answers a live landing with
+	// "loaded". Had it said "installed" — the honest word on every firmware before step C —
+	// the run would have spent the cycle wait's whole patience here for a reboot the firmware
+	// deliberately did not start. Nothing here needs to know about live installs; the word
+	// keeps the wait off the run, and restartOwed above no-ops on owed == 0, which is exactly
+	// the live-new-app case.
 	if !waited {
 		phases.cur = "restart"
 		send(installStep{Step: "install", Action: "restarting", Note: "the orb restarts to load the app"})
@@ -919,6 +977,11 @@ func (s *Server) installOneApp(ctx context.Context, ip, slug string, blob []byte
 	if err != nil {
 		return fmt.Errorf("the orb did not answer its app ledger: %w", err)
 	}
+	// §63's fact, from the ledger this run already read and before anything was touched: an
+	// orb that answers no live_install is the firmware that reboots for a new app, and the
+	// read that failed above is not a claim of live landing either. Every wait below is
+	// chosen by that word and never by a version constant.
+	live := listing.LandsLive()
 	if !force {
 		for _, row := range listing.Installed {
 			if row.Slug != slug {
@@ -1055,6 +1118,13 @@ func (s *Server) installOneApp(ctx context.Context, ip, slug string, blob []byte
 	// run says so instead of then spending the cycle wait's 20 s of quiet proving it
 	// (owner, 2026-11-06: "restarting" lit up long after the orb was back).
 	silent := false
+	// A live landing (§63, step C) is a load in flight: the copy crossed, the row stands, and
+	// the dial still says built:false. waitBuilt names that state at the moment the hard leash
+	// runs out, so the refusal can tell "never copied" from "copied and never loaded" — and
+	// toldLoad keeps the wait to one line, the way the busy worker's `told` above does. No new
+	// timing constant joins them: the extension and the hard stop already bound a reboot, and
+	// a live load is seconds on a healthy board.
+	waitBuilt, toldLoad := false, false
 	for {
 		select {
 		case <-ctx.Done():
@@ -1065,6 +1135,9 @@ func (s *Server) installOneApp(ctx context.Context, ip, slug string, blob []byte
 		if err != nil {
 			silent = true
 		}
+		if err == nil {
+			waitBuilt = false
+		}
 		if err == nil && deferred {
 			// the old row stands until the restart, so only the owed list says it copied
 			if list.Owes(slug) {
@@ -1074,15 +1147,49 @@ func (s *Server) installOneApp(ctx context.Context, ip, slug string, blob []byte
 			if list.TryStem == slug && list.TryWhy != "" {
 				return fmt.Errorf("the dial refused %s: %s", slug, list.TryWhy)
 			}
-		} else if err == nil {
-			for _, row := range list.Installed {
-				if row.Slug == slug {
-					send(installStep{Step: slug, Action: "installed"})
-					if silent {
-						send(installStep{Step: slug, Action: "restarted", Note: "the orb restarted to load it while it installed"})
-					}
+			// On live firmware a NEW app is deliberately not in restart_owed — step C's item 5
+			// keeps an install that owes nothing out of the list — so the row's own built word
+			// is the only thing that can end this wait. The refusal above still answers first:
+			// a card the ladder rejected is reported, not waited on.
+			if row, found := installedRow(list, slug); live && found {
+				if row.IsBuilt() {
+					send(installStep{Step: slug, Action: "loaded", Note: "the orb loaded it without a restart"})
 					return nil
 				}
+				waitBuilt = true
+				if !toldLoad {
+					send(installStep{Step: slug, Action: "installing", Note: "the orb is loading it on the glass"})
+					toldLoad = true
+				}
+			}
+		} else if err == nil {
+			for _, row := range list.Installed {
+				if row.Slug != slug {
+					continue
+				}
+				// A row on live firmware with no built key is a firmware that claimed live and
+				// cannot show its work: take it as it is taken today.
+				if live && row.Built != nil && !row.IsBuilt() {
+					waitBuilt = true
+					if !toldLoad {
+						send(installStep{Step: slug, Action: "installing", Note: "the orb is loading it on the glass"})
+						toldLoad = true
+					}
+					break
+				}
+				if live {
+					// "loaded" and never "installed": installRun reads an "installed" line as
+					// a slot written and a reboot owed, which is the wait this landing does not
+					// owe. The sub-step's "restarted" is a claim about a reboot that did not
+					// happen, so it goes too.
+					send(installStep{Step: slug, Action: "loaded", Note: "the orb loaded it without a restart"})
+					return nil
+				}
+				send(installStep{Step: slug, Action: "installed"})
+				if silent {
+					send(installStep{Step: slug, Action: "restarted", Note: "the orb restarted to load it while it installed"})
+				}
+				return nil
 			}
 			// A row that failed the ladder's own gates shows up refused on the card with a
 			// fresh install refusing to appear: name it rather than let the poll run blind
@@ -1094,6 +1201,9 @@ func (s *Server) installOneApp(ctx context.Context, ip, slug string, blob []byte
 			}
 		}
 		if time.Now().After(hard) {
+			if waitBuilt {
+				return fmt.Errorf("%s copied but never loaded: the orb still says its row is not built — press Install again to check", slug)
+			}
 			return fmt.Errorf("%s did not land within %s — the copy may still be running; press Install again to check",
 				slug, installHard)
 		}
@@ -1101,6 +1211,21 @@ func (s *Server) installOneApp(ctx context.Context, ip, slug string, blob []byte
 			deadline = time.Now().Add(installWait) // one full extension, then the hard stop
 		}
 	}
+}
+
+// installedRow is the ledger's row for one slug, and the bool that says whether the ledger
+// named it at all — the two are not the same question, because "no row" and "a row that says
+// nothing about its load" answer a live install differently.
+func installedRow(list *orbnet.AppList, slug string) (orbnet.AppInstalledRow, bool) {
+	if list == nil {
+		return orbnet.AppInstalledRow{}, false
+	}
+	for _, row := range list.Installed {
+		if row.Slug == slug {
+			return row, true
+		}
+	}
+	return orbnet.AppInstalledRow{}, false
 }
 
 // needsCardBytes reports whether an installed row can only run from a card copy.

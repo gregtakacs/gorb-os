@@ -10,7 +10,7 @@ import (
 // in orb_units.c's order. The zero value is metric, the orb's default.
 type Units struct {
 	Temp, Speed, Dist, Time, Pressure int
-	Gen                     uint32
+	Gen                               uint32
 }
 
 // unitKeys is orb_units.c KEYS: the route's spelling, by quantity then value. Time

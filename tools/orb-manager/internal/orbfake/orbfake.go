@@ -111,6 +111,17 @@ type Orb struct {
 	// NoDefer stands in for firmware older than deferred installs: the ledger sends no
 	// restart_owed key, and the hub must install one app per restart.
 	NoDefer bool
+	// LiveInstall stands for firmware from step C: the ledger says live_install, every
+	// installed row says built, and a NEW app lands with no restart. A knob and not a query
+	// parameter for Busy's stated reason — no caller on the LAN can ask a board for that
+	// build, and a double you cannot drive into the awkward state never tests it.
+	LiveInstall bool
+	// BuiltPolls scripts the load still in flight: the next N GET /api/v1/apps reads answer
+	// built:false for a row that landed live, decrementing on each, and after them the row
+	// reports built:true. Zero is the healthy board.
+	BuiltPolls int
+	// BuiltForever scripts a load that never finishes, for the timeout's words.
+	BuiltForever bool
 
 	// dev is the radio/config/screen state, defaulted on first use by deviceLocked.
 	dev *device
@@ -121,6 +132,10 @@ type Orb struct {
 	// reports a three-row ledger the way a fresh device does.
 	apps      map[string]*CardApp
 	appsOrder []string
+	// loading names the rows whose live load is still in flight, by slug: the rows an
+	// install under BuiltPolls left unbuilt, which the countdown settles. Only LiveInstall
+	// ever fills it, so a double that is not step C firmware has no pending loads to hide.
+	loading map[string]bool
 
 	// JobBusy mirrors orb_jobs_busy: with a card job in flight every door on an installed
 	// app answers 409 about the job, ahead of any lookup. Seed it to exercise the ordering.

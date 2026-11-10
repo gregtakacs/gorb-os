@@ -1707,3 +1707,20 @@ func TestThemesFaceListsTheLibraryByEntry(t *testing.T) {
 		}
 	}
 }
+
+// TestInstallStepsWordALiveLanding: on step C firmware a new app lands without a reboot, and the
+// hub sends a `loaded` step for it. The page must have a word for that action — otherwise it
+// renders the raw action and an owner reading "loaded" has no idea the orb did not restart — and
+// it must show the hub's own note when a step is skipped rather than inventing "not checked".
+func TestInstallStepsWordALiveLanding(t *testing.T) {
+	app := readAppJS(t)
+	for _, want := range []string{
+		`case "loaded":`,
+		"no restart",
+		`sl.skip(j.note ||`,
+	} {
+		if !strings.Contains(app, want) {
+			t.Errorf("app.js never contains %q, so the live landing is not worded on the page", want)
+		}
+	}
+}

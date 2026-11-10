@@ -2319,7 +2319,9 @@ async function streamSteps(q, frame, ip, onStep, body) {
         }
         if (planned && j.phase) sl.enter(j.phase);
         if (planned && (j.action === "skipped" || j.action === "unchecked") && sl.plan[sl.at] && j.phase === sl.plan[sl.at].id) {
-          sl.skip(j.action === "skipped" ? "already there" : "not checked");
+          // The hub's own note wins: "already there" is the wrong sentence for a stage the
+          // orb skipped for a reason of its own (a live install's restart row, §63).
+          sl.skip(j.note || (j.action === "skipped" ? "already there" : "not checked"));
         }
         const t = j.step + ": " + j.action + (j.note ? " — " + j.note : "");
         line(t);
@@ -2364,6 +2366,9 @@ function describeStep(j) {
     case "uploaded": return j.step + " sent; asking the orb to install it";
     case "installing": return "the orb is writing " + j.step + " to its app slot";
     case "installed": return j.step + " installed";
+    // A live landing (§63): the app is on the glass and nothing rebooted, so the headline
+    // says that instead of the reboot sentence an older orb's "restarted" earns.
+    case "loaded": return j.note || j.step + " loaded \u2014 no restart";
     // The clean slate's three words. A panel that ran a wipe and printed nothing would
     // read as a hub that did something to an orb without saying what (owner rule,
     // 2026-10-29: every erase the hub performs is said on the panel).

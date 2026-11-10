@@ -87,6 +87,11 @@ type AppInstalledRow struct {
 	// means both "not on the card" and "card row, no stamp" — CarriesIdentity already
 	// refuses to read a blank as an opinion, and the pair stays honest because of it.
 	Version string `json:"version,omitempty"`
+	// Built is §63's load state: the dial's own word for whether this row's module is
+	// loaded this boot (`init_done`), which is what makes a live landing observable from
+	// the LAN. A *bool for RestartOwed's stated reason — firmware before step C sends no
+	// key, and inventing false there would make every old-firmware row look unbuilt.
+	Built *bool `json:"built,omitempty"`
 }
 
 // CarriesIdentity reports whether a row plausibly sent the identity tuple. Only the
@@ -129,6 +134,10 @@ type AppList struct {
 	// Nil when the firmware predates deferred installs (it sends no key): such an orb
 	// reboots after every code install, and the hub installs one app per restart.
 	RestartOwed *[]string `json:"restart_owed"`
+	// LiveInstall is step C's word (§63): this firmware lands a NEW app on the glass with
+	// no reboot, and every installed row says `built`. Absent means the reading that costs
+	// nothing — the firmware that reboots for a new app, which is every orb before step C.
+	LiveInstall bool `json:"live_install,omitempty"`
 	// TryStem and TryWhy name the last install that failed on the orb (empty after a
 	// success), so a deferred install that will never be owed is reported, not waited on.
 	TryStem string `json:"try_stem,omitempty"`
@@ -137,6 +146,16 @@ type AppList struct {
 
 // Defers reports whether this orb takes ?defer=1 on an install.
 func (l *AppList) Defers() bool { return l != nil && l.RestartOwed != nil }
+
+// LandsLive reports whether this orb lands a new app with no restart (step C). The
+// ledger's word and not the hub's version table: an orb that says nothing is the
+// firmware that reboots, which is the reading that costs nothing.
+func (l *AppList) LandsLive() bool { return l != nil && l.LiveInstall }
+
+// IsBuilt reports the dial's own word that this row is loaded. It means nothing
+// unless LandsLive: an orb before step C omits the key, and Go reads an absent
+// *bool as nil and not as false.
+func (r AppInstalledRow) IsBuilt() bool { return r.Built != nil && *r.Built }
 
 // Owes reports whether stem was installed with defer and waits on the restart.
 func (l *AppList) Owes(stem string) bool {

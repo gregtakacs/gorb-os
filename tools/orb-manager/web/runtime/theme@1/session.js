@@ -366,6 +366,28 @@
       } catch (e) { return false; }
       return true;
     };
+    /* S3b: the hub refuses a name being chosen now when it is outside the basic characters,
+     * and when it would put two names on the one stem the orb files by. The editor asks the
+     * same two questions before it posts, in the hub's own words, so the owner reads a
+     * sentence instead of a failed save — and a name the library already holds exactly is
+     * not a new one, whatever characters it is spelled with. */
+    var NAME_CHARS = 'a design\'s name can use only letters (A\u2013Z, a\u2013z), numbers, spaces, dots, underscores and dashes';
+    var NAME_BASIC = /^[A-Za-z0-9 ._-]+$/;
+    var NAME_HANDLE = /^[a-z][a-z0-9_-]{2,23}$/;
+    var NAME_SEP = ' by @';
+    api.checkName = function (nm) {
+      var n = String(nm == null ? '' : nm).trim();
+      if (!n) return 'a design needs a name';
+      var i = n.indexOf(NAME_SEP);
+      if (i >= 0) {
+        var part = n.slice(0, i);
+        if (!part || !NAME_BASIC.test(part) || !NAME_HANDLE.test(n.slice(i + NAME_SEP.length))) return NAME_CHARS;
+      } else if (!NAME_BASIC.test(n)) return NAME_CHARS;
+      if (api.libraryEntry(n)) return null;
+      var fold = lib.filter(function (x) { return String(x.name).toLowerCase() === n.toLowerCase(); })[0];
+      if (fold) return 'a design called \u201c' + fold.name + '\u201d is already in the ' + api.slug() + ' library on this hub, under another spelling of its name';
+      return null;
+    };
     // entry: {name, doc, ...anything the app lists by}. A draft under a theme's name sits beside
     // it as that theme's unsent changes; under a draft's name it replaces it.
     // quiet (Send to orb's first step): no line unless it fails, so the send's own lines stand
@@ -373,6 +395,8 @@
     // Save under a host that saves by id — the site makes the new design and answers its id)
     var saveEntry = async function (entry, quiet, asNew) {
       if (!api.hubOrb()) { if (!quiet) say('Not saved: ' + offHub); return false; }
+      var bad = api.checkName(entry.name);
+      if (bad) { if (!quiet) say('Not saved: ' + bad); return false; }
       try { await saveDraft(entry.name, entry.doc, extrasOf(entry), asNew); }
       catch (e) {
         // a site's stale refusal is the one that costs nothing: hand the design to the new editor

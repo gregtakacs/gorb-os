@@ -18,14 +18,24 @@ package main
 // claiming 50000 × 50000 is refused as surely as a real one of that size would be. The
 // parsing below is the site's src/lib/image-header.ts and design-assets.ts, ported; the
 // sentences are the hub's own, worded to finish the owner's "the theme … " sentence.
+//
+// S3b amends the second bound in two ways. SVG art is now one of the pictures a design
+// may hold: an SVG arrives under data:image/svg+xml;base64 and is kept as the bytes it
+// came in, so the hub's rules are text rules — a size ceiling, no event handlers, no
+// outside links — checked on the decoded text. And a design's name is limited to basic
+// characters: the letters, numbers, spaces, dots, underscores and dashes an orb's name
+// field and every editor's file system both handle without a surprise.
 
 import (
+	"bytes"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"net/url"
 	"regexp"
 	"sort"
 	"strings"
+	"unicode/utf8"
 )
 
 // orbOSNet is the site's future home (§11): always allowed, https only.
@@ -121,15 +131,207 @@ const (
 	artRefusalSizeFormat = "an image in it is %d × %d pixels, and a design's pictures can be at most %d × %d"
 )
 
-// artPrefixes is the site's ART_PREFIXES: the four data: prefixes a picture may arrive
-// under, compared lower-cased.
+// artPrefixes is the site's ART_PREFIXES: the four data: prefixes a raster picture may
+// arrive under, compared lower-cased. S3b adds the SVG prefix beside them, checked apart.
 var artPrefixes = []string{"data:image/png;base64", "data:image/jpeg;base64", "data:image/gif;base64", "data:image/webp;base64"}
+
+// svgArtPrefix is S3b's fifth spelling: an SVG picture, kept as the text it arrives as.
+const svgArtPrefix = "data:image/svg+xml;base64"
+
+// svgMaxBytes is S3b's ceiling for one SVG: 256 KB of text, the site's SVG_MAX_BYTES. A
+// design's rasters are bounded by their declared sides; an SVG declares whatever it
+// likes and draws it, so the only honest ceiling is the file's own weight.
+const svgMaxBytes = 262144
+
+// The SVG refusals, verbatim. The size sentence counts the bytes up in whole KB, rounded
+// up, so the first refused file is 257 KB.
+const (
+	svgRefusalSizeFormat  = "an SVG in it is %d KB, and a design's SVGs can be at most 256 KB"
+	svgRefusalHoldsFormat = "an SVG in it holds %s, which a design's SVGs can't (no scripts, external links or entities)"
+	svgRefusalNotText     = "an SVG in it can't be read as text"
+	svgRefusalNotSvg      = "an image in it says it is an SVG but isn't one"
+)
+
+var (
+	// svgHandlerRe finds an event handler attribute: onload= and friends, the attribute
+	// names that run script the moment the picture is drawn. The character before the
+	// name is required, so a stroke-linejoin or a data-onX keeps its day.
+	svgHandlerRe = regexp.MustCompile(`(?i)[\s"'/]on[a-z]+\s*=`)
+	// svgHrefRe finds where an SVG points at something: every href and xlink:href
+	// attribute value, in either kind of quote.
+	svgHrefRe = regexp.MustCompile(`(?i)\b(?:xlink:)?href\s*=\s*"([^"]*)"|\b(?:xlink:)?href\s*=\s*'([^']*)'`)
+	// svgUrlRe finds a CSS url(…) reference, the other way a fill can point out of file.
+	svgUrlRe = regexp.MustCompile(`(?i)url\(\s*['"]?([^'")]+)`)
+	// svgImageRe is the cheap shape test: the text holds an <svg tag somewhere.
+	svgOpenRe = regexp.MustCompile(`(?i)<svg[\s/>]`)
+)
+
+// svgAllowedDataURL is the base64 tail of every raster prefix a design may hold: an SVG's
+// own links may embed one, because a picture pointing at a picture inside itself is what
+// a collage is.
+var svgAllowedDataURL = []string{"data:image/png;base64,", "data:image/jpeg;base64,", "data:image/gif;base64,", "data:image/webp;base64,"}
+
+// svgLinkOK is S3b's link rule: a reference inside an SVG may be a fragment of the same
+// file, or an embedded raster of one of the four formats the design could have carried
+// directly. Anything else — http, mailto, a data: of another type — is an outside link,
+// and a design must draw the same picture with the network cable out.
+func svgLinkOK(target string) bool {
+	t := strings.TrimSpace(target)
+	if strings.HasPrefix(t, "#") {
+		return true
+	}
+	lower := strings.ToLower(t)
+	for _, p := range svgAllowedDataURL {
+		if strings.HasPrefix(lower, p) {
+			return true
+		}
+	}
+	return false
+}
+
+// checkSvgArt is S3b's SVG check: the decoded text of one picture announced under the
+// SVG prefix. It returns "" when a design may hold the SVG and the sentence otherwise.
+// The order is the site's: weight first (a body over the ceiling is refused without
+// parsing it), then the shape, then handlers, then links.
+func checkSvgArt(b []byte) string {
+	if len(b) > svgMaxBytes {
+		return fmt.Sprintf(svgRefusalSizeFormat, (len(b)+1023)/1024)
+	}
+	if !utf8.Valid(b) || bytes.IndexByte(b, 0) >= 0 {
+		return svgRefusalNotText
+	}
+	text := string(b)
+	lower := strings.ToLower(text)
+	if at := svgFirstElement(lower); at < 0 || !svgRootAt(lower, at) {
+		return svgRefusalNotSvg
+	}
+	for _, f := range svgForbidden {
+		if f.found(lower) {
+			return fmt.Sprintf(svgRefusalHoldsFormat, f.label)
+		}
+	}
+	if svgHandlerRe.MatchString(text) {
+		return fmt.Sprintf(svgRefusalHoldsFormat, "an event handler")
+	}
+	for _, m := range svgHrefRe.FindAllStringSubmatch(text, -1) {
+		target := m[1]
+		if target == "" {
+			target = m[2]
+		}
+		if !svgLinkOK(strings.TrimSpace(target)) {
+			return fmt.Sprintf(svgRefusalHoldsFormat, "an outside link")
+		}
+	}
+	for _, m := range svgUrlRe.FindAllStringSubmatch(text, -1) {
+		if !svgLinkOK(strings.TrimSpace(m[1])) {
+			return fmt.Sprintf(svgRefusalHoldsFormat, "an outside link")
+		}
+	}
+	return ""
+}
+
+// svgForbidden is ruling 35's list of what an SVG may not hold, matched case-insensitively
+// anywhere in the text. Elements match with or without a namespace prefix (<x:script> is
+// still a script once xmlns:x names the SVG or XHTML namespace).
+var svgForbidden = []struct {
+	label string
+	found func(string) bool
+}{
+	{"a DOCTYPE", func(t string) bool { return strings.Contains(t, "<!doctype") }},
+	{"an entity", func(t string) bool { return strings.Contains(t, "<!entity") }},
+	{"a script", svgElement("script")},
+	{"foreignObject", svgElement("foreignobject")},
+	{"an iframe", svgElement("iframe")},
+	{"an embed", svgElement("embed")},
+	{"an object", svgElement("object")},
+	{"a stylesheet link", func(t string) bool { return strings.Contains(t, "<?xml-stylesheet") }},
+	{"an @import", func(t string) bool { return strings.Contains(t, "@import") }},
+	{"a javascript: URL", func(t string) bool { return strings.Contains(t, "javascript:") }},
+}
+
+// svgElement matches <name or <prefix:name, followed by anything but a name character, in
+// lower-cased text.
+func svgElement(name string) func(string) bool {
+	re := regexp.MustCompile(`<(?:[a-z0-9_.-]+:)?` + name + `(?:[^a-z0-9_.:-]|$)`)
+	return re.MatchString
+}
+
+// svgFirstElement is where the document's first element starts, past an optional XML
+// declaration, comments, whitespace and a DOCTYPE (which the forbidden list then refuses),
+// or -1 when the text ends inside one of those.
+func svgFirstElement(t string) int {
+	i := 0
+	for {
+		for i < len(t) && (t[i] == ' ' || t[i] == '\t' || t[i] == '\n' || t[i] == '\r' || strings.HasPrefix(t[i:], "\ufeff")) {
+			if strings.HasPrefix(t[i:], "\ufeff") {
+				i += len("\ufeff")
+			} else {
+				i++
+			}
+		}
+		switch {
+		case i >= len(t):
+			return -1
+		case strings.HasPrefix(t[i:], "<?"):
+			e := strings.Index(t[i+2:], "?>")
+			if e < 0 {
+				return -1
+			}
+			i += 2 + e + 2
+		case strings.HasPrefix(t[i:], "<!--"):
+			e := strings.Index(t[i+4:], "-->")
+			if e < 0 {
+				return -1
+			}
+			i += 4 + e + 3
+		case strings.HasPrefix(t[i:], "<!"):
+			e := strings.Index(t[i+2:], ">")
+			if e < 0 {
+				return -1
+			}
+			// a DOCTYPE with an internal subset ([...]) ends at "]>", not at its first ">"
+			if sub := strings.Index(t[i+2:], "["); sub >= 0 && sub < e {
+				end := strings.Index(t[i+2:], "]>")
+				if end < 0 {
+					return -1
+				}
+				e = end + 1
+			}
+			i += 2 + e + 1
+		default:
+			return i
+		}
+	}
+}
+
+// svgRootAt: the element at i is <svg, followed by whitespace, / or > (or the end).
+func svgRootAt(t string, i int) bool {
+	if !strings.HasPrefix(t[i:], "<svg") {
+		return false
+	}
+	if i+4 == len(t) {
+		return true
+	}
+	switch t[i+4] {
+	case ' ', '\t', '\n', '\r', '/', '>':
+		return true
+	}
+	return false
+}
 
 // artRefusal is "" when bytes announced by this data-URL prefix are a picture a design
 // may hold, and the sentence otherwise — the site's artRefusal, in its order: the prefix
-// first, because it is free; then the too-short pass-through; then the header.
+// first, because it is free; then the too-short pass-through; then the header. S3b's SVG
+// prefix takes the text check instead of the header check: an SVG's declared sides are
+// its own business, its weight, handlers and links are not.
 func artRefusal(prefix string, b []byte) string {
 	lower := strings.ToLower(prefix)
+	if lower == svgArtPrefix {
+		if b == nil {
+			return "" // the prefix-only pass of checkInlineArt: the bytes come next
+		}
+		return checkSvgArt(b)
+	}
 	known := false
 	for _, p := range artPrefixes {
 		if p == lower {
@@ -154,9 +356,9 @@ func artRefusal(prefix string, b []byte) string {
 }
 
 // bundleArtError is a checkBundle refusal that is not damage: the theme arrived exactly
-// as its hashes say and rules outside that refuse its art. handleSiteImport words it
-// apart from "is damaged" for that reason — the owner's fix is a smaller picture, not a
-// re-download.
+// as its hashes say and rules outside that refuse it — its art (S3), or the name its
+// shared name carries (S3b). handleSiteImport words it apart from "is damaged" for that
+// reason — the owner's fix is a smaller picture or a plainer name, not a re-download.
 type bundleArtError struct {
 	sentence string
 }
@@ -521,4 +723,82 @@ func readImageHeader(b []byte) (imageHeader, bool) {
 		return h, true
 	}
 	return webpHeader(b)
+}
+
+// --- S3b: the name rules -----------------------------------------------------------------
+// A design's name is shown back verbatim, is baked into a theme's orb name field and is
+// the file an editor's draft lives under. Three places, three things that go wrong with
+// the wrong characters in a name: a control character reaches the orb's display, a
+// non-ASCII letter reaches the file system under a normalising unicode form and the
+// draft and the theme are two files for one name, an emoji reaches all three and is a
+// box on the card. So a new name is limited to the basic characters, everywhere a name
+// is first chosen: a design save, a keep, and the shared name an import brings in.
+// Names already in the library keep working under the old rules — open, list, forget and
+// install all answer them — and a save that repeats a name exactly replaces what is
+// under it, as it did.
+
+// themeNameRe is S3b's character rule: letters, numbers, spaces, dots, underscores and
+// dashes, and nothing else. A name must hold at least one of them; emptiness and leading
+// and trailing space are the trimmer's and the empty refusal's business, not the rule's.
+var themeNameRe = regexp.MustCompile(`^[A-Za-z0-9 ._-]+$`)
+
+// themeNameRefusalChars is the sentence the character rule answers with, the allowed set
+// written out because the rule refuses names the author can see are "letters".
+const themeNameRefusalChars = "a design's name can use only letters (A–Z, a–z), numbers, spaces, dots, underscores and dashes"
+
+// handleRe is the owner's orb-os.net handle inside a shared name: a lower-case word of
+// 3 to 24 characters, the site's HANDLE_RE.
+var handleRe = regexp.MustCompile(`^[a-z][a-z0-9_-]{2,23}$`)
+
+// sharedNameSep is what the site puts between a theme's name and its author's handle.
+const sharedNameSep = " by @"
+
+// themeNameOK is S3b's character rule answering about a whole name, either form a name
+// reaches the hub in: the plain name an editor's field holds, or the shared form
+// "<name> by @<handle>" a bake carries after an import, whose separator is legal only
+// with a legal name and a legal handle on its two sides.
+func themeNameOK(n string) bool {
+	if name, handle, found := strings.Cut(n, sharedNameSep); found {
+		return name != "" && themeNameRe.MatchString(name) && handleRe.MatchString(handle)
+	}
+	return themeNameRe.MatchString(n)
+}
+
+// checkThemeName is S3b's rule for a name being chosen now: trimmed, not empty, and made
+// only of the basic characters (or the shared form of them). It returns the name as it
+// will be filed. It says nothing about length — a design's own 64-character bound still
+// applies, and an import's shared name carries the orb's 55-byte ceiling checkBundle
+// already enforces.
+func checkThemeName(raw string) (string, error) {
+	n := strings.TrimSpace(raw)
+	if n == "" {
+		return "", errors.New("a design needs a name")
+	}
+	if !themeNameOK(n) {
+		return "", errors.New(themeNameRefusalChars)
+	}
+	return n, nil
+}
+
+// checkSharedName reads the site's shared name and answers with the theme-name part and
+// the handle, or the sentence that refuses the bundle. A shared name carries the author's
+// handle after " by @", and the first such separator is the one the site wrote: a
+// theme's own name cannot hold an "@". A shared name with no separator at all is a
+// design's plain name — which is what a bundle for an unshared design serves — and the
+// plain character rule reads it.
+func checkSharedName(shared string) (name string, handle string, sentence string) {
+	if i := strings.Index(shared, sharedNameSep); i >= 0 {
+		name, handle = shared[:i], shared[i+len(sharedNameSep):]
+		if name == "" || !themeNameRe.MatchString(name) {
+			return "", "", themeNameRefusalChars
+		}
+		if !handleRe.MatchString(handle) {
+			return "", "", "its shared name holds a handle that is not allowed"
+		}
+		return name, handle, ""
+	}
+	if _, err := checkThemeName(shared); err != nil {
+		return "", "", err.Error()
+	}
+	return shared, "", ""
 }

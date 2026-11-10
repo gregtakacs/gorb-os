@@ -126,11 +126,38 @@ try {
     f = await pic(1025, 10, 'image/png'); r = await F(f);
     note(r.scaled === true && r.width === 1024 && r.height === 10, '5b. a 1025 x 10 PNG fits to 1024 x 10', dims(r));
     r = await F(svgFile()); d = await dec(r.dataUrl);
-    note(r.scaled === true && r.type === 'image/png' && r.width === 1024 && r.height === 1024 && d.w === 1024 && d.h === 1024,
-      '6a. a 24 x 24 SVG is rasterised to a 1024 x 1024 PNG', dims(r) + ', decodes ' + d.w + 'x' + d.h);
-    r = await F(svgFile(), { max: 192 });
-    note(r.scaled === true && r.type === 'image/png' && r.width === 192 && r.height === 192,
-      '6b. the same SVG at max 192 is rasterised to 192 x 192', dims(r));
+    note(r.scaled === false && r.type === 'image/svg+xml' && r.width === 24 && r.height === 24 && r.dataUrl === await urlOf(svgFile()),
+      '6a. a 24 x 24 SVG is kept as the SVG it was, byte for byte', dims(r) + ', decodes ' + d.w + 'x' + d.h);
+    r = await F(svgFile(), { max: 192, type: 'image/png' });
+    note(r.scaled === false && r.type === 'image/svg+xml' && r.width === 24 && r.height === 24,
+      '6b. the same SVG forced to a 192 PNG is still the SVG it was', dims(r));
+    // a viewBox-only SVG has no intrinsic size the browser must agree with: what comes back
+    // is its own bytes and some honest pair of sides, the box it names or the box it was
+    // asked to fit. The claim checked here is the byte identity, not Chromium's default size.
+    const VB = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 240 120"><rect width="240" height="120" fill="#334455"/></svg>';
+    f = new File([VB], 'vb.svg', { type: 'image/svg+xml' }); r = await F(f);
+    note(r.scaled === false && r.type === 'image/svg+xml' && r.dataUrl === await urlOf(f) && r.width > 0 && r.height > 0,
+      '6c. a viewBox-only SVG is its own bytes, with sides to draw it at', dims(r));
+    // S3b's refusals, in the hub's own sentences (tools/orb-manager/sitelimits.go)
+    const HANDLER = '<svg xmlns="http://www.w3.org/2000/svg" onload="alert(1)"><rect width="8" height="8"/></svg>';
+    const LINKED = '<svg xmlns="http://www.w3.org/2000/svg"><image href="https://example.com/a.png" width="8" height="8"/></svg>';
+    const BIG = '<svg xmlns="http://www.w3.org/2000/svg">' + ' '.repeat(262144) + '</svg>';
+    let msg2 = 'no rejection at all';
+    try { await F(new File([HANDLER], 'bad.svg', { type: 'image/svg+xml' })); }
+    catch (e) { msg2 = String((e && e.message) || e); }
+    note(msg2 === "an SVG in it holds an event handler, which a design's SVGs can't (no scripts, external links or entities)", '6d. an SVG with an event handler is refused, in the hub sentence', msg2);
+    msg2 = 'no rejection at all';
+    try { await F(new File([LINKED], 'out.svg', { type: 'image/svg+xml' })); }
+    catch (e) { msg2 = String((e && e.message) || e); }
+    note(msg2 === "an SVG in it holds an outside link, which a design's SVGs can't (no scripts, external links or entities)", '6e. an SVG that links outside itself is refused, in the hub sentence', msg2);
+    msg2 = 'no rejection at all';
+    try { await F(new File([BIG], 'big.svg', { type: 'image/svg+xml' })); }
+    catch (e) { msg2 = String((e && e.message) || e); }
+    note(msg2 === 'an SVG in it is ' + Math.ceil(BIG.length / 1024) + " KB, and a design's SVGs can be at most 256 KB",
+      '6f. an SVG over 256 KB is refused with its own weight', msg2);
+    note(OrbStudio.checkSvg(SVG) === null && OrbStudio.checkSvg(HANDLER) === "an SVG in it holds an event handler, which a design's SVGs can't (no scripts, external links or entities)"
+      && OrbStudio.checkSvg(LINKED) === "an SVG in it holds an outside link, which a design's SVGs can't (no scripts, external links or entities)" && OrbStudio.checkSvg('hello') === "an image in it says it is an SVG but isn't one",
+      '6g. OrbStudio.checkSvg reads the four files the same way fitPicture does', 'the sentences the one checker gives');
     // the WebP contract has two halves. A WebP source is read and, when the caller asks for a
     // type, re-encoded: this browser will encode a small WebP, so that half is always checked.
     // Scaling a big one down needs a 3000 x 2000 WebP, and this Chromium never answers a toBlob
@@ -169,6 +196,14 @@ try {
       note(!!a3.error && String(a3.error).indexOf('That file is not a picture this browser can read') === 0
         && String(a3.error).slice(-9) === ': art.png',
         '11. a file the clock cannot decode is refused with the fit message and its name', a3.error || 'no error at all');
+      // S3b: the clock keeps a picked SVG as an SVG — no rasterising, no stamping, no
+      // re-encoding — and refuses the files the hub would refuse, naming which one.
+      const a4 = await E.assetFromFile(svgFile());
+      note(!a4.error && a4.kind === 'svg' && a4.mime === 'image/svg+xml' && String(a4.dataUrl) === await urlOf(svgFile()),
+        '11a. the clock keeps a picked SVG as the SVG it picked', a4.error || (a4.kind + ' ' + a4.w + 'x' + a4.h));
+      const a5 = await E.assetFromFile(new File([HANDLER], 'bad.svg', { type: 'image/svg+xml' }));
+      note(!!a5.error && String(a5.error) === "an SVG in it holds an event handler, which a design's SVGs can't (no scripts, external links or entities): bad.svg",
+        '11b. the clock refuses an SVG with an event handler, by name', a5.error || 'no error at all');
     }
     // a 1x1 transparent GIF, the smallest one that decodes: a kept picture must come back
     // as its own bytes, animation and all, and a forced type must still be a re-encode

@@ -7,6 +7,7 @@ import (
 	"hash/crc32"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -149,8 +150,13 @@ func TestDraftsAreFilesOnTheHubOnePerName(t *testing.T) {
 	if env := designCall(t, s, http.MethodPost, "/api/design/save?app=..%2Fx&name=x", designDoc("x", "v1", 1)); env["ok"] == true {
 		t.Error("an app slug with a path in it was accepted")
 	}
-	if env := designCall(t, s, http.MethodPost, "/api/design/save?app=clock&name=..%2F..%2Fescape", designDoc("e", "v1", 1)); env["ok"] != true {
-		t.Fatalf("save: %v", env)
+	// S3b: the character rule is the first of the two things that keep a name inside the
+	// designs folder. A name holding a slash is refused as a new name, and the folder it
+	// would have been filed under stays the only place a design lands.
+	if env := designCall(t, s, http.MethodPost, "/api/design/save?app=clock&name=..%2F..%2Fescape", designDoc("e", "v1", 1)); env["ok"] == true {
+		t.Error("a name with a path in it was accepted as a new name")
+	} else if env["error"] != themeNameRefusalChars {
+		t.Errorf("a name with a path in it = %v; want the character sentence", env["error"])
 	}
 	if _, err := os.Stat(filepath.Join(root, "escape.orbdesign")); err == nil {
 		t.Error("a name walked out of the designs folder")
@@ -318,5 +324,83 @@ func TestStoredThemesAreKeptOnTheShelfOnePerName(t *testing.T) {
 	}
 	if b, _ := os.ReadFile(filepath.Join(dir, "hand-named.orbtheme")); !bytes.Equal(b, second) {
 		t.Error("the replacement was not written over the file that already held the name")
+	}
+}
+
+// S3b: a name being chosen now is basic characters, and a save or a keep that would put
+// two names on one orb stem is refused. A name the library already holds exactly is not
+// new: the draft you are editing saves again under whatever it was first filed under,
+// even a name the wider rules of an older hub let through.
+func TestNewDesignNamesAreBasicCharacters(t *testing.T) {
+	s, _, _ := libHub(t)
+	for _, n := range []string{"Big%E2%80%94Sub", "a%2Fb", "caf%C3%A9", "dial%09one"} {
+		env := designCall(t, s, http.MethodPost, "/api/design/save?app=clock&name="+n, designDoc("x", "v1.2.16", 1))
+		if env["ok"] == true {
+			t.Errorf("save under name %s: accepted, want the character sentence", n)
+		} else if env["error"] != themeNameRefusalChars {
+			t.Errorf("save under name %s: %v; want the character sentence", n, env["error"])
+		}
+	}
+	for _, n := range []string{"Grand Prix", "grand-prix", "Grand_Prix.2", "7"} {
+		if env := designCall(t, s, http.MethodPost, "/api/design/save?app=clock&name="+url.QueryEscape(n), designDoc(n, "v1.2.16", 1)); env["ok"] != true {
+			t.Errorf("save under name %q: %v", n, env["error"])
+		}
+	}
+}
+
+func TestANewNameCollidingInCaseWithAnEntryRefuses(t *testing.T) {
+	s, _, _ := libHub(t)
+	if env := designCall(t, s, http.MethodPost, "/api/design/save?app=clock&name=Big%20sub", designDoc("Big sub", "v1.2.16", 1)); env["ok"] != true {
+		t.Fatalf("save: %v", env)
+	}
+	env := designCall(t, s, http.MethodPost, "/api/design/save?app=clock&name=big%20SUB", designDoc("big SUB", "v1.2.16", 1))
+	if env["ok"] == true {
+		t.Fatal("a second name the orb would file under the first one's stem was accepted")
+	}
+	if want := nameTakenAnswer("Big sub", "clock"); env["error"] != want {
+		t.Errorf("error = %q, want %q", env["error"], want)
+	}
+	if e := entriesOf(t, s, "clock")["Big sub"]; e.Draft == nil {
+		t.Errorf("the refused save changed the entry: %+v", e)
+	}
+	// The same name again, spelled the same way, is the ordinary save: it replaces.
+	if env := designCall(t, s, http.MethodPost, "/api/design/save?app=clock&name=Big%20sub", designDoc("Big sub", "v1.2.16", 2)); env["ok"] != true {
+		t.Errorf("re-save: %v", env["error"])
+	}
+}
+
+func TestALegacyNameKeepsWorkingAfterTheRulesTightened(t *testing.T) {
+	s, _, _ := libHub(t)
+	if err := os.WriteFile(filepath.Join(s.lib.ThemesDir, "big-sub.orbtheme"), orbfake.Container("Big—Sub"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if e := entriesOf(t, s, "clock")["Big—Sub"]; e.Theme == nil {
+		t.Fatalf("the shelf's legacy name is not listed: %v", e)
+	}
+	// open, list, forget and the keep that rebakes it all answer the old name...
+	if env := designCall(t, s, http.MethodPost, "/api/design/save?app=clock&name=Big%E2%80%94Sub", designDoc("Big—Sub", "v1.2.16", 1)); env["ok"] != true {
+		t.Errorf("save under the legacy name: %v", env["error"])
+	}
+	if env := designCall(t, s, http.MethodPost, "/api/library/keep?app=clock", withDesign(orbfake.Container("Big—Sub"), string(designDoc("Big—Sub", "v1.2.16", 1)))); env["ok"] != true {
+		t.Errorf("keep under the legacy name: %v", env["error"])
+	}
+	if env := designCall(t, s, http.MethodPost, "/api/library/forget?app=clock&name=Big%E2%80%94Sub&what=all", nil); env["ok"] != true {
+		t.Errorf("forget under the legacy name: %v", env["error"])
+	}
+	// … and a NEW name one case away from it is the collision the rules refuse.
+	if env := designCall(t, s, http.MethodPost, "/api/design/save?app=clock&name=Big%E2%80%94sub", designDoc("Big—sub", "v1.2.16", 1)); env["ok"] == true {
+		t.Error("a new name differing from a legacy one only in case was accepted")
+	}
+}
+
+func TestKeepRefusesANewNameBeyondTheBasics(t *testing.T) {
+	s, _, _ := libHub(t)
+	if env := designCall(t, s, http.MethodPost, "/api/library/keep?app=clock", orbfake.Container("Big—Sub")); env["ok"] == true {
+		t.Error("a bake naming a new name beyond the basics was kept")
+	} else if env["error"] != themeNameRefusalChars {
+		t.Errorf("keep: %v; want the character sentence", env["error"])
+	}
+	if files, _ := os.ReadDir(s.lib.ThemesDir); len(files) != 0 {
+		t.Errorf("shelf = %v, want nothing kept", files)
 	}
 }

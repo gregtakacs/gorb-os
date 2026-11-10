@@ -46,12 +46,13 @@
     return null;
   }
   // a picture read from a file, at most `max` px on its longer side (never past the 1024 the
-  // shelf keeps art inside, and an SVG is drawn to pixels here too, so what is stored is a
-  // picture the orb can hold). The studio kit does the work when it is on the page.
+  // shelf keeps art inside). Since S3b an SVG comes back as the text it arrived as — the kit
+  // checks it against the design's rules and refuses the file here if it breaks one — and a
+  // raster is drawn down to pixels. The studio kit does the work when it is on the page.
   function readPicture(f, max) {
     var cap = Math.min(max, 1024);
     if (root.OrbStudio && typeof root.OrbStudio.fitPicture === 'function') {
-      return root.OrbStudio.fitPicture(f, { max: cap, type: 'image/png' }).then(function (r) { return r.dataUrl; });
+      return root.OrbStudio.fitPicture(f, { max: cap }).then(function (r) { return r.dataUrl; });
     }
     return new Promise(function (ok, bad) {
       var rd = new FileReader();

@@ -304,21 +304,25 @@
       const mime = String(file.type || '');
       const png = mime === 'image/png', svg = mime === 'image/svg+xml';
       if (!png && !svg) { res({ error: 'Accepted types are image/png and image/svg+xml (got ' + (mime || 'unknown') + ')' }); return; }
-      /* Ruling 35: the studio kit scales a picked picture down to fit 1024 × 1024 and
-       * rasterises an SVG, so the art a design holds is always a PNG the site accepts and
-       * the size limit is measured on those bytes rather than on whatever was picked. An
-       * SVG's stamping is moot once it is pixels, and the asset is recorded as a png. With
-       * no studio kit on the page (the node suite's stub world) today's path runs below. */
+      /* Ruling 35, amended by S3b: the studio kit scales a picked picture down to fit
+       * 1024 × 1024 and keeps an SVG as the text it arrived as, so the art a design holds
+       * is a PNG the site accepts or an SVG the site's rules accept, and the 1.5 MB limit
+       * is measured on those bytes rather than on whatever was picked. A picked file the
+       * rules refuse is refused by the fit, with the hub's own sentence. An SVG's stamping
+       * is moot once the bytes must not change: the fit's width and height say what the
+       * viewBox names, and that is what the design records. With no studio kit on the page
+       * (the node suite's stub world) today's path runs below, stamping and all. */
       if (window.OrbStudio && typeof window.OrbStudio.fitPicture === 'function') {
-        window.OrbStudio.fitPicture(file, { max: 1024, type: 'image/png' }).then((r) => {
+        window.OrbStudio.fitPicture(file, { max: 1024 }).then((r) => {
           const url = String((r && r.dataUrl) || '');
+          const kept = /^data:image\/svg/i.test(url);
           let n = 0; try { n = bytesOf(url).length; } catch (e) { }
-          if (!/^data:image\//i.test(url)) { res({ error: 'That PNG could not be decoded: ' + file.name }); return; }
-          if (n > MAX_ASSET_BYTES) { res({ error: file.name + ' is ' + (n / 1024).toFixed(0) + ' KB; the limit is ' + (MAX_ASSET_BYTES / 1e6).toFixed(1) + ' MB' }); return; }
+          if (!/^data:image\//i.test(url)) { res({ error: 'That ' + (kept ? 'SVG' : 'PNG') + ' could not be decoded: ' + file.name }); return; }
+          if (!kept && n > MAX_ASSET_BYTES) { res({ error: file.name + ' is ' + (n / 1024).toFixed(0) + ' KB; the limit is ' + (MAX_ASSET_BYTES / 1e6).toFixed(1) + ' MB' }); return; }
           let sha = 'unread'; try { sha = sha32(bytesOf(url)); } catch (e) { }
           const stem = (file.name.replace(/\.[a-z0-9]+$/i, '').replace(/[^\w.-]+/g, '-') || 'art').slice(0, 40);
-          const a = assetPut({ id: stem + '-' + sha.slice(0, 8), name: file.name, mime: 'image/png', dataUrl: url, sha, w: r.width, h: r.height });
-          assetLoad(a, () => a.missing ? res({ error: 'That PNG could not be decoded: ' + file.name }) : res(a));
+          const a = assetPut({ id: stem + '-' + sha.slice(0, 8), name: file.name, mime: kept ? 'image/svg+xml' : 'image/png', dataUrl: url, sha, w: r.width, h: r.height });
+          assetLoad(a, () => a.missing ? res({ error: 'That ' + (kept ? 'SVG' : 'PNG') + ' could not be decoded: ' + file.name }) : res(a));
         }, (er) => res({ error: String((er && er.message) || er || 'That file is not a picture this browser can read') + ': ' + file.name }));
         return;
       }

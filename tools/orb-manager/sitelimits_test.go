@@ -231,8 +231,9 @@ func TestArtRefusalSentences(t *testing.T) {
 		{"data:image/jpeg;base64", []byte("no header"), ""},
 		{"data:image/gif;base64", []byte{1, 2, 3}, ""},
 		{"data:image/png;base64", []byte("not an image at all, and long enough to check"), artRefusalUnreadable},
-		{"data:image/svg+xml;base64", pngArt(9, 9, 5), artRefusalType},
-		{"data:image/png;base64", nil, ""}, // too short to name a size, whatever it is
+		{"data:image/svg+xml;base64", pngArt(9, 9, 5), svgRefusalNotText}, // binary bytes fail the text rule before the root check
+		{"data:image/svg+xml;base64", nil, ""},                            // the prefix-only pass: the bytes are checked next
+		{"data:image/png;base64", nil, ""},                                // too short to name a size, whatever it is
 		{"", pngArt(9, 9, 6), artRefusalType},
 		{"DATA:IMAGE/PNG;BASE64", pngArt(9, 9, 7), ""},
 	}
@@ -240,6 +241,66 @@ func TestArtRefusalSentences(t *testing.T) {
 		if got := artRefusal(c.prefix, c.b); got != c.want {
 			t.Errorf("artRefusal(%q, %d bytes) = %q, want %q", c.prefix, len(c.b), got, c.want)
 		}
+	}
+}
+
+// --- S3b: the SVG text rules -----------------------------------------------------------
+// svgVectors is the shared set, the same text and the same sentences the studio's
+// OrbStudio.checkSvg is tested against (_selftest/headless-studio.test.js): the site,
+// the hub and the editor read one SVG the same way. "" is the answer that means "keep it".
+var svgVectors = []struct {
+	name string
+	text string
+	want string
+}{
+	{"plain rect", `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><rect width="10" height="10"/></svg>`, ""},
+	{"fragment href", `<svg xmlns="http://www.w3.org/2000/svg"><defs><linearGradient id="g"/></defs><rect fill="url(#g)" width="4" height="4"/><use href="#g"/></svg>`, ""},
+	{"embedded raster", `<svg xmlns="http://www.w3.org/2000/svg"><image href="data:image/png;base64,iVBORw0KGgo=" width="4" height="4"/></svg>`, ""},
+	{"xlink fragment", `<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink"><use xlink:href="#g"/></svg>`, ""},
+	{"plain file, no script", `<svg xmlns="http://www.w3.org/2000/svg"><rect width="2" height="2"/></svg>`, ""},
+	{"handler", `<svg xmlns="http://www.w3.org/2000/svg" onload="fetch('//x')">`, svgRefusalHandler},
+	{"handler no space", `<svg xmlns="http://www.w3.org/2000/svg"><rect onclick=alert(1)/></svg>`, svgRefusalHandler},
+	{"outside href", `<svg xmlns="http://www.w3.org/2000/svg"><image href="https://example.com/a.png"/></svg>`, svgRefusalLink},
+	{"outside single-quoted href", `<svg xmlns="http://www.w3.org/2000/svg"><use xlink:href='//example.com/x.svg'/></svg>`, svgRefusalLink},
+	{"outside url()", `<svg xmlns="http://www.w3.org/2000/svg"><rect fill="url(https://example.com/a.png)" width="2" height="2"/></svg>`, svgRefusalLink},
+	{"data url of another kind", `<svg xmlns="http://www.w3.org/2000/svg"><rect fill="url(data:text/html;base64,PHN2Zz4=)" width="2" height="2"/></svg>`, svgRefusalLink},
+	{"not an svg", `hello, not markup at all, and long enough to read`, svgRefusalNotSvg},
+}
+
+func TestCheckSvgArtVectors(t *testing.T) {
+	for _, v := range svgVectors {
+		if got := checkSvgArt([]byte(v.text)); got != v.want {
+			t.Errorf("checkSvgArt(%s) = %q, want %q", v.name, got, v.want)
+		}
+	}
+}
+
+func TestCheckSvgArtSize(t *testing.T) {
+	pad := func(n int) []byte {
+		b := []byte(`<svg xmlns="http://www.w3.org/2000/svg">`)
+		for len(b) < n-6 {
+			b = append(b, ' ')
+		}
+		return append(b, []byte("</svg>")...)
+	}
+	if got := checkSvgArt(pad(svgMaxBytes)); got != "" {
+		t.Errorf("an SVG of exactly %d bytes refused: %q", svgMaxBytes, got)
+	}
+	want := fmt.Sprintf(svgRefusalSizeFormat, 257)
+	if got := checkSvgArt(pad(svgMaxBytes + 1)); got != want {
+		t.Errorf("checkSvgArt(256 KB + 1 byte) = %q, want %q", got, want)
+	}
+	if got := checkSvgArt(pad(3 * 1024 * 1024)); got != fmt.Sprintf(svgRefusalSizeFormat, 3072) {
+		t.Errorf("a 3 MB SVG = %q, want 3072 KB", got)
+	}
+}
+
+func TestCheckSvgArtRefusedBeforeParsed(t *testing.T) {
+	// Weight first: a body over the ceiling never gets asked whether it holds a handler,
+	// so the heaviest file gets the one sentence that describes it.
+	text := `<svg onload="x">` + strings.Repeat(" ", svgMaxBytes) + `</svg>`
+	if got := checkSvgArt([]byte(text)); got != fmt.Sprintf(svgRefusalSizeFormat, (len(text)+1023)/1024) {
+		t.Errorf("an oversized SVG with a handler = %q, want the size sentence", got)
 	}
 }
 
@@ -404,3 +465,122 @@ func TestResolveOriginRefusesAnUnknownSite(t *testing.T) {
 type roundTripFunc func(*http.Request) (*http.Response, error)
 
 func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+// --- S3b: the name rules ---------------------------------------------------------------
+
+func TestCheckThemeNameBasicCharacters(t *testing.T) {
+	for _, n := range []string{
+		"Grand Prix", "grand-prix", "Grand_Prix.2", "a", "7", "Sub Dial 01",
+		"Grand Prix by @greg", "a by @abc", "z by @" + strings.Repeat("x", 24),
+	} {
+		got, err := checkThemeName(n)
+		if err != nil || got != n {
+			t.Errorf("checkThemeName(%q) = %q, %v; want kept as written", n, got, err)
+		}
+	}
+}
+
+func TestCheckThemeNameRefusesBeyondTheBasics(t *testing.T) {
+	for _, n := range []string{
+		"Big—Sub", "Grüezi", "dial one", "a/b", "sub#", "a@b", "zero​width", "big<sub>",
+		"tab\there", "newline\nhere", "Grand Prix by @Greg", "Grand Prix by @g", "Grand Prix by @greg!",
+		" by @greg", "Grand Prix by @", "Grand Prix by @@greg",
+	} {
+		if got, err := checkThemeName(n); err == nil {
+			t.Errorf("checkThemeName(%q) = %q, %v; want a refusal", n, got, err)
+		}
+	}
+}
+
+func TestCheckThemeNameTrimsAndRefusesEmpty(t *testing.T) {
+	if got, err := checkThemeName("  Grand Prix  "); err != nil || got != "Grand Prix" {
+		t.Errorf("checkThemeName(±space) = %q, %v; want %q", got, err, "Grand Prix")
+	}
+	if _, err := checkThemeName("   "); err == nil || err.Error() != "a design needs a name" {
+		t.Errorf("empty name = %v; want the empty sentence", err)
+	}
+	if _, err := checkThemeName("Big—Sub"); err == nil || err.Error() != themeNameRefusalChars {
+		t.Errorf("checkThemeName(Big—Sub) = %v; want the character sentence", err)
+	}
+}
+
+func TestCheckSharedNameSplitsAtTheFirstSeparator(t *testing.T) {
+	name, handle, sentence := checkSharedName("Grand Prix by @greg")
+	if sentence != "" || name != "Grand Prix" || handle != "greg" {
+		t.Errorf(`checkSharedName("Grand Prix by @greg") = %q, %q, %q`, name, handle, sentence)
+	}
+	if _, _, s := checkSharedName(" by @greg"); s == "" {
+		t.Error("a shared name with no theme part was accepted")
+	}
+	// A bundle for a design nobody shared serves its plain name as its shared name, and
+	// that is what the update flow's fixtures carry: the character rule reads it, and the
+	// handle half stays empty.
+	if n, h, s := checkSharedName("Grand Prix"); s != "" || n != "Grand Prix" || h != "" {
+		t.Errorf(`checkSharedName("Grand Prix") = %q, %q, %q; want the name and no handle`, n, h, s)
+	}
+	if _, _, s := checkSharedName("Grand—Prix by @greg"); s != themeNameRefusalChars {
+		t.Errorf("a shared name whose theme part is not basic = %q; want the character sentence", s)
+	}
+	if _, _, s := checkSharedName("Grand Prix by @Greg"); s == "" || s == themeNameRefusalChars {
+		t.Errorf("a shared name whose handle is not the site's shape = %q; want the handle sentence", s)
+	}
+	// A name part may itself hold the letters of the separator, as long as the first one
+	// splits into a handle the site would sign: " by @" inside a theme name is not basic.
+	if _, _, s := checkSharedName("by @ by @greg"); s == "" {
+		t.Error("a handle holding a space was accepted")
+	}
+}
+
+func TestCheckSharedNameRefusalIsNotDamage(t *testing.T) {
+	// A bundle with a name the hub cannot file is whole, not damaged: checkBundle answers
+	// with the same error kind bad art answers with, so the owner hears "can't be imported".
+	srv, _ := siteServer(t, func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write(goodBundle(t, siteDesignID, 2, "clock", "Big—Sub by @greg"))
+	})
+	s, _, _ := libHub(t)
+	got := importErr(t, s, siteLink(srv, siteDesignID))
+	if !strings.HasPrefix(got, "the theme from "+siteHostOf(srv)+" can't be imported: ") {
+		t.Errorf("shared-name refusal = %q; want the can't-be-imported wrapper", got)
+	}
+	if !strings.HasSuffix(got, themeNameRefusalChars) {
+		t.Errorf("shared-name refusal = %q; want it to end with the character sentence", got)
+	}
+}
+
+// the two refusals the earlier cases name, as the holds sentence now words them
+var (
+	svgRefusalHandler = fmt.Sprintf(svgRefusalHoldsFormat, "an event handler")
+	svgRefusalLink    = fmt.Sprintf(svgRefusalHoldsFormat, "an outside link")
+)
+
+// TestSvgArtSharedVectors is ruling 35's shared table, the same one the site's svg-art
+// tests use, so both refuse the same files; plus the namespace-prefixed elements.
+func TestSvgArtSharedVectors(t *testing.T) {
+	holds := func(what string) string { return fmt.Sprintf(svgRefusalHoldsFormat, what) }
+	big := "<svg>" + strings.Repeat(" ", 262145-len("<svg></svg>")) + "</svg>"
+	cases := []struct{ name, svg, want string }{
+		{"plain", `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><rect width="10" height="10" fill="#f00"/></svg>`, ""},
+		{"decl, comment, fragment links", `<?xml version="1.0"?><!-- c --><svg xmlns="http://www.w3.org/2000/svg"><use href="#a"/><rect id="a" fill="url(#g)"/></svg>`, ""},
+		{"embedded raster", `<svg xmlns="http://www.w3.org/2000/svg"><image href="data:image/png;base64,iVBORw0KGgo="/></svg>`, ""},
+		{"script", `<svg><script>alert(1)</script></svg>`, holds("a script")},
+		{"event handler", `<svg onload="x()"></svg>`, holds("an event handler")},
+		{"doctype", `<?xml version="1.0"?><!DOCTYPE svg [<!ENTITY a "aa">]><svg/>`, holds("a DOCTYPE")},
+		{"outside image", `<svg><image href="https://evil.example/x.png"/></svg>`, holds("an outside link")},
+		{"outside url in style", `<svg><rect style="fill:url(http://evil.example/p)"/></svg>`, holds("an outside link")},
+		{"javascript url", `<svg><a xlink:href="javascript:x()"/></svg>`, holds("a javascript: URL")},
+		{"foreignObject", `<svg><foreignObject/></svg>`, holds("foreignObject")},
+		{"not an svg", `<html><svg/></html>`, svgRefusalNotSvg},
+		{"too big", big, fmt.Sprintf(svgRefusalSizeFormat, 257)},
+		{"prefixed script", `<svg xmlns:x="http://www.w3.org/2000/svg"><x:script>1</x:script></svg>`, holds("a script")},
+		{"prefixed iframe", `<svg><h:iframe xmlns:h="http://www.w3.org/1999/xhtml"/></svg>`, holds("an iframe")},
+		{"not utf-8", "<svg>\xff</svg>", svgRefusalNotText},
+		{"nul byte", "<svg>\x00</svg>", svgRefusalNotText},
+		{"svg not first", `<rect/><svg/>`, svgRefusalNotSvg},
+		{"@import", `<svg><style>@import "x.css";</style></svg>`, holds("an @import")},
+	}
+	for _, c := range cases {
+		if got := checkSvgArt([]byte(c.svg)); got != c.want {
+			t.Errorf("%s: got %q, want %q", c.name, got, c.want)
+		}
+	}
+}

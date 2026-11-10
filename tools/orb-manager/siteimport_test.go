@@ -908,3 +908,86 @@ func TestResolveOriginReadsTheAnswerAndTheGone(t *testing.T) {
 		t.Error("no origin resolved")
 	}
 }
+
+// --- S3b: an SVG is art too -------------------------------------------------------------
+
+// svgBody is one picture as S3b reads one: real SVG text, small enough and plain enough
+// that the only thing standing between it and the shelf is the rules it must clear.
+func svgBody() []byte {
+	return []byte(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">` +
+		`<rect width="24" height="24" fill="#1b3a5c"/><use href="#rect"/></svg>`)
+}
+
+// svgBundle is goodBundle's shape with one picture carried under the SVG prefix.
+func svgBundle(t *testing.T, id string, version int, app, sharedName string, body []byte) []byte {
+	t.Helper()
+	sum := sha256.Sum256(body)
+	sha := hex.EncodeToString(sum[:])
+	return bundleOf(t, map[string]any{
+		"format": "orb-design-bundle", "bundle": 1, "id": id, "version": version, "app": app,
+		"sharedName": sharedName, "name": sharedName, "handle": "greg",
+		"design": map[string]any{"format": "wc-design", "schema": 1, "app": app, "themeName": sharedName,
+			"orbAssets": []any{map[string]any{"sha256": sha, "prefix": "data:image/svg+xml;base64"}}},
+		"assets": map[string]string{sha: base64.StdEncoding.EncodeToString(body)},
+	})
+}
+
+// The hub is not the image pipeline: an SVG that clears the rules comes back out of the
+// bundle door exactly as it went in, and the keep files the bake the editor made from it.
+func TestSiteImportCarriesSvgArtByteForByte(t *testing.T) {
+	s, _, root := libHub(t)
+	body := svgBody()
+	srv, _ := siteServer(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(svgBundle(t, siteDesignID, 6, "clock", "Compass by @greg", body))
+	})
+	env := siteImport(t, s, siteLink(srv, siteDesignID))
+	tk := ticketOf(t, env)
+	rec := rawCall(t, s, http.MethodGet, "/api/site/bundle?ticket="+tk, nil)
+	if !bytes.Equal(rec.Body.Bytes(), svgBundle(t, siteDesignID, 6, "clock", "Compass by @greg", body)) {
+		t.Errorf("the held bundle is not the bytes the site served: %s", rec.Body)
+	}
+	bake := withDesign(orbfake.Container("Compass by @greg"), string(designDoc("Compass by @greg", "v1.2.30", 1)))
+	if env := designCall(t, s, http.MethodPost, "/api/site/keep?ticket="+tk, bake); env["ok"] != true {
+		t.Fatalf("keep: %v", env)
+	}
+	var themes []string
+	for _, f := range shelfNames(t, filepath.Join(root, "themes")) {
+		if strings.HasSuffix(f, ".orbtheme") {
+			themes = append(themes, f)
+		}
+	}
+	if len(themes) != 1 || !strings.HasPrefix(themes[0], "clock-compass-by-greg") {
+		t.Errorf("shelf = %v, want the one import kept", themes)
+	}
+}
+
+// An SVG over the weight ceiling, holding a handler or pointing outside itself is refused
+// the way oversized art is: the bundle is whole, and the sentence says what its art is.
+func TestSiteImportRefusesSvgOutsideTheBounds(t *testing.T) {
+	s, _, _ := libHub(t)
+	cases := []struct {
+		what string
+		body []byte
+		want func(body []byte) string
+	}{
+		{"handler", []byte(`<svg xmlns="http://www.w3.org/2000/svg" onload="alert(1)"><rect width="2" height="2"/></svg>`), func([]byte) string { return svgRefusalHandler }},
+		{"outside link", []byte(`<svg xmlns="http://www.w3.org/2000/svg"><image href="https://example.com/a.png"/></svg>`), func([]byte) string { return svgRefusalLink }},
+		{"not an svg", []byte("text that is not markup, and is long enough to read as neither"), func([]byte) string { return svgRefusalNotSvg }},
+		{"oversize", append([]byte(`<svg xmlns="http://www.w3.org/2000/svg">`),
+			append(bytes.Repeat([]byte(" "), svgMaxBytes), []byte("</svg>")...)...),
+			func(b []byte) string { return fmt.Sprintf(svgRefusalSizeFormat, (len(b)+1023)/1024) }},
+	}
+	for _, c := range cases {
+		srv, _ := siteServer(t, func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write(svgBundle(t, siteDesignID, 7, "clock", "Compass by @greg", c.body))
+		})
+		t.Helper()
+		want := c.want(c.body)
+		got := importErr(t, s, siteLink(srv, siteDesignID))
+		if !strings.HasPrefix(got, "the theme from "+siteHostOf(srv)+" can't be imported: ") || !strings.HasSuffix(got, want) {
+			t.Errorf("%s svg: error = %q, want the can't-be-imported wrapper ending %q", c.what, got, want)
+		}
+	}
+}

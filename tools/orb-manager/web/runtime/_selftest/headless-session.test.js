@@ -147,6 +147,26 @@ const edit = (app, p) => { app.set(p); app.ses.track(); };
     fh.refuse = 'the hub has no writable library directory to keep designs in';
     ok(!(await a.ses.saveDraft({ name: 'Three', doc: doc('red') })) && /Not saved: the hub has no writable library directory/.test(a.state.status), 'a refused save says so in the hub’s words', a.state.status);
     fh.refuse = null;
+    // ---- S3b: the hub's name rules, asked before the post so a bad name is a sentence,
+    // not a failed save (sitelimits.go's checkThemeName, mirrored here).
+    {
+      const CHARS = "a design's name can use only letters (A\u2013Z, a\u2013z), numbers, spaces, dots, underscores and dashes";
+      ok(a.ses.checkName('One') === null, 'a name the library already holds exactly is never refused', String(a.ses.checkName('One')));
+      ok(a.ses.checkName('one') !== null && /under another spelling of its name$/.test(a.ses.checkName('one')),
+        'a name that differs only by case collides with the design already on the stem', a.ses.checkName('one'));
+      for (const good of ['Scope', 'My Design_1', 'a.b-c', 'Reef by @pilch'])
+        ok(a.ses.checkName(good) === null, 'a basic name is accepted: ' + good, String(a.ses.checkName(good)));
+      for (const bad of ['R\u00e9ef', 'emoji \ud83d\udd25', 'a/b', 'semi;colon', '<script>', '   ', ''])
+        ok(a.ses.checkName(bad) === (bad.trim() ? CHARS : 'a design needs a name'),
+          'a name outside the basic characters is refused before the post: ' + JSON.stringify(bad), String(a.ses.checkName(bad)));
+      ok(a.ses.checkName('Reef by @pilch') === null && a.ses.checkName('Reef by @A') !== null
+        && a.ses.checkName('Reef by @A') === CHARS && a.ses.checkName(' by @pilch') === CHARS,
+        'a shared name is its plain part plus a handle-shaped author', String(a.ses.checkName('Reef by @A')));
+      ok(!(await a.ses.saveDraft({ name: 'R\u00e9ef', doc: doc('rose') })) && a.state.status === 'Not saved: ' + CHARS,
+        'and such a name never reaches the hub', a.state.status);
+      ok(a.ses.libraryEntry('R\u00e9ef') === null && fh.drafts.get('tint').has('One'),
+        'the library is exactly what it was before that save', JSON.stringify(a.ses.library().map((e) => e.name)));
+    }
     // ?entry= opens that entry once the library is read
     location.search = '?entry=One';
     const e = mk(); await e.ses.boot();

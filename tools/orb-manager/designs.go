@@ -27,7 +27,6 @@ import (
 	"sort"
 	"strings"
 	"time"
-	"unicode"
 )
 
 const libDesignsSubdir = "designs"
@@ -48,8 +47,11 @@ func (l *Library) designsDir(app string) string {
 	return filepath.Join(filepath.Dir(t), libDesignsSubdir, app)
 }
 
-// designName checks a design's name: what the author typed, trimmed, 1–64 characters,
-// no control characters. It is shown back verbatim, so it is not reshaped here.
+// designName checks a design's name the way the doors that read one need it: what the
+// author typed, trimmed, not empty, at most 64 characters. It says nothing about which
+// characters a NEW name may hold — that is checkThemeName, asked at the doors that write
+// (handleDesignSave, handleLibKeep, an import's shared name) — because a design an older
+// hub accepted must still open, list and forget.
 func designName(raw string) (string, error) {
 	n := strings.TrimSpace(raw)
 	if n == "" {
@@ -57,11 +59,6 @@ func designName(raw string) (string, error) {
 	}
 	if len([]rune(n)) > 64 {
 		return "", errors.New("a design's name is at most 64 characters")
-	}
-	for _, r := range n {
-		if unicode.IsControl(r) {
-			return "", errors.New("a design's name cannot hold control characters")
-		}
 	}
 	return n, nil
 }
@@ -179,6 +176,14 @@ func (s *Server) handleDesignSave(w http.ResponseWriter, r *http.Request) {
 	}
 	name, err := designName(r.URL.Query().Get("name"))
 	if err != nil {
+		s.jsonErr(w, err.Error())
+		return
+	}
+	// S3b: a save under a name this app's library has never held chooses that name for
+	// the design, the file and (after the first keep) the orb's name field; a save that
+	// repeats a name exactly is the same draft written again and keeps the older, wider
+	// rules it may have been filed under.
+	if err := s.checkNewName(app, name); err != nil {
 		s.jsonErr(w, err.Error())
 		return
 	}

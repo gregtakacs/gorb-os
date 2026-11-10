@@ -183,6 +183,14 @@ func checkBundle(raw []byte, id string) (*siteBundle, error) {
 	if len(shared) > orbnet.ThemeNameMax {
 		return nil, fmt.Errorf("its shared name is over %d bytes", orbnet.ThemeNameMax)
 	}
+	// S3b: the shared name is a name the site let someone type, and the hub is about to
+	// bake it into an orb and file it on a shelf under its own spelling rules — so the
+	// site's "<name> by @<handle>" is split here and both halves are read. A bundle that
+	// fails this one is whole, like bad art: re-downloading changes nothing, so it is
+	// worded "can't be imported" and not "is damaged".
+	if _, _, sentence := checkSharedName(shared); sentence != "" {
+		return nil, &bundleArtError{sentence}
+	}
 	b.SharedName = shared
 	var design map[string]json.RawMessage
 	if json.Unmarshal(obj["design"], &design) != nil {
@@ -741,6 +749,18 @@ func (s *Server) handleSiteKeep(w http.ResponseWriter, r *http.Request) {
 	}
 	if c.Name != t.sharedName {
 		s.jsonErr(w, "the bake is named “"+c.Name+"”, not “"+t.sharedName+"”")
+		return
+	}
+	// S3b, asked again at the door that files: import checked the shared name before it
+	// wrote a ticket, and a ticket is a promise the keep is about to put on the shelf —
+	// a promise made by an older hub, or by an import whose rules have since tightened,
+	// is checked here rather than trusted.
+	if _, _, sentence := checkSharedName(t.sharedName); sentence != "" {
+		s.jsonErr(w, "the theme from "+siteHost(t.site)+" can't be imported: "+sentence)
+		return
+	}
+	if err := s.checkNewName(t.app, c.Name); err != nil {
+		s.jsonErr(w, err.Error())
 		return
 	}
 	// fold=false: the import's bake joins the shelf, it does not discard an unsent draft

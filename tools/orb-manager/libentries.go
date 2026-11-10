@@ -183,6 +183,47 @@ func (l *Library) entry(app, name string) *LibEntry {
 	return nil
 }
 
+// entryFold finds one name in app's library whichever way its letters are cased. The orb
+// files a theme under a stem made from the name's ASCII letters lower-cased, so two
+// library entries whose names differ only in case are one card on the device wearing two
+// names in the editor. S3b's new-name rule refuses that before it can be filed.
+func (l *Library) entryFold(app, name string) *LibEntry {
+	all, err := l.entries(app)
+	if err != nil {
+		return nil
+	}
+	for i := range all {
+		if strings.EqualFold(all[i].Name, name) {
+			return &all[i]
+		}
+	}
+	return nil
+}
+
+// nameTakenAnswer is the sentence a refused new name comes back with, worded after the
+// "no “…” in the … library on this hub" the read doors already use.
+func nameTakenAnswer(name, app string) string {
+	return "a design called “" + name + "” is already in the " + app + " library on this hub, under another spelling of its name"
+}
+
+// checkNewName is the rule S3b puts on a name being chosen for the first time: the basic
+// characters, and no other name in this app's library that the orb would file under the
+// same stem. A name the library already holds exactly is not new — saving over the draft
+// you are editing, and re-baking a theme you already own, are the ordinary way an editor
+// writes — so an exact repeat answers nil whatever it is spelled with.
+func (s *Server) checkNewName(app, name string) error {
+	if s.library().entry(app, name) != nil {
+		return nil
+	}
+	if _, err := checkThemeName(name); err != nil {
+		return err
+	}
+	if e := s.library().entryFold(app, name); e != nil {
+		return errors.New(nameTakenAnswer(e.Name, app))
+	}
+	return nil
+}
+
 func (s *Server) routesLibraryEntries(mux *http.ServeMux) {
 	mux.Handle("/api/library/entries", s.requireControl(http.HandlerFunc(s.handleLibEntries)))
 	mux.Handle("/api/library/design", s.requireControl(http.HandlerFunc(s.handleLibDesign)))
@@ -268,6 +309,13 @@ func (s *Server) handleLibKeep(w http.ResponseWriter, r *http.Request) {
 	}
 	if len(c.Sections) == 0 || c.Sections[0] != app {
 		s.jsonErr(w, "that theme is not one of the "+app+" app’s")
+		return
+	}
+	// S3b: a keep chooses a name for the shelf. A theme arriving under a name the shelf
+	// already holds exactly is the rebake it claims to be; a name that is new to the
+	// library, or new but for its case, has to clear the character rule first.
+	if err := s.checkNewName(app, c.Name); err != nil {
+		s.jsonErr(w, err.Error())
 		return
 	}
 	dest, err := s.library().keepTheme(body, r.URL.Query().Get("fold") != "0")

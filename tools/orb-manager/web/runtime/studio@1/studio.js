@@ -414,15 +414,101 @@
     if ((m = t.match(/^(?:rgb\s*\()?\s*(\d{1,3})[\s,]+(\d{1,3})[\s,]+(\d{1,3})\s*\)?$/))) { var v = [m[1], m[2], m[3]].map(Number); if (v.every(function (x) { return x <= 255; })) return '#' + v.map(function (x) { return x.toString(16).padStart(2, '0'); }).join(''); }
     return null;
   };
-  /* ---- picked pictures (ruling 35): the one helper an editor calls before it stores a file a
-   * user chose. The shelf keeps art as PNG, JPEG, GIF or WebP at most 1024 × 1024, so anything
-   * bigger is scaled down to fit here — aspect kept — and an SVG, which has no pixels to lose,
-   * is rasterised instead. A picture already inside the bounds, of a type the caller is happy
-   * with, comes back byte for byte: nothing is re-encoded, so nothing is lost.
+  /* ---- picked pictures (ruling 35, amended by S3b): the one helper an editor calls before it
+   * stores a file a user chose. The shelf keeps art as PNG, JPEG, GIF, WebP or SVG at most
+   * 1024 × 1024, so a raster bigger than that is scaled down to fit here — aspect kept — and
+   * an SVG is kept as the text it arrived as, never rasterised: a vector loses nothing by
+   * fitting, and the device and the preview draw it at any size. A picture already inside the
+   * bounds, of a type the caller is happy with, comes back byte for byte: nothing is re-encoded.
    * opts: { max = 1024, type, quality = 0.9 }; max is clamped to at most 1024 whatever is
-   * passed, type 'image/png' or 'image/jpeg' forces the output.
+   * passed, type 'image/png' or 'image/jpeg' forces the output of a raster (an SVG is never
+   * forced to anything).
    * → Promise<{ dataUrl, type, width, height, scaled }> */
   S.FIT_MAX = 1024;
+  /* S3b's SVG rules, the hub's own checkSvgArt in one function: an SVG a design may hold is
+   * at most 256 KB of text, holds no event handler and links to nothing outside itself — a
+   * #fragment of its own file, or an embedded PNG, JPEG, GIF or WebP. The sentences are the
+   * hub's (tools/orb-manager/sitelimits.go), word for word, so the editor refuses a picked
+   * file before the site or the hub refuses the same one after an import.
+   * → null when the text may be kept, the sentence when it may not. */
+  S.SVG_MAX_BYTES = 262144;
+  var svgRefusalSize = function (kb) { return 'an SVG in it is ' + kb + " KB, and a design's SVGs can be at most 256 KB"; };
+  // ruling 35's SVG rules, the same as the hub's checkSvgArt (sitelimits.go) and the site's svg-art.ts
+  var svgHolds = function (what) { return 'an SVG in it holds ' + what + ", which a design's SVGs can't (no scripts, external links or entities)"; };
+  var SVG_REFUSAL_NOT_TEXT = "an SVG in it can't be read as text";
+  var SVG_REFUSAL_NOT_SVG = "an image in it says it is an SVG but isn't one";
+  var svgElement = function (name) { return new RegExp('<(?:[a-z0-9_.-]+:)?' + name + '(?:[^a-z0-9_.:-]|$)'); };
+  var SVG_FORBIDDEN = [
+    ['a DOCTYPE', function (t) { return t.indexOf('<!doctype') >= 0; }],
+    ['an entity', function (t) { return t.indexOf('<!entity') >= 0; }],
+    ['a script', function (t) { return svgElement('script').test(t); }],
+    ['foreignObject', function (t) { return svgElement('foreignobject').test(t); }],
+    ['an iframe', function (t) { return svgElement('iframe').test(t); }],
+    ['an embed', function (t) { return svgElement('embed').test(t); }],
+    ['an object', function (t) { return svgElement('object').test(t); }],
+    ['a stylesheet link', function (t) { return t.indexOf('<?xml-stylesheet') >= 0; }],
+    ['an @import', function (t) { return t.indexOf('@import') >= 0; }],
+    ['a javascript: URL', function (t) { return t.indexOf('javascript:') >= 0; }]
+  ];
+  // where the first element starts, past a declaration, comments, whitespace and a DOCTYPE
+  // (internal subset included); -1 when the text ends inside one of those
+  var svgFirstElement = function (t) {
+    var i = 0, e, sub;
+    for (;;) {
+      while (i < t.length && /[\s\ufeff]/.test(t[i])) i++;
+      if (i >= t.length) return -1;
+      if (t.indexOf('<?', i) === i) { e = t.indexOf('?>', i + 2); if (e < 0) return -1; i = e + 2; }
+      else if (t.indexOf('<!--', i) === i) { e = t.indexOf('-->', i + 4); if (e < 0) return -1; i = e + 3; }
+      else if (t.indexOf('<!', i) === i) {
+        e = t.indexOf('>', i + 2); if (e < 0) return -1;
+        sub = t.indexOf('[', i + 2);
+        if (sub >= 0 && sub < e) { e = t.indexOf(']>', i + 2); if (e < 0) return -1; e += 1; }
+        i = e + 1;
+      } else return i;
+    }
+  };
+  var svgRootAt = function (t, i) { return t.indexOf('<svg', i) === i && (i + 4 === t.length || /[\s\/>]/.test(t[i + 4])); };
+  var svgHandlerRe = /[\s"'/]on[a-z]+\s*=/i;
+  var svgHrefRe = /\b(?:xlink:)?href\s*=\s*"([^"]*)"|\b(?:xlink:)?href\s*=\s*'([^']*)'/gi;
+  var svgUrlRe = /url\(\s*['"]?([^'")]+)/gi;
+  var svgRasterRe = /^data:image\/(png|jpeg|gif|webp);base64,/i;
+  var svgViewBoxRe = /viewBox\s*=\s*["']\s*[-\d.eE+]+[\s,]+[-\d.eE+]+[\s,]+([-\d.eE+]+)[\s,]+([-\d.eE+])/i;
+  var utf8Bytes = function (s) {
+    if (typeof TextEncoder !== 'undefined') return new TextEncoder().encode(s).length;
+    var n = 0;
+    for (var i = 0; i < s.length; i++) {
+      var c = s.charCodeAt(i);
+      if (c < 0x80) n += 1; else if (c < 0x800) n += 2;
+      else if ((c & 0xfc00) === 0xd800 && i + 1 < s.length && (s.charCodeAt(i + 1) & 0xfc00) === 0xdc00) { n += 4; i++; }
+      else n += 3;
+    }
+    return n;
+  };
+  var svgLinkOK = function (t) {
+    t = String(t).trim();
+    return t.charAt(0) === '#' || svgRasterRe.test(t);
+  };
+  S.checkSvg = function (text) {
+    text = String(text == null ? '' : text);
+    var bytes = utf8Bytes(text);
+    if (bytes > S.SVG_MAX_BYTES) return svgRefusalSize(Math.ceil(bytes / 1024));
+    // a reader that met bad UTF-8 hands back U+FFFD; a NUL is never text
+    if (text.indexOf('\u0000') >= 0 || text.indexOf('\ufffd') >= 0) return SVG_REFUSAL_NOT_TEXT;
+    var lower = text.toLowerCase(), at = svgFirstElement(lower);
+    if (at < 0 || !svgRootAt(lower, at)) return SVG_REFUSAL_NOT_SVG;
+    for (var f = 0; f < SVG_FORBIDDEN.length; f++) if (SVG_FORBIDDEN[f][1](lower)) return svgHolds(SVG_FORBIDDEN[f][0]);
+    if (svgHandlerRe.test(text)) return svgHolds('an event handler');
+    svgHrefRe.lastIndex = 0; svgUrlRe.lastIndex = 0;
+    var m;
+    while ((m = svgHrefRe.exec(text))) {
+      var target = m[1] != null ? m[1] : m[2];
+      if (!svgLinkOK(String(target == null ? '' : target).trim())) return svgHolds('an outside link');
+    }
+    while ((m = svgUrlRe.exec(text))) {
+      if (!svgLinkOK(String(m[1]).trim())) return svgHolds('an outside link');
+    }
+    return null;
+  };
   S.fitPicture = function (file, opts) {
     opts = opts || {};
     var max = Math.min(S.FIT_MAX, Math.max(1, +opts.max > 0 ? +opts.max : S.FIT_MAX));
@@ -441,16 +527,36 @@
         im.onerror = noPicture;
         im.onload = function () {
           var w = im.naturalWidth || im.width || 0, h = im.naturalHeight || im.height || 0;
-          // a viewBox-only SVG has no intrinsic size: the box we are asked to fit is its size
-          if (svg && !(w > 0 && h > 0)) { w = max; h = max; }
+          if (svg) {
+            // S3b: an SVG is kept as the text it came in, so the check is on the text and no
+            // canvas is opened. A file the rules refuse is refused here, before its bytes ever
+            // reach a design, with the hub's own sentence.
+            var rd2 = new FileReader();
+            rd2.onerror = noPicture;
+            rd2.onload = function () {
+              var text = String(rd2.result);
+              var refusal = S.checkSvg(text);
+              if (refusal) { bad(new Error(refusal)); return; }
+              if (!(w > 0 && h > 0)) {
+                // a viewBox-only SVG has no intrinsic size: the box it names is its size, and
+                // a file naming no box takes the box it was asked to fit
+                var vb = svgViewBoxRe.exec(text);
+                if (vb) { w = Math.round(+vb[1]) || 0; h = Math.round(+vb[2]) || 0; }
+                if (!(w > 0 && h > 0)) { w = max; h = max; }
+              }
+              ok({ dataUrl: url, type: 'image/svg+xml', width: w, height: h, scaled: false });
+            };
+            rd2.readAsText(file, 'utf-8');
+            return;
+          }
           if (!(w > 0 && h > 0)) { noPicture(); return; }
           var kept = ['image/png', 'image/jpeg', 'image/gif', 'image/webp'];
-          if (!svg && kept.indexOf(src) >= 0 && w <= max && h <= max && (!want || want === src)) {
+          if (kept.indexOf(src) >= 0 && w <= max && h <= max && (!want || want === src)) {
             ok({ dataUrl: url, type: src, width: w, height: h, scaled: false }); return;
           }
-          // a vector is drawn at whatever the box holds; a raster is only ever scaled down
+          // a raster is only ever scaled down
           var long = Math.max(w, h);
-          var k = svg ? max / long : Math.min(1, max / long);
+          var k = Math.min(1, max / long);
           if (!isFinite(k) || k <= 0) k = 1;
           var cw = Math.max(1, Math.round(w * k)), ch = Math.max(1, Math.round(h * k));
           var out = want || (src === 'image/jpeg' ? 'image/jpeg' : 'image/png');

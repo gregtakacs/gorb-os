@@ -261,6 +261,8 @@ bool orb_theme_absent(const char *slug, const char **brief, char *why, size_t wh
 /* True when opening `slug` would post a fill (its theme is chosen, on the card only, and no
  * fill runs): the carousel zooms it to the fill's face, not the glass. */
 bool orb_theme_fill_wanted(const char *slug);
+/** Whether the card file `id` is the theme its app has chosen (wears, or fills). */
+bool orb_theme_is_chosen(const char *id);
 /* Ruling 5: the owner left `slug`'s app; its fill stops at the next chunk and keeps its mark,
  * so the next fill_post for it goes on from there while the pool is as it left it. */
 void orb_theme_fill_pause(const char *slug);

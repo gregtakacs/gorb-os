@@ -1013,7 +1013,7 @@ func (s *Server) streamThemeUpload(w http.ResponseWriter, r *http.Request, ip st
 	}
 	defer release()
 	s.dropThemeCache(ip)
-	if s.streamThemeStore(r.Context(), ip, body, c.Name, c, overwrite, send) {
+	if s.streamThemeStore(r.Context(), ip, body, c.Name, c, overwrite, false, send) {
 		s.keepOnShelf(body)
 	}
 }
@@ -1642,6 +1642,13 @@ func (s *Server) themeListRiding(ip string, c *orbnet.Client, budget time.Durati
 		list, lerr = c.WithTimeout(remain).ThemeList(ip)
 		if cuttable && lerr != nil && laneCut(lerr) {
 			return noRide(lerr)
+		}
+		// A theme job or an upload owns the card and the orb answers without walking it
+		// (card_count 0, no rows): busy, not empty. Painted, and remembered for the cache's
+		// two minutes, it read as "no themes installed" after Refresh from orb, whose
+		// remount starts the reconcile job (owner, 2026-11-09). Ride it out like a lane.
+		if lerr == nil && list != nil && (list.JobBusy || list.Uploading) && len(list.Themes) == 0 {
+			return fmt.Errorf("%w: the orb's card is busy with a theme job", orbnet.ErrLaneBusy)
 		}
 		return lerr
 	})

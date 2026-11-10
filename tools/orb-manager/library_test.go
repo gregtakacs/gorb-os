@@ -1153,8 +1153,10 @@ func TestAdoptionOutranksTheOwnersShelfGate(t *testing.T) {
 // step sat behind `only == ""`, and the join-time install asks for exactly one slug — so the
 // path that runs on a freshly flashed board was the one path that could not seed a face.
 //
-// The fake answers card_count 1 rather than 0 so the run stops at installTheme's own skip:
-// this test pins the GATE, not the store. A theme upload and a reboot belong to other tests.
+// The fake answers an empty card and the hub has no theme library, so the run reaches the
+// seed and stops at its "nothing to seed": this test pins the GATE, not the store. A theme
+// upload and a reboot belong to other tests. (Until 2026-11-09 it answered card_count 1 and
+// stopped at the seed's own skip; a card with themes now gets no seed rows at all.)
 func TestJoinRunSeedsTheTheme(t *testing.T) {
 	var paths []string
 	h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1169,7 +1171,7 @@ func TestJoinRunSeedsTheTheme(t *testing.T) {
 			w.Write([]byte(`{"mounted":true,"apps":[{"stem":"clock","ok":true}],` +
 				`"installed":[{"slug":"clock"}]}`))
 		case "/api/v1/sd":
-			w.Write([]byte(`{"mounted":true,"card_count":1,"active":"Aviator"}`))
+			w.Write([]byte(`{"mounted":true,"card_count":0,"active":"Aviator","themes":[]}`))
 		default:
 			w.Write([]byte(`{}`))
 		}
@@ -1187,8 +1189,8 @@ func TestJoinRunSeedsTheTheme(t *testing.T) {
 	var steps []installStep
 	send := func(st installStep) { steps = append(steps, st) }
 	err := s.installRun(context.Background(), "127.0.0.1", "clock", false, true, send)
-	if err != nil {
-		t.Fatalf("the join run refused: %v", err)
+	if err == nil || !strings.Contains(err.Error(), "nothing to seed") {
+		t.Fatalf("the join run did not reach the seed on an empty card: %v", err)
 	}
 	sawSdRead := false
 	for _, p := range paths {
@@ -1199,14 +1201,14 @@ func TestJoinRunSeedsTheTheme(t *testing.T) {
 	if !sawSdRead {
 		t.Error("a join-time install never asked the dial for its themes, so a fresh board boots with no clock face")
 	}
-	sawTheme := false
-	for _, st := range steps {
-		if st.Step == "theme" {
-			sawTheme = true
+	seedRows := false
+	for _, p := range steps[0].Plan {
+		if strings.HasPrefix(p.ID, "theme-") {
+			seedRows = true
 		}
 	}
-	if !sawTheme {
-		t.Errorf("no theme step streamed for a clock install: %v", steps)
+	if !seedRows {
+		t.Errorf("an empty card's clock install planned no seed: %v", steps[0].Plan)
 	}
 }
 

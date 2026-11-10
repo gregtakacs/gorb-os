@@ -3729,6 +3729,13 @@ static int fill_choice(const char *slug)            /* its choice's index, -1: n
 
 bool orb_theme_fill_wanted(const char *slug) { return fill_choice(slug) >= 0; }
 
+bool orb_theme_is_chosen(const char *id)
+{
+    for (uint32_t c = 0; id && c < s_cache.n_choice; c++)
+        if (!strcmp(s_cache.c[c].stem, id)) return true;
+    return false;
+}
+
 bool orb_theme_fill_post(const char *slug)
 {
     const int c = fill_choice(slug);

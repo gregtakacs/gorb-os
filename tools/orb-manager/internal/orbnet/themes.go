@@ -493,6 +493,23 @@ func (c *Client) ThemeUploadProgress(ip string, body []byte, overwrite bool, pro
 	return c.devicePostCounted(ip, route, body, "application/octet-stream", progress)
 }
 
+// ThemeUpgradeProgress sends a newer bake over a card copy without choosing it
+// (?overwrite=1&keep=1, OS v1.6.4): the orb files it, and stores it only when it is the
+// theme its app already wears. The answer's state is "filed" or "stored". An older orb
+// ignores keep and stores, which chooses: the caller gates on the firmware.
+func (c *Client) ThemeUpgradeProgress(ip string, body []byte, progress func(int64)) (json.RawMessage, error) {
+	if len(body) == 0 {
+		return nil, fmt.Errorf("orbnet: refusing to upload an empty theme file")
+	}
+	if len(body) > MaxThemeUpload {
+		return nil, fmt.Errorf("orbnet: theme file is %d B, over the device's %d B ceiling", len(body), MaxThemeUpload)
+	}
+	if _, err := ContainerName(body); err != nil {
+		return nil, err
+	}
+	return c.devicePostCounted(ip, "/api/v1/sd/theme?overwrite=1&keep=1", body, "application/octet-stream", progress)
+}
+
 // ThemeCommit spends a duplicate refusal's one-shot token: the same
 // /api/v1/sd/theme door with ?commit=<token> and an empty body, which files the
 // copy the refusal left staged on the card and queues the store. It exists so a

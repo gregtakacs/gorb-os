@@ -961,3 +961,44 @@ func TestThemeUploadStreamsItsSteps(t *testing.T) {
 		}
 	}
 }
+
+// TestABusyCardIsNotAnEmptyOne: Refresh from orb remounts the card and the remount starts
+// the reconcile job; while a job runs the orb answers its list unwalked (card_count 0, no
+// rows), and the hub painted and remembered that as "no themes installed" (owner,
+// 2026-11-09). The read rides a busy answer out and paints the walked one.
+func TestABusyCardIsNotAnEmptyOne(t *testing.T) {
+	var mu sync.Mutex
+	dials := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path != "/api/v1/sd" {
+			w.Write([]byte(`{}`))
+			return
+		}
+		dials++
+		if dials <= 2 {
+			w.Write([]byte(`{"mounted":true,"card_count":0,"job_busy":true,"themes":[]}`))
+			return
+		}
+		w.Write([]byte(`{"mounted":true,"card_count":1,"job_busy":false,"themes":[{"name":"Skeleton","id":"clock-skeleton-209c630ff17d","app":"clock","ok":true}]}`))
+	}))
+	defer srv.Close()
+	s := newHub()
+	s.device = orbnet.NewClient(deviceTimeout)
+	s.device.DevicePort = portOf(srv.URL)
+	raw, err := s.sdListRead("127.0.0.1")
+	if err != nil {
+		t.Fatalf("the read refused: %v", err)
+	}
+	var l orbnet.ThemeList
+	if err := json.Unmarshal(raw, &l); err != nil || len(l.Themes) != 1 {
+		t.Fatalf("the read painted %d rows (err %v), want the walked card's one: %s", len(l.Themes), err, raw)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if dials != 3 {
+		t.Errorf("the orb was asked %d times, want 3 (two busy answers ridden out)", dials)
+	}
+}

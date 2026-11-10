@@ -1125,10 +1125,12 @@ function paintUpdateAll() {
   if (updAllBusy) { box.hidden = false; return; }
   const fw = !!current.ip && fwUpdateDue();
   const apps = current.ip ? updAllApps() : [];
-  box.hidden = !(fw || apps.length);
+  const themes = current.ip && themeDue.ip === current.ip ? themeDue.list : [];
+  box.hidden = !(fw || apps.length || themes.length);
   const what = [];
   if (fw) what.push("firmware " + (fwRelease(hubFirmware && hubFirmware.version) || "update"));
   for (const e of apps) what.push(e.title || e.slug);
+  if (themes.length) what.push(themes.length === 1 ? themes[0].name + " theme" : themes.length + " themes");
   $("#mn-updall-what").textContent = what.join(" · ");
   $("#mn-updall-go").disabled = false;
 }
@@ -1238,6 +1240,10 @@ async function updateEverything() {
     // every app in one run: the orb copies them all and restarts once (owner, 2026-11-09)
     if (apps.length)
       plan.push({ id: "apps", label: "Updating " + apps.map((e) => (e.title || e.slug) + " to " + e.lib.version).join(", "), kind: "wait" });
+    // the themes a later hub bake updates, each its own push after the apps
+    let themes = [];
+    try { themes = await updAllThemes(ip); } catch (e) { log("the card's themes did not answer: " + e.message); }
+    themes.forEach((t, k) => plan.push({ id: "theme" + k, label: "Updating the " + t.name + " theme", kind: "wait" }));
     if (!plan.length) { none = true; ok = true; return; }
     sl.set(plan);
     const car = await updAllRotation(ip);
@@ -1274,6 +1280,20 @@ async function updateEverything() {
           throw new Error(due.map((e) => e.title || e.slug).join(", ") + ": " + (gLastRefusal || "the update was refused"));
       }
     }
+    for (let k = 0; k < themes.length; k++) {
+      const t = themes[k], pre = "theme" + k + ":";
+      const inner = Object.create(sl);
+      inner.splice = (pid, steps) => sl.splice(pid, steps.map((p) => Object.assign({}, p, { id: pre + p.id })));
+      inner.enter = (pid) => sl.enter(pre + pid);
+      inner.finish = (good) => {
+        const st = sl.plan[sl.at];
+        if (st && st.state === "active") sl.mark(st, good ? "done" : "failed", "");
+      };
+      const frame = { list: inner, splice: "theme" + k, log: ui.log, doing: ui.doing, bar: ui.bar, op: ui.op };
+      if (!await streamSteps("/api/library/push?kind=theme&name=" + encodeURIComponent(t.file.replace(/\.orbtheme$/i, ""))
+          + "&ip=" + encodeURIComponent(ip) + "&overwrite=1" + (t.worn ? "" : "&keep=1"), frame, ip))
+        throw new Error("the " + t.name + " theme: " + (gLastRefusal || "the update was refused"));
+    }
     ok = true;
   } catch (e) {
     why = (e && e.message) || String(e);
@@ -1290,11 +1310,22 @@ async function updateEverything() {
     fpLock(false);
     updAllBusy = false;
     try { await loadApps(); } catch (e) { /* the face says so itself */ }
+    try { await themeBadgePass(current.ip || ip); } catch (e) { /* the face reads it when opened */ }
     pullFound();
     paintUpdateAll();
   }
 }
 $("#mn-updall-go").onclick = updateEverything;
+
+// updAllThemes reads the card and the hub library afresh: the themes a run would update.
+async function updAllThemes(ip) {
+  const d = await themeListWithRetry(ip);
+  if (!d || !d.mounted) return [];
+  const rows = Array.isArray(d.themes) ? d.themes : [];
+  const due = themeDueFrom(rows, await themeLibFor(new Set(rows.map((t) => t.app || "clock"))));
+  themeDue = { ip, list: due };
+  return due;
+}
 
 
 
@@ -3646,17 +3677,45 @@ function themeUpdateCounts(rows, libByApp) {
   return { ups, rebakes };
 }
 
-// themeBadgeFrom puts the Themes tab's count up from a card listing, reading each app's
-// hub library (local, no orb dial) so the tab is right before the face is ever opened.
-async function themeBadgeFrom(ip, rows) {
+// themeDueFrom is the card rows a later hub bake of the same name would update, with the
+// library file that bake is: what Update everything sends (owner, 2026-11-09: after the run
+// "the themes never lose their amber update warnings"). The same newer rule as the counts.
+function themeDueFrom(rows, libByApp) {
+  const due = [];
+  for (const t of rows) {
+    if (!t.ok) continue;
+    const name = String(t.name || "").toLowerCase();
+    const e = name && (libByApp[t.app || "clock"] || []).find((x) => String(x.name || "").toLowerCase() === name);
+    const th = e && e.theme;
+    if (th && !th.stale && t.serial > 0 && th.serial && th.serial !== t.serial &&
+        th.baked > 0 && t.baked > 0 && th.baked > t.baked)
+      due.push({ app: t.app || "clock", name: e.name, file: String(th.file || th.stem + ".orbtheme"), worn: !!t.chosen });
+  }
+  return due;
+}
+
+// themeLibFor reads each named app's hub library (local, no orb dial).
+async function themeLibFor(apps) {
   const lib = {};
-  for (const a of new Set(rows.map((t) => t.app || "clock"))) {
+  for (const a of apps) {
     try {
       const j = await (await hubFetch("/api/library/entries?app=" + encodeURIComponent(a))).json();
       lib[a] = j && j.ok && Array.isArray(j.data) ? j.data : [];
     } catch (e) { lib[a] = []; }
   }
+  return lib;
+}
+
+// the themes Update everything would send, for the orb they were read from
+let themeDue = { ip: "", list: [] };
+
+// themeBadgeFrom puts the Themes tab's count up from a card listing, reading each app's
+// hub library (local, no orb dial) so the tab is right before the face is ever opened.
+async function themeBadgeFrom(ip, rows) {
+  const lib = await themeLibFor(new Set(rows.map((t) => t.app || "clock")));
   if (ip !== current.ip || typeof tabBadge !== "function") return;
+  themeDue = { ip, list: themeDueFrom(rows, lib) };
+  paintUpdateAll();
   const { ups, rebakes } = themeUpdateCounts(rows, lib);
   themeUpsByApp = {};
   for (const a of Object.keys(lib)) themeUpsByApp[a] = themeUpdateCounts(rows.filter((t) => (t.app || "clock") === a), lib);
@@ -4343,7 +4402,7 @@ function themeLibraryRows(app, deviceRows, state, entries) {
   const list = $("#mn-themes");
   if (!entries.length || !list || !app) return 0;
   const onCard = {};   // name -> the card copy's bake serial and bake time
-  for (const t of deviceRows) if ((t.app || "clock") === app) onCard[String(t.name || "").toLowerCase()] = { serial: t.serial || -1, baked: t.baked || 0 };
+  for (const t of deviceRows) if ((t.app || "clock") === app) onCard[String(t.name || "").toLowerCase()] = { serial: t.serial || -1, baked: t.baked || 0, worn: !!t.chosen };
   const edRow = themeAppsRows.find((a) => a.slug === app);
   const canEdit = !!(edRow && edRow.has_editor && edRow.editor_url);
   const stale = entries.filter((e) => e.theme && e.theme.stale);
@@ -4470,6 +4529,8 @@ function themeLibraryRows(app, deviceRows, state, entries) {
     let inst = null;
     if (th && !th.stale && (!cardSerial || newer || unsure)) {
       const over = newer || unsure;   // both send over the card's copy
+      // an upgrade of a card copy its app does not wear leaves the app on the one it wears
+      const keep = over && card && !card.worn;
       // the button keeps its own name: `inst` is cleared below once it moves onto the card's row,
       // and a handler reading `inst` then threw on its first line after the confirm (owner, 2026-11-05)
       const btn = inst = document.createElement("button");
@@ -4483,7 +4544,8 @@ function themeLibraryRows(app, deviceRows, state, entries) {
         const orbName = current.name || themeIP;
         if (typeof askConfirm === "function" && !await askConfirm({
           title: (newer ? "Update " : unsure ? "Replace " : "Install ") + (f.title || f.file) + "?",
-          body: newer ? orbName + " gets the newer " + (f.title || f.file) + " and restarts to show it."
+          body: keep ? orbName + "'s card gets the newer " + (f.title || f.file) + "; " + themeAppTitle(app) + " keeps the theme it wears."
+            : newer ? orbName + " gets the newer " + (f.title || f.file) + " and shows it."
             : unsure ? orbName + "'s copy of " + (f.title || f.file) + " is replaced with the hub's, and it restarts to show it."
             : orbName + " gets " + (f.title || f.file) + " and restarts to show it.",
           detail: "This takes a minute or two.",
@@ -4500,7 +4562,7 @@ function themeLibraryRows(app, deviceRows, state, entries) {
         // with the bytes, and the panel is the single place a refusal is read.
         const okPush = await streamSteps("/api/library/push?kind=theme&name="
           + encodeURIComponent(String(f.file).replace(/\.orbtheme$/i, ""))
-          + "&ip=" + encodeURIComponent(themeIP) + (over ? "&overwrite=1" : ""), ui, themeIP);
+          + "&ip=" + encodeURIComponent(themeIP) + (over ? "&overwrite=1" : "") + (keep ? "&keep=1" : ""), ui, themeIP);
         if (!okPush) {
           state.textContent = "install refused \u2014 read the progress panel";
           btn.disabled = false;

@@ -345,9 +345,33 @@ func TestTheRunSaysItsPlanFirst(t *testing.T) {
 	for _, p := range steps[0].Plan {
 		ids = append(ids, p.ID)
 	}
-	want := "check install:clock restart theme-send:clock theme-check:clock theme-room:clock theme-store:clock theme-restart:clock"
+	// the card carries themes, so no seed can happen and none is listed (owner, 2026-11-09:
+	// "not needed" under every theme)
+	want := "check install:clock restart"
 	if got := strings.Join(ids, " "); got != want {
 		t.Errorf("a card install of the clock plans %q; want %q", got, want)
+	}
+	// a card with no theme of the clock's lists its seed, in the firmware's own steps
+	planIDs := func(chooses bool, seeded map[string]bool) string {
+		var out []string
+		for _, p := range installPlan(&Library{}, []string{"clock"}, true, chooses, seeded) {
+			out = append(out, p.ID)
+		}
+		return strings.Join(out, " ")
+	}
+	for _, c := range []struct {
+		chooses bool
+		seeded  map[string]bool
+		want    string
+	}{
+		{false, map[string]bool{"weather": true}, "check install:clock restart theme-send:clock theme-check:clock theme-room:clock theme-store:clock theme-restart:clock"},
+		{true, map[string]bool{"weather": true}, "check install:clock restart theme-send:clock theme-check:clock"},
+		{true, nil, "check install:clock restart theme-send:clock theme-check:clock"},
+		{true, map[string]bool{"clock": true}, "check install:clock restart"},
+	} {
+		if got := planIDs(c.chooses, c.seeded); got != c.want {
+			t.Errorf("chooses %v, card themes %v: plans %q; want %q", c.chooses, c.seeded, got, c.want)
+		}
 	}
 	phase := map[string]string{}
 	for _, st := range steps[1:] {
@@ -356,7 +380,7 @@ func TestTheRunSaysItsPlanFirst(t *testing.T) {
 		}
 		phase[st.Step+"/"+st.Action] = st.Phase
 	}
-	if phase["clock/skipped"] != "install:clock" || phase["theme/skipped"] != "theme-send:clock" {
+	if phase["clock/skipped"] != "install:clock" {
 		t.Errorf("the skips landed on the wrong rows: %v", phase)
 	}
 }
@@ -725,5 +749,67 @@ func TestARefusedCardWriteIsSentAgain(t *testing.T) {
 			t.Errorf("%d refusals of %q: the steps said it was sent again %d times, want %d: %v",
 				c.refusals, c.reply, len(notes), c.wantUploads-1, notes)
 		}
+	}
+}
+
+// TestAnUpgradeKeepsTheWornTheme: an upgrade replaces a card copy and the app keeps the
+// theme it wears (owner, 2026-11-09). The push asks for ?keep=1, a "filed" answer ends it
+// with no store followed, and an orb before v1.6.4, which would choose the theme, is not
+// sent it at all.
+func TestAnUpgradeKeepsTheWornTheme(t *testing.T) {
+	blob, err := os.ReadFile(filepath.Join("themes", "skeleton.orbtheme"))
+	if err != nil {
+		t.Skipf("no shelf theme: %v", err)
+	}
+	c, err := orbnet.ContainerName(blob)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, fw := range []string{"v1.6.4+0d9a87b", "v1.6.3+a0c1765"} {
+		var mu sync.Mutex
+		var uploads []string
+		listed := 0
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			mu.Lock()
+			defer mu.Unlock()
+			w.Header().Set("Content-Type", "application/json")
+			switch r.URL.Path {
+			case "/api/v1/status":
+				w.Write([]byte(`{"state":"connected","fw":"` + fw + `"}`))
+			case "/api/v1/sd/theme":
+				io.Copy(io.Discard, r.Body)
+				uploads = append(uploads, r.URL.RawQuery)
+				w.Write([]byte(`{"state":"filed","id":"` + c.ID + `","reboot":"none"}`))
+			case "/api/v1/sd":
+				listed++
+				w.Write([]byte(`{"mounted":true,"themes":[]}`))
+			default:
+				w.Write([]byte(`{}`))
+			}
+		}))
+		s := newHub()
+		s.device = orbnet.NewClient(deviceTimeout)
+		s.device.DevicePort = portOf(srv.URL)
+		s.ota = orbnet.NewClient(otaTimeout)
+		s.ota.DevicePort = portOf(srv.URL)
+		var last installStep
+		ok := s.streamThemeStore(context.Background(), "127.0.0.1", blob, "Skeleton", c, true, true,
+			func(st installStep) { last = st })
+		srv.Close()
+		mu.Lock()
+		if !ok {
+			t.Errorf("%s: the upgrade failed: %v", fw, last)
+		}
+		if strings.HasPrefix(fw, "v1.6.4") {
+			if len(uploads) != 1 || !strings.Contains(uploads[0], "keep=1") {
+				t.Errorf("%s: uploads %v, want one with keep=1", fw, uploads)
+			}
+			if last.Action != "done" || listed != 0 {
+				t.Errorf("%s: ended %s/%q after %d store reads; a filed upgrade has no store to follow", fw, last.Action, last.Note, listed)
+			}
+		} else if len(uploads) != 0 || last.Action != "skipped" {
+			t.Errorf("%s: uploads %v, last %s; an orb that would choose it is not sent it", fw, uploads, last.Action)
+		}
+		mu.Unlock()
 	}
 }

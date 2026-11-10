@@ -8006,6 +8006,11 @@ static esp_err_t h_theme_upload(httpd_req_t *req)
      * on the card. */
     char ow[4] = "";
     const bool overwrite = q_param(req, "overwrite", ow, sizeof ow) && strcmp(ow, "1") == 0;
+    /* ?keep=1: an upgrade of a card copy, not a choice (owner, 2026-11-09). The file is
+     * filed, and stored only when it is the theme its app already wears (the store then
+     * rebuilds that app's copies from the newer bake); any other app keeps what it wears. */
+    char kp[4] = "";
+    const bool keep = q_param(req, "keep", kp, sizeof kp) && strcmp(kp, "1") == 0;
 
     /* The confirmed-duplicate answer: an empty-body POST carrying ?commit=<token>
      * files the copy the last refusal left staged, instead of making the owner
@@ -8174,6 +8179,11 @@ static esp_err_t h_theme_upload(httpd_req_t *req)
      * does not reboot (2026-11-09); the app wears the new theme as its fill lands. */
     orb_edge_arc_set(-1);
     char b[192];
+    if (keep && !orb_theme_is_chosen(committed)) {
+        snprintf(b, sizeof b, "{\"state\":\"filed\",\"id\":\"%s\",\"bytes\":%d,\"reboot\":\"none\"}",
+                 committed, got);
+        return httpd_resp_sendstr(req, b);
+    }
     const esp_err_t pe = orb_theme_post_bundle(committed);
     if (pe != ESP_OK) {
         /* On the card but not queued. The slot stays armed invalid; the page says so and

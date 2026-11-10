@@ -225,7 +225,11 @@ func (p *runPhases) phaseOf(st installStep) string {
 // reach, in order. A stage the orb makes unnecessary (the card already holds the file, the
 // card already carries a theme) is still listed, and the panel marks it skipped, so the
 // count an owner reads at the start is the count they watch finish.
-func installPlan(lib *Library, slugs []string, card, chooses bool) []planStep {
+//
+// A theme seed's rows are listed only for an app whose card carries no theme of its own
+// (seeded names the ones that do): on a card with themes every seed row read "not needed"
+// under every app (owner, 2026-11-09). seeded nil (the card did not answer) lists them all.
+func installPlan(lib *Library, slugs []string, card, chooses bool, seeded map[string]bool) []planStep {
 	titles := map[string]string{}
 	p := &LibraryPayload{}
 	listAppLibrary(lib.AppsDir, p)
@@ -251,7 +255,7 @@ func installPlan(lib *Library, slugs []string, card, chooses bool) []planStep {
 	}
 	plan = append(plan, planStep{ID: "restart", Label: "Restarting the orb to load it", Kind: "wait", Budget: restart})
 	for _, slug := range slugs {
-		if slug != "clock" && !lib.hasAppTheme(slug) {
+		if slug != "clock" && !lib.hasAppTheme(slug) || seeded != nil && seeded[slug] {
 			continue
 		}
 		for _, st := range themeSteps(title(slug)+"'s theme", restart, chooses) {
@@ -598,7 +602,23 @@ func (s *Server) installRun(ctx context.Context, ip, only string, force, card bo
 		return fmt.Errorf("a card-only install names exactly one slug")
 	}
 	phases := &runPhases{cur: "check", chooses: !s.storeReboots(ip)}
-	send(installStep{Step: "install", Action: "plan", Phase: "check", Plan: installPlan(lib, slugs, card, phases.chooses)})
+	var seeded map[string]bool
+	if tl, terr := s.themeListRidingOutLane(ip); terr == nil {
+		seeded = map[string]bool{}
+		for _, t := range tl.Themes {
+			app := t.App
+			if app == "" {
+				app = "clock"
+			}
+			seeded[app] = true
+		}
+		if len(tl.Themes) == 0 && tl.CardCount > 0 { // a card the answer did not list: the owner's
+			for _, slug := range slugs {
+				seeded[slug] = true
+			}
+		}
+	}
+	send(installStep{Step: "install", Action: "plan", Phase: "check", Plan: installPlan(lib, slugs, card, phases.chooses, seeded)})
 	send = phases.stamp(send)
 	st, err := s.device.Status(ip)
 	if err != nil {
@@ -752,8 +772,9 @@ func (s *Server) installRun(ctx context.Context, ip, only string, force, card bo
 	waited := !rebooted || cycled // nothing landed, or its reboot is already behind the run
 	for _, slug := range slugs {
 		// the clock always asks (a clock with no face draws nothing, and a library with no
-		// theme is an error worth saying); another app only when the library has one for it
-		if slug != "clock" && !lib.hasAppTheme(slug) {
+		// theme is an error worth saying); another app only when the library has one for it,
+		// and neither when the card already carries a theme for it (the plan lists no rows)
+		if slug != "clock" && !lib.hasAppTheme(slug) || seeded != nil && seeded[slug] {
 			continue
 		}
 		// An install ends with the orb rebooting to load the app, and a ledger read in that
@@ -1359,7 +1380,13 @@ func (s *Server) h_libraryPush(w http.ResponseWriter, r *http.Request) {
 	// The push's plan: one byte transfer for an app, and for a theme the store and the
 	// reboot the device's upload door sets off behind it. Each line names its stage by
 	// its action, the way an install run's do.
-	if kind == "theme" {
+	if kind == "theme" && r.URL.Query().Get("keep") == "1" {
+		// an upgrade of a theme its app does not wear: the copy is the whole of it
+		send(installStep{Step: kind, Action: "plan", Phase: "theme-send",
+			Plan: []planStep{{ID: "theme-send", Label: "Copying the newer " + name + " to the orb's SD card", Kind: "bytes"}}})
+		raw := send
+		send = func(st installStep) { st.Phase = "theme-send"; raw(st) }
+	} else if kind == "theme" {
 		send = themeRunSend(send, name, !s.storeReboots(ip))
 	} else {
 		send(installStep{Step: kind, Action: "plan", Phase: "send",
@@ -1421,7 +1448,8 @@ func (s *Server) h_libraryPush(w http.ResponseWriter, r *http.Request) {
 	}
 	// overwrite=1 is the Themes face's Update: the card holds an older bake under this
 	// name, and the shelf's copy replaces it (the device refuses a same-name file without it)
-	s.streamThemeStore(r.Context(), ip, body.blob, body.name, c, r.URL.Query().Get("overwrite") == "1", send)
+	s.streamThemeStore(r.Context(), ip, body.blob, body.name, c, r.URL.Query().Get("overwrite") == "1",
+		r.URL.Query().Get("keep") == "1", send)
 }
 
 // themeRunSend opens a theme store's streamed run: it sends the plan (themeSteps, named for
@@ -1445,10 +1473,25 @@ func themeRunSend(send func(installStep), what string, chooses bool) func(instal
 // device's upload door queues, through the reboot, to the orb answering again, speaking
 // each stage as a step. It answers whether the run said done. label names the file in a
 // refusal; the caller holds the device port.
-func (s *Server) streamThemeStore(ctx context.Context, ip string, blob []byte, label string, c *orbnet.ThemeContainer, overwrite bool, send func(installStep)) bool {
+//
+// keep is an upgrade (owner, 2026-11-09: "we're talking about upgrading them"): the newer
+// bake replaces the card copy and the app keeps the theme it wears; only the worn one is
+// stored again. An orb before removeNoRebootFW cannot file without choosing, so it is left.
+func (s *Server) streamThemeStore(ctx context.Context, ip string, blob []byte, label string, c *orbnet.ThemeContainer, overwrite, keep bool, send func(installStep)) bool {
+	if keep && s.firmwareBefore(ip, removeNoRebootFW) {
+		send(installStep{Step: c.ID, Action: "skipped",
+			Note: "this orb's firmware would make it the theme its app wears; it updates after the firmware does"})
+		return true
+	}
 	total := len(blob)
 	last, sentLast := 0, int64(0)
-	_, uerr := s.ota.ThemeUploadProgress(ip, blob, overwrite, func(sent int64) {
+	upload := func(p func(int64)) (json.RawMessage, error) {
+		if keep {
+			return s.ota.ThemeUpgradeProgress(ip, blob, p)
+		}
+		return s.ota.ThemeUploadProgress(ip, blob, overwrite, p)
+	}
+	raw, uerr := upload(func(sent int64) {
 		sentLast = sent
 		pct := int(sent * 100 / int64(total))
 		if pct-last < 10 && int(sent) != total {
@@ -1467,6 +1510,13 @@ func (s *Server) streamThemeStore(ctx context.Context, ip string, blob []byte, l
 	// from before the push would answer /api/theme/list for two minutes and paint the
 	// shelf row it already showed. h_theme_delete does the same for the same reason.
 	s.dropThemeCache(ip)
+	var ans struct {
+		State string `json:"state"`
+	}
+	if keep && json.Unmarshal(raw, &ans) == nil && ans.State == "filed" {
+		send(installStep{Step: c.ID, Action: "done", Note: "the newer bake is on the card; its app keeps the theme it wears"})
+		return true
+	}
 	// The upload door queued the store itself (h_theme_upload's post_bundle tail): the
 	// orb now copies the file from card to flash and reboots onto it. The push follows
 	// that to the end, as the install run's theme step does, and holds the lead through

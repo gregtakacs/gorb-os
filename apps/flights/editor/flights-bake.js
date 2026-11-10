@@ -41,12 +41,14 @@
     { slot: 20, name: 'header', tones: [0, 1, NONE, NONE] },
     { slot: 21, name: 'footer', tones: [2, NONE, 3, NONE] },
     { slot: CARD_SLOT, name: 'card', tones: [0, NONE, NONE, NONE], panel: true },
-    { slot: 23, name: 'range', tones: [2, NONE, NONE, NONE] },
+    { slot: 23, name: 'range', tones: [6, NONE, NONE, NONE] },
   ];
   var CARD_LINES = 4;
   // the range while it changes (main.c PILL_SLOT): large on a backing, as radar's zoom, in its
   // own font past the map names' (FONTS.length)
   var PILL_SLOT = 38, PILL_FONT = FONTS.length + 1, PILL_PX = 36, PILL_W = 340, PILL_GROW = 16;
+  // the scale's length label (main.c LAB_RNG), fscale-2: its own font past the pill's (font 5)
+  var SCALE_FONT = FONTS.length + 2;
   // the runtime's faces (fonts@1) the editor offers
   var FACES = ['IBM Plex Sans', 'IBM Plex Mono', 'Space Grotesk', 'Space Mono', 'Barlow Condensed', 'Jost',
     'Oswald', 'Michroma', 'Orbitron', 'Playfair Display', 'Cormorant Garamond', 'DM Serif Display', 'VT323'];
@@ -126,6 +128,26 @@
     galaxy: { style: 'pill', edge: 1.25, pad: 8, fill: '#0B0820', opacity: 0.8, line: '#8C7BFF' },
     sectional: { style: 'rounded', edge: 1.5, pad: 8, fill: '#FBFBF5', opacity: 0.94, line: '#2A5DB0' },
   };
+  // the scale each start draws (fscale-design §Review): ring/bar, its ink and edge; keyed by base
+  var SCALE = {
+    modern: { style: 'ring', ink: '#3DBB6E', edge: '#020805' },
+    paper: { style: 'ring', ink: '#2F5C8C', edge: '#EAE3CF' },
+    brass: { style: 'ring', ink: '#C9A24E', edge: '#161815' },
+    blueprint: { style: 'bar', ink: '#DCE9F8', edge: '#1C4A84' },
+    celestial: { style: 'ring', ink: '#8C7BFF', edge: '#0B0820' },
+    silver: { style: 'ring', ink: '#C8CED6', edge: '#2C3138' },
+    station: { style: 'ring', ink: '#111111', edge: '#FFFFFF' },
+    sectional: { style: 'bar', ink: '#2A5DB0', edge: '#FBFBF5' },
+    blank: { style: 'ring', ink: '#8F8F8F', edge: '#101010' },
+  };
+  // give a design its scale: the ring/bar, its look and its label's font (fscale-2)
+  function applyScale(d) {
+    var s = SCALE[d.base] || SCALE.blank, W = d.words, z = sizes(d);
+    d.layout = d.layout || {};
+    d.layout.scale = s.style;
+    d.scale = { ink: s.ink, edge: s.edge, width: 2, tick: 9, max: 150 };
+    W.scale = { face: W.face, px: z.quiet, colour: W.quiet };
+  }
   // what a family brings beyond its ground: its own frame, and the celestial arm
   var FAMILY = {
     silver: { frame: 'silver' }, brass: { frame: 'brass' }, blueprint: { frame: 'drafting' }, paper: { frame: 'chart' },
@@ -167,6 +189,7 @@
     d.frames = { style: 'rounded', edge: 1, pad: 8, fill: '#1A1A1A', opacity: 0.85, line: '#4A4A4A', image: null, corner: 10,
       card: { width: 240, place: 'auto' }, shadow: { on: false, blur: 4, opacity: 0.55, drop: 3 } };
     d.map = M().preset('blank', d.words.face, d.words.size);
+    applyScale(d);
     return d;
   }
   function sectional() {
@@ -182,6 +205,7 @@
     d.frames = Object.assign(clone(FRAMES.sectional), { image: null, corner: 8, card: { width: 240, place: 'auto' },
       shadow: { on: true, blur: 3, opacity: 0.3, drop: 2 } });
     d.map = M().preset('sectional', d.words.face, d.words.size);
+    applyScale(d);
     return d;
   }
   function station() {
@@ -201,6 +225,7 @@
     d.frames = { style: 'square', edge: 1.5, pad: 8, fill: '#FFFFFF', opacity: 0.94, line: '#111111', image: null, corner: 4,
       card: { width: 240, place: 'auto' }, shadow: { on: false, blur: 3, opacity: 0.3, drop: 2 } };
     d.map = M().preset('station', d.words.face, d.words.size);
+    applyScale(d);
     return d;
   }
   function preset(fam) {
@@ -231,6 +256,7 @@
       d.words = { face: 'Jost', size: 17, body: '#F2F4F7', accent: '#7FC8FF', accent2: null, quiet: '#AAB2BD', warning: '#FF9A5C' };
     }
     d.map = M().preset(fam, d.words.face, d.words.size);
+    applyScale(d);
     return d;
   }
   // a design saved before a field existed takes that field from its preset (§12.6: added
@@ -731,11 +757,14 @@
     var cw = Math.max(200, Math.min(320, F.card.width | 0 || 240)), ch = CARD_LINES * lineH(z.body) + 2 * pad;
     var cy = F.card.place === 'top' ? 44 : 422 - ch;
     var box = function (w, h, y) { return [CX - (w >> 1), y, w, h]; };
+    // the range's box: sized for the longest the figure can say ("2000 km", 8 cells) in the
+    // scale's own font, centred on the glass (main.c re-poses it over the ring or the foot bar)
+    var sp = Math.max(14, Math.min(40, (d.words.scale && d.words.scale.px) || z.quiet));
+    var rw = (Math.floor(sp / 2) + 1) * 8 + 8, rh = sp + 6;
     return {
       header: { box: box(240, hh, 10), pad: 2, frame: false },
       footer: { box: box(240, fh, 456 - fh), pad: 2, frame: false },
-      // in the gap at 135°: under the figure at 120, right of a default card, inside the glass
-      range: { box: [357, 352, 56, fh], pad: 2, frame: false },
+      range: { box: [CX - (rw >> 1), CX - (rh >> 1), rw, rh], pad: 2, frame: false },
       card: cardBox(d, box(cw, ch, cy), pad),
     };
   }
@@ -790,13 +819,14 @@
     }
     return svgDoc('0 0 ' + w + ' ' + h, r, defs);
   }
-  // the pill's backing: the card's fill, a rounded bar, opaque enough to read over the map
-  function pillCanvas(d, w, h) {
-    var c = canvas(w, h), x = c.getContext('2d'), r = h / 2, F = d.frames;
-    x.globalAlpha = Math.max(0.78, Math.min(1, +F.opacity || 1));
-    x.fillStyle = F.fill || '#000000';
-    x.beginPath(); x.moveTo(r, 0); x.arcTo(w, 0, w, h, r); x.arcTo(w, h, 0, h, r); x.arcTo(0, h, 0, 0, r); x.arcTo(0, 0, w, 0, r); x.closePath(); x.fill();
-    return c;
+  // the pill's backing wears the card's frame (fscale-3, §7.5): the same frameSvg the labels
+  // use, so it reads as a small card — the design's fill, line, edge and style — not a flat
+  // grey lozenge. A 'rounded' frame keeps the pill's own rounded silhouette; every other
+  // style takes the frame's shape. An empty frame (`none`/`picture`) draws nothing behind it.
+  async function pillCanvas(d, w, h) {
+    var F = d.frames;
+    var look = Object.assign({}, d, { frames: Object.assign({}, F, { style: F.style === 'rounded' ? 'pill' : F.style }) });
+    return await rast(frameSvg(look, [0, 0, w, h], false), w, h);
   }
   function panelSvg(d, name) {
     var L = layout(d)[name], b = L.box;
@@ -966,8 +996,15 @@
         S.row({ n: S.id(), class: AUX, slot: M().NAME_SLOT0 + ni, kind: 2, src: GB.SOURCES.indexOf('text'), x: a.cx - (nw >> 1), y: a.cx - (nh >> 1),
           w: nw, h: nh, pivot_x: nw >> 1, pivot_y: nh >> 1, order: 1, alpha: Math.max(1, na), n_frames: 1, str: toneStr([FONTS.length, NONE, NONE, NONE]),
           radius: 1, digit: 1, end: 1 }, plane(canvas(nw, nh)), true, false);
-      S.values(M().valuesBytes(Mp), M().VALUES_VER);
     }
+    // the scale's length label (fscale-2): its own font 6, from the theme's quiet words, on every
+    // theme (map or no map); its values row is written next, unconditionally, at layout 2
+    var sW = W.scale || {}, spx = Math.max(14, Math.min(40, sW.px == null ? Z.quiet : sW.px | 0));
+    var sfc = await font(sW.face || W.face, spx, '#FFFFFF', null);
+    S.font({ n: S.id(), class: TEXT, slot: SCALE_FONT, x: 0, y: 0, w: sfc.w, h: sfc.h, order: 0,
+      pivot_x: Math.min(sfc.space, sfc.w), pivot_y: sfc.track }, sfc.glyphs.map(plane), sW.colour || W.quiet, null);
+    // the values row always: the map's own, or an all-off blank; the scale region written on top
+    S.values(scaleBytes(M().valuesBytes(Mp || M().preset('blank', W.face, W.size)), d), M().VALUES_VER);
     for (var lab of LABELS) {
       var L = Lay[lab.name], b = L.box, slot = lab.name === 'card' && L.clear ? CARD_CLEAR_SLOT : lab.slot;
       S.row({ n: S.id(), class: AUX, slot: slot, kind: 2, src: GB.SOURCES.indexOf('text'), x: b[0], y: b[1], w: b[2], h: b[3],
@@ -975,11 +1012,13 @@
         digit: 1, end: 1 }, plane(await panelCanvas(d, lab.name)), true, false);
     }
     var pf = await font(W.face, PILL_PX, '#FFFFFF', null), ph = pf.h + 2 + PILL_GROW;
+    // the pill's words wear the theme's accent (fscale-3, §7.5): the scope green, with the
+    // accent's own foot where a family has one, exactly as the accent font (slot 1) does
     S.font({ n: S.id(), class: TEXT, slot: PILL_FONT, x: 0, y: 0, w: pf.w, h: pf.h, order: 0,
-      pivot_x: Math.min(pf.space, pf.w), pivot_y: pf.track }, pf.glyphs.map(plane), W.body, null);
+      pivot_x: Math.min(pf.space, pf.w), pivot_y: pf.track }, pf.glyphs.map(plane), W.accent, W.accent2 || null);
     S.row({ n: S.id(), class: AUX, slot: PILL_SLOT, kind: 2, src: GB.SOURCES.indexOf('text'), x: a.cx - (PILL_W >> 1), y: a.cx - (ph >> 1),
       w: PILL_W, h: ph, pivot_x: PILL_W >> 1, pivot_y: ph >> 1, order: 4, alpha: 255, n_frames: 1, str: toneStr([PILL_FONT, NONE, NONE, NONE]),
-      radius: 8, digit: 1, end: 1 }, plane(pillCanvas(d, PILL_W, ph)), true, false);
+      radius: 8, digit: 1, end: 1 }, plane(await pillCanvas(d, PILL_W, ph)), true, false);
     // §60: the whole glass, deflated by the baker and inflated by the orb (owner, 2026-11-07)
     S.preview({ plane: plane(await picture(plateC, armC, ar.pivot, frames, px, 466, await mapPicture(d))), x: 0, y: 0, order: 3 });
     // the bake time rides the header (word 10) so the hub can tell a newer copy from an older one;
@@ -1002,8 +1041,30 @@
     return h > 1 ? h : h + 2;
   }
 
-  root.FlightsBake = {
-    SCHEMA: SCHEMA, SHAPES: SHAPES, SHAPE_TITLES: SHAPE_TITLES, LABELS: LABELS, FACES: FACES, PRESETS: PRESETS, GROUNDS: GROUNDS,
+  // the values row this app reads: the map's 120 B (or an all-off blank), grown to 136 B and
+  // the scale region (fscale-design's table, main.c fl_values_t layout 2) written over its tail
+  function scaleBytes(base, d) {
+    var b = new Uint8Array(136), dv = new DataView(b.buffer), W = d.words || {}, SW = W.scale || {},
+        S = d.scale || {}, ring = !(d.layout && d.layout.scale === 'bar'), i;
+    for (i = 0; i < 120; i++) b[i] = base[i];
+    var lbl = SW.px == null ? sizes(d).quiet : SW.px | 0, al = function (h) {
+      var n = parseInt(String(h || '#000000').slice(1), 16) >>> 0;
+      return (((255 << 24) | n) >>> 0);
+    };
+    b[117] = ring ? 1 : 0;
+    b[118] = Math.max(14, Math.min(40, lbl));
+    b[119] = Math.max(2, Math.min(8, S.width == null ? 2 : S.width | 0));
+    b[120] = Math.max(0, Math.min(24, S.tick == null ? 9 : S.tick | 0));
+    b[121] = Math.max(60, Math.min(200, S.max == null ? 150 : S.max | 0));
+    b[122] = 0; b[123] = 0;
+    dv.setUint32(124, al(S.ink || '#4A7A62'), true);
+    dv.setUint32(128, S.edge ? al(S.edge) : 0, true);
+    dv.setUint32(132, al(SW.colour || W.quiet || '#8A9A90'), true);
+    return b;
+  }
+
+  root.FlightsBake = { SCHEMA: SCHEMA, SHAPES: SHAPES, SHAPE_TITLES: SHAPE_TITLES, LABELS: LABELS, FACES: FACES, PRESETS: PRESETS, GROUNDS: GROUNDS,
+    SCALE: SCALE, SCALE_FONT: SCALE_FONT, scaleBytes: scaleBytes,
     STARTS: STARTS, startInfo: startInfo,
     GROUND_TITLES: GROUND_TITLES, ARMS: ARMS, SCOPES: SCOPES, ARM_LOOKS: ARM_LOOKS, PERIOD_MIN: PERIOD_MIN, PERIOD_MAX: PERIOD_MAX,
     PLANE_ROWS: PLANE_ROWS, SWEEP_FPS: SWEEP_FPS, PILL_SLOT: PILL_SLOT, pillCanvas: pillCanvas, CARD_SLOT: CARD_SLOT, CARD_CLEAR_SLOT: CARD_CLEAR_SLOT,

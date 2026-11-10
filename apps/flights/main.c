@@ -80,9 +80,37 @@ static float range_km(void) { return (float)range_km_at(s_set.range); }
 /* The feeds take a whole number of nautical miles: the step, rounded up so the scope's
  * edge is always inside what was asked for. */
 static unsigned range_req_nm(void) { return (unsigned)ceil(range_km() / 1.852 - 1e-9); }
+static int scale_cap_px(void);          /* the theme's scale, in the values read below */
+static void scale_pos(int step, int *x, int *y);        /* where the figure's length stands */
+static void scale_draw(int32_t tgt, int step);          /* the figure itself, ring or bar */
+static void scale_label(int32_t cv, int step);          /* its words, the no-theme path */
+/* The scale's round length at a reach, radar's rule (apps/radar/radar.c rd_scale) copied and not
+ * linked: the largest ladder length that still fits max_px, and its size on the glass in `*px`.
+ * Flights' ring stands at RING_R and not at the glass's edge, so a pixel is `radius_m / RING_R`
+ * metres and the round length lands on the ring itself at the step. */
+static int fl_scale(double radius_m, int unit, int max_px, int *px)
+{
+    static const int NICE[] = { 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000 };
+    const double u = UNIT_KM[unit] * 1000.0;
+    *px = 0;
+    if (!(radius_m > 0)) return NICE[0];                   /* no reach at all: nothing to round */
+    const double mpp = radius_m / RING_R;
+    int best = NICE[0];
+    for (size_t i = 0; i < sizeof NICE / sizeof NICE[0]; i++)
+        if (NICE[i] * u / mpp <= max_px) best = NICE[i];
+    *px = (int)lround(best * u / mpp);
+    return best;
+}
+/* The length at a step and its size on the glass, the pair every caller shares: the cap is the
+ * theme's scale's own, so the figure, its label and the pill always say the same number. */
+static int scale_round(int step, int *px)
+{
+    return fl_scale(range_km_at(step) * 1000.0, dist_unit(), scale_cap_px(), px);
+}
 static void range_text_at(int step, char *b, size_t n)
 {
-    snprintf(b, n, "%u %s", (unsigned)lround(range_km_at(step) / UNIT_KM[dist_unit()]), orb_dist_label(&s_units));
+    int px;
+    snprintf(b, n, "%d %s", scale_round(step, &px), orb_dist_label(&s_units));
 }
 static void range_text(char *b, size_t n) { range_text_at(s_set.range, b, n); }
 static bool       s_visible;
@@ -752,6 +780,11 @@ static __attribute__((noinline)) void draw_frame(void)
     orb_cv_line(s_cv, CX, CY - RING_R - 6, CX, CY - RING_R + 6, 0x2A4A3A);   /* north tick */
     orb_cv_disc(s_cv, CX, CY, 3, 0xFFFFFF);                                  /* home */
 
+    /* the scale, over the plate's rings and under the contacts, in the default ring the no-theme
+     * app wears (read_values filled V with it) */
+    scale_draw(s_cv, s_set.range);
+    scale_label(s_cv, s_set.range);
+
     for (int o = s_m.norder - 1; o >= 0; o--) {                              /* far first */
         const fm_trk_t *t = &s_m.t[s_m.order[o]];
         const uint32_t c = t->live ? alt_rgb(&t->ac) : dim(alt_rgb(&t->ac));
@@ -834,6 +867,13 @@ static __attribute__((noinline)) void draw_stage(void)
     char rng[12];
     range_text(rng, sizeof rng);
     say(LAB_RNG, rng, ORB_TONE_NORMAL, 0x8A9A90);
+    /* the length's words stand where the figure puts them, not where the theme baked them: the
+     * round number moves with the step, so the row is posed to the scale each frame. */
+    if (s_lab[LAB_RNG] >= 0) {
+        int lx, ly;
+        scale_pos(s_set.range, &lx, &ly);
+        orb_stage_pose(s_lab[LAB_RNG], 0, lx - CX, ly - CY);
+    }
 }
 
 /* How many aircraft the glass draws: on a theme, the plane rows and then the dots take
@@ -940,7 +980,7 @@ static __attribute__((noinline)) void draw_text(void)
  * colours; a range step clears the layer until its own view is ready, so the map never
  * stands at the wrong scale under the aircraft. The theme says what is drawn at each range
  * (roads and runways close, the airports' symbols wide) and which landmarks are named. */
-#define FL_VALUES_VER 1
+#define FL_VALUES_VER 2
 #define N_NAMES       6
 #define NAME_SLOT0    32
 typedef struct {
@@ -955,12 +995,25 @@ typedef struct {
     uint8_t  map_order;            /* the layer's depth on the rows' scale */
     uint8_t  clip;                 /* half the radius, px, the map stops at */
     uint8_t  name_px;              /* the names' font size, for their boxes */
-    uint8_t  pad[3];
+    /* The scale (fscale-design's table, bytes 117..135): the figure the app draws itself, the
+     * map's own rows carrying no scale. It starts on the old `pad[3]` and grows the carrier by
+     * 16 B, so `scale_ink` lands 4-aligned at byte 124. A theme of layout 1 says nothing here,
+     * and the app draws the default ring. */
+    uint8_t  scale_style;          /* 117: 1 a ring at the round length, 0 a bar at the foot */
+    uint8_t  scale_lbl_px;         /* 118: the length label's px, 14-40 */
+    uint8_t  scale_w;              /* 119: the bar's thickness, 2-8 px */
+    uint8_t  scale_tick;           /* 120: the bar's end ticks' height, 0-24 px */
+    uint8_t  scale_max;            /* 121: the bar's longest, 60-200 px */
+    uint8_t  pad2[2];              /* 122-123 */
+    uint32_t scale_ink;            /* 124: the ring's line, the bar's ink (ARGB) */
+    uint32_t scale_edge;           /* 128: the edge round the bar and its ticks; alpha 0 = none */
+    uint32_t scale_lbl_argb;       /* 132: the length label's colour */
 } fl_values_t;
-_Static_assert(sizeof(fl_values_t) == 120, "flights-bake.js writes this layout");
+_Static_assert(sizeof(fl_values_t) == 136, "flights-bake.js writes this layout");
 static fl_values_t V;
 static bool    s_map;                    /* the theme draws a map */
 static bool    s_layer, s_map_drawn;
+static int     s_scale_px = -1;          /* the scale's figure on layer 0, -1: nothing drawn there */
 static int32_t s_view, s_view_next;
 static int32_t s_view_key = -1, s_next_key = -1;
 static int64_t s_map_retry_ms;
@@ -968,13 +1021,29 @@ static int32_t s_name[N_NAMES] = { -1, -1, -1, -1, -1, -1 };
 static bool    s_reread;                 /* the theme is read again at the next frame */
 static void    stage_reread(void);
 
+/* The scale an app wears when the theme carries none (fscale-design): the ring, in the plate's
+ * line and the footer's words, so a theme baked before the scale still reads a round number. */
+static void scale_default(void)
+{
+    V.scale_style = 1;
+    V.scale_lbl_px = 14;
+    V.scale_w = 2;
+    V.scale_tick = 9;
+    V.scale_max = 150;
+    V.scale_ink = 0xFF4A7A62;
+    V.scale_edge = 0xFF020805;
+    V.scale_lbl_argb = 0xFF8A9A90;
+}
+
 static __attribute__((noinline)) void read_values(void)
 {
     uint32_t ver = 0;
     memset(&V, 0, sizeof V);
     const uint32_t n = s_themed ? orb_stage_values(&V, sizeof V, &ver) : 0;
-    if (n && (n != sizeof V || ver != FL_VALUES_VER)) {
-        orb_logf("flights: the theme's values are layout %u, %u B: no map", (unsigned)ver, (unsigned)n);
+    const bool have = n == sizeof V && ver == FL_VALUES_VER;      /* the carrier this app reads */
+    if (n && !have) {
+        orb_logf("flights: the theme's values are layout %u, %u B: no map, the default scale",
+                 (unsigned)ver, (unsigned)n);
         memset(&V, 0, sizeof V);
     }
     s_map = false;
@@ -983,7 +1052,115 @@ static __attribute__((noinline)) void read_values(void)
         s_map |= V.role_on[k] != 0;
     }
     if (V.name_px < 14 || V.name_px > 40) V.name_px = 18;
+    if (have) {                        /* the theme's own scale, kept inside what can be drawn */
+        if (V.scale_w < 2 || V.scale_w > 8) V.scale_w = 2;
+        if (V.scale_tick > 24) V.scale_tick = 9;
+        if (V.scale_max < 60 || V.scale_max > 200) V.scale_max = 150;
+        if (V.scale_lbl_px < 14 || V.scale_lbl_px > 40) V.scale_lbl_px = 14;
+    } else {
+        scale_default();               /* no values, or another layout: the default ring */
+    }
 }
+/* ---- the scale on the glass (fscale-design) -------------------------------------- *
+ * The theme says ring or bar and how it looks; the app draws the figure itself, because the
+ * round length moves with the step, the place's latitude and the owner's unit, so no baked row
+ * could stand where it belongs. The drawing mirrors the radar's (apps/radar/main.c draw_scale),
+ * copied and not linked: flights' ring stands at RING_R, its bar above the footer. */
+#define SCALE_Y    420                 /* the bar's top: the footer sits at 433..456 */
+#define SCALE_LBL  400                 /* and its length, centred above the bar */
+static void map_clear(void);           /* the live layer, wiped */
+
+/* How far the round length may reach: a ring's inside the scope's own ring, a bar's inside the
+ * theme's longest. One cap for the figure and its label is what makes them say the same thing. */
+static int scale_cap_px(void) { return V.scale_style ? RING_R : (int)V.scale_max; }
+
+/* The system font nearest the theme's label px: the canvas has the OS's three sizes, and the
+ * label's px is the theme's say about how large the figure's number is. */
+static int32_t scale_font(void)
+{
+    return V.scale_lbl_px >= 33 ? ORB_FONT_48 : V.scale_lbl_px >= 16 ? ORB_FONT_18 : ORB_FONT_14;
+}
+
+/* Rows y0..y1 of a bar: the 2 px pen, radar's band. A colour with no alpha draws nothing. */
+static void scale_band(int32_t cv, int x0, int x1, int y0, int y1, uint32_t argb)
+{
+    if (!(argb >> 24)) return;
+    for (int y = y0; y <= y1; y += 2)
+        orb_cv_line(cv, x0, y > y1 - 1 ? y1 - 1 : y, x1, y > y1 - 1 ? y1 - 1 : y, argb & 0xFFFFFF);
+}
+
+/* The scale's figure at a step, on a canvas or a live layer: `tgt` is the handle orb_cv_* take. */
+static __attribute__((noinline)) void scale_draw(int32_t tgt, int step)
+{
+    int px;
+    scale_round(step, &px);
+    if (V.scale_style) {                                /* a ring at the round length */
+        if (px > 0) orb_cv_ring(tgt, CX, CY, px, V.scale_ink & 0xFFFFFF);
+        return;
+    }
+    const int x0 = CX - px / 2, x1 = x0 + px, t = V.scale_tick, h = V.scale_w;
+    /* the edge a pixel round the bar and its ticks, then the ink over it */
+    scale_band(tgt, x0 - 2, x1 + 1, SCALE_Y - 1, SCALE_Y + h, V.scale_edge);
+    if (t) {
+        scale_band(tgt, x0 - 2, x0 + 1, SCALE_Y - t - 1, SCALE_Y, V.scale_edge);
+        scale_band(tgt, x1 - 2, x1 + 1, SCALE_Y - t - 1, SCALE_Y, V.scale_edge);
+    }
+    scale_band(tgt, x0, x1 - 1, SCALE_Y, SCALE_Y + h - 1, V.scale_ink);
+    if (t) {
+        orb_cv_line(tgt, x0, SCALE_Y - t, x0, SCALE_Y, V.scale_ink & 0xFFFFFF);
+        orb_cv_line(tgt, x1 - 2, SCALE_Y - t, x1 - 2, SCALE_Y, V.scale_ink & 0xFFFFFF);
+    }
+}
+
+/* Where the length's words stand: on a ring, up and to the right of its NE crossing, as the
+ * radar poses its own; on a bar, centred above it. The stage poses a row by its centre. */
+static void scale_pos(int step, int *x, int *y)
+{
+    int px;
+    scale_round(step, &px);
+    *x = V.scale_style ? CX + px * 7071 / 10000 + 30 : CX;
+    *y = V.scale_style ? CY - px * 7071 / 10000 - 6 : SCALE_LBL;
+}
+
+/* The length with its figure, in the theme's label face: the no-theme path, where there is no
+ * label row of the theme's to re-pose. A theme says it on its own LAB_RNG row instead. */
+static __attribute__((noinline)) void scale_label(int32_t cv, int step)
+{
+    char rng[12];
+    range_text_at(step, rng, sizeof rng);
+    int x, y;
+    scale_pos(step, &x, &y);
+    const int w = (V.scale_lbl_px / 2 + 1) * (int)strlen(rng) + 8;       /* the box, as names' are */
+    orb_cv_text(cv, x - w / 2, y - V.scale_lbl_px / 2, w, scale_font() | ORB_CV_CENTER,
+                V.scale_lbl_argb & 0xFFFFFF, rng);
+}
+
+/* live layer 0, opened whatever the theme draws: the map goes into it when the theme has one,
+ * and the scale always. Refused before the stage binds, as map_step found: the next frame asks. */
+static __attribute__((noinline)) void live_open(void)
+{
+    if (s_layer || !s_visible) return;
+    if (orb_stage_live(0, V.map_order, 0) == ORB_OK) {
+        s_layer = true;
+        s_map_drawn = false;
+        s_scale_px = -1;
+    }
+}
+
+/* The figure on layer 0, drawn after the map and under the aircraft rows: once per round length.
+ * A moved length — another step, place or unit — wipes the layer first, since the old figure must
+ * not stay on the glass; the map that stood under it goes with it and returns by map_step. */
+static __attribute__((noinline)) void scale_layer(void)
+{
+    if (!s_layer) return;
+    int px;
+    scale_round(s_set.range, &px);
+    if (px == s_scale_px) return;                       /* what is on the glass is this figure */
+    if (s_scale_px >= 0) map_clear();
+    s_scale_px = px;
+    scale_draw(ORB_CV_LIVE0, s_set.range);
+}
+
 static void names_hide(void);
 
 static void names_hide(void)
@@ -991,8 +1168,19 @@ static void names_hide(void)
     for (int k = 0; k < N_NAMES; k++) if (s_name[k] >= 0) orb_stage_pose(s_name[k], ORB_STAGE_HIDDEN, 0, 0);
 }
 
-/* The landmarks' names, best rank first, kept inside the inner rings, off home's dot, off
- * the range figure and off each other: under the name's own mark, as a chart prints it. */
+/* A name's box keeps clear of the scale's length, wherever the theme's figure puts it: a ring's
+ * words stand up and to the right of its NE crossing, a bar's centred above the foot. The box is
+ * sized for the longest the figure can say, as the label's own box is. */
+static bool scale_clash(int x, int y, int w, int lh)
+{
+    int fx, fy;
+    scale_pos(s_set.range, &fx, &fy);
+    const int fw = (V.scale_lbl_px / 2 + 1) * 8 + 8, fh = V.scale_lbl_px + 6;
+    return 2 * abs(x - fx) < w + fw && 2 * abs(y - fy) < lh + fh;
+}
+
+/* The landmarks' names, best rank first, kept inside the inner rings, off home's dot, off the
+ * scale's length and off each other: under the name's own mark, as a chart prints it. */
 static __attribute__((noinline)) void names_draw(void)
 {
     const int want = V.names[s_set.range], cw = V.name_px / 2 + 1, lh = V.name_px + 6;
@@ -1007,7 +1195,7 @@ static __attribute__((noinline)) void names_draw(void)
         const int dx = x - CX, dy = y - CY;
         if (dx * dx + dy * dy > (RING_R - 24) * (RING_R - 24)) continue;
         if (dx * dx + dy * dy < 30 * 30) continue;                       /* home's dot */
-        if (x + w / 2 > CX + 70 && y + lh / 2 > CY + 116) continue;      /* the range figure */
+        if (scale_clash(x, y, w, lh)) continue;                           /* the scale's length */
         bool hit = false;
         for (int j = 0; j < n && !hit; j++)
             hit = abs(x - bx[j]) < (w + bw[j]) / 2 && abs(y - by[j]) < lh;
@@ -1032,8 +1220,11 @@ static int32_t map_key(void)
 
 static void map_clear(void)
 {
-    if (s_layer && s_map_drawn) orb_stage_live(0, V.map_order, 0);
+    /* the layer carries the scale's figure as well as the map, so it is wiped when either stands
+     * on it: the figure is drawn again by scale_layer, the map by map_step when its view is ready */
+    if (s_layer && (s_map_drawn || s_scale_px >= 0)) orb_stage_live(0, V.map_order, 0);
     s_map_drawn = false;
+    s_scale_px = -1;
     names_hide();
 }
 
@@ -1063,13 +1254,11 @@ static void map_open(void)
 
 static __attribute__((noinline)) void map_step(void)
 {
-    if (!s_map || !s_set.home_ok || !s_visible) return;
+    /* the scale figure rides layer 0 whatever the theme draws, so the layer opens for a themed
+     * app even when the theme has no map; the map's own view is what needs a home and a theme. */
+    live_open();
+    if (!s_map || !s_set.home_ok || !s_visible) { scale_layer(); return; }
     if (s_rng_want >= 0) return;                     /* a range being chosen: no view opens */
-    if (!s_layer) {                          /* refused before the stage binds: the next frame asks */
-        s_layer = orb_stage_live(0, V.map_order, 0) == ORB_OK;
-        s_map_drawn = false;
-        if (!s_layer) return;
-    }
     const int32_t key = map_key();
     if (key != s_view_key && key != s_next_key) {
         if (s_view_key >= 0 && (s_view_key & 3) != (key & 3)) map_clear();   /* another scale */
@@ -1091,11 +1280,14 @@ static __attribute__((noinline)) void map_step(void)
         }
     }
     if (s_view > 0 && !s_map_drawn && s_view_key == key) {
-        orb_stage_live(0, V.map_order, 0);
+        orb_stage_live(0, V.map_order, 0);            /* the wipe takes the map and the figure off */
+        s_scale_px = -1;
         orb_map_draw(ORB_CV_LIVE0, s_view, V.map_pal, 0, 0);
         s_map_drawn = true;
+        scale_layer();                              /* the figure over the map, under the rows */
         names_draw();
     }
+    scale_layer();                                  /* the figure, drawn once per round length */
 }
 
 /* The pieces redraw() reaches are noinline (as weather's are): wasm3 holds a native frame per
@@ -1172,9 +1364,9 @@ ORB_EXPORT("orb_init") int32_t orb_init(void)
 {
     orb_knob_dial();                     /* every turn is the dial's, from the first click */
     s_themed = orb_stage_open(&s_stage) == ORB_OK && !s_stage.base;
+    read_values();                       /* both paths wear a scale: the theme's, or the default ring */
     if (s_themed) {
         stage_rows();
-        read_values();
         names_hide();
         s_labels = s_lab[LAB_HEAD] >= 0 && s_lab[LAB_FOOT] >= 0 && s_lab[LAB_CARD] >= 0 &&
                    s_lab[LAB_RNG] >= 0;
@@ -1254,6 +1446,7 @@ static void set_visible(bool v)
     if (v) F.kick = s_req != REQ_POLL && (!F.pub_ms || now_ms() - F.pub_ms > 5000);
     else schedule_next();
     s_layer = s_map_drawn = false;   /* the OS frees the live layers off the glass */
+    s_scale_px = -1;                 /* and the scale's figure stood on one of them */
     if (!v) { s_view = s_view_next = 0; s_view_key = s_next_key = -1; }   /* and closes the map's views */
 }
 

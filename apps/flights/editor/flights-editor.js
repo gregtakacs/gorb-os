@@ -82,6 +82,36 @@
    * (the host keeps them, c.part) ---- */
   // the orb's distance unit, as main.c reads it (a unit it has no ranges for is km)
   var unitOf = function (c) { return UNIT_KM[c.unit] ? c.unit : 'km'; };
+  // the scale, as main.c draws it (fscale-design): the round length is the largest nice number
+  // whose bar/ring fits; a ring's cap is the scope's own ring, a bar's the theme's longest
+  var RING_R = 184, SCALE_Y = 420, SCALE_LBL = 400;
+  var UNIT_M = { km: 1000, mi: 1609.344, nm: 1852 }, NICE = [1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000];
+  function scaleFig(d, rKm, unit) {
+    var ring = !(d.layout && d.layout.scale === 'bar'), S = d.scale || {};
+    var m = Math.max(60, Math.min(200, S.max == null ? 150 : S.max | 0)), cap = ring ? RING_R : m;
+    var u = UNIT_M[unit] || 1000, mpp = rKm * 1000 / RING_R, best = 1;
+    NICE.forEach(function (n) { if (n * u / mpp <= cap) best = n; });
+    var px = Math.round(best * u / mpp);
+    return { ring: ring, len: best, px: px, cap: cap };
+  }
+  // draw the scale's figure on the preview canvas, mirroring main.c scale_draw/scale_pos
+  function drawScale(x, d, fig) {
+    var SC = d.scale || {}, ink = SC.ink || '#8F8F8F', edge = SC.edge, W = d.words || {}, SW = W.scale || {};
+    if (fig.ring) {
+      if (fig.px > 0) { x.strokeStyle = ink; x.lineWidth = 1; x.beginPath(); x.arc(CX, CX, fig.px, 0, 2 * Math.PI); x.stroke(); }
+      return { x: CX + Math.round(fig.px * 7071 / 10000) + 30, y: CX - Math.round(fig.px * 7071 / 10000) - 6 };
+    }
+    var h = Math.max(2, Math.min(8, SC.width == null ? 2 : SC.width | 0)), t = Math.max(0, Math.min(24, SC.tick == null ? 9 : SC.tick | 0));
+    var x0 = CX - fig.px / 2, x1 = x0 + fig.px;
+    if (edge) {                                   // the edge a pixel round the bar and its ticks
+      x.fillStyle = edge;
+      x.fillRect(x0 - 2, SCALE_Y - 1, (x1 + 1) - (x0 - 2), (SCALE_Y + h) - (SCALE_Y - 1));
+      if (t) { x.fillRect(x0 - 2, SCALE_Y - t - 1, 3, t + 1); x.fillRect(x1 - 2, SCALE_Y - t - 1, 3, t + 1); }
+    }
+    x.fillStyle = ink; x.fillRect(x0, SCALE_Y, fig.px - 1, h - 1);
+    if (t) { x.fillRect(x0, SCALE_Y - t, 1, t); x.fillRect(x1 - 2, SCALE_Y - t, 1, t); }
+    return { x: CX, y: SCALE_LBL };
+  }
   function partsOf(d, c) {
     var plate = c.part('plate', JSON.stringify(d.scope), function () { return B.plateCanvas(d); });
     var arm = c.part('arm', JSON.stringify(d.arm) + d.scope.face, async function () { var a = B.arm(d); return { c: await B.rast(a.svg, a.size[0], a.size[1]), piv: a.pivot }; });
@@ -108,8 +138,8 @@
           .then(function () { return M.view(d.map, b, home.lat, rKm, rng); });
       });
     }
-    if (words) words = Object.assign({}, words, { rangeText: Math.round(rangeKm(home ? home.lat : 0, rng) / UNIT_KM[unit]) + ' ' + unit });
-    return { plate: plate, arm: arm, planes: planes, words: words, map: map };
+    return { plate: plate, arm: arm, planes: planes, words: words, map: map,
+      geo: { rKm: rangeKm(home ? home.lat : 0, rng), unit: unit } };
   }
 
   /* ---- the traffic: each contact flies a straight chord across its circle and comes back in
@@ -158,7 +188,6 @@
     var c = TRAFFIC[SEL];
     say('header', [mode === 'roam' ? TRAFFIC.length + ' aircraft' : '1 of ' + TRAFFIC.length], mode === 'roam' ? 'body' : 'accent');
     say('footer', [mode === 'alert' ? 'feed down 3 min' : 'live  adsb.fi'], mode === 'alert' ? 'warning' : 'quiet');
-    say('range', [P.rangeText || '80 nm'], 'quiet');
     if (mode !== 'roam') say('card', [c[5] + '  ' + c[6], 'DFW → SFO', c[1] + ' ft  ↑ 1800 fpm', '452 kt  trk ' + c[4]], 'body', cardY);
   }
 
@@ -193,6 +222,14 @@
       if (mode !== 'roam' && sel) x.drawImage(P.sel, sel[0] - 28, sel[1] - 28);
       var e = where(TRAFFIC[EMERGENCY], t, rr); x.drawImage(P.em, e[0] - 32, e[1] - 32);   // N911TH squawks 7700 throughout
     } else if (over) drawArm();
+    // the scale's figure and its length, on the glass (fscale-2), under the card
+    if (parts.geo && !hidden.scope) {
+      var fig = scaleFig(d, parts.geo.rKm, parts.geo.unit), sp = drawScale(x, d, fig), SWl = (d.words && d.words.scale) || {}, Wz = d.words || {};
+      x.fillStyle = SWl.colour || Wz.quiet || '#8F8F8F';
+      x.font = Math.max(14, Math.min(40, SWl.px == null ? B.sizes(d).quiet : SWl.px | 0)) + 'px "' + (SWl.face || Wz.face) + '", sans-serif';
+      x.textAlign = 'center'; x.textBaseline = 'middle';
+      x.fillText(fig.len + ' ' + parts.geo.unit, sp.x, sp.y);
+    }
     if (parts.words && !hidden.words) {
       var cb = parts.words.layout.card;
       if (st) st.dy = cb.clear && sel ? cardDy(cb.box, sel[0], sel[1], st.dy || 0) : 0;
@@ -280,6 +317,23 @@
       fields.push(K.H('Home'));
       fields.push(num('Dot', 'scope.home.size', 0, 8, 0.5, function (v) { return v ? v + ' px' : 'none'; }));
       if (sc.home.size) fields.push(C('Colour', 'scope.home.colour'));
+      var Ly = d.layout || {}, SWd = (d.words && d.words.scale) || {};
+      fields.push(K.H('Scale'));
+      fields.push(K.Ch('Scale', Ly.scale || 'ring', opt([['ring', 'A ring at a round distance'], ['bar', 'A bar at the foot']]), function (v) { upd('layout.scale', v); }));
+      if (Ly.scale === 'bar') {
+        fields.push(C('Bar', 'scale.ink'));
+        fields.push(C('Edge', 'scale.edge', { none: true }));
+        fields.push(num('Thickness', 'scale.width', 2, 8, 1, function (v) { return v + ' px'; }));
+        fields.push(num('End ticks', 'scale.tick', 0, 24, 1, function (v) { return v ? v + ' px' : 'none'; }));
+        fields.push(num('Longest', 'scale.max', 60, 200, 5, function (v) { return v + ' px'; }));
+      } else {
+        fields.push(C('Ring', 'scale.ink'));
+      }
+      fields.push(K.H('Scale label'));
+      fields.push(K.Sl('Typeface', SWd.face || (d.words && d.words.face), B.FACES.map(function (k) { return { v: k, label: k }; }), function (v) { upd('words.scale.face', v); }));
+      fields.push(num('Size', 'words.scale.px', 14, 40, 1, function (v) { return v + ' px'; }));
+      fields.push(C('Colour', 'words.scale.colour'));
+      fields.push(K.Nt('', 'The round length the figure shows (1, 2, 5, 10…) is the largest that fits a ring’s scope, or the bar’s longest.'));
     } else if (step === 'map') {
       var mp = d.map, base0 = d.base;
       fields.push(K.H('Map'));

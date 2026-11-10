@@ -7,12 +7,14 @@ Stages bake.html beside the runtime's baker and fonts and the editor's art and b
 folder Windows Chrome can read, runs it headless, and checks every theme it prints: it
 reads back through orbbundle and theme_schema, the shipped orb_clock3.c projects it under
 the flights slug, and its rows are the ones apps/flights/main.c finds (the arm at slot 0,
-fifteen planes of 49 picked frames, the marker rings at 16 and 17, four fonts (and the pill's), the header,
+fifteen planes of 49 picked frames, the marker rings at 16 and 17, four fonts (the pill's and
+the scale label's), the header,
 footer and range at 20, 21 and 23 and the card at 22 or, keeping clear, at 24, the far-contact
 dots at 18, 19 and 25..31 when the design shows them, the preview),
 the arm's vmax its turn in seconds (§12.5), with the design region carried.
 """
 import base64
+import json
 import os
 import re
 import shutil
@@ -47,7 +49,37 @@ def run_chrome(chrome, stage_dir, profile):
     return oc.run_headless(chrome, url, profile, 600, extra=["--virtual-time-budget=300000"]).stdout
 
 
-VALUES_B = 120                                  # main.c fl_values_t, layout 1
+VALUES_B = 136                                  # main.c fl_values_t, layout 2 (fscale-2)
+
+
+def _pill_wears_frame(raw, sec, pill):
+    """fscale-3 §7.5: the range pill's backing is the card's frame, not a flat fill. The
+    design region names the frame; a style that draws no line (none/picture) carries no
+    stroke to find and passes. Any other style must show, in the pill's own sprite, more
+    than one colour among its near-opaque texels — the fill and the frame's line — or the
+    bake has quietly gone back to a lozenge."""
+    d, why = ob.read_design(raw)
+    if why:
+        return True                              # no design to read it from: not this check's call
+    fr = (json.loads(d.decode("utf-8")).get("design") or {}).get("frames") or {}
+    if fr.get("style") in (None, "none", "picture") or not fr.get("line"):
+        return True
+    sp = sec["blob"]["sprites"][int(pill["frame0"])]
+    w, h = int(sp["w"]), int(sp["h"])
+    art = sec["art"][int(sp["off"]):int(sp["off"]) + int(sp["size"])]
+    opaque = [0] * 512
+    seen = 0
+    for i in range(w * h):
+        a = art[w * h * 2 + i]                   # the alpha plane follows the colour plane
+        if a <= 200:
+            continue
+        v = art[i * 2] | (art[i * 2 + 1] << 8)   # native-LE RGB565
+        r, g, b = v >> 11, (v >> 5) & 0x3F, v & 0x1F     # 5-, 6-, 5-bit channels
+        opaque[(r >> 2 << 6) | (g >> 3 << 3) | (b >> 2)] += 1
+        seen += 1
+    if not seen:
+        return False                             # the frame promised a line and drew no pixels
+    return (seen - max(opaque)) * 100 >= 3 * seen  # a second colour is at least 3% of the ink
 
 
 def check(name, raw, exe, card, period, mapped):
@@ -78,26 +110,26 @@ def check(name, raw, exe, card, period, mapped):
     if any(dots) and not all(d is not None and int(d["n_frames"]) in (1, 7) and not int(d["delay"])
                              and int(d["n_frames"]) == int(dots[0]["n_frames"]) for d in dots):
         bad.append("the dot pool is not nine rows of 1 or 7 picked frames")
-    want_fonts = [0, 1, 2, 3, 4, 5] if mapped else [0, 1, 2, 3, 5]    # 4: the map's names, 5: the pill
+    want_fonts = [0, 1, 2, 3, 4, 5, 6] if mapped else [0, 1, 2, 3, 5, 6]    # 4: names, 5: pill, 6: scale
     if sorted(int(f["slot"]) for f in fonts) != want_fonts:
         bad.append("fonts: %s" % [int(f["slot"]) for f in fonts])
-    # the map (flights-map-plan §2.2): six names at 32..37 and the values, or neither
+    # the map (flights-map-plan §2.2): six names at 32..37, or none (a no-map theme has no font 4)
     names = [s for s in range(32, 38) if s in aux and int(aux[s]["kind"]) == ts.SHAPE_TEXT]
     if names != (list(range(32, 38)) if mapped else []):
         bad.append("map names at %s" % names)
+    # every theme carries the scale's values (fscale-2): one row at layout 2, 136 B, map or not
     vals = [e for e in els if int(e["class"]) == ts.CLASS_VALUES]
-    if mapped:
-        if len(vals) != 1 or int(vals[0]["src"]) != 1:
-            bad.append("no values of layout 1")
-        else:
-            b = sec["blob"]["sprites"][int(vals[0]["frame0"])]
-            if not b or int(b["w"]) != VALUES_B:
-                bad.append("values of %r B, not fl_values_t's %d" % (b and b["w"], VALUES_B))
-    elif vals:
-        bad.append("values with no map")
+    if len(vals) != 1 or int(vals[0]["src"]) != 2:
+        bad.append("no values of layout 2")
+    else:
+        b = sec["blob"]["sprites"][int(vals[0]["frame0"])]
+        if not b or int(b["w"]) != VALUES_B:
+            bad.append("values of %r B, not fl_values_t's %d" % (b and b["w"], VALUES_B))
     pill = aux.get(38)                   # main.c PILL_SLOT: the range while it changes
     if pill is None or int(pill["kind"]) != ts.SHAPE_TEXT or (int(pill["str"]) & 0xF) != 5:
         bad.append("no range pill at 38 in font 5")
+    elif not _pill_wears_frame(raw, sec, pill):
+        bad.append("the range pill's backing is a flat fill, not the card's frame (fscale-3 §7.5)")
     labels = [aux.get(s) for s in (20, 21, 23, card)]
     if not all(lb is not None and int(lb["kind"]) == ts.SHAPE_TEXT for lb in labels):
         bad.append("the labels are not at 20, 21, 23 and %d" % card)

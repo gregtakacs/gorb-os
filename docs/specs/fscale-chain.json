@@ -1,0 +1,24 @@
+{
+  "name": "fscale",
+  "repo": "../..",
+  "base": "fscale-scale-pill",
+  "retries": 2,
+  "steps": [
+    {
+      "name": "fscale-1-firmware-scale-round",
+      "spec": "docs/specs/fscale-1-firmware-scale-round.md",
+      "verify": "set -o pipefail; R=$PWD; test -z \"$(git diff --name-only cf48d9b8 -- main apps/radar apps/weather apps/flights/version.txt apps/flights/editor)\" && grep -q 'FL_VALUES_VER 2' apps/flights/main.c && grep -q '== 136' apps/flights/main.c && ! grep -qn '#include.*radar' apps/flights/main.c && python3 apps/sdk/orbsdk.py build apps/flights"
+    },
+    {
+      "name": "fscale-2-bake-editor-carrier",
+      "spec": "docs/specs/fscale-2-bake-editor-carrier.md",
+      "verify": "set -o pipefail; R=$PWD; test -z \"$(git diff --name-only cf48d9b8 -- main apps/radar apps/flights/main.c apps/flights/version.txt)\" && grep -q 'VALUES_VER = 2' apps/flights/editor/flights-map.js && grep -q 'VALUES_B = 136' apps/flights/editor/_selftest/bake_check.py && python3 apps/flights/editor/_selftest/bake_check.py && cd $R && test -z \"$(git diff cf48d9b8 -- apps/flights/editor/flights-map.js | grep -E '^[+-][^+-]' | grep -v 'VALUES_VER')\"",
+      "hard": true
+    },
+    {
+      "name": "fscale-3-pill-wears-theme",
+      "spec": "docs/specs/fscale-3-pill-wears-theme.md",
+      "verify": "set -o pipefail; R=$PWD; test -z \"$(git diff --name-only cf48d9b8 -- main apps/radar apps/flights/main.c apps/flights/editor/flights-map.js)\" && grep -q 'v1.6.4' apps/flights/version.txt && python3 apps/flights/editor/_selftest/bake_check.py"
+    }
+  ]
+}

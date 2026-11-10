@@ -19,7 +19,7 @@
   var R = { water: 0, land: 1, urban: 2, lake: 3, river: 4, road2: 5, road1: 6, state: 7, border: 8, coast: 9,
     city: 10, airport: 11, runway: 12, road3: 13, road4: 14 };
   var DASH = { solid: 0, short: 1, long: 2, dot: 3, dashdot: 4 };
-  var N_RANGES = 4, N_NAMES = 6, NAME_SLOT0 = 32, VALUES_VER = 1, CLIP = 92;   // main.c RING_R / 2
+  var N_RANGES = 4, N_NAMES = 6, NAME_SLOT0 = 32, VALUES_VER = 2, CLIP = 92;   // main.c RING_R / 2
   // the colour rows the Map step offers, in the order it lists them
   var INKS = [['water', 'Water'], ['river', 'Rivers'], ['urban', 'Towns, built up'], ['road1', 'Motorways'], ['road2', 'Main roads'],
     ['airport', 'Airports'], ['runway', 'Runways'], ['town', 'Town dots'], ['border', 'Borders'], ['names', 'Names']];

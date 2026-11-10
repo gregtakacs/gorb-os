@@ -102,10 +102,22 @@ const VECTORS = [
   ['smooth:false forces nearest on a dial that would be granted', (G) => !(flags(G, Object.assign(stillOpts(15, 1), { smooth: false })).any & 128)],
   ['smooth:true forces the bit on a dial the price refused (the bench arm)', (G) => !!(flags(G, Object.assign(stillOpts(15, 1, true), { smooth: true })).h0 & 128)],
   ['and the report still names the honest verdict for those bytes', (G) => G.bakeClock3(Object.assign(stillOpts(15, 1, true), { smooth: true })).est.smooth === false],
+  // owner 2026-11-10: every hand smooths, whatever it reads and whatever the price grants; smooth:false still wins
+  ['a date hand smooths on a dial the price refused', (G) => !!(auxFlags(G) & 128)],
+  ['smooth:false forces a date hand nearest too', (G) => !(auxFlags(G, { smooth: false }) & 128)],
   ['the bit off a turned row is refused at the writer', (G) => { try { G.checkElement(Object.assign(G.blankElement(), { 'class': 3, slot: 0, flags: 128, w: 466, h: 466, n_frames: 1 }), 'e'); return false; } catch (e) { return /smoothing/.test(e.message); } }],
 ];
 /* Each moving row's flags after a bake, by the hand it is (D42: hands are rows):
  * h0 the hour, h1 the minute, h2 the seconds, h0s..h2s their shadow twins; any = OR of every row. */
+/* A date pointer on the heavy (price-refused) dial: its flags after the bake. */
+function auxFlags(G, extra) {
+  const w = 10, h = 40, rgba = new Uint8Array(w * h * 4).fill(255);
+  const opts = Object.assign(stillOpts(15, 1, true), { aux: [{ src: 'date', motion: 'rotate', span: 3600, zero: 0, vmin: 1, vmax: 32,
+    x: 100, y: 300, w, h, pivot_x: 5, pivot_y: 35, order: 3, plane: { rgba, w, h } }] }, extra || {});
+  const els = G.verifyBundle3(G.bakeClock3(opts).bytes).sections[0].blob.elements;
+  const e = els.find((x) => x['class'] === 8 && G.SOURCES[x.src] === 'date');
+  return e ? e.flags : -1;
+}
 function flags(G, opts) {
   const els = G.verifyBundle3(G.bakeClock3(opts).bytes).sections[0].blob.elements;
   const f = { any: 0 }, SRC = { hour12: 'h0', minute: 'h1', second: 'h2' };

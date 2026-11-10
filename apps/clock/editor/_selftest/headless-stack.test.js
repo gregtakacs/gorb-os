@@ -19,7 +19,7 @@ if (process.argv.includes('--mutations')) {
     ['a hand may turn under the dial', "      if (tg.kind === 'disc' || (onDial(tg) && !(tg.kind === 'dial' && above)))", "      if (false)"],
     ['a face\u2019s hands leave its group', "    if (it.kind === 'pointer') return 'R3: a sub-dial\\u2019s hand rides its face", "    if (false) return 'R3: a sub-dial\\u2019s hand rides its face"],
     ['a lifted face never settles back', "return { ok: true, order: full.filter(function (x) { return x !== key(it); }) };", "return { ok: false, reason: 'stuck' };"],
-    ['a lifted face is not counted as a row', "liveKeys(input).forEach(function (e) { if (e.indexOf('comp:') === 0) n += 1; });", ""],
+    ['a lifted face is not counted as a row', "liveKeys(input).forEach(function (e) { if (e.indexOf('comp:') === 0 && !foldIn[e.slice(5)]) n += 1; });", ""],
     ['children block the move', 'while (j >= 0 && j < items.length && items[j].parent && items[j].group !== it.group) j += dir;', ''],
     ['the dial moves', "push({ id: 'dial', kind: 'dial', band: 'rows', label: 'Dial', hide: 'dial', sel: { kind: 'dial', id: 'dial' },\n           badge: 'baked in', movable: false });",
       "push({ id: 'dial', kind: 'dial', group: 'subdials', band: 'rows', label: 'Dial', hide: 'dial', sel: { kind: 'dial', id: 'dial' },\n           badge: 'baked in', movable: true });"],

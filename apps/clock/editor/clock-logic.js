@@ -548,7 +548,19 @@ class Component extends DCLogic {
   stackInput() {
     const fc = this.face(), d = this.design() || {}, c = this.cfg();
     if (!fc) return null;
-    return { comps: d.comps || [], order: (fc.liveSeq || []).map((e) => (e.kind === 'sub' ? 'comp:' + e.id : e.id)), E: window.WatchEngine,
+    /* D43 P5e: a face the live band carries as a fold is still a row of the stack — it just
+     * ships with the plate — so it keys as 'comp:<id>' like a lifted one. `folded` names them,
+     * and `liftedBy` says what passes under each face the band carries at all. */
+    const seq = fc.liveSeq || [], folded = [], liftedBy = {}, below = [];
+    seq.forEach((e) => {
+      if (e.kind === 'hand') { below.push(e.id); return; }
+      if (e.kind !== 'sub' && e.kind !== 'fold') return;
+      const r = window.WatchEngine.faceReach(fc.lay, fc.design, e.id, below.slice());
+      liftedBy[e.id] = r.by;
+      if (e.kind === 'fold') folded.push(e.id);
+    });
+    return { comps: d.comps || [], order: seq.map((e) => (e.kind === 'sub' || e.kind === 'fold' ? 'comp:' + e.id : e.id)),
+             folded, liftedBy, E: window.WatchEngine,
              hands: (fc.hands || []).map((h) => ({ id: h.id, kind: h.kind, sub: !!h.sub, host: h.host, x: h.x, y: h.y, len: h.len })),
              shadows: +c.shMove > 0.01 && +c.shOp > 0.01, carriage: !!(this.base && this.base.cageAt) };
   }
@@ -2069,20 +2081,14 @@ class Component extends DCLogic {
     // D34: and which subdial hands the dial TURNS instead of plating — the pointer
     // table, planned beside the comp table so one refusal list stays honest.
     const pp = this.pointerRows3(D, plan);
-    // D43 P5d.3: and which wheels turn as rows under one cover -- never under a face lifted
-    // among the hands, whose still row would leave its wheel turning over the hands below
-    const wp = G.wheelPlan3(D.comps), lifted3 = {};
-    (D.order || []).forEach((e) => { if (String(e).indexOf('comp:') === 0) lifted3[String(e).slice(5)] = 1; });
-    wp.rows.forEach((r) => { if (lifted3[r.host]) wp.refuses.push('the wheel \u201c' + r.id + '\u201d turns under the face \u201c' + r.host + '\u201d, which is lifted among the hands \u2014 drop that face back on the dial, or its wheel would turn over the hands below it'); });
-    // D34's authoring hint: a budget refusal over plates-driven hour or second rings is
-    // this row wanting pointer drive — one hand plate, not a window row's tiles. The
-    // hint rides the refusal sentence so the baker can see which lever moves.
-    const PTSCALE3 = { second: 'seconds', hour12: 'hours' };
-    const pt3 = plan.rows.filter((r) => PTSCALE3[r.src]);
-    this._ptrHint = pt3.length ? ' — the subdial' + (pt3.length > 1 ? 's' : '') + ' #' + pt3.map((r) => r.id).join(' and #') +
-      (pt3.length > 1 ? ' are' : ' is') + ' baked as ' + pt3.reduce((s, r) => s + r.count, 0) +
-      ' frames, one per value, because another part sits on ' + (pt3.length > 1 ? 'them' : 'it') +
-      ': move that part off and ' + (pt3.length > 1 ? 'each ships' : 'it ships') + ' one turning hand instead' : '';
+    const wp = G.wheelPlan3(D.comps);
+    // D43 P5e ruling 3/4: a wheel hosted on a lifted face plans exactly as one hosted on the
+    // dial — the refusal that used to stand here went with the plate-per-value sub-dial.
+    // wheelFaces3 names each such wheel's lifted face on its row; wheelPass3 rides it under the
+    // face with no cover, t3bake passes it through and depthOrder3 places it just under the face.
+    this.wheelFaces3(wp, this.face().liveSeq);
+    // D43 P5e: the plates-driven sub-dial this hint described is gone — a sub-dial is a face,
+    // its hands pointer rows — so a budget refusal no longer wants a lever toward pointer drive.
     const nm = String(this.themeName() || 'watch').replace(/\u0000/g, '').trim();
     if (!G.nameOk(nm)) {
       this.setState({ status: 'Not baked: "' + nm + '" is not a theme name — the header holds ' + (G.NAME_MAX - 1) + ' bytes of it and this one measures ' + G.nameBytes(nm) });
@@ -2477,28 +2483,31 @@ class Component extends DCLogic {
   // a pointer row's source and value range: the dial poses it at zero + span x (units - vmin) /
   // (vmax - vmin), so a date hand runs 1..32 to land each day where the preview draws it
   POINTER3 = { hour: ['hour12', 0, 12], minute: ['minute', 0, 60], second: ['second', 0, 60], hours24: ['hour24', 0, 24], gmt: ['hour24', 0, 24], day: ['weekday', 0, 7], date: ['date', 1, 32], month: ['month', 0, 12] };
-  /* The pointer table: every hand without a slot is one plate lifted at its rest pose and
-   * turned by the dial from its own source -- a second seconds hand, a 24-hour or GMT hand,
-   * a hand on any sub-dial. A sub-dial driven as plates carries the hand reading its own
-   * scale in its tiles instead. D41: a hand with motion takes its drive columns, lifted
-   * frozen (freeze) so the plate is the art at zero and the dial does all the moving. */
+  /* D43 P5e ruling 1: every hand without a slot is its own pointer row, wherever it stands —
+   * a second seconds hand, a 24-hour or GMT hand, and every hand on any sub-dial (even the
+   * first): a sub-dial is a face, never a value row, so nothing is left on a plate for it.
+   * One plate lifted at its rest pose, turned by the dial from its own source about its own
+   * authored pivot (the engine's laid-out arbour for that hand, amendment 1). D41: a hand with
+   * motion takes its drive columns, lifted frozen (freeze) so the plate is the art at zero and
+   * the dial does all the moving; a bare date or day hand jumps at the boundary, cadence 3, so
+   * the row moves the way the preview's TURN.date draws it; a month hand keeps the sweep, the
+   * dial's month fraction being TURN.month's creep through the month. */
   pointerRows3(D, plan) {
     const E = WatchEngine, seat = this.handSeats3(D), byId = {}, rows = [], refuses = [];
     (D.comps || []).forEach((c) => { byId[c.id] = c; });
-    const plates = {}; ((plan && plan.rows) || []).forEach((r) => { if (r.type === 'subdial') plates[String(r.id)] = 1; });
     const drawn = {}; (((this.face() || {}).hands) || []).forEach((h) => { drawn[h.id] = h; });
     (D.comps || []).forEach((c) => {
       if (c.type !== 'hand' || seat[c.id] !== undefined || !drawn[c.id]) return;
       const host = c.host && c.host !== 'dial' ? byId[c.host] : null;
-      if (host && plates[String(host.id)] && (D.comps || []).find((h) => h.type === 'hand' && h.host === host.id) === c) return;
       const p = this.POINTER3[c.shows];
       if (!p) { refuses.push('the hand \u201c' + c.id + '\u201d shows \u201c' + c.shows + '\u201d: no source on the dial reads that'); return; }
-      // the direction is the engine's resolution (the hand's own, else the dial's), and its
-      // motion is its own
+      // the direction is the engine's resolution (the hand's own, else the dial's), its
+      // motion is its own, and its pivot is the arbour the engine laid it out about
       const hd = drawn[c.id];
-      const r = { id: c.id, type: 'hand', host: host ? host.id : 'dial', src: p[0], vmin: p[1], vmax: p[2], span: hd.dir === 'ccw' ? -3600 : 3600, zero: 0, motion: 'rotate' };
+      const r = { id: c.id, type: 'hand', host: host ? host.id : 'dial', src: p[0], vmin: p[1], vmax: p[2], span: hd.dir === 'ccw' ? -3600 : 3600, zero: 0, motion: 'rotate', pivot: { x: hd.x, y: hd.y } };
       const dc = this.driveCols3(c.shows, hd.motion || c.motion);
       if (dc) Object.assign(r, dc, { freeze: true });
+      else if (c.shows === 'date' || c.shows === 'day') { r.cadence = 3; r.cad_arg = 0; }   // a month hand sweeps: the dial's month fraction is the preview's day-by-day creep
       rows.push(r);
     });
     const cap = window.GorbBake && window.GorbBake.caps ? window.GorbBake.caps.aux : 0;
@@ -2620,6 +2629,7 @@ class Component extends DCLogic {
     const yieldNow = () => new Promise((r) => setTimeout(r, 0));
     try {
       const plan = G.compPlan3(D.comps), pp = this.pointerRows3(D, plan), wp = G.wheelPlan3(D.comps);
+      this.wheelFaces3(wp, fc.liveSeq);
       const liveIds = plan.rows.map((r) => r.id);
       const onlyBase = (D.comps || []).filter((x) => liveIds.indexOf(String(x.id)) < 0 && x.type !== 'opening' && x.type !== 'hand'
         && x.type !== 'wheel' && x.type !== 'cutout' && !(x.type === 'flare' && x.icon === 'datetext')).map((x) => String(x.id));
@@ -2758,6 +2768,27 @@ class Component extends DCLogic {
       this.forceUpdate();
     }, 250);
   }
+  /* D43 P5e ruling 3: the stack's live band, bottom first. Walk the engine's liveSeq: a hand
+   * pushes its id; a folded face pushes nothing (it rides the plate); a lifted face pushes, in
+   * order, the rows of every wheel hosted under it ('wheel:<id>'), the live windows it frames
+   * ('bank:<id>'), then its own still row ('comp:<id>') — so a hosted wheel's rows sit just under
+   * the face and above whatever passes beneath. With nothing lifted the answer is the hand ids in
+   * sequence, which is fc.handOrder exactly, so dials with no lifted face keep their depth list
+   * and their bytes. An empty sequence answers null: no depthOrder on the wire. */
+  depthOrder3(seq, compRows, wheelRows) {
+    seq = seq || []; compRows = compRows || []; wheelRows = wheelRows || [];
+    if (!seq.length) return null;
+    if (!seq.some((e) => e.kind === 'sub')) return seq.filter((e) => e.kind === 'hand').map((e) => e.id);
+    const dep = [];
+    seq.forEach((e) => {
+      if (e.kind === 'hand') { dep.push(e.id); return; }
+      if (e.kind !== 'sub') return;                                         // a fold rides the plate: no row of its own
+      wheelRows.forEach((r) => { if (String(r.face || r.host) === String(e.id)) dep.push('wheel:' + r.id); });
+      compRows.forEach((r) => { if (String(r.host) === String(e.id)) dep.push('bank:' + r.id); });
+      dep.push('comp:' + e.id);
+    });
+    return dep;
+  }
   /* The split's other half: decide carriers off the measurement, assemble the
    * planes the bake wants, and download under the id the card will file it by.
    * A second method only because the first one holds the walk's ~8 MB of
@@ -2788,15 +2819,18 @@ class Component extends DCLogic {
       for (let p = 3; p < gp.length; p += 4096) if (gp[p] > 2) { glassB = 466 * 466 * 3; break; }
       if (glassB) glassP = { x: 0, y: 0, w: 466, h: 466, rgba: gp };
     }
-    /* D43 P4b: every sub-dial face lifted among the hands ships as a still row at its
-     * stack depth. Rendered through composeLayers with only the static discs (a live
-     * window stays its own value row, placed just under the face), cropped to its ink. */
+    /* D43 P4b, P5e: every sub-dial face LIFTED among the hands ships as a still row at its
+     * stack depth. Rendered through composeLayers with only the static discs (a live window
+     * stays its own value row, placed just under the face), cropped to its ink. A folded
+     * face is plate-baked and gets no still row: the ids here are exactly the seq's 'sub'
+     * entries, so no stray still can ride the depth band without a place in it. */
     const stills = [], E3 = window.WatchEngine;
     const seq3 = fc.liveSeq || [];
+    const lift3 = {}; seq3.forEach((e) => { if (e.kind === 'sub') lift3[String(e.id)] = 1; });
     if (seq3.some((e) => e.kind === 'sub')) {
       const L3 = E3.composeLayers(M, gt[0], fc, this.now(), { glass: 1, outer: 1 }, onlyBase);
       for (const l of (L3.live || [])) {
-        if (!l.still) continue;
+        if (!l.still || !lift3[String(l.id)]) continue;
         const rgba = pixOf(l.canvas), cr = G.cropLayer(rgba, 466, 466, 1);
         if (!cr) continue;
         stills.push({ id: l.id, rgba: cr.rgba, w: cr.w, h: cr.h, x: cr.offx, y: cr.offy });
@@ -2919,24 +2953,26 @@ class Component extends DCLogic {
     }
     if (compRows.length) opts.comps = compRows;
     if (auxRows.length) opts.aux = auxRows;
-    if (wheelRows && wheelRows.length) { opts.wheels = wheelRows; if (cover) opts.cover = cover; }
+    if (wheelRows && wheelRows.length) {
+      // D43 P5e ruling 3: wheelFaces3 already named each lifted face on its row before the pass;
+      // the rows travel to the baker unchanged. A disc under a face needs no cover: the face it
+      // rides under is what hides it, and wheelPass3 dropped the cover when every disc rode one.
+      opts.wheels = wheelRows;
+      if (cover) opts.cover = cover;
+    }
     if (glassP) opts.plates = [glassP];
     /* The ONE depth list: the author's hand order, bottom to top — the same list the
      * preview draws by and the layer kit ships. The baker turns it into the element
      * order column, so the rung the author set in the studio is the rung the L4
      * compositor sorts by and the glass shows. */
-    /* The stack's live band, bottom first (D43 P4b): the hands, each lifted face as
-     * 'comp:<id>' with the live windows it frames ('bank:<id>') just under it. With
-     * nothing lifted this is handOrder exactly, so those bakes do not change. */
-    if (seq3.length) {
-      const dep = [];
-      seq3.forEach((e) => {
-        if (e.kind === 'hand') { dep.push(e.id); return; }
-        compRows.filter((r) => r.host === e.id).forEach((r) => dep.push('bank:' + r.id));
-        dep.push('comp:' + e.id);
-      });
-      opts.depthOrder = dep;
-    } else if (fc.handOrder && fc.handOrder.length) opts.depthOrder = fc.handOrder.slice();
+    /* The stack's live band, bottom first (D43 P4b, P5e): the hands, each lifted face as
+     * 'comp:<id>' with the wheel rows hosted under it and the live windows it frames
+     * ('bank:<id>') just under it. With nothing lifted this is handOrder exactly, so those
+     * bakes do not change. */
+    {
+      const dep3 = this.depthOrder3(seq3, compRows, wheelRows);
+      if (dep3) opts.depthOrder = dep3;
+    }
     if (stills.length) opts.stills = stills;
 
     /* The preview rides every bake. The glass picker, the orb's own /themes page,
@@ -3008,7 +3044,7 @@ class Component extends DCLogic {
         ' · uploading or sending this file stores it into the one slot, and the orb reboots onto it' });
     } catch (e) {
       const msg3 = (e && e.message ? e.message : String(e));
-      this.setState({ status: 'Not baked: ' + msg3 + (msg3.indexOf('complication tiles cost') >= 0 ? (this._ptrHint || '') : '') });
+      this.setState({ status: 'Not baked: ' + msg3 });
     }
   }
   /* §31's comp-table pass: render every domain value of every planned row as one
@@ -3037,19 +3073,15 @@ class Component extends DCLogic {
     const base = pixOf(this.frameCanvas(0, { hands: 1, glass: 1, outer: 1 }, null, onlyBase));
     const kids = {};
     plan.rows.forEach((r) => { if (r.hosted) (kids[r.hosted] = kids[r.hosted] || []).push(r.id); });
-    // a sub-dial driven as plates carries the hands it hosts in its tiles (pointerRows3 leaves
-    // them to it). compose's compOnly names what a tile draws, hands by their own id, so they
-    // are named here: since D43 P5c a hand is a comp of its own, no longer the sub-dial's id,
-    // and a month dial's tiles had come out bare (nothing to plate: Perpetual calendar) or
-    // showing only their wheels (Triple calendar's date hand, missing on the orb)
-    const ptr = {}; (ptrIds || []).forEach((id) => { ptr[String(id)] = 1; });
-    const handsOf = {}; (this.design().comps || []).forEach((c) => { if (c.type === 'hand' && c.host && !ptr[String(c.id)]) (handsOf[c.host] = handsOf[c.host] || []).push(String(c.id)); });
+    // D43 P5e: no hand rides a comp tile any more — every hand is its own pointer row
+    // (pointerRows3), so no row carries one. A hosted row still rides its host's tile, and
+    // compHoles still punches the apertures of rows this tile hosts.
     const scratch = document.createElement('canvas'); scratch.width = scratch.height = W;
     const sx = scratch.getContext('2d');
     const out = []; let compB = 0;
     for (let ri = 0; ri < plan.rows.length; ri++) {
       const r = plan.rows[ri];
-      const only = onlyBase.concat(r.hosted ? [r.id] : [r.id].concat(kids[r.id] || [], handsOf[r.id] || []));
+      const only = onlyBase.concat(r.hosted ? [r.id] : [r.id].concat(kids[r.id] || []));
       let bx = W, by = W, bx2 = -1, by2 = -1;
       const rends = [];
       for (let v = 0; v < r.count; v++) {
@@ -3101,13 +3133,22 @@ class Component extends DCLogic {
    * the offset stays fixed in screen space while the pointer turns. An opaque shadow
    * baked into the hand plate is the artifact the twin exists to kill: it carries the
    * plate that sat under the bake pose and smears it along the sweep, worst at the tip.
-   * The pivot is the engine's own layout centre for the subdial (face().outline), the
-   * very point its hand turns about, and the box grows to include it: orb_clock3.c
-   * refuses a rotation whose pivot lies outside its own plate, and a hand with barely
-   * a tail could otherwise crop it off. Live comps hosted here punch as apertures —
-   * the hand sweeps UNDER the window, the same way a host tile in the plate table
-   * punches under its row — and the twin is punched to the same holes, because the
-   * ink the window hides cannot cast through it. */
+   * The pivot is the hand's authored arbour (pointerRows3's `pivot`, the engine's layout
+   * for it), the very point its hand turns about, and the box grows to include it:
+   * orb_clock3.c refuses a rotation whose pivot lies outside its own plate, and a hand with
+   * barely a tail could otherwise crop it off. D43 P5e: no aperture is punched here — a
+   * pointer rides above its face and everything that face hosts, and a punch at the rest
+   * pose would turn with the hand; the twin is built from the same unpunched plane. */
+  /* D43 P5e ruling 3: a wheel hosted on a LIFTED sub-dial face is that face's wheel. Name the
+   * face on its row so the band, the cover and the baker's depth all read it. Pure: it reads
+   * only the planned rows and the sequence's own 'sub' entries — a fold (the face rides the
+   * plate), the dial and a wheel hosted on nothing leave the row without a face field. Rows
+   * that already name a face keep it; a host that is not a lifted face never gains one. */
+  wheelFaces3(wp, seq) {
+    const sub = {}; (seq || []).forEach((e) => { if (e.kind === 'sub') sub[String(e.id)] = 1; });
+    (((wp || {}).rows) || []).forEach((r) => { if (r.host && String(r.host) !== 'dial' && sub[String(r.host)]) r.face = String(r.host); });
+    return wp;
+  }
   /* D43 P5d.3: the wheels' rows. The cover first, read off two renders of the base with every
    * wheel filled black and then white: where the two agree the face covers the discs (its
    * own texel, opaque), where they differ by the whole step a cutout shows them (clear), and
@@ -3122,6 +3163,9 @@ class Component extends DCLogic {
     const W = 466, C = 233, F = this.face(), kP = (F.inset || 1) * (F.dynK || 1);
     const pixOf = (c) => this.wbPix(c.getContext('2d').getImageData(0, 0, W, W).data);
     const byId = {}; (F.lay.wheels || []).forEach((w) => { byId[String(w.id)] = w; });
+    // D43 P5e ruling 3: the lifted face each faced row rides under, for the clip that keeps the
+    // disc inside its face's plate. Slider faces give the half-extents of their bar.
+    const faceById = {}; (F.lay.subs || []).forEach((s) => { faceById[String(s.id)] = s; });
     const miss = wp.rows.find((r) => !byId[String(r.id)]);
     if (miss) return { refuse: 'the wheel \u201c' + miss.id + '\u201d has no place on this dial (no layout, or a host that is gone)' };
     const ids = onlyBase.concat(wp.rows.map((r) => String(r.id))), hid = { hands: 1, glass: 1, outer: 1, cage: 1 }, now = this.now();
@@ -3134,28 +3178,43 @@ class Component extends DCLogic {
     const rows = [], bands = [];
     for (const r of order) {
       const w = byId[String(r.id)], gx0 = C + (w.x - C) * kP, gy0 = C + (w.y - C) * kP, R = w.r * kP;
+      /* D43 P5e ruling 3: a faced row rides just under its lifted face — no cover band for it. */
+      const fc = r.face ? faceById[String(r.face)] : null;
+      if (r.face && !fc) return { refuse: 'the wheel \u201c' + r.id + '\u201d is seated under the face \u201c' + r.face + '\u201d this dial does not show' };
       if (r.drum) {
         /* D43: a drum ships its strip; its window (strip wide, 2r tall) is centred where the
          * barrel stands, the pivot on the window's centre, and the cover over it carries its
-         * shading (drawWheel's fill path draws it). */
+         * shading (drawWheel's fill path draws it). A faced drum keeps the strip path but adds no
+         * band: like a faced disc, the opaque face above is what hides it. */
         const st = F.wheelStrip(r.id, kP, r.foff);
         if (!st) return { refuse: 'the drum \u201c' + r.id + '\u201d has no strip to roll' };
         const sx = st.canvas.getContext('2d').getImageData(0, 0, st.w, st.h).data;
         const x0 = Math.round(gx0 - st.w / 2), y0 = Math.round(gy0) - st.r;
         rows.push(Object.assign({}, r, { x: x0, y: y0, w: st.w, h: st.h, pivot_x: Math.floor(st.w / 2), pivot_y: st.r, radius: st.r, rgba: new Uint8Array(sx.buffer.slice(0)) }));
-        bands.push({ x: gx0, y: gy0, r0: 0, r1: Math.hypot(st.w / 2, st.r) + 2 });
+        if (!fc) bands.push({ x: gx0, y: gy0, r0: 0, r1: Math.hypot(st.w / 2, st.r) + 2 });
         continue;
       }
-      // the band: every radius at which some cutout shows a wheel, inside this disc
-      let r0 = Infinity, r1 = -1;
-      for (let y = Math.max(0, Math.floor(gy0 - R)); y <= Math.min(W - 1, Math.ceil(gy0 + R)); y++)
-        for (let x = Math.max(0, Math.floor(gx0 - R)); x <= Math.min(W - 1, Math.ceil(gx0 + R)); x++) {
-          if (!seen[y * W + x]) continue;
-          const d = Math.hypot(x + 0.5 - gx0, y + 0.5 - gy0); if (d > R + 1) continue;
-          if (d < r0) r0 = d; if (d > r1) r1 = d;
-        }
-      if (r1 < 0) return { refuse: 'the wheel \u201c' + r.id + '\u201d is read through no cutout the dial shows \u2014 give it a cutout over its figures, or remove it' };
-      r0 = Math.max(0, r0 - 2); r1 = Math.min(R + 1, r1 + 2);
+      /* The faced disc: the whole disc, clipped to that face's plate, with no cutout measurement
+       * and no band — a face is opaque relief, so it needs no cover over the wheel beneath it;
+       * the disc simply travels under the face's row. Every other row keeps the old cutout band
+       * read off the two fills. */
+      let r0 = Infinity, r1 = -1, fx = 0, fy = 0, fr = 0;
+      if (fc) {
+        r0 = 0; r1 = R + 1;
+        const sl = fc.slide;
+        fx = C + (fc.x - C) * kP; fy = C + (fc.y - C) * kP;
+        fr = (sl ? Math.hypot(sl.hl, sl.hh) : fc.r) * kP + 1;
+      } else {
+        // the band: every radius at which some cutout shows a wheel, inside this disc
+        for (let y = Math.max(0, Math.floor(gy0 - R)); y <= Math.min(W - 1, Math.ceil(gy0 + R)); y++)
+          for (let x = Math.max(0, Math.floor(gx0 - R)); x <= Math.min(W - 1, Math.ceil(gx0 + R)); x++) {
+            if (!seen[y * W + x]) continue;
+            const d = Math.hypot(x + 0.5 - gx0, y + 0.5 - gy0); if (d > R + 1) continue;
+            if (d < r0) r0 = d; if (d > r1) r1 = d;
+          }
+        if (r1 < 0) return { refuse: 'the wheel \u201c' + r.id + '\u201d is read through no cutout the dial shows \u2014 give it a cutout over its figures, or remove it' };
+        r0 = Math.max(0, r0 - 2); r1 = Math.min(R + 1, r1 + 2);
+      }
       const c = document.createElement('canvas'); c.width = c.height = W;
       const x = c.getContext('2d'); x.translate(C, C); x.scale(kP, kP); x.translate(-C, -C);
       F.wheelDisc(x, r.id, 0);
@@ -3164,12 +3223,19 @@ class Component extends DCLogic {
       const ww = Math.max(bx2, gx) - Math.min(bx, gx) + 1, hh = Math.max(by2, gy) - Math.min(by, gy) + 1, ox = Math.min(bx, gx), oy = Math.min(by, gy), rgba = new Uint8Array(ww * hh * 4);
       for (let yy = 0; yy < hh; yy++) for (let xx = 0; xx < ww; xx++) {
         const X = ox + xx, Y = oy + yy; if (X >= W || Y >= W) continue;
-        const d = Math.hypot(X + 0.5 - gx0, Y + 0.5 - gy0); if (d < r0 || d > r1) continue;
+        if (fc) { if (Math.hypot(X + 0.5 - fx, Y + 0.5 - fy) > fr) continue; }
+        else { const d = Math.hypot(X + 0.5 - gx0, Y + 0.5 - gy0); if (d < r0 || d > r1) continue; }
         const si = (Y * W + X) * 4, di = (yy * ww + xx) * 4; rgba[di] = px[si]; rgba[di + 1] = px[si + 1]; rgba[di + 2] = px[si + 2]; rgba[di + 3] = px[si + 3];
       }
       rows.push(Object.assign({}, r, { x: ox, y: oy, w: ww, h: hh, pivot_x: gx - ox, pivot_y: gy - oy, rgba }));
-      bands.push({ x: gx0, y: gy0, r0, r1 });
+      // a faced disc adds no band: it rides under an opaque face, and the cover spans only what a
+      // cutout shows. Only uncovered rows widen the cover.
+      if (!fc) bands.push({ x: gx0, y: gy0, r0, r1 });
     }
+    // D43 P5e ruling 3: a cover ships only over what a cutout shows. A ring seen whole and a disc
+    // riding under its opaque face both need none, so when every row is one of those — or when the
+    // only rows were faced and no band was ever pushed — there is nothing left to cover.
+    if (wp.rows.every((r) => r.exposed || r.face) || !bands.length) return { rows, cover: null };
     let x0 = W, y0 = W, x1 = -1, y1 = -1;
     bands.forEach((d) => { x0 = Math.min(x0, Math.floor(d.x - d.r1)); y0 = Math.min(y0, Math.floor(d.y - d.r1)); x1 = Math.max(x1, Math.ceil(d.x + d.r1)); y1 = Math.max(y1, Math.ceil(d.y + d.r1)); });
     x0 = Math.max(0, x0); y0 = Math.max(0, y0); x1 = Math.min(W - 1, x1); y1 = Math.min(W - 1, y1);
@@ -3181,15 +3247,11 @@ class Component extends DCLogic {
       if (a <= 0) continue;
       rgba[di] = Math.min(255, Math.round((A[si] * 255) / a)); rgba[di + 1] = Math.min(255, Math.round((A[si + 1] * 255) / a)); rgba[di + 2] = Math.min(255, Math.round((A[si + 2] * 255) / a)); rgba[di + 3] = a;
     }
-    // exposed rings are seen whole: with nothing but them, there is no face over them to ship
-    if (wp.rows.every((r) => r.exposed)) return { rows, cover: null };
     return { rows, cover: { x: x0, y: y0, w: cw, h: ch, rgba } };
   }
   async auxPass3(pp, onlyBase) {
     const W = 466, PANEL = W * W;
     const pixOf = (c) => this.wbPix(new Uint8Array(c.getContext('2d').getImageData(0, 0, W, W).data.slice().buffer));
-    const kids = {};
-    (this.design().comps || []).forEach((c) => { if (c.host && c.host !== 'dial') (kids[String(c.host)] = kids[String(c.host)] || []).push(String(c.id)); });
     const scratch = document.createElement('canvas'); scratch.width = scratch.height = W;
     const sx = scratch.getContext('2d');
     const out = []; let auxB = 0;
@@ -3221,9 +3283,10 @@ class Component extends DCLogic {
         }
       }
       if (bx2 < 0) return { refuse: 'the pointer \u201c' + r.id + '\u201d draws no hand: that subdial prints no hand for the bake to lift off the plate and turn' };
-      // the arbour the hand turns about: its own place (owner, 2026-11-05), wherever it stands
+      // the arbour the hand turns about: its authored pivot as pointerRows3 laid it (P5e
+      // amendment 1), else its own place, wherever it stands (owner, 2026-11-05)
       const hd3 = r.type === 'hand' ? ((this.face() || {}).hands || []).find((h) => h.id === r.id) : null;
-      const g = hd3 ? { x: hd3.x, y: hd3.y } : !r.host || r.host === 'dial' ? { x: 233, y: 233 } : this.face().outline(r.host);
+      const g = r.pivot ? { x: r.pivot.x, y: r.pivot.y } : hd3 ? { x: hd3.x, y: hd3.y } : !r.host || r.host === 'dial' ? { x: 233, y: 233 } : this.face().outline(r.host);
       if (!g) return { refuse: 'the pointer \u201c' + r.id + '\u201d has no layout centre on this dial' };
       /* Layout space is not device space. frameCanvas composes through the face's
        * own lenses -- the case inset and the no-case ease (dynK) -- so the ink this
@@ -3253,14 +3316,10 @@ class Component extends DCLogic {
           else { o[ro] = bare[so]; o[ro + 1] = bare[so + 1]; o[ro + 2] = bare[so + 2]; }
         }
       }
-      const holes = this.face().compHoles((kids[String(r.host)] || []).filter((k) => !this.handComp(k)));
-      let rgba = o;
-      if (holes.length) {
-        scratch.width = w; scratch.height = h;
-        sx.putImageData(new ImageData(new Uint8ClampedArray(o.buffer, 0, o.length), w, h), 0, 0);
-        sx.save(); sx.translate(-bx, -by); WatchEngine.punchHoles(sx, holes); sx.restore();
-        rgba = sx.getImageData(0, 0, w, h).data;
-      }
+      // D43 P5e: no aperture punch on the pointer plane. A pointer rides above its face and
+      // everything the face hosts, and a punch struck at the rest pose would turn with the
+      // hand and gouge the dial it sweeps over.
+      const rgba = o;
       auxB += w * h * 3;
       const row = { slot: ri, id: String(r.id), src: r.src, motion: r.motion, angle: r.angle, span: r.span, zero: r.zero, vmin: r.vmin, vmax: r.vmax,
                     cadence: r.cadence | 0, cad_arg: r.cad_arg | 0, ease: r.ease | 0,
@@ -3289,7 +3348,6 @@ class Component extends DCLogic {
           txc.drawImage(sil, pd, pd);
           scratch.width = tw; scratch.height = th;
           sx.setTransform(1, 0, 0, 1, 0, 0); sx.clearRect(0, 0, tw, th); sx.drawImage(tc, 0, 0);
-          if (holes.length) { sx.save(); sx.translate(-tx0, -ty0); WatchEngine.punchHoles(sx, holes); sx.restore(); }
           const simg = sx.getImageData(0, 0, tw, th);
           row.shadow = { rgba: new Uint8Array(simg.data.buffer), w: tw, h: th,
                          x: tx0, y: ty0, pivot_x: gx - bx + pd, pivot_y: gy - by + pd };

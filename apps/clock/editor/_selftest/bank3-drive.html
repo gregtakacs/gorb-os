@@ -127,6 +127,38 @@
       IT.buildMovement();
       if (!await settle()) throw new Error('did not settle after the lift');
     }
+    // D43 P5e: the owner's Gold check edits the mounted design before the export the same way
+    // ?lift= does. add/set/order take a URL-encoded JSON payload, rebuild and settle, and the
+    // bake then reads the turning wheel under the lifted face. Applied in the order add, set, order.
+    const reDrive = async (name, fn) => {
+      const d1 = IT.design(); fn(d1); IT.state.designs[DIAL] = d1; IT.faces = {};
+      IT.buildMovement();
+      if (!await settle()) throw new Error('did not settle after the ' + name);
+    };
+    const ADD = QP.get('add');
+    if (ADD) {
+      const added = JSON.parse(ADD);
+      await reDrive('add', (d1) => {
+        added.forEach((c) => {
+          if (c.after != null) { const at = d1.comps.findIndex((x) => String(x.id) === String(c.after)); delete c.after; d1.comps.splice(at + 1, 0, c); }
+          else d1.comps.push(c);
+        });
+      });
+      say('added ' + added.map((c) => c.id).join(','));
+    }
+    const SET = QP.get('set');
+    if (SET) {
+      const sets = JSON.parse(SET);
+      await reDrive('set', (d1) => {
+        Object.keys(sets).forEach((id) => { const c = d1.comps.find((x) => String(x.id) === String(id)); if (c) Object.assign(c, sets[id]); });
+      });
+      say('set ' + Object.keys(sets).join(','));
+    }
+    const ORDER = QP.get('order');
+    if (ORDER) {
+      await reDrive('order', (d1) => { d1.order = ORDER.split(',').map((s) => s.trim()).filter(Boolean); });
+      say('order ' + ORDER);
+    }
     // ?strip=<type>: take every part of that type off the design first (strip=hand: a dial with no hands)
     const STRIP = QP.get('strip');
     if (STRIP) {

@@ -21,7 +21,8 @@
  *   R3  a child stays above its host's face (a sub-dial pointer over its sub-dial, a
  *       sub-dial over the dial)
  *   R4  a disc stays below the face that frames it
- *   R5  only still layers fold into the plate (the badge each row carries)
+ *   R5  only still layers fold into the plate, and a face folds unless something below it
+ *       passes under it (P5e): liveSeq says which, and a folded face's row badges why it stayed.
  *   R6  at most 24 live rows (rowCount)
  *   R7  the dial is the face the rest is placed against; it does not move
  *   R8  coaxial order and arbors swept through: warnings
@@ -118,12 +119,17 @@
 
     var order = liveKeys(input);
     var drawnHand = {}; hands.forEach(function (h) { drawnHand[h.id] = h; });
+    // D43 P5e: 'comp:<id>' in the band is a face the engine carries there, lifted or folded.
+    // `lifted` below still describes POSITION (as before); input.folded says which of them ship
+    // with the plate, and that is only ever visible in the badge the row carries.
+    var foldIn = {}; (input.folded || []).forEach(function (id) { foldIn[id] = 1; });
     var lifted = {};
     order.forEach(function (e) { if (e.indexOf('comp:') === 0 && byId[e.slice(5)] && byId[e.slice(5)].type === 'subdial') lifted[e.slice(5)] = 1; });
     var subBlock = function (sb, live) {
+      var fold = !!foldIn[sb.id];
       push({ id: 'comp:' + sb.id, ref: sb.id, kind: 'subdial', group: live ? 'live' : 'subdials', band: 'rows', label: partName(sb, comps, E),
              host: 'dial', hide: 'subdials', sel: { kind: 'comp', id: sb.id }, lifted: !!live,
-             badge: live ? 'above the hands · drawn once' : (sb.transparent ? 'baked in · open' : 'baked in'), movable: true });
+             badge: fold ? 'baked in · nothing passes under it' : live ? 'above the hands · drawn once' : (sb.transparent ? 'baked in · open' : 'baked in'), movable: true });
       // its hands, top first: they turn above its face and ride it wherever it goes
       for (var q = hands.length - 1; q >= 0; q--) {
         var ph = hands[q];
@@ -432,8 +438,10 @@
     (input.hands || []).forEach(function () { n += input.shadows ? 2 : 1; });
     (input.comps || []).forEach(function (c) { if (c.type === 'window' || c.type === 'moon' || c.type === 'wheel') n += 1; });
     if (input.carriage) n += 1;
-    // a lifted sub-dial face ships as one still row (D43 P4b)
-    liveKeys(input).forEach(function (e) { if (e.indexOf('comp:') === 0) n += 1; });
+    // a lifted sub-dial face ships as one still row (D43 P4b); a folded one ships with the
+    // plate and costs nothing (D43 P5e)
+    var foldIn = {}; (input.folded || []).forEach(function (id) { foldIn[id] = 1; });
+    liveKeys(input).forEach(function (e) { if (e.indexOf('comp:') === 0 && !foldIn[e.slice(5)]) n += 1; });
     return { rows: n, cap: ROW_CAP, over: n > ROW_CAP };
   }
 

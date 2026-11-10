@@ -88,11 +88,14 @@ const fit = (h, S) => { const f = E.faceFit(h, S); Object.keys(f).forEach((k) =>
   ok(r && r.vmin === 1 && r.vmax === 32, 'v6Drive keeps a source’s first value (a date runs 1..32)', JSON.stringify(r && [r.vmin, r.vmax]));
   const sl = B.v6Drive ? B.v6Drive('slide-x', { span: 100, zero: -50, vmax: 60, angle: 90 }, 10, 20) : null;
   ok(sl && sl.dx === 0 && sl.dy === 100 && sl.x === 10 && sl.y === -30, 'an angled slide splits its travel into dx/dy and its start into the placement', JSON.stringify(sl && [sl.dx, sl.dy, sl.x, sl.y]));
-  ok(B.pointerDefault3({ type: 'subdial', form: 'slider', scale: 'date' }, []) && B.compPlan3([{ id: 's', type: 'subdial', form: 'fan', scale: 'date' }]).rows.length === 0, 'a fan or a slider is pointer-driven, never plated');
-  const rf = [{ id: 's', type: 'subdial' }, { id: 'h', type: 'hand', host: 's', shows: 'date', motion: { path: 'retrograde', start: 270, span: 180 } }];
-  ok(B.pointerDefault3(rf[0], rf) && B.compPlan3(rf).rows.length === 0, 'a face whose hand sweeps an arc is pointer-driven too: the hand, not the face, says so');
-  const dd = [{ id: 's', type: 'subdial' }, { id: 'h', type: 'hand', host: 's', shows: 'date' }], pl = B.compPlan3(dd).rows;
-  ok(!B.pointerDefault3(dd[0], dd) && pl.length === 1 && pl[0].src === 'date', 'a round face reads what its hand shows: a date hand plates the date', JSON.stringify(pl));
+  const fan = B.compPlan3([{ id: 's', type: 'subdial', form: 'fan', scale: 'date' }]);
+  ok(fan.rows.length === 0 && fan.refuses.length === 0, 'a legacy fan face is no row and no refusal: an old scale and form are ignored outright (D43 P5e)');
+  const sld = B.compPlan3([{ id: 's', type: 'subdial', form: 'slider', scale: 'date', carrier: 'pointer' }]);
+  ok(sld.rows.length === 0 && sld.refuses.length === 0, 'and so is a slider face an old design drove as a pointer: the face is paint, its hand is the row');
+  const rf = [{ id: 's', type: 'subdial' }, { id: 'h', type: 'hand', host: 's', shows: 'date', motion: { path: 'retrograde', start: 270, span: 180 } }], rfp = B.compPlan3(rf);
+  ok(rfp.rows.length === 0 && rfp.refuses.length === 0, 'a face whose hand sweeps an arc is still no row: the hand, not the face, rides the pointer table');
+  const dd = [{ id: 's', type: 'subdial' }, { id: 'h', type: 'hand', host: 's', shows: 'date' }], pl = B.compPlan3(dd);
+  ok(pl.rows.length === 0 && pl.refuses.length === 0, 'a date hand on a face is its own pointer row now, not a bank of 31 whole dials', JSON.stringify(pl));
   ok(B.compPlan3([{ id: 's', type: 'subdial' }]).rows.length === 0, 'and a face no hand is aligned to is plate art');
 }
 // ---- the composer's bake hand-off ----------------------------------------------------------

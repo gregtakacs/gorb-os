@@ -138,9 +138,9 @@
       // Only what no element row can carry (a datetext flare, an unknown type) refuses.
       let cnote = '';
       if ((d.comps || []).length) {
-        const pl = G.compPlan3(d.comps), ptp = G.pointerPlan3(d.comps);
-        if (pl.refuses.length || ptp.refuses.length) why.push(pl.refuses[0] || ptp.refuses[0]);
-        else if (pl.rows.length || ptp.rows.length) cnote = ' · ' + pl.rows.length + ' comp row(s) + ' + ptp.rows.length + ' pointer row(s) bake';
+        const pl = G.compPlan3(d.comps);
+        if (pl.refuses.length) why.push(pl.refuses[0]);
+        else if (pl.rows.length) cnote = ' · ' + pl.rows.length + ' comp row(s) bake';
       }
       // a dial with no slot hand still bakes (its hands ride the pointer table); the count is reported
       const seat = seatsOf(d), ch = (F.hands || []).filter((h) => seat[h.id] !== undefined);

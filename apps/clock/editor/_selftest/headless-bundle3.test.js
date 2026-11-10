@@ -807,10 +807,11 @@ ok(pAux.carrier === 'bank' && pAux.keyframes < pThin.keyframes,
 // own opening a "live complication" while its note had promised the bake.
 ok(B.liveComps3([{ type: 'opening' }, { type: 'flare', icon: 'star' }, { type: 'window', shows: 'custom' }]).length === 0,
    'openings, engraved flares and custom art windows are not live: the baked plate carries them');
-ok(B.liveComps3([{ type: 'window', shows: 'date' }, { type: 'moon' }, { id: 's', type: 'subdial' }, { type: 'hand', host: 's', shows: 'second' }, { type: 'flare', icon: 'datetext' }]).filter((c) => c.type !== 'hand').length === 4,
-   'calendar windows, moons, subdial hands and date-printing flares are live: the comp table drives them');
-ok(B.liveComps3([{ type: 'subdial', scale: 'none' }]).length === 0 && B.liveComps3([{ id: 's', type: 'subdial' }]).length === 0,
-   'a subdial no hand is aligned to (or, written before, with no scale) is engraved plate art, not a row');
+ok(B.liveComps3([{ type: 'window', shows: 'date' }, { type: 'moon' }, { id: 's', type: 'subdial' }, { type: 'hand', host: 's', shows: 'second' }, { type: 'flare', icon: 'datetext' }]).filter((c) => c.type !== 'hand').length === 3,
+   'calendar windows, moons and date-printing flares are live: the comp table drives them');
+ok(B.liveComps3([{ type: 'subdial', scale: 'none' }]).length === 0 && B.liveComps3([{ id: 's', type: 'subdial' }]).length === 0
+   && B.liveComps3([{ id: 's', type: 'subdial', scale: 'date' }, { type: 'hand', host: 's', shows: 'date' }]).length === 1,
+   'a sub-dial is never live, whatever it reads or hosts (D43 P5e): it is face paint, and its hands are hands');
 ok(B.liveComps3([{ type: 'whatever-comes-next' }]).length === 1,
    'an unrecognised comp counts live — the safe direction is the refusal the author can see');
 ok(B.liveComps3(undefined).length === 0 && B.liveComps3([]).length === 0,
@@ -819,30 +820,25 @@ ok(B.liveComps3(undefined).length === 0 && B.liveComps3([]).length === 0,
 // D32 ruling A/B: every live comp becomes one window row over its calendar
 // domain, and only what the element row truly cannot carry (glyph work,
 // unknown types) refuses. The plan is the single source behind the note, the
-// guard and the bake.
+// guard and the bake. D43 P5e: a sub-dial is a face, so it leaves the plan
+// empty-handed — its hands are pointer rows and its wheels are wheels.
 const cpCal = B.compPlan3([{ id: 'c1', type: 'opening' },
                            { id: 'c2', type: 'window', host: 'dial', shows: 'day' },
                            { id: 'c3', type: 'window', host: 'dial', shows: 'month' },
                            { id: 'c4', type: 'subdial', host: 'dial', scale: 'date' },
                            { id: 'c5', type: 'moon', host: 'c4' }]);
-ok(cpCal.refuses.length === 0 && cpCal.rows.length === 4,
-   'the calendar compiles whole: two windows, a date subdial and its hosted moon');
+ok(cpCal.refuses.length === 0 && cpCal.rows.length === 3,
+   'the calendar compiles whole: two windows and a moon, and the date sub-dial that hosts the moon is face paint with no row (D43 P5e)');
 const cpBy = {}; cpCal.rows.forEach((r) => { cpBy[r.id] = r; });
-ok(cpBy.c2.src === 'weekday' && cpBy.c2.count === 7 && cpBy.c3.count === 12 &&
-   cpBy.c4.src === 'date' && cpBy.c4.count === 31 && cpBy.c4.valueMin === 1 &&
-   cpBy.c5.src === 'moon_age' && cpBy.c5.count === 30,
+ok(cpBy.c2.src === 'weekday' && cpBy.c2.count === 7 && cpBy.c3.count === 12 && cpBy.c5.src === 'moon_age' && cpBy.c5.count === 30,
    'rows name the source and the domain\u2019s own count, never a number the bake invented');
-ok(cpCal.rows.map((r) => r.id).join(',') === 'c2,c3,c5,c4' && cpCal.rows[2].hosted === 'c4',
-   'the hosted moon is ordered before its host: the runtime paints record order, and the host tile punches over the tile below');
+ok(cpCal.rows.map((r) => r.id).join(',') === 'c2,c3,c5' && cpCal.rows[2].hosted === null,
+   'a moon whose host is a face is one plain unhosted row: the face is not a row to punch over, so the moon stands on the plate');
 const cpReg = B.compPlan3([{ id: 'c1', type: 'subdial', scale: 'hours' },
                            { id: 'c2', type: 'subdial', scale: 'seconds' },
                            { id: 'c3', type: 'window', host: 'c1', shows: 'date' }]);
-ok(cpReg.rows.map((r) => r.id).join(',') === 'c3,c1',
-   'the regulator\u2019s hosted window rides first, under its hours subdial\u2019s punched plate (the bare seconds ring is the pointer\u2019s by default and leaves the bank)');
-ok(B.pointerPlan3([{ id: 'c1', type: 'subdial', scale: 'hours' },
-                   { id: 'c2', type: 'subdial', scale: 'seconds' },
-                   { id: 'c3', type: 'window', host: 'c1', shows: 'date' }]).rows.map((r) => r.id).join(',') === 'c2',
-   'and the regulator\u2019s seconds hand is the one pointer the default puts on the dial');
+ok(cpReg.rows.map((r) => r.id).join(',') === 'c3' && cpReg.rows[0].hosted === null,
+   'the regulator leaves the bank its one hosted window: both its rings are faces now, not rows, and the window over them stands alone (D43 P5e)');
 const cpPhase = B.compPlan3([{ id: 'c1', type: 'subdial', scale: 'none' },
                              { id: 'c2', type: 'moon', host: 'c1' }]);
 ok(cpPhase.rows.length === 1 && cpPhase.rows[0].src === 'moon_age' && !cpPhase.rows[0].hosted,
@@ -857,42 +853,25 @@ ok(cpUnk.rows.length === 0 && /astrolabe/.test(cpUnk.refuses[0] || ''),
 const cpMany = B.compPlan3(Array.from({ length: 17 }, (_, i) => ({ id: 'w' + i, type: 'window', shows: 'date' })));
 ok(cpMany.rows.length === 17 && cpMany.refuses.length === 1 && /cap of 16/.test(cpMany.refuses[0]),
    'seventeen windows exceed the dial\u2019s 16 complication slots and say so before the guard runs');
-// ---- 7e2. pointerPlan3 (D34): the drive that replaces the plates, the engine's call alone ----
-const ptSec = B.pointerPlan3([{ id: 'c2', type: 'subdial', scale: 'seconds' },
-                              { id: 'c1', type: 'subdial', scale: 'hours' }, { id: 'c9', type: 'window', host: 'c1', shows: 'date' }]);
-ok(ptSec.rows.length === 1 && ptSec.rows[0].id === 'c2' && ptSec.rows[0].src === 'second' &&
-   ptSec.rows[0].vmin === 0 && ptSec.rows[0].vmax === 60 && ptSec.rows[0].span === 3600 &&
-   ptSec.rows[0].zero === 0 && ptSec.rows[0].motion === 'rotate' && ptSec.refuses.length === 0,
-   'a pointer seconds subdial plans one whole-turn row over sixty values \u2014 one plate, not sixty',
-   JSON.stringify(ptSec));
-ok(B.compPlan3([{ id: 'c2', type: 'subdial', scale: 'seconds' }]).rows.length === 0,
-   'a pointer-driven subdial never also claims a window row: the drive replaces the plates, it does not join them');
-const ptDate = B.pointerPlan3([{ id: 'c4', type: 'subdial', scale: 'date', carrier: 'pointer' }]);
-ok(ptDate.rows.length === 0 && ptDate.refuses.length === 0 && B.compPlan3([{ id: 'c4', type: 'subdial', scale: 'date', carrier: 'pointer' }]).rows.length === 1,
-   'a date ring stays on the bank whatever an old design asked: its hand never closes its own turn, and nothing is refused',
-   JSON.stringify(ptDate));
-const pt9 = B.pointerPlan3(Array.from({ length: 9 }, (_, i) => ({ id: 'p' + i, type: 'subdial', scale: 'seconds' })));
-ok(pt9.rows.length === 9 && pt9.refuses.length === 1 && /pointer slots/.test(pt9.refuses[0]),
-   'nine pointers overflow the dial\u2019s eight pointer slots and say so before any art is drawn');
-const ptDflt = B.pointerPlan3([{ id: 'c1', type: 'subdial', scale: 'seconds' },
-                               { id: 'c2', type: 'subdial', scale: 'hours', carrier: 'plates' },
-                               { id: 'c3', type: 'subdial', scale: 'date' },
-                               { id: 'c4', type: 'subdial', scale: 'hours' },
-                               { id: 'c5', type: 'window', host: 'c4', shows: 'date' }]);
-ok(ptDflt.rows.map((r) => r.id).join() === 'c1,c2' && ptDflt.refuses.length === 0,
-   'every bare seconds or hours ring ships as a pointer, an old plates carrier ignored; hosted and other scales stay on the bank',
-   JSON.stringify(ptDflt));
-ok(B.compPlan3([{ id: 'c1', type: 'subdial', scale: 'seconds' }]).rows.length === 0,
-   'the defaulted pointer never also claims a window row: the drive replaces the plates, it does not join them');
-const ptHost = B.pointerPlan3([{ id: 'c4', type: 'subdial', scale: 'hours', carrier: 'pointer' },
-                               { id: 'c5', type: 'window', host: 'c4', shows: 'date' }]);
-ok(ptHost.rows.length === 0 && ptHost.refuses.length === 0,
-   'a subdial hosting another indication stays on the bank, even where an old design asked for a pointer: the row carries nothing to punch',
-   JSON.stringify(ptHost));
-// the plan's own row shape must bake through bakeClock3's aux seam, unmodified but for art
+// ---- 7e2. the pointer row, D43 P5e ----
+// The pointer table the baker used to plan is retired: a sub-dial is a face, so its hands
+// are pointer rows the editor (clock-logic.js) plans and the writer bakes through bakeClock3's
+// aux seam. What the bake must still guarantee is the row SHAPE the editor feeds it —
+// one whole-turn, one-frame, wrapping rotate row over the hand's domain. The face
+// itself never reaches the bank: compPlan3 skips it, so it is neither plated nor
+// refused.
+const ptSecRow = { id: 'c2', type: 'subdial', src: 'second', vmin: 0, vmax: 60, span: 3600, zero: 0, motion: 'rotate' };
+ok(B.compPlan3([{ id: 'c2', type: 'subdial', scale: 'seconds' },
+                { id: 'c1', type: 'subdial', scale: 'hours' },
+                { id: 'c9', type: 'window', host: 'c1', shows: 'date' }]).rows.map((r) => r.id).join(',') === 'c9',
+   'no face plans a bank row now: the regulator\u2019s two rings leave the plate bank, its one window stays (D43 P5e)');
+ok(B.compPlan3([{ id: 'c2', type: 'subdial', scale: 'date', carrier: 'pointer' }]).rows.length === 0,
+   'a date face plans nothing whatever an old design asked: the carrier field is ignored, the hand is the row, not the face',
+   JSON.stringify(B.compPlan3([{ id: 'c2', type: 'subdial', scale: 'date', carrier: 'pointer' }])));
+// the editor's pointer-row shape must bake through bakeClock3's aux seam, unmodified but for art
 const bakedPT = B.bakeClock3({ name: 'pt-plan', serial: 7, bakedMs: 1, plate: PL, hands: [HK], order: [0],
-  aux: ptSec.rows.map((r, i) => Object.assign({}, r, { slot: i, x: 300, y: 120, w: 28, h: 64,
-        pivot_x: 14, pivot_y: 56, plane: { rgba: mkPlane(28, 64, 200), w: 28, h: 64 } })) });
+  aux: [Object.assign({}, ptSecRow, { slot: 0, x: 300, y: 120, w: 28, h: 64,
+        pivot_x: 14, pivot_y: 56, plane: { rgba: mkPlane(28, 64, 200), w: 28, h: 64 } })] });
 // D42 retired the order table: the D34 off-by-one (order:[1] for a hand at slot 0, which
 // drew nothing) cannot be written, because every hand is a row with its own depth.
 const offByOne = B.verifyBundle3(B.bakeClock3({ name: 'off-by-one', serial: 9, bakedMs: 1,

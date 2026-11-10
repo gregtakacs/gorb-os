@@ -4199,7 +4199,11 @@
      * faces over them are ONE still cover row: the plate's own texels over the discs with
      * the union of their cutouts cut out. All at depth 0 in this table order -- the discs
      * largest first, then the cover -- so they land on the plate and under every window,
-     * pointer, carriage and hand (depth_key keeps table order at a tie). */
+     * pointer, carriage and hand (depth_key keeps table order at a tie).
+     * D43 P5e: the stack may name a depth for one disc (a 'wheel:<id>' entry of the same
+     * depthOrder that places hands and lifted faces), and a disc that turns under a lifted
+     * face names that face in its `face` field. Such a wheel needs no cover: the face it
+     * turns under is what hides it. */
     var wheels3 = o.wheels || [];
     for (var kw = 0; kw < wheels3.length; kw++) {
       var w3 = wheels3[kw];
@@ -4211,24 +4215,37 @@
       // x,y and the window's centre as its pivot; it rolls one strip in its direction per turn
       if (w3.drum && !((w3.radius | 0) >= 2 && (w3.pivot_y | 0) === (w3.radius | 0) && w3.h > w3.radius))
         throw new Error('the drum ' + q(String(w3.id)) + ' carries no radius its strip can roll through');
+      /* D43 P5e: a disc the stack names rides the rung depthOrder gave 'wheel:<id>', exactly
+       * as a lifted face rides 'comp:<id>'; one it does not name keeps the old depth 0. A disc
+       * that turns under a lifted face must be named, and named just under that face. */
+      var wk3 = 'wheel:' + String(w3.id), wOrd3 = 0;
+      if (rung3[wk3] !== undefined) wOrd3 = Math.max(1, Math.min(63, rung3[wk3]));
+      if (w3.face) {
+        var wc3 = 'comp:' + w3.face;
+        if (rung3[wk3] === undefined || rung3[wc3] === undefined || rung3[wc3] <= rung3[wk3])
+          throw new Error('the wheel ' + q(String(w3.id)) + ' turns under the lifted face ' + q(String(w3.face))
+            + ' and has no place just under it in depthOrder');
+      }
       row({ n: B.id(), 'class': CLASS_AUX, slot: nextSlot('the wheel ' + q(String(w3.id))), kind: w3.drum ? SHAPE_DRUM : SHAPE_RING,
             src: SOURCES.indexOf(String(w3.src)), digit: DIGITS.indexOf(String(w3.digit || 'whole')),
             x: w3.x | 0, y: w3.y | 0, w: w3.w, h: w3.h, pivot_x: w3.pivot_x | 0, pivot_y: w3.pivot_y | 0,
             radius: w3.drum ? (w3.radius | 0) : 0, dy: w3.drum ? (w3.dir < 0 ? -w3.h : w3.h) : 0,
-            order: 0, alpha: 255, n_frames: 1, span: w3.span | 0, zero: w3.zero | 0, vmin: w3.vmin | 0, vmax: w3.vmax | 0,
+            order: wOrd3, alpha: 255, n_frames: 1, span: w3.span | 0, zero: w3.zero | 0, vmin: w3.vmin | 0, vmax: w3.vmax | 0,
             end: END_WRAP, cadence: CADENCES.indexOf(String(w3.cadence)), cad_arg: 0, ease: w3.ease | 0 }, w3, true, !!w3.dither);   // ruling 3: a ring or disc may ask
       auxB += w3.w * w3.h * 3;
     }
     if (o.cover) {
       var cv3 = o.cover;
       if (!wheels3.length) throw new Error('a wheel cover with no wheels under it');
+      if (wheels3.every(function (w) { return !!w.face; }))
+        throw new Error('a wheel cover over no wheel it covers: every wheel here turns under a lifted face');   // D43 P5e
       if (!cv3.rgba || !(cv3.w > 0 && cv3.h > 0) || cv3.rgba.length !== cv3.w * cv3.h * 4)
         throw new Error('the wheels\u2019 cover carries no pixels: a still row ships its art');
       row({ n: B.id(), 'class': CLASS_AUX, slot: nextSlot('the wheels\u2019 cover'), kind: SHAPE_ARM, src: SOURCES.indexOf('none'),
             x: cv3.x | 0, y: cv3.y | 0, w: cv3.w, h: cv3.h, order: 0, alpha: 255, n_frames: 1 }, cv3, true, true);
       auxB += cv3.w * cv3.h * 3;
-    } else if (wheels3.some(function (w) { return !w.exposed; }))
-      throw new Error('wheels with no cover: every disc would show whole over the face');   // exposed rings need none
+    } else if (wheels3.some(function (w) { return !w.exposed && !w.face; }))
+      throw new Error('wheels with no cover: every disc would show whole over the face');   // exposed rings need none; so does a disc under a lifted face (D43 P5e)
     /* D43 P4b: a still row — a sub-dial face the author lifted among the hands. It never
      * moves (source none, no cadence, no travel), takes its depth from depthOrder's
      * 'comp:<id>' entry, and is a still, screen-locked plane, so it dithers. */
@@ -4493,9 +4510,10 @@
   /* Owner 2026-11-02: an hour or minute row is always smoothed (EF_SMOOTH), whatever the
    * dial's verdict for its other rows: those hands re-pose rarely and read best antialiased. */
   function isHM3(e) {
-    // a hand or pointer, not a turning wheel (a ring row's whole disc is too much ink to filter)
-    return !(e.n_frames > 1) && e.kind !== SHAPE_RING &&
-      (e.src === SOURCES.indexOf('hour12') || e.src === SOURCES.indexOf('hour24') || e.src === SOURCES.indexOf('minute'));
+    // a hand or pointer, not a turning wheel (a ring row's whole disc is too much ink to filter).
+    // Every hand smooths, whatever it reads (owner 2026-11-10: "we need to smooth all hands");
+    // the seconds keep their own rule below, so their shadow still waits on its switch
+    return !(e.n_frames > 1) && e.kind !== SHAPE_RING && e.src !== SOURCES.indexOf('second');
   }
   function estimate3(sec) {
     var els = sec.blob.elements, spr = sec.blob.sprites, art = sec.art;
@@ -5117,12 +5135,13 @@
   /* Which comps the compiled clock must carry in its table — the one predicate
    * behind the button's note, the export guard and the bake, so none of the
    * three can promise what another refuses. Live is data-driven: a window
-   * printing calendar text, a moon on tonight's phase, a subdial hand that
-   * turns. Each maps to one window row by compPlan3 below. Static is
-   * geometry-driven and rides inside the baked plate: an opening is a hole
-   * with the movement art — the bank itself — under it; a flare is engraved
-   * art unless it prints the date; a custom-format window is uploaded art; a
-   * subdial with no scale has no hand to drive. Anything unrecognised counts
+   * printing calendar text, a moon on tonight's phase, a hand that turns.
+   * Each maps to one window row by compPlan3 below, or to a pointer row.
+   * Static is geometry-driven and rides inside the baked plate: an opening is
+   * a hole with the movement art — the bank itself — under it; a flare is
+   * engraved art unless it prints the date; a custom-format window is uploaded
+   * art; a sub-dial is face paint and its hands are hands, so the face itself
+   * is never a row (D43 P5e). Anything unrecognised counts
    * live: the safe direction is the refusal the author can see. */
   function liveComps3(comps) {
     return (comps || []).filter(function (c) {
@@ -5130,7 +5149,7 @@
       if (c.type === 'index') return false;                  // D43 P5d.3n: crystal paint, still
       if (c.type === 'window') return c.shows !== 'custom';
       if (c.type === 'flare') return c.icon === 'datetext';
-      if (c.type === 'subdial') return subScale3(c, comps) !== 'none';   // an engraved dial with no hand is plate art
+      if (c.type === 'subdial') return false;                          // D43 P5e: a sub-dial is face paint; its hands are hands
       return true;
     });
   }
@@ -5138,42 +5157,16 @@
   /* The §31 comp table, planned: one window row per live comp. The dial drives
    * the value (D32 ruling B: the frame-to-value map is the clock's calendar,
    * not a carried figure), so a row names a source and the domain's own count
-   * of plates — a date window is 31 plates because a month has 31 days, a
-   * seconds subdial is 60 whole dials because the runtime indexes one per
-   * tick and a FORMAT 3 pointer snaps to its domain where a FORMAT 2 aux row
+   * of plates — a date window is 31 plates because a month has 31 days, and a
+   * FORMAT 3 pointer snaps to its domain where a FORMAT 2 aux row
    * interpolated. A datetext flare needs the glyph fields no element row
    * holds — orb_clock3.c's refusal, said here so the author hears it before
    * export. Hosted rows are ordered BEFORE their host: the runtime paints its
    * bottom bucket in record order, and a host tile carries a punched aperture
-   * over the tile beneath it. Unknown types refuse rather than freeze. */
-  var COMP3_SCALE_SRC = { seconds: 'second', minutes: 'minute', date: 'date', day: 'weekday', month: 'month', hours: 'hour12', hours24: 'hour24' };
-  /* What a sub-dial reads, and how its hand moves (owner, 2026-11-06: a face prints nothing,
-   * the hands aligned to it print and read). The first hand aligned to it names the measure; a
-   * face no hand is aligned to is plate art. Its hand sweeping an arc (retrograde) or riding a
-   * slider's slot makes it the arc or the track a pointer row drives. A design written before
-   * named the measure and the arc on the face (scale, form 'fan'), and still reads so. */
-  var HAND3_SCALE = { second: 'seconds', minute: 'minutes', hour: 'hours', hours24: 'hours24', gmt: 'hours24', date: 'date', day: 'day', month: 'month' };
-  function faceHand3(c, comps) { return (comps || []).filter(function (x) { return x.type === 'hand' && x.host === c.id; })[0] || null; }
-  function subScale3(c, comps) {
-    if (c.scale !== undefined) return c.scale;
-    var h = faceHand3(c, comps);
-    return h ? (HAND3_SCALE[h.shows] || 'none') : 'none';
-  }
-  function subTrack3(c, comps) {
-    if (c.form === 'fan' || c.form === 'slider') return true;
-    var h = faceHand3(c, comps), m = h && h.motion;
-    return !!(m && (m.path === 'retrograde' || m.path === 'slide' || m.path === 'slide-x' || m.path === 'slide-y'));
-  }
+   * over the tile beneath it. A sub-dial plans nothing at all (D43 P5e): it is
+   * a face, its hands are pointer rows, its wheels are wheels.
+   * Unknown types refuse rather than freeze. */
   var COMP3_SHOW_SRC = { date: 'date', day: 'weekday', month: 'month' };
-  /* D34: the scales whose hand sweeps a WHOLE turn across its domain. A pointer row
-   * carries one plate and the dial turns it, so the plate must be the box the hand
-   * covers at every value — and the centre of that box is the pivot only when the
-   * sweep is whole, because only then is the union a disc about the pivot. A date
-   * ring stops 1/31 of a turn short of closing, so its box centre sits off the true
-   * pivot by a margin nobody can measure from the pixels alone: the author who wants
-   * a pointer on one gets the window row, and this is the sentence that says so.
-   * The scales that qualify are the ones the complaint was ever about. */
-  var COMP3_RING_FULL = { second: 60, minute: 60, hour12: 12, hour24: 24 };
   /* D43 P5d.3: a wheel is a turning row -- its disc, standing at figure 0 -- and the faces
    * over the wheels are one still cover row with their cutouts cut out of it, both just
    * above the plate. What each measure reads, how many figures its ring carries (a digit
@@ -5245,6 +5238,7 @@
       var src = null, id = c.id === undefined ? '?' : c.id;
       if (c.type === 'opening') return;                                  // a hole in the plate
       if (c.type === 'hand') return;                                     // D43 P5c: a hand slot or a pointer row, never a window row
+      if (c.type === 'subdial') return;                                  // D43 P5e: a sub-dial is a face; its hands are pointer rows, its wheels are wheels
       if (c.type === 'cutout') return;                                   // D43 P5d.3: a wheel's window; its wheel is the row
       if (c.type === 'index') return;                                    // D43 P5d.3n: painted into the crystal overlay, no row
       if (c.type === 'wheel') {
@@ -5266,14 +5260,7 @@
         src = COMP3_SHOW_SRC[c.shows];
         if (!src) { refuses.push('the window \u201c' + id + '\u201d shows \u201c' + c.shows + '\u201d: no source on this dial reads that'); return; }
       } else if (c.type === 'moon') src = 'moon_age';
-      else if (c.type === 'subdial') {
-        var sc3 = subScale3(c, comps);
-        if (sc3 === 'none') return;                                      // no hand: plate art
-        if (subTrack3(c, comps)) return;                                 // D43 P5d.2: its hands are pointer rows
-        if (pointerDefault3(c, comps)) return;   // D34: pointerPlan3 owns this row, not the bank
-        src = COMP3_SCALE_SRC[sc3];
-        if (!src) { refuses.push('the subdial \u201c' + id + '\u201d reads scale \u201c' + sc3 + '\u201d: the dial indexes plates by calendar value and none matches'); return; }
-      } else {
+      else {
         refuses.push('the complication \u201c' + id + '\u201d of type \u201c' + c.type + '\u201d has no mapping to a window row');
         return;
       }
@@ -5294,57 +5281,11 @@
       refuses.push(ordered.length + ' complications exceed the dial\u2019s cap of ' + CLK_COMP_MAX + ' — remove one');
     return { rows: ordered, refuses: refuses };
   }
-  /* D34: the pointer table, planned. An author who sets a subdial's drive to
-   * `pointer` says the moving part IS the indication and refuses the plate-per-tick
-   * bank for it — one masked hand plate, and the dial turns it. Only a scale whose
-   * hand sweeps a WHOLE turn across its domain can take that carrier: the row's
-   * linear drive (zero + value*span/vmax, span inside one turn) lands the hand on
-   * every tick of a 60- or 12-division ring, and a date ring that stops 1/31 of a
-   * turn short of closing does not. A refused drive stays a refusal even when the
-   * rest of the bake is legal — silently falling back to plates would ship the
-   * carrier the author just said no to. Rows here carry the drive, not the art:
-   * the composer measures the plate and the pivot off the pixels and feeds them
-   * to bakeClock3's `aux` option. */
-  /* Which way a subdial's hand ships is the engine's call alone (owner, 2026-11-05; it was the
-   * author's Drive chip, D34): a seconds or hours ring, or any fan or slider, turns one hand
-   * plate; a ring that hosts another indication stays on the bank, because the plates carrier
-   * punches the host tile so the hosted tile sits inside it and a pointer row carries nothing
-   * to punch; every other scale stays on the bank. The editor and the bake share this one
-   * predicate, and an old design's `carrier` is ignored. */
-  function pointerDefault3(c, comps) {
-    if (c.type === 'subdial' && subTrack3(c, comps)) return true;   // an arc or a slider is always pointer-driven
-    if (c.type !== 'subdial') return false;   // the engine's call alone (owner, 2026-11-05): no authored carrier
-    var sc3 = subScale3(c, comps);
-    if (!(sc3 === 'seconds' || sc3 === 'hours')) return false;
-    // a hand on the sub-dial is its pointer, not another indication (D43 P5c)
-    return !(comps || []).some(function (x) { return x.host === c.id && x.type !== 'hand'; });
-  }
-  var COMP3_POINTER_SPAN = 3600;                       // one whole turn, tenths of a degree
-  function pointerPlan3(comps) {
-    var rows = [], refuses = [];
-    (comps || []).forEach(function (c) {
-      if (c.type !== 'subdial') return;
-      if (!pointerDefault3(c, comps)) return;
-      var id = c.id === undefined ? '?' : c.id;
-      if ((comps || []).some(function (x) { return x.host === id && x.type !== 'hand'; })) {
-        refuses.push('the subdial \u201c' + id + '\u201d hosts another indication: the plates carrier punches its '
-          + 'plate so the hosted tile sits inside the hole, and a pointer row carries nothing to punch — drive it as plates');
-        return;
-      }
-      var sc3 = subScale3(c, comps), src = COMP3_SCALE_SRC[sc3];
-      if (!src || !COMP3_RING_FULL[src]) {
-        refuses.push('the subdial \u201c' + id + '\u201d asks to be driven as a pointer and reads scale '
-          + '\u201c' + sc3 + '\u201d: a pointer plate turns through '
-          + 'a whole linear sweep, and that ring does not close under its own hand — drive it as plates');
-        return;
-      }
-      rows.push({ id: id, type: 'subdial', src: src, vmin: 0, vmax: COMP3_RING_FULL[src],
-                  span: COMP3_POINTER_SPAN, zero: 0, motion: MOTION_NAMES[MOTION_ROTATE] });
-    });
-    if (rows.length > CLK_AUX_MAX)
-      refuses.push(rows.length + ' pointers exceed the dial\u2019s ' + CLK_AUX_MAX + ' pointer slots \u2014 remove one');
-    return { rows: rows, refuses: refuses };
-  }
+  /* D43 P5e: the pointer table this file used to plan is gone. A sub-dial is a face,
+   * never a value row, so no ring of it can fail to close under its own hand and no
+   * face hosts an indication a plate bank would have to punch. Every hand on a face
+   * is its own pointer row, planned by the editor (clock-logic.js) and carried to
+   * bakeClock3's `aux` option, which is where a pointer row has always been baked. */
 
 
   /* ---- radar-plan §6.22: the accented Latin letters, as a base and a mark --------------
@@ -5453,8 +5394,7 @@
     // reason the dial will print instead of a reason of its own.
     bank3: bank3, stage3: stage3, bakeClock3: bakeClock3, budget3: budget3, splitPolicy3: splitPolicy3, estimate3: estimate3, estimate4: estimate4, EST4: EST4, GRID4: GRID4, pickPlan4: pickPlan4, planKey4: planKey4, bestPlan4: bestPlan4,
     carriageRect3: carriageRect3, carriageStart3: carriageStart3,
-    liveComps3: liveComps3, compPlan3: compPlan3, wheelPlan3: wheelPlan3, wheelDither3: wheelDither3, readDesign3: readDesign3, THEME_UPLOAD_MAX: THEME_UPLOAD_MAX, wheelTurns3: wheelTurns3, pointerPlan3: pointerPlan3,
-    pointerDefault3: pointerDefault3,
+    liveComps3: liveComps3, compPlan3: compPlan3, wheelPlan3: wheelPlan3, wheelDither3: wheelDither3, readDesign3: readDesign3, THEME_UPLOAD_MAX: THEME_UPLOAD_MAX, wheelTurns3: wheelTurns3,
     // D39: the sound vocabulary and the mirror of the dial's sound refusals.
     SOUND_SLOTS: SOUND_SLOTS, HOUR_PATTERNS: HOUR_PATTERNS, CLASS_SOUND: CLASS_SOUND, CLASS_VALUES: CLASS_VALUES,
     zlibFixed: zlibFixed,

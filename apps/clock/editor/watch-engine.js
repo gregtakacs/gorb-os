@@ -3684,6 +3684,57 @@
     return handComps(design).filter((c) => !c.host || c.host === 'dial' || subs[c.host])
       .map((c) => ({ id: c.id, kind: c.shows, sub: !!(c.host && c.host !== 'dial'), host: c.host && c.host !== 'dial' ? c.host : 'dial' }));
   }
+  /* D43 P5e (owner amendment 2 and the refinement to it): does anything below this face
+   * actually pass under it? A face's ink is the plate it paints plus the rim and the drop it
+   * wears: a round face's circle, or a slider's plate about its own centre (the lens scales
+   * the whole dial alike, so one radius in layout space answers for every case).
+   * A hand's reach is the disc it sweeps about its OWN arbour: the farthest corner of the
+   * sprite it ships, plus the length of the track it rides when it slides. A wheel's reach is
+   * its VISIBLE disc: what its cutouts show, or the whole disc only when it is exposed -- a
+   * wheel whose hidden part lies under the face but whose window does not does not lift it.
+   * Only the dial's own wheels are ever below a face: one hosted on this face is covered by
+   * it, one on another face is not below this one. Pure: no canvas reads beyond a sprite's own
+   * box, so the node suites hold the verdict directly. */
+  const faceInk = (s) => ({ x: s.x, y: s.y, r: (s.form === 'slider' && s.slide ? Math.hypot(s.slide.hl, s.slide.hh) : s.r) + 4 });
+  const handReach = (h) => {
+    const sp = h.sp;
+    let r = sp && sp.c ? Math.max(Math.hypot(sp.px, sp.py), Math.hypot(sp.c.width - sp.px, sp.py),
+                                  Math.hypot(sp.px, sp.c.height - sp.py), Math.hypot(sp.c.width - sp.px, sp.c.height - sp.py))
+      : +h.len || 0;
+    if (isSlide(h.motion)) r += Math.abs(slideGeom(h.motion)[1]);
+    return r;
+  };
+  const holeReaches = (hole, ink) => (inside(hole, ink.x, ink.y, 0) ? true
+    : holePts(hole).some((p) => Math.hypot(p[0] - ink.x, p[1] - ink.y) < ink.r));
+  // the hands' reach, by id: built with the layout, and stashed by buildHands before it asks
+  // for the draw order, so liveSeq never has to build a second set of hands
+  function handMap(lay, design) {
+    if (!lay.__reach && !lay.__hands) buildHands(lay, design, 'breguet', 'blued', null);
+    if (lay.__reach) return lay.__reach;
+    const m = {}; (lay.__hands || []).forEach((h) => { m[h.id] = h; });
+    return m;
+  }
+  /* { lifts, by }: the ONE verdict liveSeq folds or lifts by. `below` is the list of hand ids
+   * lower in the sequence than the face; the dial's wheels are below every face, so they count
+   * whatever the order says. `by` names the first layer found lifting it. */
+  function faceReach(lay, design, faceId, below) {
+    const s = (lay.subs || []).find((q) => String(q.id) === String(faceId));
+    if (!s) return { lifts: false, by: null };
+    const ink = faceInk(s), hm = handMap(lay, design);
+    for (let i = 0; i < (below || []).length; i++) {
+      const h = hm[below[i]];
+      if (!h || h.host === s.id) continue;                                  // a hand never lifts its own face
+      if (Math.hypot(h.x - s.x, h.y - s.y) < handReach(h) + ink.r) return { lifts: true, by: h.id };
+    }
+    for (let i = 0; i < (lay.wheels || []).length; i++) {
+      const w = lay.wheels[i];
+      if (w.host && w.host !== 'dial') continue;                            // only the dial's own wheels lie under every face
+      const over = w.exposed ? Math.hypot(w.x - s.x, w.y - s.y) < w.r + ink.r
+        : (w.holes || []).some((hole) => holeReaches(hole, ink));
+      if (over) return { lifts: true, by: w.id };
+    }
+    return { lifts: false, by: null };
+  }
   /* D43 P5d: the draw order, bottom first. A sub-dial's hands ride its face: the group
    * of a face left on the dial sits under the live band, its hands in comps order, and a
    * face the author lifted among the dial's hands carries its own hands with it.
@@ -3698,9 +3749,30 @@
     (design.order || []).forEach((e) => {
       const id = String(e);
       if (dialHands.includes(id) && !seen[id]) { live.push({ kind: 'hand', id }); seen[id] = 1; }
-      else if (id.indexOf('comp:') === 0 && subs[id.slice(5)] && !seen[id]) { live.push({ kind: 'sub', id: id.slice(5) }); seen[id] = 1; }
+      else if (id.indexOf('comp:') === 0 && subs[id.slice(5)] && !seen[id]) {
+        /* D43 P5e: an ordered face keeps the position the author gave it, but it only SHIPS as
+         * a still row there when something below it passes under it. With nothing reaching it
+         * the entry is a fold: the face stays with the plate wherever the order names it. */
+        const sid = id.slice(5), under = live.filter((x) => x.kind === 'hand').map((x) => x.id);
+        live.push(faceReach(lay, design, sid, under).lifts ? { kind: 'sub', id: sid } : { kind: 'fold', id: sid });
+        seen[sid] = 1;
+      }
     });
     dialHands.forEach((id) => { if (!seen[id]) live.push({ kind: 'hand', id }); });
+    /* A face the author left on the dial has no HAND below it -- the group of faces on the dial
+     * rides under the whole live band -- but the dial's wheels lie under every face, and one
+     * whose visible area reaches the ink lifts it. It ships at the bottom of the live band,
+     * just over the plate, with its own hands on it (Ruling 2). */
+    const reachers = [];
+    lay.subs.forEach((s) => {
+      if (seen['comp:' + s.id]) return;
+      const r = faceReach(lay, design, s.id, []);
+      if (r.lifts) reachers.push({ kind: 'sub', id: s.id });
+    });
+    if (reachers.length) {
+      let at = live.findIndex((e) => e.kind === 'hand');
+      live.splice(at < 0 ? live.length : at, 0, ...reachers);
+    }
     const lifted = {}; live.forEach((e) => { if (e.kind === 'sub') lifted[e.id] = 1; });
     const out = [];
     lay.subs.forEach((s) => { if (!lifted[s.id]) (own[s.id] || []).forEach((id) => out.push({ kind: 'hand', id })); });
@@ -3770,6 +3842,7 @@
       if (m.path === 'retrograde') hd.dir = (m.span != null ? +m.span : 180) < 0 ? 'ccw' : 'cw';
       else if (onTrack) hd.dir = (+m.travel || 1) < 0 ? 'ccw' : 'cw';
     });
+    lay.__reach = all;                                        // P5e: faceReach reads the hands off this pass, not a second one
     const list = handOrder(lay, design).filter((id) => all[id]).map((id) => all[id]);
     // each hand sits higher than the one below it, so shadows lengthen up the stack; the cap crowns the top hand of each arbor
     const top = {}, key = (h) => h.x.toFixed(1) + ',' + h.y.toFixed(1);
@@ -4900,7 +4973,9 @@
           if (!compOnly) return subBlock(sl);
           if (!hidden.complications && cp.subs[sl.id]) dz(() => ctx.drawImage(cp.subs[sl.id], 0, 0));
         };
-        seq.forEach((e) => { if (e.kind === 'hand') seg.push(e.id); else { flush(); if (subOf[e.id]) liftBlock(subOf[e.id]); } });
+        // a fold entry is plate-baked: the subBlock walk above already drew it, so the live
+        // band walks past it entirely -- no flush, the hand segments either side stay one call
+        seq.forEach((e) => { if (e.kind === 'hand') seg.push(e.id); else if (e.kind === 'sub') { flush(); if (subOf[e.id]) liftBlock(subOf[e.id]); } });
         flush();
       }
     }
@@ -4954,6 +5029,7 @@
     const flush = () => { if (!run.length) return; const ids = run; const c = cv(S); inset(c, (ctx) => F.drawHands(ctx, date, ids)); live.push({ canvas: c, still: false }); run = []; };
     seq.forEach((e) => {
       if (e.kind === 'hand') { run.push(e.id); return; }
+      if (e.kind === 'fold') return;                                        // P5e: plate-baked, no live row
       flush();
       const sl = subOf[e.id]; if (!sl) return;
       const c = cv(S);
@@ -5179,7 +5255,7 @@
         ['scale', 'tfont', 'torient', 'tdir', 'tweight', 'tsize', 'tstyle', 'tcolor', 'fanStart', 'fanSpan'].forEach((k) => delete c[k]);
         if (c.rim !== 1 && !isHex(c.rim)) delete c.rim;
         if (c.color === 'match') delete c.color;
-        delete c.carrier;   // the engine decides how a sub-dial's hand ships (pointerDefault3)
+        delete c.carrier;   // a sub-dial's hands are always pointer rows (D43 P5e)
         delete c.hstyle; delete c.hfinish;   // a face lends its hands its centre and its layer, never a look (owner, 2026-11-05)
         // a face's form and its own geometry; a round face carries none of the slider's
         if (c.form !== 'slider') delete c.form;
@@ -5214,7 +5290,7 @@
    * second copy of the number exists to drift. */
   window.WatchEngine = { SIZE: S, PRESETS, SCRATCH, template,
     TEETH_PER_LOOP: window.DialRenderer.TEETH_PER_LOOP,
-    bankFrames: (f) => window.DialRenderer.bankFrames(f), gearTempo: (g) => (Math.abs(g - 7.5) < 0.01 ? 8 : Math.round(g)), LENSES, DIAL_COLORS, COLOR_GROUPS, PLATES, BEZEL, canonDesign, faceFit, SCALE_STYLES, SCALE_GAP, TRACK_OF, FIGURES, scaleFamily, scaleRadius, CAL_DIMS, HAND_DIMS, caseMetalOf: (o) => caseMetal(o), TYPEFACES, OPENWORK, SEC_STYLES, NEW_COMP, TRAINS, HAND_STYLES, HAND_FINISHES, COMP_TYPES, COMP_STYLES, FRAME_COLORS, SHOWS, NUMERALS, SURFACES, COLOR_NAMES, SHAPES, SIZE_RANGE, TURN, CASE_STYLES, CASE_METALS, GLASS_STYLES, HAND_SHOWS, MARKERS, WHEEL_SHOWS, WHEEL_DIGITS, WHEEL_SRC, wheelSpec, CUT_LIES, WHEEL_TICKS, TICK_POS, wheelTicks, WHEEL_RIMS, RIM_POS, wheelRims, WHEEL_FINISHES, INDEX_STYLES, INDEX_SPANS, FACE_SNAPS, normDeg, prime, _holePts: holePts, WHEEL_FORMS, WHEEL_FACES, WHEEL_STYLES, LEGIBLE, LEGIBLE_PX, legible, PANEL, MM_PER_PX, pxMm, REAL_CSS, REAL_Z, RULER_MM, realCss, rulerPx, screenInch, handParts, caseLayer, glassLayer, movement, face, compose, composeLayers, topLayer, liveSeq, punchHoles, drawCage, handPreview, moonPhase, cycleDate, previewDate, PREVIEW_MOON, isHex, fmtDate, features, aimAngle, trainAngle, tune, wb: whiteBalance, wbData, FONT_NAME, FONTS, FLARE_ICONS, IMAGES,
+    bankFrames: (f) => window.DialRenderer.bankFrames(f), gearTempo: (g) => (Math.abs(g - 7.5) < 0.01 ? 8 : Math.round(g)), LENSES, DIAL_COLORS, COLOR_GROUPS, PLATES, BEZEL, canonDesign, faceFit, SCALE_STYLES, SCALE_GAP, TRACK_OF, FIGURES, scaleFamily, scaleRadius, CAL_DIMS, HAND_DIMS, caseMetalOf: (o) => caseMetal(o), TYPEFACES, OPENWORK, SEC_STYLES, NEW_COMP, TRAINS, HAND_STYLES, HAND_FINISHES, COMP_TYPES, COMP_STYLES, FRAME_COLORS, SHOWS, NUMERALS, SURFACES, COLOR_NAMES, SHAPES, SIZE_RANGE, TURN, CASE_STYLES, CASE_METALS, GLASS_STYLES, HAND_SHOWS, MARKERS, WHEEL_SHOWS, WHEEL_DIGITS, WHEEL_SRC, wheelSpec, CUT_LIES, WHEEL_TICKS, TICK_POS, wheelTicks, WHEEL_RIMS, RIM_POS, wheelRims, WHEEL_FINISHES, INDEX_STYLES, INDEX_SPANS, FACE_SNAPS, normDeg, prime, _holePts: holePts, WHEEL_FORMS, WHEEL_FACES, WHEEL_STYLES, LEGIBLE, LEGIBLE_PX, legible, PANEL, MM_PER_PX, pxMm, REAL_CSS, REAL_Z, RULER_MM, realCss, rulerPx, screenInch, handParts, caseLayer, glassLayer, movement, face, compose, composeLayers, topLayer, liveSeq, faceReach, punchHoles, drawCage, handPreview, moonPhase, cycleDate, previewDate, PREVIEW_MOON, isHex, fmtDate, features, aimAngle, trainAngle, tune, wb: whiteBalance, wbData, FONT_NAME, FONTS, FLARE_ICONS, IMAGES,
     // uploaded art: the registry the composer persists, and the two draw helpers
     // (drawAsset for a placed backdrop, handSpriteAsset for a sprite-backed hand)
     assetFromFile, assetGet, assetReady, assetKnown, assetFits, assetBytes, assetDump, assetRestore, assetDrop, assetClear,

@@ -1,0 +1,29 @@
+{
+  "name": "p5e",
+  "repo": "../..",
+  "base": "p5e-subdial-pointers",
+  "retries": 2,
+  "steps": [
+    {
+      "name": "p5e-1-baker-plan",
+      "spec": "docs/specs/p5e-1-baker-plan.md",
+      "verify": "set -o pipefail; export PATH=/home/greg/.local/share/nodeenv-gorb/bin:$PATH; R=$PWD; test -z \"$(git diff --name-only 0303a6be -- apps/clock/main.c main apps/clock/version.txt)\" && cd $R/apps/clock/editor/_selftest && node headless-subdial.test.js | tail -1 | grep -q 'all green' && for f in headless-*.test.js; do [ $f = headless-sound.test.js ] && continue; node $f > /tmp/suite.log 2>&1 || { echo FAIL $f; tail -20 /tmp/suite.log; exit 1; }; GORB_HOST='{\"kind\":\"hub\"}' NODE_OPTIONS=\"--require=$R/tools/orb-manager/web/runtime/_selftest/gorb-host-preload.js\" node $f > /tmp/suite.log 2>&1 || { echo FAIL hub $f; tail -20 /tmp/suite.log; exit 1; }; echo ok $f; done && cd $R && ! grep -rIn 'does not close under its own hand\\|hosts another indication\\|COMP3_RING_FULL\\|pointerPlan3\\|pointerDefault3' apps tools"
+    },
+    {
+      "name": "p5e-2-engine-fold",
+      "spec": "docs/specs/p5e-2-engine-fold.md",
+      "verify": "set -o pipefail; export PATH=/home/greg/.local/share/nodeenv-gorb/bin:$PATH; R=$PWD; test -z \"$(git diff --name-only 0303a6be -- apps/clock/main.c main apps/clock/version.txt)\" && cd $R/apps/clock/editor/_selftest && node headless-subdial.test.js | tail -1 | grep -q 'all green' && for f in headless-*.test.js; do [ $f = headless-sound.test.js ] && continue; node $f > /tmp/suite.log 2>&1 || { echo FAIL $f; tail -20 /tmp/suite.log; exit 1; }; GORB_HOST='{\"kind\":\"hub\"}' NODE_OPTIONS=\"--require=$R/tools/orb-manager/web/runtime/_selftest/gorb-host-preload.js\" node $f > /tmp/suite.log 2>&1 || { echo FAIL hub $f; tail -20 /tmp/suite.log; exit 1; }; echo ok $f; done && cd $R && node -e \"const s=require('fs').readFileSync('apps/clock/editor/watch-engine.js','utf8'); if(!/faceReach/.test(s)||!/kind: 'fold'/.test(s)) process.exit(1)\"",
+      "hard": true
+    },
+    {
+      "name": "p5e-3-editor-pointers",
+      "spec": "docs/specs/p5e-3-editor-pointers.md",
+      "verify": "set -o pipefail; export PATH=/home/greg/.local/share/nodeenv-gorb/bin:$PATH; R=$PWD; test -z \"$(git diff --name-only 0303a6be -- apps/clock/main.c main apps/clock/version.txt)\" && cd $R/apps/clock/editor/_selftest && node headless-subdial.test.js | tail -1 | grep -q 'all green' && for f in headless-*.test.js; do [ $f = headless-sound.test.js ] && continue; node $f > /tmp/suite.log 2>&1 || { echo FAIL $f; tail -20 /tmp/suite.log; exit 1; }; GORB_HOST='{\"kind\":\"hub\"}' NODE_OPTIONS=\"--require=$R/tools/orb-manager/web/runtime/_selftest/gorb-host-preload.js\" node $f > /tmp/suite.log 2>&1 || { echo FAIL hub $f; tail -20 /tmp/suite.log; exit 1; }; echo ok $f; done && cd $R && ! grep -n 'handsOf\\|_ptrHint\\|PTSCALE3' apps/clock/editor/clock-logic.js"
+    },
+    {
+      "name": "p5e-4-wheels-under-lifted-faces",
+      "spec": "docs/specs/p5e-4-wheels-under-lifted-faces.md",
+      "verify": "set -o pipefail; export PATH=/home/greg/.local/share/nodeenv-gorb/bin:$PATH; R=$PWD; test -z \"$(git diff --name-only 0303a6be -- apps/clock/main.c main apps/clock/version.txt)\" && cd $R/apps/clock/editor/_selftest && node headless-subdial.test.js | tail -1 | grep -q 'all green' && for f in headless-*.test.js; do [ $f = headless-sound.test.js ] && continue; node $f > /tmp/suite.log 2>&1 || { echo FAIL $f; tail -20 /tmp/suite.log; exit 1; }; GORB_HOST='{\"kind\":\"hub\"}' NODE_OPTIONS=\"--require=$R/tools/orb-manager/web/runtime/_selftest/gorb-host-preload.js\" node $f > /tmp/suite.log 2>&1 || { echo FAIL hub $f; tail -20 /tmp/suite.log; exit 1; }; echo ok $f; done && cd $R && ! grep -rIn 'turns under the face' apps tools"
+    }
+  ]
+}

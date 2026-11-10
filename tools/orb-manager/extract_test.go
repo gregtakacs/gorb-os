@@ -100,8 +100,21 @@ func TestExtractEditorsMatchesWhatTheHubServes(t *testing.T) {
 			checkExtractedApp(t, out, rows[strings.TrimSuffix(f, ":ok")])
 		}
 	}
-	// stdout is one line per app: the status, then the app or the reason.
-	for _, line := range []string{"ok         clock v1.6.2+e969d69 (9 files)",
+	// stdout is one line per app: the status, then the app or the reason. The clock's line is
+	// built from its own row, not pinned: a stamp written here broke on every release. Its
+	// version must still be the one apps/clock/version.txt names, so a stale shelf fails.
+	clock := rows["clock.orbapp"]
+	src, err := os.ReadFile(filepath.Join("..", "..", "apps", "clock", "version.txt"))
+	if err != nil {
+		t.Fatalf("apps/clock/version.txt: %v", err)
+	}
+	if want := strings.TrimSpace(string(src)) + "+"; !strings.HasPrefix(clock.Version, want) {
+		t.Errorf("the shelf clock is %q; apps/clock/version.txt says %q: rebuild the shelf (make apps)", clock.Version, want)
+	}
+	if clock.Editor == nil {
+		t.Fatalf("the clock row has no editor: %+v", clock)
+	}
+	for _, line := range []string{fmt.Sprintf("ok         %s %s (%d files)", clock.Slug, clock.Version, len(clock.Editor.Files)),
 		"no-editor  color_picker.orbapp: this app ships no editor"} {
 		if !strings.Contains(stdout, line) {
 			t.Errorf("stdout lacks %q:\n%s", line, stdout)

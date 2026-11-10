@@ -1,0 +1,30 @@
+{
+  "name": "s2-gorb",
+  "repo": "../..",
+  "base": "s2",
+  "retries": 2,
+  "timeout": 5400,
+  "steps": [
+    {
+      "name": "s2-1-editor-listener",
+      "spec": "docs/specs/s2-1-editor-listener.md",
+      "verify": "export GOFLAGS=-buildvcs=false PATH=/usr/local/go/bin:$PATH && R=$PWD && cd tools/orb-manager && go vet ./... && test \"$(go test -run 'EditorOrigin|EditorToken|EditorListener|EditorDocument|EditorSubresources|EditorAPI|ControlNoLonger|LegacyEditor' -v . | grep -cE '^--- PASS: Test(EditorOriginIsPerAppAndLoopback|EditorTokenIsPerAppAndPerLaunch|EditorListenerRefusesForeignHosts|EditorDocumentNeedsItsOwnToken|EditorSubresourcesLoadSameOriginOnly|EditorAPIOnlyTheListedRoutes|EditorAPIRefusesWithoutItsHeader|ControlNoLongerServesEditors|LegacyEditorDocumentGetsTheShim) ')\" = 9 && ! grep -n 'setLaunchToken' editor.go && cd $R && test -z \"$(git diff --stat s2 -- tools/orb-manager/contract apps tools/orb-manager/web)\" && sh docs/specs/s2-gotest.sh"
+    },
+    {
+      "name": "s2-2-editor-scope-and-control-gate",
+      "spec": "docs/specs/s2-2-editor-scope-and-control-gate.md",
+      "verify": "export GOFLAGS=-buildvcs=false PATH=/usr/local/go/bin:$PATH && R=$PWD && cd tools/orb-manager && go vet ./... && test \"$(go test -run 'EditorTokenOpensNoControlRoute|EditorOriginRefusedEvenWithTheControlCookie|EditorListenerServesNoControlRoute|EditorAPIScopeIsItsApp|ControlHostGuard|HubIndexRefusesFraming' -v . | grep -cE '^--- PASS: Test(EditorTokenOpensNoControlRoute|EditorOriginRefusedEvenWithTheControlCookie|EditorListenerServesNoControlRoute|EditorAPIScopeIsItsApp|ControlHostGuard|HubIndexRefusesFraming) ')\" = 6 && ! grep -nE 'case .*\"same-site\"' security.go && grep -q 'Editors run on their own origin' README.md && cd $R && test -z \"$(git diff --stat s2 -- tools/orb-manager/contract apps tools/orb-manager/web)\" && sh docs/specs/s2-gotest.sh"
+    },
+    {
+      "name": "s2-3-hub-page-and-runtime",
+      "spec": "docs/specs/s2-3-hub-page-and-runtime.md",
+      "verify": "export GOFLAGS=-buildvcs=false PATH=/usr/local/go/bin:$PATH && R=$PWD && node --check tools/orb-manager/web/app.js && test -z \"$(grep -n \"'/api/\" tools/orb-manager/web/runtime/theme@1/*.js tools/orb-manager/web/runtime/host@1/host.js)\" && grep -q 'themeEditorOrigin' tools/orb-manager/web/app.js && grep -q 'editorFrameSrc' tools/orb-manager/web/app.js && test -z \"$(git diff --stat s2 -- tools/orb-manager/contract apps tools/orb-manager/web/runtime/host@1/page.html)\" && cd tools/orb-manager/web/runtime/_selftest && node headless-gorbhost.test.js | tail -3 | grep -q 'all green' && node headless-session.test.js | tail -1 | grep -q 'all green' && node headless-send.test.js && PY=python3 node headless-test.js && cd $R && make check-editor && make check-runner && make check-web && sh docs/specs/s2-gotest.sh"
+    },
+    {
+      "name": "s2-4-live-gate",
+      "spec": "docs/specs/s2-4-live-gate.md",
+      "hard": true,
+      "verify": "export GOFLAGS=-buildvcs=false PATH=/usr/local/go/bin:$PATH && make check-editor-origin 2>&1 | tail -15 | tee /tmp/s2-live-1.txt && grep -q 'editor-origin-live: 8/8 passed' /tmp/s2-live-1.txt && node tools/orb-manager/web/runtime/_selftest/editor-origin-live.js --json /tmp/s2.json | tail -1 | grep -q '8/8 passed' && node -e \"const j=require('/tmp/s2.json'); if(!j.hostile||j.hostile.length<30) process.exit(1)\" && test -z \"$(git diff --stat s2 -- tools/orb-manager/contract apps tools/orb-manager/web/runtime/host@1/page.html)\" && sh docs/specs/s2-gotest.sh"
+    }
+  ]
+}

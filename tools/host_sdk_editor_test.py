@@ -218,6 +218,31 @@ def run(sdk):
     d1, m1 = app({"index.html": b"x"})
     txt, rc, why = say(["check-migrations", disk(with_fixtures(d1, ["notes.txt"]), m1)])
     ck(rc == 1 and "not named schema-<n>.orbdesign" in why, "a stray in _fixtures is refused (%s)" % why)
+
+    # The SDK's own directory is the generic SDK, not an app: apps/*/ catches it and
+    # `apps/sdk/` has no app.json, so check-migrations skips it. Any other directory
+    # without app.json still fails, so a typo is never silently skipped.
+    skip = "the SDK itself, not an app, skipped"
+    txt, rc, why = say(["check-migrations", sdk.SDK])
+    ck(rc == 0 and txt == "%s: %s\n" % (sdk.SDK, skip),
+       "check-migrations skips the SDK's own directory naming it as given (%r, %r)" % (txt, why))
+    txt, rc, why = say(["check-migrations", sdk.SDK + os.sep])
+    ck(rc == 0 and skip in txt, "a trailing slash on the SDK is still the SDK (%r)" % txt)
+    cwd = os.getcwd()
+    os.chdir(os.path.dirname(sdk.SDK))
+    try:
+        txt, rc, why = say(["check-migrations", os.path.basename(sdk.SDK)])
+        ck(rc == 0 and txt == "%s: %s\n" % (os.path.basename(sdk.SDK), skip),
+           "the SDK reached by a relative path is still skipped, as given (%r, %r)" % (txt, why))
+    finally:
+        os.chdir(cwd)
+    dempty = tempfile.mkdtemp(prefix="sdkapp.")
+    txt, rc, why = say(["check-migrations", dempty])
+    ck(rc == 1 and "has no app.json" in why,
+       "a directory that is not the SDK and has no app.json still fails (%s)" % why)
+    txt, rc, why = say(["check-migrations", sdk.SDK, dempty])
+    ck(rc == 1 and skip in txt and "has no app.json" in why,
+       "the SDK's skip does not hide a later failure (%r, %s)" % (txt, why))
     return fails
 
 
@@ -244,6 +269,7 @@ MUTANTS = (
     ("no fixture rule", "schema_fixture_rule(m[\"slug\"], schema, fixtures_dir(appdir, m))", "pass"),
     ("build compiles first", "if editor_dir(d, m):\n            editor_region(d, m, version(d))",
      "if 0:\n            editor_region(d, m, version(d))"),
+    ("the SDK is not skipped", "if os.path.realpath(d) == os.path.realpath(SDK):", "if 0:"),
 )
 
 

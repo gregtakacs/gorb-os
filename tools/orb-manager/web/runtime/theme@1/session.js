@@ -24,6 +24,9 @@
  *     shared name <name> by @<handle> and downloaded, with nothing of it saved.
  *   - on the hub, an import (?import=<ticket>): a site's design bundle the hub fetched, baked here
  *     under its shared name and kept in the hub's library with where it came from (orb-os-net §7.1).
+ *   - on a site, a save it refused because its editor was updated (orb-os-net §6.5): the design goes
+ *     into this tab's sessionStorage, the tab reloads into the version the site named, and that
+ *     editor opens the design back through the same checks and migrations any open runs.
  *
  * Everything is per app (?app=, else the host's slug), so two apps' editors never read
  * each other's designs. Plain JS, no React. The app keeps what only it knows:
@@ -155,6 +158,8 @@
     api.version = function () { var a = typeof root !== 'undefined' && root.__ORB_APP; return (a && a.version) || 'dev'; };
     // the keys this browser held before K9: read once to move My designs, then dropped
     api.sessionKey = function () { return 'wc.session.' + api.slug(); };
+    // the design a site's stale-editor refusal handed to this tab (orb-os-net §6.5)
+    api.handoffKey = function () { return 'orb.handoff.' + api.slug(); };
     api.mineKey = function () { return 'wc.mine.' + api.slug(); };
     // the orb this page was served for: /editor/<ip>/<slug>/…, or null off the hub. Under a
     // web host there is no orb, and the site's library stands where the hub's does.
@@ -163,11 +168,18 @@
       var m = /^\/editor\/(\d{1,3}(?:\.\d{1,3}){3})\/([a-z0-9_-]{1,32})\//i.exec(String((root.location && root.location.pathname) || ''));
       return m ? { ip: m[1], slug: m[2] } : null;
     };
-    // a hub route's {ok, data} answer, or a throw carrying the hub's own sentence
+    // a hub route's {ok, data} answer, or a throw carrying the hub's own sentence. A site's
+    // refusal naming a newer editor (orb-os-net M1) rides on the throw as e.updated.
+    var VER = /^v\d+\.\d+\.\d+$/;
     var hubJson = async function (path, opts) {
       var r = await fetch(path, opts), j = null;
       try { j = await r.json(); } catch (e) { j = null; }
-      if (!r.ok || !j || j.ok === false) throw new Error((j && j.error) || OrbTheme.hostText('the hub answered ' + r.status, 'the server answered ' + r.status));
+      if (!r.ok || !j || j.ok === false) {
+        var x = new Error((j && j.error) || OrbTheme.hostText('the hub answered ' + r.status, 'the server answered ' + r.status));
+        if (j && j.updated && typeof j.updated === 'object' && !Array.isArray(j.updated) &&
+          typeof j.updated.version === 'string' && VER.test(j.updated.version)) x.updated = { version: j.updated.version };
+        throw x;
+      }
       return j.data;
     };
 
@@ -325,6 +337,25 @@
       host.set({});
       return true;
     };
+    /* a site that refuses a save because its editor was updated carries the design into the newer
+     * one (orb-os-net §6.5): the document rides this tab's sessionStorage, the tab reloads into the
+     * version the site named, and that editor opens what it finds there. The url keeps the pathname
+     * and drops the query on purpose: the new page opens the stash, not what ?theme= names. */
+    var handoffUrl = function (to) {
+      var p = String((root.location && root.location.pathname) || ''), s = p.indexOf('/', 1), seg = s < 0 ? p.slice(1) : p.slice(1, s);
+      if (!VER.test(seg)) return '/' + to + '/';
+      return s < 0 ? '/' + to : '/' + to + p.slice(s);
+    };
+    // false when the design cannot be carried: no sessionStorage, or one the document is too big for
+    var handoff = function (to, entry) {
+      var ss = null; try { ss = root.sessionStorage; } catch (e) { ss = null; }
+      if (!ss || typeof ss.setItem !== 'function') return false;
+      try {
+        ss.setItem(api.handoffKey(), JSON.stringify({ format: 1, app: api.slug(), to: to, from: api.version(),
+          name: entry.name, doc: entry.doc, extra: extrasOf(entry), opened: api.opened || null, at: Date.now() }));
+      } catch (e) { return false; }
+      return true;
+    };
     // entry: {name, doc, ...anything the app lists by}. A draft under a theme's name sits beside
     // it as that theme's unsent changes; under a draft's name it replaces it.
     // quiet (Send to orb's first step): no line unless it fails, so the send's own lines stand
@@ -333,7 +364,15 @@
     var saveEntry = async function (entry, quiet, asNew) {
       if (!api.hubOrb()) { if (!quiet) say('Not saved: ' + offHub); return false; }
       try { await saveDraft(entry.name, entry.doc, extrasOf(entry), asNew); }
-      catch (e) { say('Not saved: ' + err(e)); return false; }
+      catch (e) {
+        // a site's stale refusal is the one that costs nothing: hand the design to the new editor
+        var to = OrbTheme.hostInfo().kind === 'web' && e && e.updated ? e.updated.version : null;
+        if (!to) { say('Not saved: ' + err(e)); return false; }
+        if (!handoff(to, entry)) { say('Not saved: ' + err(e) + ', and this design is too big to carry over to it: use Export to keep it as a file, then reload and import it'); return false; }
+        say('Not saved: ' + err(e) + '. Reopening your design in ' + to + '…');
+        root.location.replace(handoffUrl(to));
+        return false;
+      }
       await api.libraryRefresh();
       if (quiet) return true;
       var e = api.libraryEntry(entry.name);
@@ -414,10 +453,32 @@
       return { done: done, failed: failed };
     };
 
+    /* the other half of a site's stale-editor refusal (orb-os-net §6.5): the design an old tab
+     * stashed opens here, in the editor the site reloaded this tab into. The key goes before the
+     * apply, so a design this editor cannot read never comes back to loop on the next load. A hub
+     * neither writes nor reads it: nothing on the hub goes stale under a tab's feet. */
+    var handBack = function () {
+      var ss = null; try { ss = root.sessionStorage; } catch (e) { ss = null; }
+      if (!ss || typeof ss.getItem !== 'function') return false;
+      var raw = null; try { raw = ss.getItem(api.handoffKey()); } catch (e) { return false; }
+      if (typeof raw !== 'string') return false;
+      try { ss.removeItem(api.handoffKey()); } catch (e) { /* already gone */ }
+      var stash = null; try { stash = JSON.parse(raw); } catch (e) { stash = null; }
+      if (!stash || stash.format !== 1 || stash.app !== api.slug()) return false;
+      var why = api.apply(stash.doc, 'the design you were editing');
+      if (why) { say('Your design from ' + stash.from + ' could not be reopened in ' + api.version() + ': ' + why); return false; }
+      api.restart();
+      var o = stash.opened;
+      api.opened = o && typeof o === 'object' && typeof o.id === 'string' && /^[A-Za-z0-9_-]{22}$/.test(o.id) && typeof o.name === 'string' ? o : null;
+      say(api.slug() + "'s editor was updated to " + api.version() + ': your design is back as you left it. Save it again to keep it');
+      return true;
+    };
+
     /* ---- boot: drop the browser's old autosave; under the hub, move any My designs this
      * browser still holds from before K9 into the library as drafts (references only: they
      * never held their art), read the library, ask the hub what the orb runs, then do what
-     * the page was opened for: ?entry=<name> opens that entry, ?rebake=1 runs Rebake all. */
+     * the page was opened for: ?entry=<name> opens that entry, ?rebake=1 runs Rebake all.
+     * On a site, a design a stale refusal stashed opens first and takes their place. */
     // a boot that throws never reaches the open it was covering for
     api.boot = async function () {
       try { return await boot(); } catch (e) { opening(null); throw e; }
@@ -447,6 +508,9 @@
       } catch (e) { api.orbNote = ''; }
       if (api.orbNote) say('Heads up: ' + api.orbNote);
       var q = null; try { q = new URLSearchParams(root.location.search); } catch (e) { q = null; }
+      // a design a stale refusal handed to this version of the editor opens instead of the open
+      // this page was asked for, which is whatever the pre-reload tab had been asked for
+      if (OrbTheme.hostInfo().kind === 'web' && handBack()) return true;
       // an import page reads its library but opens and rebakes nothing: the import is what it came for
       if (!importOf(q)) {
         var entry = q && q.get('entry');

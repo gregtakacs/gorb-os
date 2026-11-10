@@ -5,7 +5,9 @@
 // fake-hub.js: drafts, themes, unsent changes, opening at the newest design, discarding,
 // forgetting, ?entry=, Rebake all), the move of a browser's old designs, the hub's word on
 // the orb's release, the design envelope with its migrations and refusals, the older-design
-// note, opening a design file, an .orbtheme's design and the hub's Edit door.
+// note, opening a design file, an .orbtheme's design and the hub's Edit door, and a site's
+// stale-editor hand-off: a save refused with a newer version carried through sessionStorage into
+// the reloaded editor (orb-os-net §6.5).
 //
 //   node headless-session.test.js
 'use strict';
@@ -16,13 +18,19 @@ setTimeout(() => { console.log('FAIL timed out (' + checked + ' checks run)'); p
 
 // the window: a browser store that can be made to refuse, an address, and the hub
 const store = new Map(); let refuse = false;
+const sstore = new Map(); let ssRefuse = false, replaced = [];
 global.window = globalThis;
 global.localStorage = {
   getItem: (k) => (store.has(k) ? store.get(k) : null),
   setItem: (k, v) => { if (refuse) { const e = new Error('full'); e.name = 'QuotaExceededError'; throw e; } store.set(k, String(v)); },
   removeItem: (k) => { store.delete(k); },
 };
-global.location = { origin: 'http://hub', search: '', pathname: '/' };
+global.sessionStorage = {
+  getItem: (k) => (sstore.has(k) ? sstore.get(k) : null),
+  setItem: (k, v) => { if (ssRefuse) { const e = new Error('full'); e.name = 'QuotaExceededError'; throw e; } sstore.set(k, String(v)); },
+  removeItem: (k) => { sstore.delete(k); },
+};
+global.location = { origin: 'http://hub', search: '', pathname: '/', replace: (u) => { replaced.push(String(u)); } };
 let hub = null;
 const fakeHub = require(path.join(__dirname, 'fake-hub.js'));
 let fh = fakeHub({ rest: (url, o) => hub(url, o) });
@@ -443,6 +451,175 @@ const edit = (app, p) => { app.set(p); app.ses.track(); };
     global.GorbHost = { kind: 'web' };
     ok(OrbTheme.hostText('on the hub', 'in your library') === 'in your library', 'kind "web" is the site’s words');
     delete global.GorbHost;
+  }
+
+  // ---- a tab left open across an update (orb-os-net §6.5): a site that refuses a save because its
+  // editor was updated hands the design to the newer one through sessionStorage, and that editor
+  // opens it back on boot. Nothing is lost, and the user saves again.
+  {
+    const WEB = { kind: 'web', api: '/studio-api', designIds: true };
+    const WEBART = { kind: 'web', api: '/studio-api', assets: true, designIds: true };
+    const keepVer = window.__ORB_APP, keepFetch = global.fetch, ssWas = global.sessionStorage;
+    window.__ORB_APP = { slug: 'tint', version: 'v1.0.0' };
+    const KEY = 'orb.handoff.tint', ID = 'abcdefghijklmnopqrstuv';
+    const UPD = { status: 409, body: { ok: false, error: "Clock's editor was updated", updated: { version: 'v9.9.9' } } };
+    const dsg = (c, extra) => Object.assign({ format: 'wc-design', schema: 1, app: 'tint', appVersion: 'v1.0.0', color: c, size: 5 }, extra || {});
+    const stashOf = () => JSON.parse(sstore.get(KEY) || 'null');
+    const reset = () => { sstore.clear(); store.clear(); replaced.length = 0; fh.drafts.clear(); fh.themes.clear(); fh.calls.length = 0; fh.refuse = null; fh.source = { source: 'library', relation: 'same' }; location.pathname = '/v1.0.0/'; location.search = ''; };
+    // the fake hub as a site at /studio-api, with /design/save answered as `ans` says (null: as usual)
+    const site = (ans) => async (url, o) => {
+      const u = String(url).replace(/^\/studio-api/, '/api');
+      if (ans && /^\/api\/design\/save/.test(u)) return { ok: false, status: ans.status, json: async () => JSON.parse(JSON.stringify(ans.body)) };
+      return fh.fetch(u, o);
+    };
+    const saidReload = "Not saved: Clock's editor was updated. Reopening your design in v9.9.9…";
+    const saidTooBig = "Not saved: Clock's editor was updated, and this design is too big to carry over to it: use Export to keep it as a file, then reload and import it";
+    const web = (host) => { reset(); global.GorbHost = host; global.fetch = site(UPD); };
+
+    ok(mk().ses.handoffKey() === KEY, 'the stash is keyed by the runtime and the app', mk().ses.handoffKey());
+    location.search = '?app=clock';
+    ok(mk().ses.handoffKey() === 'orb.handoff.clock', 'and two apps of one site never share it');
+
+    // 1. a save refused with a newer version: the design is stashed and the tab reloaded into it
+    web(WEB);
+    location.search = '?theme=D1';
+    const a = mk(); await a.ses.boot();
+    a.ses.opened = { id: ID, name: 'One' };
+    const t0 = Date.now();
+    const r1 = await a.ses.saveDraft({ name: 'One', doc: dsg('teal'), dial: 'round' });
+    const st1 = stashOf();
+    ok(r1 === false, 'a save the site refused because its editor was updated did not save');
+    ok(replaced.length === 1 && replaced[0] === '/v9.9.9/', 'the tab reloaded into the version the site named, at the same page, its query dropped', JSON.stringify(replaced));
+    ok(st1 && st1.format === 1 && st1.app === 'tint' && st1.to === 'v9.9.9' && st1.from === 'v1.0.0', 'the design went into sessionStorage with where it came from and where it is going', JSON.stringify(st1 && [st1.format, st1.app, st1.to, st1.from]));
+    ok(st1.name === 'One' && JSON.stringify(st1.doc) === JSON.stringify(dsg('teal')) && JSON.stringify(st1.extra) === JSON.stringify({ dial: 'round' }), 'the entry’s name, its document, and the extras the library lists it by', JSON.stringify(st1 && st1.extra));
+    ok(JSON.stringify(st1.opened) === JSON.stringify({ id: ID, name: 'One' }), 'and the design id this page held, so the new one saves back over it', JSON.stringify(st1 && st1.opened));
+    ok(typeof st1.at === 'number' && st1.at >= t0 && st1.at <= Date.now(), 'stamped with the moment it was written', String(st1 && st1.at));
+    ok(a.state.status === saidReload, 'and the line says the site’s sentence and the reload', a.state.status);
+    // the document the stash holds is the editor's own, not the ref form the save posts
+    web(WEBART);
+    const bytes = new Uint8Array(600); for (let i = 0; i < 600; i++) bytes[i] = (i * 7 + 3) & 0xff;
+    const sha = Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', bytes))).map((x) => (x < 16 ? '0' : '') + x.toString(16)).join('');
+    const pic = 'data:image/png;base64,' + btoa(Array.from(bytes, (x) => String.fromCharCode(x)).join(''));
+    const artDoc = { format: 'wc-design', schema: 1, app: 'tint', appVersion: 'v1.0.0', color: 'teal', size: 5, art: [pic] };
+    global.fetch = site(null);
+    const wt = mk(); await wt.ses.boot();
+    // the first save posts that image inline for the site to keep, the next one sends the ref it
+    // learned from that — the shape this site wants a save to look like, and what the stash is not
+    ok(await wt.ses.saveDraft({ name: 'One', doc: artDoc }) && await wt.ses.saveDraft({ name: 'One', doc: artDoc }) &&
+      fh.drafts.get('tint').get('One').art[0] === 'orb-asset:' + sha,
+      'a site with the assets flag was sent that image as a ref once it knew it', String(fh.drafts.get('tint').get('One').art[0]).slice(0, 22));
+    global.fetch = site(UPD);
+    wt.ses.opened = { id: ID, name: 'One' };
+    ok(!(await wt.ses.saveDraft({ name: 'One', doc: artDoc })) && stashOf().doc.art[0] === pic && artDoc.art[0] === pic,
+      'and the stash carries the document as the editor built it, its art inline and its own copy unchanged', String(stashOf().doc.art[0]).slice(0, 24));
+    // 2. a design the browser will not hold is not carried, and the tab does not reload
+    web(WEB); ssRefuse = true;
+    const q = mk(); await q.ses.boot();
+    ok(!(await q.ses.saveDraft({ name: 'One', doc: dsg('teal') })) && !replaced.length && !sstore.size,
+      'a stash the browser refuses keeps the page where it is');
+    ok(q.state.status === saidTooBig, 'and names Export as the way to keep the design', q.state.status);
+    ssRefuse = false;
+    delete global.sessionStorage;
+    const nz = mk(); await nz.ses.boot();
+    ok(!(await nz.ses.saveDraft({ name: 'One', doc: dsg('teal') })) && !replaced.length && nz.state.status === saidTooBig,
+      'a browser with no sessionStorage at all says the same line and reloads nothing');
+    global.sessionStorage = ssWas;
+    // 3. every other refusal is exactly today's
+    web(WEB); global.fetch = site({ status: 409, body: { ok: false, error: 'you already have a design called “One”' } });
+    const n1 = mk(); await n1.ses.boot();
+    ok(!(await n1.ses.saveDraft({ name: 'One', doc: dsg('teal') })) && !replaced.length && !sstore.size &&
+      n1.state.status === 'Not saved: you already have a design called “One”', 'a 409 naming no new version says only its sentence', n1.state.status);
+    global.fetch = site({ status: 400, body: { ok: false, error: 'that is not a design document' } });
+    ok(!(await mk().ses.saveDraft({ name: 'One', doc: dsg('teal') })) && !replaced.length && !sstore.size, 'and so does a 400');
+    global.fetch = site({ status: 409, body: { ok: false, error: 'the editor was updated', updated: { version: 'latest' } } });
+    const n2 = mk();
+    ok(!(await n2.ses.saveDraft({ name: 'One', doc: dsg('teal') })) && !replaced.length && !sstore.size && n2.state.status === 'Not saved: the editor was updated',
+      'an updated whose version is not one is no hand-off: the grammar is the whole of the trust', n2.state.status);
+    global.fetch = site({ status: 409, body: { ok: false, error: 'the editor was updated', updated: 'v9.9.9' } });
+    ok(!(await mk().ses.saveDraft({ name: 'One', doc: dsg('teal') })) && !replaced.length && !sstore.size,
+      'and an updated that is not an object is none either');
+    // 4. a hub given the same answer changes nothing
+    const underHub = async (host) => {
+      web(undefined); global.GorbHost = host; location.pathname = ON_HUB;
+      const h = mk(); await h.ses.boot();
+      const no = await h.ses.saveDraft({ name: 'One', doc: dsg('teal') });
+      return [no, replaced.length, sstore.size, h.state.status];
+    };
+    delete global.GorbHost;
+    ok(JSON.stringify(await underHub(undefined)) === JSON.stringify([false, 0, 0, "Not saved: Clock's editor was updated"]),
+      'under no GorbHost at all the same refusal is today’s: nothing stashed, no reload');
+    ok(JSON.stringify(await underHub({ kind: 'hub' })) === JSON.stringify([false, 0, 0, "Not saved: Clock's editor was updated"]),
+      'and the same under kind "hub"');
+    // 5. the new editor's boot: the stash is migrated by its own steps and opens in its place
+    // arms a site page for a boot with `stash` in sessionStorage, and records the urls it asks for
+    const arm = (stash, search) => {
+      const urls = [];
+      reset(); global.GorbHost = WEB; location.search = search || '';
+      global.fetch = (u, o) => { urls.push(String(u)); return site(null)(u, o); };
+      if (stash !== null) sstore.set(KEY, typeof stash === 'string' ? stash : JSON.stringify(stash));
+      return urls;
+    };
+    const of5 = (o) => Object.assign({ format: 1, app: 'tint', to: 'v1.0.0', from: 'v0.9.9', name: 'One', doc: dsg('teal', { schema: 1, appVersion: 'v0.9.9' }), extra: { dial: 'round' }, opened: { id: ID, name: 'One' }, at: 5 }, o || {});
+    const seen5 = [];
+    const m5 = mk({ apply: (o, from) => { seen5.push({ o: o, from: from }); m5.set({ color: o.color, size: o.size, name: o.name || '' }); return null; } });
+    m5.schema = 2; m5.steps = { 1: (d) => Object.assign(d, { color: 'migrated-' + d.color }) };
+    const urls5 = arm(of5(), '?entry=One');
+    fh.drafts.set('tint', new Map([['One', { format: 'wc-design', schema: 1, app: 'tint', appVersion: 'v1.0.0', color: 'plum', size: 5, saved: { name: 'One', at: 4, extra: {} } }]]));
+    ok((await m5.ses.boot()) === true, 'a boot that reopened a design still says it booted');
+    ok(seen5.length === 1 && seen5[0].from === 'the design you were editing' && seen5[0].o.schema === 2 && seen5[0].o.color === 'migrated-teal',
+      'the stashed design came through this editor’s check and its step up to this schema', JSON.stringify(seen5[0] && seen5[0].o));
+    ok(!sstore.has(KEY), 'the key is gone the moment it is read, so a design that throws cannot loop');
+    ok(JSON.stringify(m5.ses.opened) === JSON.stringify({ id: ID, name: 'One' }), 'and the page holds the design id the old one held');
+    ok(m5.state.status === "tint's editor was updated to v1.0.0: your design is back as you left it. Save it again to keep it", 'the line says who updated and what to do', m5.state.status);
+    ok(!urls5.some((u) => /library\/design/.test(u)), 'and the ?entry= this reloaded page carried was not opened', urls5.join(' '));
+    await m5.ses.saveDraft({ name: 'One', doc: dsg('teal') });
+    ok(urls5.some((u) => /design\/save\?app=tint&name=One&id=abcdefghijklmnopqrstuv$/.test(u)), 'the next Save overwrites that very design', urls5[urls5.length - 1]);
+    // 6. a stash this editor has no step for
+    const m6 = mk(); m6.schema = 3; m6.steps = {};
+    arm(of5());
+    ok((await m6.ses.boot()) === true && !sstore.has(KEY) && !m6.applied.length,
+      'a design it cannot read is dropped, and the boot goes on as if there were no stash');
+    ok(m6.state.status === 'Your design from v0.9.9 could not be reopened in v1.0.0: that design is schema 1 and this editor has no step from schema 1 to 2',
+      'and check’s own sentence is said in full', m6.state.status);
+    ok(m6.ses.opened === null, 'the page holds no design id, so the next Save asks for a new one');
+    // 7. what is not this app's stash, in any of the ways
+    for (const bad of [of5({ app: 'clock' }), of5({ format: 2 }), 'not json at all {', '{"format":1,"app":"tint"', JSON.stringify(of5({ doc: null }))]) {
+      const e7 = mk(); arm(bad);
+      await e7.ses.boot();
+      ok(!sstore.has(KEY) && !e7.applied.length, 'a stash that is not one this editor can reopen is removed and opened by nothing: ' + String(JSON.stringify(bad)).slice(0, 24));
+    }
+    const e7b = mk(); arm(of5({ doc: null }));
+    await e7b.ses.boot();
+    ok(e7b.state.status === 'Your design from v0.9.9 could not be reopened in v1.0.0: that design is not one this editor wrote',
+      'a stash with no document says why in the same line', e7b.state.status);
+    const e7c = mk({ apply: (o, from) => { e7c.set({ color: o.color, size: o.size, name: o.name || '' }); return null; } });
+    arm(of5({ opened: { id: 'too-short', name: 'One' } }));
+    await e7c.ses.boot();
+    ok(e7c.state.color === 'teal' && e7c.ses.opened === null && /your design is back/.test(e7c.state.status),
+      'an id that is not one is no design id: the design opens and the next Save makes a new one', JSON.stringify(e7c.ses.opened));
+    // 8. a hub never reads or removes the key, in either of its two spellings
+    const held8 = JSON.stringify(of5());
+    for (const host of [undefined, { kind: 'hub' }]) {
+      const h8 = mk(); arm(null); global.GorbHost = host; location.pathname = host === undefined || host.kind === 'hub' ? ON_HUB : '/v1.0.0/';
+      sstore.set(KEY, held8);
+      await h8.ses.boot();
+      ok(sstore.get(KEY) === held8 && !h8.applied.length, 'a hub boot leaves a stash it has no part in exactly where it was');
+    }
+    // a shared link page reads no stash, and a page already on the version the site named still goes
+    const s9 = mk(); arm(of5(), '?shared=' + ID);
+    ok((await s9.ses.boot()) === true && sstore.has(KEY) && !s9.applied.length,
+      'a ?shared= page returns before the stash, which stands for the next page');
+    web(WEB); location.pathname = '/v9.9.9/';
+    const r9 = mk(); await r9.ses.boot(); r9.ses.opened = { id: ID, name: 'One' };
+    ok(!(await r9.ses.saveDraft({ name: 'One', doc: dsg('teal') })) && replaced.length === 1 && replaced[0] === '/v9.9.9/' && sstore.size === 1,
+      'the site decides, even when this page is already on that version: it stashes and reloads', JSON.stringify(replaced));
+    web(WEB);
+    const q10 = mk(); await q10.ses.boot();
+    ok(!(await q10.ses.saveDraft({ name: 'One', doc: dsg('teal') }, true)) && sstore.size === 1 && replaced.length === 1,
+      'a quiet save (Send’s first step) is handed over the same way', q10.state.status);
+    reset(); delete global.GorbHost; location.pathname = '/'; global.fetch = keepFetch;
+    if (keepVer) window.__ORB_APP = keepVer; else delete window.__ORB_APP;
+    global.sessionStorage = ssWas;
   }
 
   console.log(fails ? 'RESULT: FAIL — ' + fails + ' of ' + checked + ' checks' : 'all green (' + checked + ' checks)');

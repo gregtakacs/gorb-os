@@ -741,11 +741,16 @@ def _run_migrate(a, node, runtime, editor_tmp, extra):
 def cmd_check_migrations(a):
     """Open each app's schema fixtures in its packed editor, through the migration runner.
     Answers 0 only when every app passed; an app with no editor, or an editor with no
-    design schema, has nothing to migrate."""
+    design schema, has nothing to migrate. The SDK's own directory is skipped: it is the
+    generic SDK for building new apps, not an app, and `apps/*/` catches it. Every other
+    directory without app.json still fails, so a typo is never silently skipped."""
     node = os.environ.get("ORB_NODE") or "node"
     runtime = a.runtime or (os.path.join(ROOT, "tools", "orb-manager", "web", "runtime")
                             if IN_TREE else os.path.join(SDK, "runtime"))
     for d in a.appdir or ["."]:
+        if os.path.realpath(d) == os.path.realpath(SDK):
+            print("%s: the SDK itself, not an app, skipped" % d)
+            continue
         m = manifest(d)
         slug = m["slug"]
         if editor_dir(d, m):

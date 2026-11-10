@@ -10,7 +10,10 @@
 // and with `{kind: "hub"}`, both at the hub's own URL shape, and with `{kind: "web"}` at the
 // site's. The hub pair must behave identically and ask for identical routes, and the web run
 // must never reach a hub route at all: that is the seam orb-os-net design §6.3 promises, and
-// the one thing no suite inside this repo proves, because they all drive the sources.
+// the one thing no suite inside this repo proves, because they all drive the sources. The
+// same three pages are read for their words: under a web host nothing on screen may name the
+// hub, offer a Send to orb or point at the Themes tab, and the two hub cases must paint
+// exactly the strings they paint today.
 //
 // Deliberately not named headless-*.test.js: headless-test.js runs suites against the tree,
 // with no browser and no unpacked editor, and this needs both. `make check-web` runs it.
@@ -81,11 +84,19 @@ const PROBE = "(function(){var e=[];function p(m){if(e.length<40)e.push(String(m
   + "p(ev&&ev.message?'uncaught: '+ev.message:'resource failed: '+src);},true);"
   + "window.addEventListener('unhandledrejection',function(ev){p('rejected: '"
   + "+((ev&&ev.reason&&(ev.reason.message||ev.reason))||'?'));});"
+  // the editors open on the four ways to start (host@1); New goes straight to editing, then
+  // the Render step is where a send's words live, so walk there before the dump
+  + "function start(){var c=document.querySelectorAll('button.st-choice');"
+  + "for(var i=0;i<c.length;i++){var b=c[i].getElementsByTagName('b')[0];if(b&&(b.textContent||'').trim()==='New'){c[i].click();return true;}}return false;}"
+  + "function toRender(){var b=document.querySelectorAll('.st-steps button');"
+  + "for(var i=0;i<b.length;i++){if((b[i].textContent||'').trim()==='Render'){b[i].click();return true;}}return false;}"
   + "window.addEventListener('load',function(){setTimeout(function(){try{"
   + "var h=(window.OrbTheme&&OrbTheme.hostInfo)?OrbTheme.hostInfo():null;"
   + "var n=document.body?document.body.getElementsByTagName('*').length:0;"
+  + "start();setTimeout(function(){try{var went=toRender();setTimeout(function(){try{"
   + "fetch('/__smoke',{method:'POST',headers:{'content-type':'application/json'},"
-  + "body:JSON.stringify({errors:e,host:h,nodes:n,title:document.title})});}catch(x){}},6000);});})();";
+  + "body:JSON.stringify({errors:e,host:h,nodes:n,render:went,title:document.title})});}catch(x){}},"
+  + "2500);}catch(x){}},1200);}catch(x){}},6000);});})();";
 
 // one page load at a time: the requests it made, its fake hub, its report
 let load = null;
@@ -217,6 +228,30 @@ async function reported() {
 const paths = (reqs, prefix) => [...new Set(reqs.filter((r) => r.split(' ')[1].split('?')[0].startsWith(prefix))
   .map((r) => r.split(' ')[0] + ' ' + r.split(' ')[1].split('?')[0]))].sort();
 
+/* Every word the dumped DOM shows: text nodes and the attributes a reader hears (title,
+ * placeholder, aria-label, alt), with scripts and styles — the source, not the page — cut
+ * out first. A web host must not read like a hub (design §6.3), so this is what gets tested.
+ * The dial's own mechanical hub ink is the watch's word, not the host's, and is cut. */
+const decode = (s) => s.replace(/&#(\d+|x[0-9a-f]+);/gi, (m, n) => String.fromCodePoint((/x/i.test(n) ? 16 : 10) === 10 ? +n : parseInt(n.slice(1), 16)))
+  .replace(/&quot;/g, '"').replace(/&#0?39;/g, "'").replace(/&apos;/g, "'")
+  .replace(/&nbsp;/g, ' ').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&');
+function saidOn(dom) {
+  const s = String(dom).replace(/<script[\s\S]*?<\/script>/gi, ' ').replace(/<style[\s\S]*?<\/style>/gi, ' ')
+    .replace(/Pivot on the hub ink/gi, ' ');
+  const out = [], seen = new Set();
+  const push = (t) => {
+    t = decode(String(t).replace(/\s+/g, ' ').trim());
+    if (t && !seen.has(t)) { seen.add(t); out.push(t); }
+  };
+  for (const m of s.matchAll(/(?:^|\s)(?:title|placeholder|aria-label|alt)\s*=\s*"([^"]*)"/gi)) push(m[1]);
+  for (const m of s.matchAll(/(?:^|\s)(?:title|placeholder|aria-label|alt)\s*=\s*'([^']*)'/gi)) push(m[1]);
+  for (const m of s.matchAll(/>([^<>]+)</g)) push(m[1]);
+  return out;
+}
+// what a page served by a web host may never say about where it came from
+const HUB_WORDS = [/send to orb/i, /this hub/i, /the hub/i, /hub[’']s/i, /hub library/i, /on the hub/i, /to the hub/i, /themes tab/i];
+const hubWords = (said) => HUB_WORDS.filter((re) => said.some((t) => re.test(t)));
+
 async function smoke(row) {
   const seen = {};
   for (const c of CASES) {
@@ -244,6 +279,19 @@ async function smoke(row) {
       const want = c.name === 'web' ? WEB_INFO : HUB_INFO;
       ok(rep.host && Object.keys(want).every((k) => rep.host[k] === want[k]),
         at + ': the runtime read the host as ' + JSON.stringify(want), JSON.stringify(rep.host));
+      const said = saidOn(r.dom);
+      seen[c.name].said = said;
+      ok(rep.render === true, at + ': the probe walked to the Render step, where a send’s words are');
+      if (c.name === 'web') {
+        // design §6.3: nothing a web host paints names the hub product, a send it cannot
+        // do, or the hub's Themes tab
+        const hit = hubWords(said);
+        ok(hit.length === 0, at + ' web: no word on the page names the hub, a send or the Themes tab',
+          hit.join(' ') + ' :: ' + said.filter((t) => hit.some((re) => re.test(t))).join(' | ').slice(0, 400));
+      } else if (c.name === 'hub') {
+        ok(row.slug !== 'flights' && row.slug !== 'weather' || said.some((t) => /Send to orb/.test(t)),
+          at + ': the hub still offers Send to orb', said.slice(0, 12).join(' | '));
+      }
     }
     const folder = c.base + row.slug + '/';
     const bad = load.requests.filter((q) => {
@@ -260,6 +308,11 @@ async function smoke(row) {
   const same = JSON.stringify(paths(seen.none.requests, '/api/')) === JSON.stringify(paths(seen.hub.requests, '/api/'));
   ok(same, at + ' none/hub: an explicit hub host asks for exactly what no host description asks',
     paths(seen.none.requests, '/api/').join(' ') + ' vs ' + paths(seen.hub.requests, '/api/').join(' '));
+  if (usesTheme(row) && seen.none.said && seen.hub.said) {
+    ok(JSON.stringify(seen.none.said) === JSON.stringify(seen.hub.said),
+      at + ' none/hub: an explicit hub host shows exactly the words no host description shows',
+      JSON.stringify(seen.none.said || []).slice(0, 200) + ' vs ' + JSON.stringify(seen.hub.said || []).slice(0, 200));
+  }
   const web = seen.web.requests;
   ok(!web.some((q) => q.split(' ')[1].split('?')[0].startsWith('/api/')),
     at + ' web: not one request to a hub route', web.filter((q) => q.includes(' /api/')).join(' '));

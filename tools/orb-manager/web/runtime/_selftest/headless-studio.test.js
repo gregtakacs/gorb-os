@@ -333,5 +333,65 @@ Object.defineProperty(global, 'fn', { get: mkfn });
   ok(by(by(L, 'div', 'st-lr')[1], 'button').length === 3, 'each row: up, down and the eye');
 }
 
+{
+  // ---- the host's words (orb-os-net design §6.3): the same shell, the site's sentences.
+  // theme@1's session.js is what answers which host this is, so load it here.
+  global.location = global.location || { origin: 'http://site', search: '', pathname: '/studio/tint/' };
+  global.addEventListener = global.addEventListener || function () {};
+  global.removeEventListener = global.removeEventListener || function () {};
+  global.localStorage = global.localStorage || { getItem: () => null, setItem: () => {}, removeItem: () => {} };
+  require(path.join(__dirname, '..', 'theme@1', 'session.js'));
+  const WEB = { kind: 'web', api: '/studio-api', send: false, publish: true, inbox: true };
+  // the start flow's empty-library line, host-worded the way host@1's host.js now passes it
+  const EMB = 'Nothing in the library yet. Save to library on the Render step keeps a design on the hub as a draft; Send to orb bakes it into a theme under the same name.';
+  const EWB = 'Nothing in the library yet. Save to library on the Render step keeps a design in your library as a draft; Download .orbtheme bakes it into a theme under the same name.';
+  const shell = (host) => {
+    global.GorbHost = host;
+    const on = fn;
+    const rp = render(S.RenderPanel, { send: { note: '', tip: 't', on: on }, save: { note: 'keep it', tip: 'st', on: fn }, downloads: [] });
+    const big = by(rp, 'button', 'st-big');
+    const rows = S.libraryRows([{ name: 'Night', state: 'changed', at: 0 }, { name: 'Day', state: 'draft', at: 0, theme: { stale: 'old rows' } },
+      { name: 'Old', state: 'theme', at: 0, theme: {} }], { version: '1.2.0', armed: null, arm: fn, open: fn, forget: fn, meta: () => '' });
+    const sheet = render(S.StartFlow, { pick: 'library', library: { rows: [], empty: (OrbTheme.hostText ? OrbTheme.hostText(EMB, EWB) : EMB) } });
+    const out = {
+      send: text(big[1]),
+      save: text(big[0]),
+      sendHint: S.sendProps({ canCancel: true, cancelling: false }, 'x', on).hint,
+      modalTitle: text(by(render(S.SendModal, S.sendProps({ canCancel: true, cancelling: false }, 'x', on)), 'div', 'st-mtitle')[0]),
+      openHint: text(by(render(S.OpeningModal, { line: 'Opening…' }), 'div', 'st-hint')[0]),
+      empty: text(by(sheet, 'div', 'st-lib-empty')[0]),
+      tips: rows.map((r) => r.tagTip).join(' | '),
+      delTip: rows[0].delTip,
+    };
+    delete global.GorbHost;
+    return out;
+  };
+  const none = shell(undefined), hubbed = shell({ kind: 'hub' }), webbed = shell(WEB);
+  const HUB = {
+    send: 'Send to orb', save: 'Save to librarykeep it',
+    sendHint: 'Nothing has reached the orb yet, so Cancel stops it cleanly.',
+    modalTitle: 'Sending to the orb',
+    openHint: 'A theme’s design comes with its art, and from an orb’s card that can take a while. The editor opens on the theme when it arrives.',
+    empty: 'Nothing in the library yet. Save to library on the Render step keeps a design on the hub as a draft; Send to orb bakes it into a theme under the same name.',
+    tips: 'A baked theme with changes saved beside it: Open shows the changes, Send to orb bakes them in'
+      + ' | An orb on the current firmware would refuse this bake (old rows). Rebake all on the Themes tab rebakes it from its design.'
+      + ' | Baked: on the hub shelf, ready to install',
+    delTip: 'Take it out of the hub’s library, baked theme and all (asks twice). No orb is touched.',
+  };
+  ok(JSON.stringify(none) === JSON.stringify(hubbed), 'no GorbHost and kind "hub" draw the shell with the same words');
+  ok(JSON.stringify(hubbed) === JSON.stringify(HUB), 'and they are today’s strings, byte for byte', JSON.stringify(hubbed));
+  ok(!/hub|Send to orb|Themes tab/i.test(JSON.stringify(webbed)), 'under a web host no word of the shell names the hub, a send or the Themes tab',
+    JSON.stringify(webbed).slice(0, 400));
+  ok(webbed.send === 'Download .orbtheme' && webbed.modalTitle === 'Baking the theme'
+    && webbed.sendHint === 'The .orbtheme downloads when the bake is done.'
+    && /Download \.orbtheme bakes them in/.test(webbed.tips) && /in your library, ready to download/.test(webbed.tips),
+    'the web shell says download, bake and your library', JSON.stringify(webbed).slice(0, 200));
+  const keepInfo = OrbTheme.hostInfo, keepText = OrbTheme.hostText;
+  delete OrbTheme.hostText; delete OrbTheme.hostInfo;      // an editor page with no theme@1
+  const noTheme = shell(WEB);
+  OrbTheme.hostInfo = keepInfo; OrbTheme.hostText = keepText;
+  ok(JSON.stringify(noTheme) === JSON.stringify(HUB), 'with theme@1 not loaded the shell keeps the hub’s words rather than break', JSON.stringify(noTheme).slice(0, 200));
+}
+
 console.log(fails ? 'RESULT: FAIL — ' + fails + ' of ' + checked + ' checks' : 'all green (' + checked + ' checks)');
 process.exit(fails ? 1 : 0);

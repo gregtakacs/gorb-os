@@ -2102,7 +2102,7 @@ class Component extends DCLogic {
     // on the script tags) is the only way this page can meet an engine that young
     // at odds; say what to do about it instead of a bare TypeError.
     if (typeof this.face().compHoles !== 'function') {
-      this.setState({ status: 'Not baked: the loaded watch-engine.js is older than this page — hard-reload the editor (Ctrl+F5), or restart orb-manager if this is the hub' });
+      this.setState({ status: 'Not baked: the loaded watch-engine.js is older than this page — hard-reload the editor (Ctrl+F5)' + this.hostText(', or restart orb-manager if this is the hub', '') });
       return;
     }
     let M = s0.M, gt = s0.gt, B = s0.B, fps = s0.fps, fc = s0.fc;
@@ -3537,7 +3537,15 @@ class Component extends DCLogic {
    * still the clock's and only the markup that shows it moved. */
   /* The shell parts the hosted panes draw (clock-host.js): the layers, the toolbar and the
    * inspector's rows. E7 2d moved the rest of the chrome to Orb Manager's host: its top bar,
-   * start, Render step, send and duplicate dialogs, confirm, calibration and stage glass. */
+    * start, Render step, send and duplicate dialogs, confirm, calibration and stage glass. */
+  /* design §6.3: a web host's words, for the two notes this class still owns. theme@1 says
+   * which host served the page; with no theme@1 loaded (a bare editor page, the node suites)
+   * the hub's sentence is the one that has always been true here. The send, library and
+   * Render chrome the old composer worded are the host's now, so only these take it. */
+  hostText(hub, web) {
+    const T = window.OrbTheme;
+    return T && typeof T.hostText === 'function' ? T.hostText(hub, web) : hub;
+  }
   studioVals(R) {
     const T = window.OrbStudio, O = window.OrbTheme;
     if (!T || !O) return {};
@@ -4167,7 +4175,8 @@ class Component extends DCLogic {
     }
     if (ready && s.tab === 'sound' && !(window.GorbBake && window.GorbBake.SOUND_SLOTS && window.SoundEngine)) {
       fields.push(H('Sound'), Nt('', window.SoundEngine
-        ? 'This hub\u2019s theme baker predates sound, so a bake from here would carry none. Run a hub built from main of 2026-11-01 or later and reopen the editor.'
+        ? this.hostText('This hub\u2019s theme baker predates sound, so a bake from here would carry none. Run a hub built from main of 2026-11-01 or later and reopen the editor.',
+          'The theme baker this page loaded predates sound, so a bake from here would carry none. Reload with a newer editor and reopen it.')
         : 'The sound generator did not load with this editor.'));
     }
     if (ready && s.tab === 'sound' && window.SoundEngine && window.GorbBake && window.GorbBake.SOUND_SLOTS) {

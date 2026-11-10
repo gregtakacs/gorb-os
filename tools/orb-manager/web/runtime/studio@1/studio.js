@@ -28,6 +28,18 @@
   var h = function () { return root.React.createElement.apply(root.React, arguments); };
   var cx = function () { return Array.prototype.filter.call(arguments, Boolean).join(' '); };
   var list = function (a) { return Array.isArray(a) ? a : []; };
+  /* the host's words (orb-os-net design §6.3): the hub's sentence and the site's. The shell
+   * keeps working with no theme@1 loaded — radar loads neither, and an editor might load
+   * studio alone — so with no OrbTheme.hostText it is the hub's sentence, as today. */
+  var hostText = function (hub, web) {
+    var T = root.OrbTheme;
+    return T && typeof T.hostText === 'function' ? T.hostText(hub, web) : hub;
+  };
+  // the send flag: an editor's Send to orb is a download when a host says it cannot send
+  var sendOff = function () {
+    var T = root.OrbTheme;
+    return !!(T && typeof T.hostInfo === 'function' && T.hostInfo().send === false);
+  };
 
   // a segmented control: [{label, tip, cls, pick}]
   function Seg(p) {
@@ -253,7 +265,7 @@
         h('div', { className: 'st-gal' }, tiles.map(function (t) { return h(Tile, { key: t.key, t: t }); })));
     } else if (pick === 'library') {
       body = h(root.React.Fragment, null, back, h('h2', null, 'From my library'),
-        rows.length ? h('div', { className: 'ui-mut st-cap' }, 'Your drafts and themes on this hub: Open one to carry on with it.') : null,
+        rows.length ? h('div', { className: 'ui-mut st-cap' }, hostText('Your drafts and themes on this hub: Open one to carry on with it.', 'Your drafts and themes in your library: Open one to carry on with it.')) : null,
         rows.length ? null : h('div', { className: 'ui-mut st-lib-empty' }, L.empty || 'Nothing saved yet.'),
         rows.map(function (r) {
           return h('div', { key: r.name, className: 'st-lib-row' },
@@ -270,7 +282,7 @@
         h('div', { className: 'st-choices' },
           choice('new', '＋', 'New', fr.note || 'A blank design, every part present', fr.on, 'Start from a blank design and go straight to editing'),
           choice('template', '◐', 'From a template', tiles.length ? plural(tiles.length, 'look', 'looks') + ' to start from' : 'None for this app', function () { p.setPick('template'); }, 'See the app’s looks and pick one to start from'),
-          choice('library', '▤', 'From my library', rows.length ? plural(rows.length, 'saved design', 'saved designs') : 'Nothing saved yet', function () { p.setPick('library'); }, 'Your drafts and themes on this hub'),
+          choice('library', '▤', 'From my library', rows.length ? plural(rows.length, 'saved design', 'saved designs') : 'Nothing saved yet', function () { p.setPick('library'); }, hostText('Your drafts and themes on this hub', 'Your drafts and themes in your library')),
           choice('import', '⇪', 'Import a file', 'An .orbtheme or a design file: it goes into your library', function () { if (fileRef.current) fileRef.current.click(); }, 'Add a theme (.orbtheme) or a design file (.orbdesign) to the library, then open it')));
     }
     return h('div', { className: 'st-sheet' },
@@ -288,11 +300,17 @@
       var tag = th.stale ? 'theme · needs a rebake' : m.state === 'changed' ? 'theme · unsent changes' : m.state === 'theme' ? 'theme' : 'draft';
       var tb = typeof m.thumb === 'string' && /^data:image\/(jpeg|png);base64,/.test(m.thumb) ? m.thumb : null;
       return { name: m.name, thumb: tb, tag: tag + (older ? ' · made with ' + older : ''),
-        tagTip: th.stale ? 'An orb on the current firmware would refuse this bake (' + th.stale + '). Rebake all on the Themes tab rebakes it from its design.' : m.state === 'draft' ? 'Saved, never baked: Send to orb makes it a theme' : m.state === 'changed' ? 'A baked theme with changes saved beside it: Open shows the changes, Send to orb bakes them in' : 'Baked: on the hub shelf, ready to install',
+        tagTip: th.stale ? hostText('An orb on the current firmware would refuse this bake (' + th.stale + '). Rebake all on the Themes tab rebakes it from its design.',
+            'An orb on the current firmware would refuse this bake (' + th.stale + '). Open it and download it again: that rebakes it from its design.')
+          : m.state === 'draft' ? hostText('Saved, never baked: Send to orb makes it a theme', 'Saved, never baked: Download .orbtheme makes it a theme')
+          : m.state === 'changed' ? hostText('A baked theme with changes saved beside it: Open shows the changes, Send to orb bakes them in',
+            'A baked theme with changes saved beside it: Open shows the changes, Download .orbtheme bakes them in')
+          : hostText('Baked: on the hub shelf, ready to install', 'Baked: in your library, ready to download'),
         meta: (o.meta ? o.meta(m) : '') + new Date(+m.at || 0).toLocaleDateString(),
         load: function () { o.open(m.name); }, loadTip: m.state === 'changed' ? 'Open it with its unsent changes' : 'Open it in the editor',
         changed: m.state === 'changed', discard: function () { o.forget(m.name, 'draft'); },
-        delLabel: armed ? 'Press again' : 'Delete', delTip: 'Take it out of the hub’s library, baked theme and all (asks twice). No orb is touched.',
+        delLabel: armed ? 'Press again' : 'Delete', delTip: hostText('Take it out of the hub’s library, baked theme and all (asks twice). No orb is touched.',
+          'Take it out of your library, baked theme and all (asks twice). Nothing already on an orb is touched.'),
         del: function () { if (armed) { o.arm(null); o.forget(m.name, 'all'); } else o.arm(m.name); } };
     });
   };
@@ -305,14 +323,15 @@
       h('div', null,
         h('div', { className: 'st-mtitle' }, 'Opening a design'),
         h('div', { className: 'st-mbody' }, p.line),
-        h('div', { className: 'st-hint' }, 'A theme’s design comes with its art, and from an orb’s card that can take a while. The editor opens on the theme when it arrives.')));
+        h('div', { className: 'st-hint' }, hostText('A theme’s design comes with its art, and from an orb’s card that can take a while. The editor opens on the theme when it arrives.',
+          'A theme’s design comes with its art, which is why opening one takes a moment. The editor opens on the theme when it arrives.'))));
   };
   // open, line, hint, noCancel, cancelLabel, onCancel
   S.SendModal = function (p) {
     if (!p.open) return null;
     return h('div', { className: 'st-modal', style: { zIndex: 60 } },
       h('div', null,
-        h('div', { className: 'st-mtitle' }, p.title || 'Sending to the orb'),
+        h('div', { className: 'st-mtitle' }, p.title || hostText('Sending to the orb', 'Baking the theme')),
         h('div', { className: 'st-mbody' }, p.line),
         p.hint ? h('div', { className: 'st-hint' }, p.hint) : null,
         h('div', { className: 'st-mfoot' }, h('button', { className: p.primary ? 'primary' : '', onClick: p.onCancel, disabled: !!p.noCancel }, p.cancelLabel || 'Cancel'))));
@@ -364,7 +383,7 @@
       }),
       b ? h('div', { className: 'st-badge', title: b.tip || '', style: { borderColor: b.border, background: b.background } }, h('b', { style: { color: b.color } }, b.text), h('span', null, b.note)) : null,
       p.save ? h('button', { className: 'st-big', onClick: p.save.on, title: p.save.tip || '' }, h('b', null, 'Save to library'), h('span', null, p.save.note)) : null,
-      p.send ? h('button', { className: 'st-big ui-primary', onClick: p.send.on, title: p.send.tip || '' }, h('b', null, 'Send to orb'), h('span', null, p.send.note)) : null,
+      p.send ? h('button', { className: 'st-big ui-primary', onClick: p.send.on, title: p.send.tip || '' }, h('b', null, sendOff() ? 'Download .orbtheme' : 'Send to orb'), h('span', null, p.send.note)) : null,
       list(p.downloads).map(function (d, i) { return h('button', { key: i, className: 'st-big', onClick: d.on, title: d.title || '' }, h('b', null, d.label), h('span', null, d.note)); }),
       p.note ? h('div', { className: 'st-hint ui-mono st-warn' }, p.note) : null);
   };
@@ -647,8 +666,10 @@
       return { open: true, line: status || '', title: o === 'ok' ? 'Sent to the orb' : o === 'warn' ? 'Sent — check the orb' : 'Not sent',
         hint: '', noCancel: false, cancelLabel: o === 'fail' ? 'Close' : 'Done', primary: o !== 'fail', onCancel: onCancel };
     }
+    var off = sendOff();
     return { open: !!sending, line: status || 'Building the theme…',
-      hint: !sending ? '' : sending.cancelling ? 'Cancelling: the send stops before anything reaches the orb.'
+      hint: !sending ? '' : off ? 'The .orbtheme downloads when the bake is done.'
+        : sending.cancelling ? 'Cancelling: the send stops before anything reaches the orb.'
         : sending.canCancel ? 'Nothing has reached the orb yet, so Cancel stops it cleanly.'
         : 'The orb is storing it and rebooting onto it. That cannot be stopped part way, so this waits until the orb is back.',
       noCancel: !(sending && sending.canCancel),

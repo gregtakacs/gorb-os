@@ -16,6 +16,7 @@
 (function (root) {
   'use strict';
   var B = root.WeatherBake, FX = root.WeatherFx, M = root.WeatherMap;
+  var word = function (hub, web) { return root.OrbTheme && root.OrbTheme.hostText ? root.OrbTheme.hostText(hub, web) : hub; };
   var G = 466, CX = 233, ROW_CAP = (root.GorbBake && root.GorbBake.CLK_ROW_MAX) || 64;
   var VIEWS = [['now', 'Now', 'Home on the glass, unarmed'], ['places', 'Places', 'Armed: turning steps the places'],
     ['hours', 'Hourly', 'A press: the next twelve hours on a clock face, the cursor on one'], ['days', '5 days', 'Another press: the next five days']];
@@ -282,7 +283,7 @@
             function (v) { upd('map.line.' + k, [L[0], v]); }));
           fields.push(K.Rg('Weight', L[0], 1, 4, 1, function (v) { upd('map.line.' + k, [v, L[1]]); }, L[0] + ' px'));
         });
-        fields.push(K.Nt('', home ? 'The preview is your own home map, drawn the way the orb draws it; on the orb each place shows its own.' : 'Open this editor from the hub, with home set on the Orb tab, to preview the map on your own home.'));
+        fields.push(K.Nt('', home ? 'The preview is your own home map, drawn the way the orb draws it; on the orb each place shows its own.' : word('Open this editor from the hub, with home set on the Orb tab, to preview the map on your own home.', 'Open this editor with home set on the Orb tab, to preview the map on your own home.')));
       }
     }
     if (step === 'ground') {
@@ -428,7 +429,7 @@
       return { key: k, name: pd.name, note: B.PACKS[pd.icons.pack].title + ' icons · ' + pd.match, make: function () { return B.preset(k); } };
     }),
     start: 'scope',
-    startNote: 'The places the app shows are on the hub’s App settings page.',
+    startNote: word('The places the app shows are on the hub’s App settings page.', 'The places the app shows are on your account’s App settings page.'),
     picture: function (d, px) { return B.thumb(d, px); },
     steps: [['ground', 'Ground'], ['map', 'Map'], ['icons', 'Icons'], ['temps', 'Temperature'], ['words', 'Words'], ['layout', 'Layout']],
     parts: [

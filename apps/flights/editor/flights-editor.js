@@ -9,6 +9,7 @@
 (function (root) {
   'use strict';
   var T = root.OrbTheme, B = root.FlightsBake, M = root.FlightsMap;
+  var word = function (hub, web) { return T && T.hostText ? T.hostText(hub, web) : hub; };
   var A = function () { return root.FlightsArt; };
   // the rows the tracker poses (arm, planes, rings, labels, the far dots) and, with a map,
   // its six names; an app seats CLK_ROW_MAX of them

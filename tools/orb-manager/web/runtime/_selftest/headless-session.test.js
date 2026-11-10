@@ -200,17 +200,39 @@ const edit = (app, p) => { app.set(p); app.ses.track(); };
     ok(/the clock app’s, not tint’s/.test(b.ses.apply(Object.assign({}, doc, { app: 'clock' }))), 'another app’s design is refused by name');
     ok(/that design has no tint in it/.test(b.ses.apply(Object.assign({}, doc, { color: '' }))), 'then the app’s own refusal');
     const newer = b.ses.apply(Object.assign({}, doc, { appVersion: 'v1.4.0+0000000' }));
-    ok(/made by tint v1\.4\.0\+0000000, newer than this editor \(v1\.3\.0\+6a5c661\)/.test(newer || ''), 'a design from a newer release is refused, so no field it added is dropped', newer);
+    ok(newer === null && b.state.color === 'teal' && b.ses.lastMade === null, 'a same-schema design from a newer release opens, saved as this release (ruling 21)', String(newer));
+    ok(b.ses.apply(Object.assign({}, doc, { appVersion: 'v9.0.0' })) === null, 'and so does a much newer release: only the schema says what an editor can read');
     ok(b.ses.apply(Object.assign({}, doc, { appVersion: 'v1.3.0+fffffff' })) === null, 'another build of this release opens: the hash never orders');
     ok(b.ses.apply(Object.assign({}, doc, { appVersion: 'v1.2.9' })) === null, 'and one from an older release opens');
     const future = b.ses.apply(Object.assign({}, doc, { schema: 2 }));
     ok(/design schema 2\); this editor \(v1\.3\.0\+6a5c661\) reads schema 1/.test(future || ''), 'a newer schema names what this editor reads', future);
+    const oldbuild = b.ses.apply(Object.assign({}, doc, { schema: 2, appVersion: 'v1.2.0' }));
+    ok(/reads schema 1/.test(oldbuild || ''), 'and a newer schema is refused whatever release made it', oldbuild);
+    [0, 1.5, 'abc', null].forEach((bad, i) => {
+      const d2 = Object.assign({}, doc);
+      if (bad === null) delete d2.schema; else d2.schema = bad;
+      const w = b.ses.apply(d2);
+      ok(/reads schema 1/.test(w || ''), 'a schema that is not a whole number from 1 is refused, not half-read (#' + i + ')', w);
+    });
+    ok(b.ses.apply(Object.assign({}, doc, { schema: '1' })) === null, 'a schema spelled as a numeric string is still this schema, so it opens');
     // migrations: one pure step per bump, never guessed
     const m = mk(); m.schema = 3; m.steps = { 1: (d) => Object.assign(d, { color: 'from-1' }), 2: (d) => Object.assign(d, { size: 77 }) };
     const mig = m.ses.migrate(Object.assign({}, doc));
     ok(mig.doc && mig.doc.schema === 3 && mig.doc.color === 'from-1' && mig.doc.size === 77 && doc.schema === 1, 'an older design walks forward one step at a time, leaving the original alone');
     m.steps = { 1: (d) => d };
     ok(/no step from schema 2 to 3/.test(m.ses.apply(Object.assign({}, doc)) || ''), 'a missing step is refused by name');
+    // the start check (design §6.5 point 1): editor.json's schema and this editor's are one fact
+    const startThrow = (stamp) => {
+      window.__ORB_APP = stamp;
+      try { mk(); return null; } catch (e) { return e; }
+    };
+    const drift = startThrow({ slug: 'tint', version: 'v1.3.0', schema: 2 });
+    ok(drift instanceof Error && /reads design schema 1, but its editor\.json says 2/.test(drift.message),
+      'a session whose editor.json names another schema refuses to start', drift && drift.message);
+    ok(startThrow({ slug: 'tint', version: 'v1.3.0', schema: 1 }) === null, 'and starts when the two agree');
+    ok(startThrow({ slug: 'tint', version: 'v1.3.0' }) === null, 'and when the stamp names no schema: an app built before the key');
+    ok(startThrow(null) === null, 'and when there is no stamp at all: an unpackaged editor');
+    window.__ORB_APP = { slug: 'tint', version: 'v1.3.0+6a5c661' };
   }
 
   // ---- opening a file: an .orbdesign someone already has (K10 retired the download), an .orbtheme
@@ -354,6 +376,73 @@ const edit = (app, p) => { app.set(p); app.ses.track(); };
     a.ses.apply({ format: 'wc-design', schema: 1, app: 'tint', appVersion: 'v1.3.0', color: 'teal', shared: 'not an object' }, 'the card');
     ok(a.ses.sharedName === null, 'a shared field that is not an object is no shared name');
     ok(a.ses.bakeName(undefined) === undefined, 'with nothing to say, bakeName says nothing');
+  }
+
+  // ---- the host's words (design §6.3): the session's own lines change with the host, and a
+  // site's session never says a word about a hub or a Send to orb
+  {
+    const WEB = { kind: 'web', api: '/studio-api', send: false, publish: true, inbox: true };
+    const dsg = (c) => ({ format: 'wc-design', schema: 1, app: 'tint', appVersion: 'v1.3.0', color: c });
+    const keepVer = window.__ORB_APP, keepFetch = global.fetch;
+    window.__ORB_APP = { slug: 'tint', version: 'v1.3.0' };
+    // the same session, the same routes, the same order: two hub runs differ by nothing but the words
+    const words = async (host) => {
+      global.GorbHost = host; location.pathname = '/editor/192.0.2.7/tint/'; location.search = ''; store.clear();
+      fh.drafts.clear(); fh.themes.clear(); fh.calls.length = 0; fh.refuse = null; fh.source = { source: 'library', relation: 'same' };
+      fh.themes.set('tint', new Map([['One', { design: dsg('shelved'), stale: '', at: 1, bytes: 64 }]]));
+      // a web host addresses /studio-api; map it back onto the fake hub's /api so both run the same routes
+      global.fetch = (url, o) => fh.fetch(String(url).replace(/^\/studio-api/, '/api'), o);
+      const a = mk();
+      await a.ses.boot();
+      const out = {};
+      out.refused = (a.ses.check({ format: 'wc-design', schema: 9, app: 'tint', appVersion: 'v9.9.9' }) || {}).why || '';
+      await a.ses.saveDraft({ name: 'One', doc: dsg('teal') }); out.savedChanged = a.state.status;
+      await a.ses.saveDraft({ name: 'Two', doc: dsg('teal') }); out.savedDraft = a.state.status;
+      const keep = global.fetch;
+      global.fetch = async () => ({ ok: false, status: 404, json: async () => ({ ok: false }) });   // /library/design with no sentence of its own
+      await a.ses.openEntry('Missing'); out.missing = a.state.status;
+      global.fetch = async () => ({ ok: false, status: 500, json: async () => ({ ok: false }) });
+      await a.ses.libraryRefresh(); out.refreshFail = a.state.status;
+      global.fetch = keep;
+      location.pathname = '/v1.4.2/';                                                                // off any hub's editor url: no library
+      await a.ses.saveDraft({ name: 'Three', doc: dsg('teal') }); out.noLibrary = a.state.status;
+      await a.ses.openEntry('One'); out.offHubOpen = a.state.status;
+      return out;
+    };
+    const said = await words(undefined), hubbed = await words({ kind: 'hub' }), webbed = await words(WEB);
+    delete global.GorbHost;
+    global.fetch = keepFetch; if (keepVer) window.__ORB_APP = keepVer; else delete window.__ORB_APP;
+    ok(JSON.stringify(said) === JSON.stringify(hubbed), 'every session line is the same string with no GorbHost as with kind "hub"');
+    const HUB_SED = {
+      refused: 'that design was made by tint v9.9.9 (design schema 9); this editor (v1.3.0) reads schema 1 — update the app on this orb',
+      savedChanged: 'Saved “One” to the library as unsent changes to its theme — Send to orb bakes them in',
+      savedDraft: 'Saved “Two” to the library as a draft',
+      missing: 'Could not open “Missing”: the hub has no design for “Missing”',
+      refreshFail: 'The library could not be read from the hub: the hub answered 500',
+      noLibrary: 'Not saved: the library is kept on the hub: open this editor from the hub, or download the .orbtheme',
+      offHubOpen: 'the library is kept on the hub: open this editor from the hub, or download the .orbtheme',
+    };
+    ok(Object.keys(HUB_SED).every((k) => hubbed[k] === HUB_SED[k]), 'and each of them is the hub’s sentence, byte for byte',
+      Object.keys(HUB_SED).map((k) => k + '=' + hubbed[k]).join(' | '));
+    const WEB_SED = {
+      refused: 'that design was made by tint v9.9.9 (design schema 9); this editor (v1.3.0) reads schema 1 — update the app on your orb to read it',
+      savedChanged: 'Saved “One” to the library as unsent changes to its theme — Download .orbtheme bakes them in',
+      savedDraft: 'Saved “Two” to the library as a draft',
+      missing: 'Could not open “Missing”: the server has no design for “Missing”',
+      refreshFail: 'The library could not be read: the server answered 500',
+    };
+    ok(Object.keys(WEB_SED).every((k) => webbed[k] === WEB_SED[k]), 'under a web host each is the site’s sentence instead',
+      Object.keys(WEB_SED).map((k) => k + '=' + webbed[k]).join(' | '));
+    ok(!/hub|Send to orb|Themes tab/i.test(Object.keys(WEB_SED).map((k) => webbed[k]).join(' ')),
+      'and no site sentence says hub, Send to orb or Themes tab', Object.keys(WEB_SED).map((k) => webbed[k]).join(' ').slice(0, 300));
+    // hostText itself: the hub's sentence is the default, and only kind "web" picks the other
+    global.GorbHost = undefined;
+    ok(OrbTheme.hostText('on the hub', 'in your library') === 'on the hub', 'no GorbHost is the hub’s words');
+    global.GorbHost = { kind: 'hub' };
+    ok(OrbTheme.hostText('on the hub', 'in your library') === 'on the hub', 'kind "hub" is the hub’s words');
+    global.GorbHost = { kind: 'web' };
+    ok(OrbTheme.hostText('on the hub', 'in your library') === 'in your library', 'kind "web" is the site’s words');
+    delete global.GorbHost;
   }
 
   console.log(fails ? 'RESULT: FAIL — ' + fails + ' of ' + checked + ' checks' : 'all green (' + checked + ' checks)');

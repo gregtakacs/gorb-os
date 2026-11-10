@@ -82,6 +82,9 @@
 
   var list = function (a) { return Array.isArray(a) ? a : []; };
   var clone = function (o) { return JSON.parse(JSON.stringify(o)); };
+  // the host's sentence (§6.3): with a web host the site's wording, otherwise the hub's; with
+  // no theme@1 loaded a studio-only host keeps the hub's rather than break
+  var word = function (hub, web) { return T && T.hostText ? T.hostText(hub, web) : hub; };
   var getIn = function (o, path) { return path.split('.').reduce(function (x, k) { return x == null ? x : x[k]; }, o); };
   var setIn = function (d, path, v) {
     var n = clone(d), o = n, ks = path.split('.');
@@ -227,29 +230,35 @@
       return { home: home, unit: g.unit, places: g.places, place: place, placesRead: g.read };
     };
     var complete = function (x) { return A.complete ? A.complete(x) : x; };
-    var ses = R.useMemo(function () {
-      return T.session({
-        slug: A.slug, keys: function () { return ['d']; }, state: function () { return stateRef.current; },
-        set: redraw, ready: function () { return true; }, say: say,
-        restore: function (snap, text) { setD(snap.d); say(text); },
-        schema: function () { return A.schema; }, migrate: function () { return A.migrate || {}; },
-        // an app whose files have a shape of their own converts both ways (toDoc, fromDoc)
-        content: async function (withArt) { return A.toDoc ? A.toDoc(stateRef.current.d, withArt) : { design: stateRef.current.d }; },
-        apply: function (doc) {
-          var dd = A.fromDoc ? A.fromDoc(doc) : doc.design;
-          var why = !dd ? 'that design carries no theme' : A.check(dd);
-          if (!why) {
-            var nd = complete(dd);
-            // Rebake all bakes straight after an open, before React draws again: the ref the bake
-            // reads must hold the opened design now, not the one before it
-            stateRef.current = Object.assign({}, stateRef.current, { d: nd });
-            setD(nd); setChosen(true); setStep(function (s) { return s === 'start' ? first : s; });
-          }
-          return why;
-        },
-        // a failed bake throws its own reason, so Rebake all names it rather than a stale status line
-        bake: async function () { var r = await bakeNow(); if (!r) throw new Error(bakeWhy || 'the bake did not finish'); return r.bytes; },
-      });
+    // the session's config: named so the migration runner's seam (below) can hand over both the
+    // session api and the host side (ready/schema/bake) that Orb Manager's own session answers
+    var CFG = {
+      slug: A.slug, keys: function () { return ['d']; }, state: function () { return stateRef.current; },
+      set: redraw, ready: function () { return true; }, say: say,
+      restore: function (snap, text) { setD(snap.d); say(text); },
+      schema: function () { return A.schema; }, migrate: function () { return A.migrate || {}; },
+      // an app whose files have a shape of their own converts both ways (toDoc, fromDoc)
+      content: async function (withArt) { return A.toDoc ? A.toDoc(stateRef.current.d, withArt) : { design: stateRef.current.d }; },
+      apply: function (doc) {
+        var dd = A.fromDoc ? A.fromDoc(doc) : doc.design;
+        var why = !dd ? 'that design carries no theme' : A.check(dd);
+        if (!why) {
+          var nd = complete(dd);
+          // Rebake all bakes straight after an open, before React draws again: the ref the bake
+          // reads must hold the opened design now, not the one before it
+          stateRef.current = Object.assign({}, stateRef.current, { d: nd });
+          setD(nd); setChosen(true); setStep(function (s) { return s === 'start' ? first : s; });
+        }
+        return why;
+      },
+      // a failed bake throws its own reason, so Rebake all names it rather than a stale status line
+      bake: async function () { var r = await bakeNow(); if (!r) throw new Error(bakeWhy || 'the bake did not finish'); return r.bytes; },
+    };
+    var ses = R.useMemo(function () { return T.session(CFG); }, []);
+    // the migration seam (design §6.5 point 4): check-migrations injects window.GorbRunner before
+    // this mounts and only that runner defines it, so in normal hub and web use this does nothing.
+    R.useEffect(function () {
+      if (typeof root.GorbRunner === 'function') root.GorbRunner(ses, CFG);
     }, []);
     var sender = R.useMemo(function () {
       return T.sender({ say: say, ask: function (x) { setDup(x); }, sending: function (x) { setSending(x); } });
@@ -545,7 +554,7 @@
       h(S.RenderPanel, {
         // the live size and each paceBy view's rate lead the Render step, in every app
         blocks: [
-          { title: 'Size', body: h('span', null, sz.line), over: sz.over, tip: 'The theme baked again a moment after your last edit: what Send to orb and Export send.' },
+          { title: 'Size', body: h('span', null, sz.line), over: sz.over, tip: word('The theme baked again a moment after your last edit: what Send to orb and Export send.', 'The theme baked again a moment after your last edit: what Download .orbtheme and Export download.') },
           { title: 'Frame rate', tip: 'What each view holds on the orb, estimated from what its preview moves, priced as the orb’s compositor paints it.',
             body: paceRows(d).map(function (g, gi) {
               return h('div', { key: gi, className: 'hs-pace' }, g.label ? h('span', { className: 'ui-mut' }, g.label) : null,
@@ -556,10 +565,10 @@
             }) },
         ],
         badge: S.badgeProps(verdict, verdict.note),
-        save: { on: saveLib, note: 'keep “' + d.name + '” in the library', tip: 'Keep this design in the hub library under its name, without baking or sending it. Under a theme’s name it is that theme’s unsent changes until Send to orb bakes them in.' },
-        send: { on: send, note: 'save “' + d.name + '”, bake it and store it on the orb', tip: 'Save it to the hub library, bake it, then send it to the orb this editor was opened for.' },
+        save: { on: saveLib, note: 'keep “' + d.name + '” in the library', tip: word('Keep this design in the hub library under its name, without baking or sending it. Under a theme’s name it is that theme’s unsent changes until Send to orb bakes them in.', 'Keep this design in your library under its name, without baking or sending it. Under a theme’s name it is that theme’s unsent changes until Download .orbtheme bakes them in.') },
+        send: { on: send, note: word('save “' + d.name + '”, bake it and store it on the orb', 'save “' + d.name + '”, bake it and download it'), tip: word('Save it to the hub library, bake it, then send it to the orb this editor was opened for.', 'Save it to your library, bake it, then download the .orbtheme: import it in Orb Manager to put it on an orb.') },
         downloads: [
-          { label: 'Export .orbtheme', note: 'bake it and save the file where you choose', on: exportTheme, title: 'The same .orbtheme Send to orb bakes, saved as a file: ready for any orb’s Themes tab, with its design inside so the editor can open it again.' },
+          { label: 'Export .orbtheme', note: 'bake it and save the file where you choose', on: exportTheme, title: word('The same .orbtheme Send to orb bakes, saved as a file: ready for any orb’s Themes tab, with its design inside so the editor can open it again.', 'The same .orbtheme a bake produces, saved as a file: ready to import, with its design inside so the editor can open it again.') },
         ],
       }));
     else if (step === 'start') right = h('div', { className: 'hs-list' }, h('div', { className: 'ui-mut' },
@@ -613,7 +622,9 @@
         rows: S.libraryRows(ses.library(), { version: ses.version(), armed: mineDel, arm: setMineDel,
           meta: function (m) { var t = m.design && tmpl(A, m.design.base); return t ? t.name + ' · ' : ''; },
           open: function (nm) { ses.openEntry(nm); }, forget: function (nm, what) { ses.forgetEntry(nm, what); } }),
-        empty: 'Nothing saved yet. Save to library on the Render step keeps a design here; Send to orb bakes it into a theme under the same name; Import a file adds one.' },
+        empty: T && T.hostText ? T.hostText('Nothing saved yet. Save to library on the Render step keeps a design here; Send to orb bakes it into a theme under the same name; Import a file adds one.',
+          'Nothing saved yet. Save to library on the Render step keeps a design in your library; Download .orbtheme bakes it into a theme under the same name; Import a file adds one.')
+          : 'Nothing saved yet. Save to library on the Render step keeps a design here; Send to orb bakes it into a theme under the same name; Import a file adds one.' },
       importFile: { accept: '.orbtheme,.orbdesign,.json', on: function (e) { var fl = e.target.files[0]; e.target.value = ''; if (fl) importFile(fl); } },
       foot: [{ label: 'Continue with ' + d.name, primary: true, on: function () { setChosen(true); setStep(first); } }],
     }) : null;
@@ -648,7 +659,7 @@
         undo: chosen ? { on: function () { ses.undo(); }, tip: 'Undo', op: ses.undoStack.length ? 1 : 0.35 } : null,
         redo: chosen ? { on: function () { ses.redo(); }, tip: 'Redo', op: ses.redoStack.length ? 1 : 0.35 } : null,
         extra: chosen && step !== 'start' ? [{ label: resetArm ? 'Press again to reset' : 'Reset to ' + baseName, title: 'Put this theme back to the start it came from, its name kept; Undo brings your version back', on: reset }] : [],
-        fit: chosen ? fit : null, primary: chosen ? { label: 'Send to orb', on: send, title: 'Bake and send this theme' } : null,
+        fit: chosen ? fit : null, primary: chosen ? { label: word('Send to orb', 'Download .orbtheme'), on: send, title: word('Bake and send this theme', 'Bake this theme and download it, to import in Orb Manager') } : null,
       }),
       h(S.Pane, { side: 'left' }, chosen ? (PN.left ? PN.left(paneCtx()) : left) : null),
       h(S.Stage, null,

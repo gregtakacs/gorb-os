@@ -1350,6 +1350,7 @@ $("#ob-go").onclick = async () => {
   $("#ob-blankstate").textContent = "";
   const go = $("#ob-go"), close = $("#no-close");
   go.disabled = true; close.disabled = true;
+  $("#no-foot").hidden = true;      // the flash has its own Cancel; a dead Close beside it read as stray
   let mac = null, ok = false;
   const ui = { log: $("#nf-log"), bar: $("#nf-bar > div"), doing: $("#nf-doing"),
                op: $("#nf-op"), live: $("#nf-liveop"), cancel: $("#nf-cancel") };
@@ -1381,6 +1382,7 @@ $("#ob-go").onclick = async () => {
   } finally {
     clearInterval(nfSteps.tick);
     go.disabled = false; close.disabled = false;
+    $("#no-foot").hidden = false;
     gateFlashButton();
   }
 };
@@ -4563,19 +4565,22 @@ function themeLibraryRows(app, deviceRows, state, entries) {
       const btn = inst = document.createElement("button");
       inst.className = newer ? "upd" : "ghost";
       inst.textContent = newer ? "Update" : unsure ? "Replace" : "Install";
-      inst.title = newer ? "Replace this orb's copy with the hub library's newer bake. The orb stores it and reboots onto it."
-        : unsure ? "Send the hub library's bake over this orb's copy. One of the two carries no bake time, so the hub cannot tell which is newer. The orb stores it and reboots onto it."
-        : "Send this theme to the orb in hand. The device's theme door stores the file the moment it verifies, and the board reboots onto it.";
+      // OS v1.6.0+: a store chooses the theme and the app wears it, no restart; an upgrade of
+      // a theme its app does not wear (keep) only replaces the card's copy
+      const wears = keep ? " Its app keeps the theme it wears." : " " + themeAppTitle(app) + " wears it, with no restart.";
+      inst.title = newer ? "Replace this orb's copy with the hub library's newer bake." + wears
+        : unsure ? "Send the hub library's bake over this orb's copy. One of the two carries no bake time, so the hub cannot tell which is newer." + wears
+        : "Send this theme to the orb in hand. The orb stores it the moment it verifies." + wears;
       inst.onclick = async () => {
         if (!themeIP) { state.textContent = "no orb in hand \u2014 connect one first."; return; }
         const orbName = current.name || themeIP;
         if (typeof askConfirm === "function" && !await askConfirm({
           title: (newer ? "Update " : unsure ? "Replace " : "Install ") + (f.title || f.file) + "?",
           body: keep ? orbName + "'s card gets the newer " + (f.title || f.file) + "; " + themeAppTitle(app) + " keeps the theme it wears."
-            : newer ? orbName + " gets the newer " + (f.title || f.file) + " and shows it."
-            : unsure ? orbName + "'s copy of " + (f.title || f.file) + " is replaced with the hub's, and it restarts to show it."
-            : orbName + " gets " + (f.title || f.file) + " and restarts to show it.",
-          detail: "This takes a minute or two.",
+            : newer ? orbName + " gets the newer " + (f.title || f.file) + "; " + themeAppTitle(app) + " wears it."
+            : unsure ? orbName + "'s copy of " + (f.title || f.file) + " is replaced with the hub's; " + themeAppTitle(app) + " wears it."
+            : orbName + " gets " + (f.title || f.file) + "; " + themeAppTitle(app) + " wears it.",
+          detail: "No restart: the app changes its look the next time it is on the dial, at once if it is there now.",
           yes: newer ? "Update" : unsure ? "Replace" : "Install",
         })) return;
         btn.disabled = true;
@@ -4721,7 +4726,12 @@ async function watchThemeJob(state, t) {
       return;
     }
     const row = (d.themes || []).find((x) => x.id === t.id);
-    if (row && row.stored) {
+    if (row && row.chosen) {            // OS v1.6.0+: chosen, no restart
+      state.textContent = t.name + " is chosen \u2014 its app wears it";
+      await loadThemes(themeIP);
+      return;
+    }
+    if (row && row.stored) {            // older firmware: the store reboots onto it
       state.textContent = "stored " + t.name + " \u2014 the orb is rebooting onto it";
       continue;
     }
@@ -4881,7 +4891,7 @@ function watchSendState(ip, st, f) {
     uploading: (d) => "sending to the orb: " + Math.floor((d.sent || 0) * 100 / (d.total || 1)) +
       "% of " + (d.total || 0) + " B",
     queued: () => "on the orb \u2014 store armed, copy next",
-    storing: () => "storing into the slot \u2014 progress on the orb's glass; it reboots when the copy lands",
+    storing: () => "storing \u2014 its app puts it on the dial when the copy lands",
     duplicate: () => "the card holds a different \u201c" + (f && f.name) + "\u201d \u2014 press Upload again to replace",
     rejected: (d) => "the orb refused the upload" + (d.note ? ": " + d.note : "")
   };
@@ -4904,7 +4914,7 @@ function storeVerdictSentence(d, f) {
     return "the copy tore before its header \u2014 the base face boots until one re-store";
   if (d.store === "refused") return "the store refused: " + (d.store_note || "no reason from the orb");
   if (d.store === "lost") return "filed on the card; the store outcome stayed unreported \u2014 re-read the rows";
-  return "stored into the slot \u2014 the orb is rebooting onto it";
+  return "stored \u2014 its app wears it";
 }
 $("#mn-fw-file").onchange = async (e) => {
   const f = e.target.files && e.target.files[0];

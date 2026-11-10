@@ -367,8 +367,10 @@ func TestTheRunSaysItsPlanFirst(t *testing.T) {
 		want    string
 	}{
 		{false, map[string]bool{"weather": true}, "check install:clock restart theme-send:clock theme-check:clock theme-room:clock theme-store:clock theme-restart:clock"},
-		{true, map[string]bool{"weather": true}, "check theme-send:clock theme-check:clock install:clock restart"},
-		{true, nil, "check theme-send:clock theme-check:clock install:clock restart"},
+		// a new app's theme follows its install on every firmware: the store refuses a theme
+		// for an app that is not installed (Gold, 2026-11-10)
+		{true, map[string]bool{"weather": true}, "check install:clock restart theme-send:clock theme-check:clock"},
+		{true, nil, "check install:clock restart theme-send:clock theme-check:clock"},
 		{true, map[string]bool{"clock": true}, "check install:clock restart"},
 	} {
 		if got := planIDs(c.chooses, c.seeded); got != c.want {
@@ -816,17 +818,15 @@ func TestAnUpgradeKeepsTheWornTheme(t *testing.T) {
 	}
 }
 
-// TestASeedGoesBeforeTheRestart pins the run's order on both firmware postures (owner,
-// 2026-11-09: "We install the app, we reboot, then we install the theme. Why don't we just
-// install the app, we install the theme and then reboot as the last thing?"). A store that
-// chooses without rebooting (v1.6.0+) is seeded BEFORE the app is installed, so the one
-// restart the run ends with boots the app already wearing its face; a store that reboots the
-// orb on the store itself keeps the old order, because seeding ahead of it would cost a second
-// restart. The third case is the refusal this reordering makes possible — a seed that cannot
-// dress the app standing behind it — and pins that it costs the run its refusal and not its app.
+// TestANewAppsSeedFollowsItsInstall pins the run's order on both firmware postures. A NEW
+// app's theme is seeded after its install on every firmware: the store refuses a theme for an
+// app that is not installed ("no installed app wears that theme"; Gold, 2026-11-10, a first
+// Flights install). The 2026-11-09 reorder that seeded ahead of the install never worked for a
+// new app; with live installs (§63) the app lands with no restart and its theme follows at once.
+// The third case pins that a seed that cannot dress the app costs the run its refusal, not its app.
 // The fake is one install onto a card holding no themes of its own, and it records every device
 // call, so the order is the board's own answer and not a reading of code.
-func TestASeedGoesBeforeTheRestart(t *testing.T) {
+func TestANewAppsSeedFollowsItsInstall(t *testing.T) {
 	op, ow, og, oh := installPoll, installRebootWait, cycleQuietGrace, installHard
 	tp, tb := themeStorePoll, themeStoreBudget
 	installPoll, installRebootWait, cycleQuietGrace, installHard = 10*time.Millisecond, 300*time.Millisecond, 50*time.Millisecond, 2*time.Second
@@ -942,15 +942,6 @@ func TestASeedGoesBeforeTheRestart(t *testing.T) {
 			if !sent || !installed {
 				t.Fatalf("%s seeding a clock the shelf cannot dress: the seed's refusal cost the run its app: %v", c.fw, calls)
 			}
-			refused := ""
-			for _, st := range steps {
-				if st.Action == "refused" {
-					refused = st.Phase
-				}
-			}
-			if refused != "theme-send:clock" {
-				t.Errorf("%s seeding a clock the shelf cannot dress: the refusal printed on %q; want the seed's own send row", c.fw, refused)
-			}
 			continue
 		}
 		if err != nil {
@@ -979,10 +970,10 @@ func TestASeedGoesBeforeTheRestart(t *testing.T) {
 		if up < 0 || ins < 0 {
 			t.Fatalf("%s: the run sent no theme upload or no install: %v", c.fw, calls)
 		}
-		if first := up < ins; first != c.chooses {
-			t.Errorf("%s: the theme upload went %s the app install; on this firmware the seed must go %s it",
-				c.fw, map[bool]string{true: "before", false: "after"}[first],
-				map[bool]string{true: "before", false: "after"}[c.chooses])
+		// A NEW app's theme follows its install on every firmware: the store refuses a theme
+		// for an app that is not installed (Gold, 2026-11-10: a first Flights install).
+		if up < ins {
+			t.Errorf("%s: the theme upload went before the app install; a new app's seed must follow it", c.fw)
 		}
 
 		// The plan the panel drew before the first dial lists its rows where the run walks them.
@@ -1000,12 +991,8 @@ func TestASeedGoesBeforeTheRestart(t *testing.T) {
 		if seedRow < 0 || installRow < 0 || restartRow < 0 {
 			t.Fatalf("%s: the plan lost a row: %v", c.fw, rows)
 		}
-		if c.chooses {
-			if !(seedRow < installRow && installRow < restartRow) {
-				t.Errorf("%s: plans %v; want the seed before the install and the restart after both", c.fw, rows)
-			}
-		} else if !(installRow < restartRow && restartRow < seedRow) {
-			t.Errorf("%s: plans %v; want the old order — install, restart, then the seed", c.fw, rows)
+		if !(installRow < restartRow && restartRow < seedRow) {
+			t.Errorf("%s: plans %v; want install, restart, then the new app's seed", c.fw, rows)
 		}
 
 		// Every theme line sits on one of its own theme rows, and a choosing store is never

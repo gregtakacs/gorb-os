@@ -256,10 +256,15 @@ func installPlan(lib *Library, slugs []string, card, chooses, live bool, install
 	}
 	secs := func(d time.Duration) int { return int(d / time.Second) }
 	restart := secs(cycleQuietGrace + installRebootWait)
-	seedRows := func() []planStep {
+	// early: the seeds that go before the apps (an app already on the dial, on firmware that
+	// chooses); the rest go after. The firmware's store refuses a theme for an app that is not
+	// installed ("no installed app wears that theme"), so a new app's theme always follows
+	// its install (owner, Gold, 2026-11-10: a first Flights install refused its seed).
+	early := func(slug string) bool { return chooses && installed[slug] }
+	seedRows := func(before bool) []planStep {
 		var rows []planStep
 		for _, slug := range slugs {
-			if !seedSlug(lib, slug, seeded) {
+			if !seedSlug(lib, slug, seeded) || early(slug) != before {
 				continue
 			}
 			for _, st := range themeSteps(title(slug)+"'s theme", restart, chooses) {
@@ -274,9 +279,7 @@ func installPlan(lib *Library, slugs []string, card, chooses, live bool, install
 	// seeds every theme it can and installs the apps behind them, so the one restart it
 	// ends with boots each app wearing its theme. The rows are listed where the run walks
 	// them (owner, 2026-11-09).
-	if chooses {
-		plan = append(plan, seedRows()...)
-	}
+	plan = append(plan, seedRows(true)...)
 	for _, slug := range slugs {
 		if !card {
 			plan = append(plan, planStep{ID: "send:" + slug, Label: "Sending " + title(slug) + " to the orb's card", Kind: "bytes"})
@@ -286,9 +289,7 @@ func installPlan(lib *Library, slugs []string, card, chooses, live bool, install
 	if !live || owesOne(slugs, installed) {
 		plan = append(plan, planStep{ID: "restart", Label: "Restarting the orb to load it", Kind: "wait", Budget: restart})
 	}
-	if !chooses {
-		plan = append(plan, seedRows()...)
-	}
+	plan = append(plan, seedRows(false)...)
 	return plan
 }
 
@@ -769,8 +770,8 @@ func (s *Server) installRun(ctx context.Context, ip, only string, force, card bo
 	var seedErr error
 	if phases.chooses {
 		for _, slug := range slugs {
-			if !seedSlug(lib, slug, seeded) {
-				continue
+			if !seedSlug(lib, slug, seeded) || !installed[slug] {
+				continue // a new app's theme follows its install (below)
 			}
 			phases.theme = slug
 			phases.cur = "theme-send:" + slug
@@ -883,14 +884,14 @@ func (s *Server) installRun(ctx context.Context, ip, only string, force, card bo
 	// with no theme): each app this run installed that has a default in the library gets it
 	// when the card holds no theme of its own, and only once the app is live on the dial.
 	//
-	// This is the OLD ordering, and it runs only where the store still reboots the orb: on
-	// firmware that chooses (phases.chooses) the seed already went out above the apps, and a
-	// second pass here would re-read a card the run only just filed.
+	// Every new app's theme goes here, after its install: the store refuses a theme for an app
+	// that is not installed. On firmware that chooses, an app already on the dial was seeded
+	// above the apps and is skipped here; on older firmware every seed goes here.
 	waited := !rebooted || cycled // nothing landed, or its reboot is already behind the run
-	if !phases.chooses {
+	{
 		for _, slug := range slugs {
-			if !seedSlug(lib, slug, seeded) {
-				continue
+			if !seedSlug(lib, slug, seeded) || phases.chooses && installed[slug] {
+				continue // seeded before the apps
 			}
 			// An install ends with the orb rebooting to load the app, and a ledger read in that
 			// gap answers nothing; the seed waits the boot out and asks again rather than read

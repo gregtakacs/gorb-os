@@ -565,7 +565,7 @@ static void place_changed(void)
     s_rng_until = now_ms() + 2000;                 /* the header names the place for a moment */
 }
 
-static void merge(void)
+static __attribute__((noinline)) void merge(void)
 {
     const int64_t now = orb_uptime_us();
     fm_merge_begin(&s_m);
@@ -741,7 +741,7 @@ static int shape_of(const orb_ac_t *a)
     return 6;
 }
 
-static void draw_frame(void)
+static __attribute__((noinline)) void draw_frame(void)
 {
     const float rkm = range_km();
     fm_project(&s_m, rkm, orb_uptime_us(), CX, CY, RING_R);
@@ -778,7 +778,7 @@ static void draw_frame(void)
  * later row, and rows at one depth draw in table order, so a higher aircraft passes over a
  * lower one (owner, §12.5). The selection and an emergency ride as rings over their
  * contacts, and a card that keeps clear moves off the contact it describes. */
-static void draw_stage(void)
+static __attribute__((noinline)) void draw_stage(void)
 {
     const float rkm = range_km();
     fm_project(&s_m, rkm, orb_uptime_us(), CX, CY, RING_R);
@@ -845,7 +845,7 @@ static int drawn_n(void)
     return s_m.norder < cap ? s_m.norder : cap;
 }
 
-static void draw_text(void)
+static __attribute__((noinline)) void draw_text(void)
 {
     char b[64];
     /* The selected aircraft left the range or aged out: its card closes and the dial
@@ -968,7 +968,7 @@ static int32_t s_name[N_NAMES] = { -1, -1, -1, -1, -1, -1 };
 static bool    s_reread;                 /* the theme is read again at the next frame */
 static void    stage_reread(void);
 
-static void read_values(void)
+static __attribute__((noinline)) void read_values(void)
 {
     uint32_t ver = 0;
     memset(&V, 0, sizeof V);
@@ -993,7 +993,7 @@ static void names_hide(void)
 
 /* The landmarks' names, best rank first, kept inside the inner rings, off home's dot, off
  * the range figure and off each other: under the name's own mark, as a chart prints it. */
-static void names_draw(void)
+static __attribute__((noinline)) void names_draw(void)
 {
     const int want = V.names[s_set.range], cw = V.name_px / 2 + 1, lh = V.name_px + 6;
     int n = 0;
@@ -1061,7 +1061,7 @@ static void map_open(void)
     }
 }
 
-static void map_step(void)
+static __attribute__((noinline)) void map_step(void)
 {
     if (!s_map || !s_set.home_ok || !s_visible) return;
     if (s_rng_want >= 0) return;                     /* a range being chosen: no view opens */
@@ -1098,6 +1098,9 @@ static void map_step(void)
     }
 }
 
+/* The pieces redraw() reaches are noinline (as weather's are): wasm3 holds a native frame per
+ * op until its block returns, so clang inlining them into one body ran a zoom's redraw past
+ * the guest's 64 KB stack (Gold, 2026-11-10: "stack overflow in task lvgl" on a press-and-turn). */
 static void redraw(void)
 {
     if (!s_visible) return;
@@ -1126,7 +1129,7 @@ static bool is_dot_slot(uint16_t tag)
 
 /* The theme's rows, by slot: the arm at 0, the planes after it, the marker rings, and the
  * far-contact dots when the theme carries them. */
-static void stage_rows(void)
+static __attribute__((noinline)) void stage_rows(void)
 {
     s_nplanes = 0;
     s_ndots = 0;
@@ -1220,7 +1223,7 @@ ORB_EXPORT("orb_init") int32_t orb_init(void)
  * before its theme is bound, and a theme sent from the editor binds while the app is away,
  * so the rows and values orb_init saw may not be the ones on the glass now. The OS binds the
  * stage after orb_activate and orb_resume, so the read waits for the stage's first tick. */
-static void stage_reread(void)
+static __attribute__((noinline)) void stage_reread(void)
 {
     clk_row_t r0;
     if (!s_themed) { s_reread = false; return; }

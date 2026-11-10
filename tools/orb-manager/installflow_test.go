@@ -351,7 +351,9 @@ func TestTheRunSaysItsPlanFirst(t *testing.T) {
 	if got := strings.Join(ids, " "); got != want {
 		t.Errorf("a card install of the clock plans %q; want %q", got, want)
 	}
-	// a card with no theme of the clock's lists its seed, in the firmware's own steps
+	// a card with no theme of the clock's lists its seed, in the firmware's own steps, and on
+	// firmware whose store only chooses it lists them BEFORE the install, where the run walks
+	// them so its one restart boots the app already wearing its face (owner, 2026-11-09)
 	planIDs := func(chooses bool, seeded map[string]bool) string {
 		var out []string
 		for _, p := range installPlan(&Library{}, []string{"clock"}, true, chooses, seeded) {
@@ -365,8 +367,8 @@ func TestTheRunSaysItsPlanFirst(t *testing.T) {
 		want    string
 	}{
 		{false, map[string]bool{"weather": true}, "check install:clock restart theme-send:clock theme-check:clock theme-room:clock theme-store:clock theme-restart:clock"},
-		{true, map[string]bool{"weather": true}, "check install:clock restart theme-send:clock theme-check:clock"},
-		{true, nil, "check install:clock restart theme-send:clock theme-check:clock"},
+		{true, map[string]bool{"weather": true}, "check theme-send:clock theme-check:clock install:clock restart"},
+		{true, nil, "check theme-send:clock theme-check:clock install:clock restart"},
 		{true, map[string]bool{"clock": true}, "check install:clock restart"},
 	} {
 		if got := planIDs(c.chooses, c.seeded); got != c.want {
@@ -811,5 +813,322 @@ func TestAnUpgradeKeepsTheWornTheme(t *testing.T) {
 			t.Errorf("%s: uploads %v, last %s; an orb that would choose it is not sent it", fw, uploads, last.Action)
 		}
 		mu.Unlock()
+	}
+}
+
+// TestASeedGoesBeforeTheRestart pins the run's order on both firmware postures (owner,
+// 2026-11-09: "We install the app, we reboot, then we install the theme. Why don't we just
+// install the app, we install the theme and then reboot as the last thing?"). A store that
+// chooses without rebooting (v1.6.0+) is seeded BEFORE the app is installed, so the one
+// restart the run ends with boots the app already wearing its face; a store that reboots the
+// orb on the store itself keeps the old order, because seeding ahead of it would cost a second
+// restart. The third case is the refusal this reordering makes possible — a seed that cannot
+// dress the app standing behind it — and pins that it costs the run its refusal and not its app.
+// The fake is one install onto a card holding no themes of its own, and it records every device
+// call, so the order is the board's own answer and not a reading of code.
+func TestASeedGoesBeforeTheRestart(t *testing.T) {
+	op, ow, og, oh := installPoll, installRebootWait, cycleQuietGrace, installHard
+	tp, tb := themeStorePoll, themeStoreBudget
+	installPoll, installRebootWait, cycleQuietGrace, installHard = 10*time.Millisecond, 300*time.Millisecond, 50*time.Millisecond, 2*time.Second
+	themeStorePoll, themeStoreBudget = 10*time.Millisecond, 2*time.Second
+	defer func() {
+		installPoll, installRebootWait, cycleQuietGrace, installHard = op, ow, og, oh
+		themeStorePoll, themeStoreBudget = tp, tb
+	}()
+	for _, c := range []struct {
+		fw      string
+		chooses bool
+		slug    string
+	}{
+		{"v1.6.4+aaaaaaa", true, "weather"},
+		{"v1.5.9+aaaaaaa", false, "weather"},
+		// the theme only dresses the app the owner asked for, and on choosing firmware the seed
+		// now sits in front of it — so a clock the shelf has no face for is refused there, and
+		// the install it stands in front of still goes in (the same refusal the old ordering
+		// took after the apps had landed)
+		{"v1.6.4+aaaaaaa", true, "clock"},
+	} {
+		dir := t.TempDir()
+		for _, src := range []string{
+			path.Join(libAppsSubdir, c.slug+".orbapp"),
+			path.Join(libThemesSubdir, "weather-scope.orbtheme"),
+		} {
+			b, err := fs.ReadFile(shippedLib, src)
+			if err != nil {
+				t.Skipf("no shipped %s: %v", src, err)
+			}
+			dest := filepath.Base(src)
+			if err := os.WriteFile(filepath.Join(dir, dest), b, 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+		var mu sync.Mutex
+		var calls []string
+		themeID, landed := "", false
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			mu.Lock()
+			defer mu.Unlock()
+			calls = append(calls, r.Method+" "+r.URL.Path)
+			w.Header().Set("Content-Type", "application/json")
+			switch {
+			case r.URL.Path == "/api/v1/status":
+				w.Write([]byte(`{"state":"connected","ip":"127.0.0.1","fw":"` + c.fw + `"}`))
+			case r.URL.Path == "/api/v1/sd" && r.Method == http.MethodGet:
+				// an empty card until the theme lands, then its row wearing the witness the
+				// firmware of that release reports a landed store by
+				if themeID == "" {
+					w.Write([]byte(`{"mounted":true,"card_count":0,"themes":[]}`))
+					return
+				}
+				chosen, stored := "false", "true"
+				if c.chooses {
+					chosen, stored = "true", "false"
+				}
+				w.Write([]byte(`{"mounted":true,"card_count":1,"themes":[{"name":"Scope","app":"weather","id":"` +
+					themeID + `","ok":true,"chosen":` + chosen + `,"stored":` + stored + `}]}`))
+			case r.URL.Path == "/api/v1/sd/theme":
+				b, err := io.ReadAll(r.Body)
+				if err != nil {
+					http.Error(w, `{"error":"short body"}`, http.StatusBadRequest)
+					return
+				}
+				tc, err := orbnet.ContainerName(b)
+				if err != nil {
+					http.Error(w, `{"error":"the card refused the container"}`, http.StatusBadRequest)
+					return
+				}
+				themeID = tc.ID
+				w.Write([]byte(`{"state":"staged","id":"` + tc.ID + `","reboot":"none"}`))
+			case r.URL.Path == "/api/v1/sd/app":
+				io.Copy(io.Discard, r.Body)
+				w.Write([]byte(`{"state":"stored"}`))
+			case r.URL.Path == "/api/v1/apps" && r.Method == http.MethodGet:
+				if !landed {
+					w.Write([]byte(`{"mounted":true,"apps":[],"installed":[]}`))
+					return
+				}
+				w.Write([]byte(`{"mounted":true,"apps":[{"stem":"` + c.slug + `","ok":true}],` +
+					`"installed":[{"slug":"` + c.slug + `","version":"v1.0.0"}]}`))
+			case r.URL.Path == "/api/v1/apps/install":
+				landed = true
+				w.Write([]byte(`{"state":"installing"}`))
+			case r.URL.Path == "/api/v1/reboot":
+				w.Write([]byte(`{"state":"rebooting"}`))
+			default:
+				w.Write([]byte(`{}`))
+			}
+		}))
+		s := newHub()
+		s.lib = &Library{AppsDir: dir, ThemesDir: dir}
+		for _, cl := range []*orbnet.Client{s.device, s.ota, s.orb} {
+			cl.DevicePort = portOf(srv.URL)
+		}
+		var steps []installStep
+		err := s.installRun(context.Background(), "127.0.0.1", c.slug, false, false,
+			func(st installStep) { steps = append(steps, st) })
+		srv.Close()
+		if c.slug == "clock" {
+			// The refusal is the run's last word, and the clock is still on the card.
+			if err == nil || !strings.Contains(err.Error(), "no theme for clock") {
+				t.Fatalf("%s seeding a clock the shelf cannot dress: the run ended %v; want the seed's own refusal", c.fw, err)
+			}
+			mu.Lock()
+			sent, installed := false, false
+			for _, l := range calls {
+				sent = sent || l == "POST /api/v1/sd/app"
+				installed = installed || l == "POST /api/v1/apps/install"
+			}
+			mu.Unlock()
+			if !sent || !installed {
+				t.Fatalf("%s seeding a clock the shelf cannot dress: the seed's refusal cost the run its app: %v", c.fw, calls)
+			}
+			refused := ""
+			for _, st := range steps {
+				if st.Action == "refused" {
+					refused = st.Phase
+				}
+			}
+			if refused != "theme-send:clock" {
+				t.Errorf("%s seeding a clock the shelf cannot dress: the refusal printed on %q; want the seed's own send row", c.fw, refused)
+			}
+			continue
+		}
+		if err != nil {
+			t.Fatalf("%s: the run refused: %v", c.fw, err)
+		}
+		if len(steps) == 0 || steps[0].Action != "plan" {
+			t.Fatalf("%s: the run did not open with its plan: %+v", c.fw, steps)
+		}
+		rows := []string{}
+		for _, p := range steps[0].Plan {
+			rows = append(rows, p.ID)
+		}
+
+		// Which door crossed first, in the board's own words.
+		mu.Lock()
+		at := func(pref string) int {
+			for i, l := range calls {
+				if strings.HasPrefix(l, pref) {
+					return i
+				}
+			}
+			return -1
+		}
+		up, ins := at("POST /api/v1/sd/theme"), at("POST /api/v1/apps/install")
+		mu.Unlock()
+		if up < 0 || ins < 0 {
+			t.Fatalf("%s: the run sent no theme upload or no install: %v", c.fw, calls)
+		}
+		if first := up < ins; first != c.chooses {
+			t.Errorf("%s: the theme upload went %s the app install; on this firmware the seed must go %s it",
+				c.fw, map[bool]string{true: "before", false: "after"}[first],
+				map[bool]string{true: "before", false: "after"}[c.chooses])
+		}
+
+		// The plan the panel drew before the first dial lists its rows where the run walks them.
+		// An absent row is -1 and not 0: a plan that lost its seed rows is a failure, not a
+		// row that happened to sort first.
+		row := func(id string) int {
+			for i, got := range rows {
+				if got == id {
+					return i
+				}
+			}
+			return -1
+		}
+		seedRow, installRow, restartRow := row("theme-send:weather"), row("install:weather"), row("restart")
+		if seedRow < 0 || installRow < 0 || restartRow < 0 {
+			t.Fatalf("%s: the plan lost a row: %v", c.fw, rows)
+		}
+		if c.chooses {
+			if !(seedRow < installRow && installRow < restartRow) {
+				t.Errorf("%s: plans %v; want the seed before the install and the restart after both", c.fw, rows)
+			}
+		} else if !(installRow < restartRow && restartRow < seedRow) {
+			t.Errorf("%s: plans %v; want the old order — install, restart, then the seed", c.fw, rows)
+		}
+
+		// Every theme line sits on one of its own theme rows, and a choosing store is never
+		// asked to reboot.
+		phase := map[string]string{}
+		for _, st := range steps[1:] {
+			if st.Step != "theme" {
+				continue
+			}
+			phase[st.Action] = st.Phase
+			if strings.HasPrefix(st.Phase, "install:") {
+				t.Errorf("%s: the theme line %s stamped %s; a seed has no install row to sit on", c.fw, st.Action, st.Phase)
+			}
+		}
+		for action, want := range map[string]string{
+			"uploading": "theme-send:weather", "uploaded-theme": "theme-send:weather", "storing": "theme-check:weather",
+		} {
+			if phase[action] != want {
+				t.Errorf("%s: the theme %s line landed on %q; want %s", c.fw, action, phase[action], want)
+			}
+		}
+		if c.chooses {
+			if phase["worn"] != "theme-check:weather" || phase["rebooting"] != "" {
+				t.Errorf("%s: a choosing store reported %v; want a worn theme on its check row and no reboot", c.fw, phase)
+			}
+		}
+		// The run still ends behind the restart that loads the app, whichever order it took.
+		back := false
+		for _, st := range steps[1:] {
+			if st.Step == "install" && st.Action == "restarting" && st.Phase == "restart" {
+				back = true
+			}
+		}
+		if !back {
+			t.Errorf("%s: the run never waited for the orb to come back with the app: %+v", c.fw, steps[max(0, len(steps)-3):])
+		}
+	}
+}
+
+// TestAThemeForAMissingAppSaysSo: §63's "added, its app not installed" half of a theme push.
+// The theme still lands — a face filed for the day its app arrives is a good thing — but the
+// run's final line says the dial cannot wear it yet and carries the app's slug in AppMissing
+// so the page can offer the install. The offer needs all three: no ledger row on the orb,
+// the .orbapp on the hub's shelf, a theme that names an app. A failed app list is the fourth
+// way to say nothing: the push is not reported missing on one bad GET.
+func TestAThemeForAMissingAppSaysSo(t *testing.T) {
+	dir := t.TempDir()
+	blob, err := fs.ReadFile(shippedLib, path.Join(libAppsSubdir, "clock.orbapp"))
+	if err != nil {
+		t.Skipf("no shipped clock.orbapp: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "clock.orbapp"), blob, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	theme, err := os.ReadFile(filepath.Join("themes", "skeleton.orbtheme"))
+	if err != nil {
+		t.Skipf("no shelf theme: %v", err)
+	}
+	c, err := orbnet.ContainerName(theme)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		what      string
+		appsDir   string
+		installed string // JSON for the orb's installed ledger
+		appsFail  bool
+		want      string // AppMissing wanted on the done step
+	}{
+		{"filed for a bare orb with the app on the shelf", dir, `[]`, false, "clock"},
+		{"filed for an orb already wearing the app", dir, `[{"slug":"clock","version":"v1.0.0"}]`, false, ""},
+		{"filed for a bare orb with no clock on the shelf", t.TempDir(), `[]`, false, ""},
+		{"filed for a bare orb whose app list would not read", dir, `[]`, true, ""},
+	} {
+		var mu sync.Mutex
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			mu.Lock()
+			defer mu.Unlock()
+			w.Header().Set("Content-Type", "application/json")
+			switch r.URL.Path {
+			case "/api/v1/status":
+				w.Write([]byte(`{"state":"connected","fw":"v1.6.4+0d9a87b"}`))
+			case "/api/v1/sd/theme":
+				io.Copy(io.Discard, r.Body)
+				w.Write([]byte(`{"state":"filed","id":"` + c.ID + `","reboot":"none"}`))
+			case "/api/v1/apps":
+				if tc.appsFail {
+					w.WriteHeader(500)
+					w.Write([]byte(`{"error":"the card is gone"}`))
+					return
+				}
+				w.Write([]byte(`{"mounted":true,"apps":[],"installed":` + tc.installed + `}`))
+			case "/api/v1/sd":
+				w.Write([]byte(`{"mounted":true,"themes":[]}`))
+			default:
+				w.Write([]byte(`{}`))
+			}
+		}))
+		s := newHub()
+		s.lib = &Library{AppsDir: tc.appsDir}
+		s.device = orbnet.NewClient(deviceTimeout)
+		s.device.DevicePort = portOf(srv.URL)
+		s.ota = orbnet.NewClient(otaTimeout)
+		s.ota.DevicePort = portOf(srv.URL)
+		var last installStep
+		ok := s.streamThemeStore(context.Background(), "127.0.0.1", theme, "Skeleton", c, true, true,
+			func(st installStep) { last = st })
+		srv.Close()
+		if !ok {
+			t.Errorf("%s: the push failed: %+v", tc.what, last)
+			continue
+		}
+		if last.Action != "done" {
+			t.Errorf("%s: ended %s, want done: %+v", tc.what, last.Action, last)
+			continue
+		}
+		if last.AppMissing != tc.want {
+			t.Errorf("%s: AppMissing %q, want %q", tc.what, last.AppMissing, tc.want)
+		}
+		if want := "is not installed on this orb"; tc.want != "" && !strings.Contains(last.Note, want) {
+			t.Errorf("%s: note %q does not say the app is missing", tc.what, last.Note)
+		} else if tc.want == "" && strings.Contains(last.Note, want) {
+			t.Errorf("%s: note %q says the app is missing when it should not", tc.what, last.Note)
+		}
 	}
 }

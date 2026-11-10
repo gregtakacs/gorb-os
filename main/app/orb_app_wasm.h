@@ -135,6 +135,25 @@ void orb_wasm_theme_release(struct orb_app *app);
  * task. */
 void orb_wasm_theme_changed(struct orb_app *app);
 
+/** Restart `app`'s engine in place: its guest state, pages, widgets, network, kept
+ *  bodies and maps are released, the same code is loaded again from the engine's own
+ *  copy and initialised, and an app on the glass is activated again on a fresh page.
+ *  LVGL task only. ESP_OK, or why it could not (the app is then left unloaded, as a
+ *  failed boot load leaves it, and its row says why via orb_svc_note_refused). */
+esp_err_t orb_wasm_restart(orb_app_t *app);
+
+/** A theme removal let `app`'s theme go (orb_theme.c clear_job). LVGL task. */
+void orb_wasm_theme_gone(orb_app_t *app);
+
+/** §63: an uninstall freed the registry row over slot `slot` — release its engine
+ *  state now instead of at the next reboot. It unbinds the app's stage while its page
+ *  still stands, then releases the slot (the runtime, its environment, the module
+ *  bytes in PSRAM, the beat timer, the icon and the geometry/schema stores the engine
+ *  owns). LVGL task only (the uninstall door posts it with lv_async_call); idempotent
+ *  on a slot holding nothing, and it refuses to free anything while that page is the
+ *  glass, which the door has already moved off. */
+void orb_wasm_evict(int slot);
+
 #ifdef __cplusplus
 }
 #endif

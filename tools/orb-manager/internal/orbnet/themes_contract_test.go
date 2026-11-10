@@ -107,7 +107,7 @@ func TestThemeContractAgainstTheLiveDouble(t *testing.T) {
 	}
 
 	// Delete by id, and watch the row go.
-	if _, err := c.ThemeDelete(ip, byName["damaged"].ID); err != nil {
+	if _, err := c.ThemeDelete(ip, byName["damaged"].ID, ""); err != nil {
 		t.Fatalf("delete damaged: %v", err)
 	}
 	l3, err := c.ThemeList(ip)

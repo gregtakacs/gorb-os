@@ -528,15 +528,22 @@ void orb_theme_upload_unpark(void);
  *  resolved by walking the themes directory and re-verified against the file's
  *  header name. Never builds a path from the caller's string.
  *
- *  D38: deleting the theme the dial is WEARING is also a deactivation — the
- *  slot's header sector is erased (clear_job) and the next boot draws the base
- *  face, exactly as a torn store does. `deactivating` (nullable) reads back
- *  true when the active theme was removed and the clear was queued; it reads
- *  false for an inactive theme, and false when the delete removed the wall's
- *  card file but the slot clear could not be queued (the face stands until the
- *  next store). The card file is unlinked before either, so the delete always
+ *  D38: deleting the theme an app is WEARING is also a deactivation — the copies and
+ *  the choice go (clear_job), no reboot of the device. §63 narrowed what the app is
+ *  left wearing: an installed app does not fall to its plain face while the card holds
+ *  another theme for it. It wears its next theme — `next` (nullable, "" for no
+ *  opinion) is the replacement the remover proposes, honoured only when the card holds
+ *  that file for that same app, and otherwise the app's most recently added loadable
+ *  theme is stored in its place, on the worker, and the app restarts onto it. Only
+ *  with no theme left — or a store that refused — does it go bare, and only then is the
+ *  gone message posted to the app.
+ *
+ *  `deactivating` (nullable) reads back true when the active theme was removed and the
+ *  clear was queued; it reads false for an inactive theme, and false when the delete
+ *  removed the wall's card file but the clear could not be queued (the face stands
+ *  until the next store). The card file is unlinked before either, so the delete always
  *  lands. */
-esp_err_t orb_theme_delete(const char *id, bool *deactivating);
+esp_err_t orb_theme_delete(const char *id, const char *next, bool *deactivating);
 
 /** Deactivate the worn theme without touching any card file: erase the active
  *  slot's header and reboot onto the base face. The dial menu's "wear nothing"

@@ -620,10 +620,14 @@ def lint():
     # stream still ends in the terminator chunk.
     # 2026-11-07: the no-card body carries the reason (orb_sd_why) between its
     # mounted word and its count, sent as three chunks.
-    assert '"{\\"mounted\\":false,\\"why\\":\\""' in nn
+    # §63: both no-card bodies carry the firmware's live-install capability word right
+    # after "mounted", on every path — a hub that cannot tell an old orb from a dial
+    # with nothing owed would read an empty ledger as a broken door.
+    assert '"{\\"mounted\\":false,\\"live_install\\":true,\\"why\\":\\""' in nn
     assert 'orb_sd_why()' in nn
     assert '"\\",\\"count\\":-1,\\"apps\\":[],\\"installed\\":[' in nn
-    assert '{\\"mounted\\":true,\\"card\\":\\"%s\\",\\"count\\":-1,\\"apps\\":[],\\"installed\\":[' in nn
+    assert '{\\"mounted\\":true,\\"live_install\\":true,\\"card\\":\\"%s\\",' in nn
+    assert '\\"count\\":-1,\\"apps\\":[],\\"installed\\":[' in nn
     # P4a's invariant: the installed tier is streamed on EVERY path — card or
     # no card, folder or none. An installed app's existence does not depend on
     # the socket's contents, and a page that only learns of it when a card is

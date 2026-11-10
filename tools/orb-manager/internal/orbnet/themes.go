@@ -334,11 +334,21 @@ func (c *Client) ThemeStore(ip, id string) (json.RawMessage, error) {
 // ThemeDelete removes a theme from the card by id. It is the only theme call that is
 // not a queued job, so its reply is the outcome. Deleting by name is not available:
 // the name is free text, and only an id selects one file for certain.
-func (c *Client) ThemeDelete(ip, id string) (json.RawMessage, error) {
+//
+// next names the theme the caller proposes to wear in its place (§63): the delete of a
+// worn theme otherwise lets the app go bare. An empty next asks for no replacement. An
+// invalid one is dropped rather than refused — the caller asked for the delete, and the
+// firmware's own door ignores a next it cannot read, so a hub that named a bad one would
+// only lose the proposal twice over.
+func (c *Client) ThemeDelete(ip, id, next string) (json.RawMessage, error) {
 	if err := CheckThemeID(id); err != nil {
 		return nil, err
 	}
-	return c.devicePost(ip, "/api/v1/sd/delete?id="+url.QueryEscape(id), nil, "")
+	route := "/api/v1/sd/delete?id=" + url.QueryEscape(id)
+	if CheckThemeID(next) == nil {
+		route += "&next=" + url.QueryEscape(next)
+	}
+	return c.devicePost(ip, route, nil, "")
 }
 
 // ThemeDesign fetches the app design a card theme carries after its banks (D43 P7):

@@ -6188,7 +6188,8 @@ static esp_err_t h_bundle_install(httpd_req_t *req)
     return httpd_resp_sendstr(req, b);
 }
 
-/* POST /api/v1/sd/delete?id=X */
+/* POST /api/v1/sd/delete?id=X[&next=Y] — Y, optional, names the theme the remover would
+ * like the app to wear once X is gone (§63). An invalid Y is dropped, not refused. */
 static esp_err_t h_theme_del(httpd_req_t *req)
 {
     httpd_resp_set_type(req, "application/json");
@@ -6199,9 +6200,18 @@ static esp_err_t h_theme_del(httpd_req_t *req)
         return httpd_resp_sendstr(req, "{\"error\":\"id is missing or not a theme id\"}");
     }
     /* D38: a delete that lands on a worn theme lets it go, and its app draws its base
-     * face without a reboot (2026-11-09). The answer says whether it was worn. */
+     * face without a reboot (2026-11-09). The answer says whether it was worn.
+     * §63 narrowed that: an installed app goes bare only when the card holds no other
+     * theme for it. `next` is the caller's proposed replacement — optional, and a value
+     * that is not a theme id is ignored rather than refused, because the delete of the
+     * file was asked for and must still land. The worker decides for real: it honours
+     * this stem only when it is this app's own file, and takes the card's newest
+     * otherwise. */
+    char next[ORB_THEME_HANDLE_MAX + 1] = "";
+    (void)q_param(req, "next", next, sizeof next);
+    if (next[0] && !orb_theme_id_ok(next)) next[0] = '\0';
     bool deactivating = false;
-    const esp_err_t e = orb_theme_delete(id, &deactivating);
+    const esp_err_t e = orb_theme_delete(id, next, &deactivating);
     if (e == ESP_ERR_NOT_FOUND) {
         httpd_resp_set_status(req, "404 Not Found");
         return httpd_resp_sendstr(req, "{\"error\":\"no such theme on the card\"}");
@@ -6756,7 +6766,9 @@ static esp_err_t h_sd_rescan(httpd_req_t *req)
  *
  * S6 added a sixth word to the installed tier — "version", a 32-byte field whose grammar
  * admits no character needing an escape beyond '-' and '.', so its worst cell is
- * 2 * 31 + 13 = 75 B and the row's total is 496 B. The scratch did not move: the CARD
+ * 2 * 31 + 13 = 75 B and the row's total is 496 B. §63's "built" adds 13 of them, and
+ * the row answers "installed, and standing on the dial" apart from "walkable", which is
+ * only the module's answer. The scratch did not move: the CARD
  * tier's row (stem, slug, title and a 128-byte why) is the wider of the two, and the
  * sentinel recomputes that one from the shipped headers. D38 gave the CARD tier that
  * same word — the Update button answers "is the card copy older than the shelf", and
@@ -6799,12 +6811,13 @@ static void apps_send_installed(httpd_req_t *req, char *row, size_t rowsz)
             "%s{\"slug\":\"%s\",\"title\":\"%s\",\"slot\":%d,\"caps\":\"%s\","
             "\"period_ms\":%" PRIu32 ",\"n_settings\":%d,"
             "\"failed\":%s,\"walkable\":%s,\"on_glass\":%s,"
-            "\"compiled\":true,\"reason\":\"%s\"}",
+            "\"built\":%s,\"compiled\":true,\"reason\":\"%s\"}",
             seen++ ? "," : "", e_slug, e_title, (int)i, caps,
             a->period_ms, a->n_settings,
             orb_app_failed_live(a) ? "true" : "false",
             a->iface ? "true" : "false",
-            (a == orb_app_current() || a->active) ? "true" : "false", e_reason);
+            (a == orb_app_current() || a->active) ? "true" : "false",
+            a->init_done ? "true" : "false", e_reason);
         if (w < 0 || (size_t)w >= rowsz) {
             ESP_LOGE(TAG, "compiled app row exceeded %d B", (int)rowsz);
             httpd_resp_send_chunk(req, "{}", HTTPD_RESP_USE_STRLEN);
@@ -6849,7 +6862,7 @@ static void apps_send_installed(httpd_req_t *req, char *row, size_t rowsz)
         const int w = snprintf(row, rowsz,
             "%s{\"slug\":\"%s\",\"title\":\"%s\",\"slot\":%d,\"caps\":\"%s\","
             "\"period_ms\":%" PRIu32 ",\"n_settings\":%d,"
-            "\"failed\":%s,\"walkable\":%s,\"on_glass\":%s,"
+            "\"failed\":%s,\"walkable\":%s,\"on_glass\":%s,\"built\":%s,"
             "\"geom_crc\":%" PRIu32 ",\"code_crc\":%" PRIu32 ","
             "\"code_size\":%" PRIu32 ",\"serial\":%" PRIu32 ","
             "\"editor_crc\":%" PRIu32 ",\"version\":\"%s\",\"secrets\":%s,\"reason\":\"%s\"}",
@@ -6858,6 +6871,7 @@ static void apps_send_installed(httpd_req_t *req, char *row, size_t rowsz)
             orb_app_failed_live(a) ? "true" : "false",
             a->iface ? "true" : "false",
             (a == orb_app_current() || a->active) ? "true" : "false",
+            a->init_done ? "true" : "false",
             a->geom_crc, a->code_crc, a->code_size, a->serial, a->editor_crc,
             e_version, secrets, e_why);
         if (w < 0 || (size_t)w >= rowsz) {        /* cannot: bounds are arithmetic;
@@ -7019,14 +7033,14 @@ static esp_err_t h_apps_list(httpd_req_t *req)
     const bool mounted = orb_sd_mounted();
     char closer[8];
     snprintf(closer, sizeof closer, "]}");
-    char card[83], head[160];
+    char card[83], head[208];
     json_put(card, sizeof card, mounted ? orb_sd_card_id() : "");
     if (n < 0 && !mounted) {
         /* The reason travels with the refusal: a card that answered in a format the orb
          * cannot read is a different fix from a socket nothing answered in. */
         char why[200];
         json_put(why, sizeof why, orb_sd_why());
-        httpd_resp_send_chunk(req, "{\"mounted\":false,\"why\":\"", HTTPD_RESP_USE_STRLEN);
+        httpd_resp_send_chunk(req, "{\"mounted\":false,\"live_install\":true,\"why\":\"", HTTPD_RESP_USE_STRLEN);
         httpd_resp_send_chunk(req, why, HTTPD_RESP_USE_STRLEN);
         httpd_resp_send_chunk(req, "\",\"count\":-1,\"apps\":[],\"installed\":[",
                               HTTPD_RESP_USE_STRLEN);
@@ -7041,7 +7055,8 @@ static esp_err_t h_apps_list(httpd_req_t *req)
          * difference for the owner between "the folder is misnamed" and "the
          * files are there but all refused" — the second lists rows. */
         snprintf(head, sizeof head,
-                 "{\"mounted\":true,\"card\":\"%s\",\"count\":-1,\"apps\":[],\"installed\":[",
+                 "{\"mounted\":true,\"live_install\":true,\"card\":\"%s\","
+                 "\"count\":-1,\"apps\":[],\"installed\":[",
                  card);
         httpd_resp_send_chunk(req, head, HTTPD_RESP_USE_STRLEN);
         apps_send_installed(req, row, APPS_ROW_MAX);
@@ -7095,12 +7110,18 @@ static esp_err_t h_apps_list(httpd_req_t *req)
         }
         httpd_resp_send_chunk(req, row, HTTPD_RESP_USE_STRLEN);
     }
-    /* Close the card tier, then the installed tier (P4a), then the object. */
+    /* Close the card tier, then the installed tier (P4a), then the object.
+     * §63's "live_install" says what this firmware does with an arrival: an install
+     * lands on the dial, an uninstall frees its engine, and neither asks for a reboot.
+     * It is a capability bit and not a state — the hub's Apps face reads it to decide
+     * whether an empty restart_owed list means "nothing to reload" or "this orb is
+     * older than the rule", and it is true on every response, including the two
+     * no-card answers above, because an orb with no card still reboots for nothing. */
     httpd_resp_send_chunk(req, "],\"installed\":[", HTTPD_RESP_USE_STRLEN);
     apps_send_installed(req, row, APPS_ROW_MAX);
     /* The installs holding their restart (?defer=1): the hub reads a stem here as
      * copied, and the key's presence as this firmware taking defer at all. */
-    httpd_resp_send_chunk(req, "],\"restart_owed\":[", HTTPD_RESP_USE_STRLEN);
+    httpd_resp_send_chunk(req, "],\"live_install\":true,\"restart_owed\":[", HTTPD_RESP_USE_STRLEN);
     {
         const char *owed[16];
         const int n = orb_app_install_owed(owed, 16);
@@ -8184,7 +8205,14 @@ static esp_err_t h_theme_upload(httpd_req_t *req)
                  committed, got);
         return httpd_resp_sendstr(req, b);
     }
-    const esp_err_t pe = orb_theme_post_bundle(committed);
+    /* The one job worker may be busy (a boot's theme check, a fill): wait up to 10 s for its
+     * slot rather than refuse a store whose file is already on the card (owner, Gold,
+     * 2026-11-09: a setup's seed refused with ESP_ERR_INVALID_STATE). */
+    esp_err_t pe = orb_theme_post_bundle(committed);
+    for (int w = 0; pe == ESP_ERR_INVALID_STATE && w < 40; w++) {
+        vTaskDelay(pdMS_TO_TICKS(250));
+        pe = orb_theme_post_bundle(committed);
+    }
     if (pe != ESP_OK) {
         /* On the card but not queued. The slot stays armed invalid; the page says so and
          * the owner re-presses Store. */
@@ -8643,7 +8671,7 @@ static const char HTML_THEMES[] =
 "setTimeout(function(){watch(kind,id,nm,n+1,down);},1500);},"
 "function(){if(n>120){say('the orb stopped answering - reload this page','bad');return;}"
 "setTimeout(function(){watch(kind,id,nm,n+1,1);},1500);});}"
-"function del(id){var nm=ROWS[id]||id;if(!confirm('Delete '+nm+' from the card? The dial keeps drawing it until another theme is loaded.')){return;}"
+"function del(id){var nm=ROWS[id]||id;if(!confirm('Delete '+nm+' from the card? Its app wears its next theme - its plain face only if that was the last one.')){return;}"
 "j('/api/v1/sd/delete?id='+encodeURIComponent(id),{method:'POST'}).then(function(r){"
 "if(!r.ok){say('delete failed: '+((r.d&&r.d.error)?r.d.error:r.st),'bad');return;}refresh();},function(){rfail();});}"
 "function scan(){say('rescanning card\\u2026','');j('/api/v1/sd/rescan',{method:'POST'},30000).then(function(){refresh();},function(){say('the rescan request did not reach the orb or ran long - the page will re-read on its own','bad');});}"

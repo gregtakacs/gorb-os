@@ -12,7 +12,7 @@ import (
 func TestHostedEditorServesTheHubsPageWithTheAppsModule(t *testing.T) {
 	const ip = "203.0.113.7"
 	raw := zipWith(t, map[string]string{
-		"editor.json": `{"editor":1,"host":1,"module":["radar-bake.js","radar-editor.js"],"runtime":["baker@1","maps@1","host@1","theme@1","studio@1","ui@1","fonts@1","react@18.3.1"]}`,
+		"editor.json":     `{"editor":1,"host":1,"module":["radar-bake.js","radar-editor.js"],"runtime":["baker@1","maps@1","host@1","theme@1","studio@1","ui@1","fonts@1","react@18.3.1"]}`,
 		"radar-bake.js":   `var b`,
 		"radar-editor.js": `OrbHost.register({})`,
 		"orb-app.js":      `window.__ORB_APP = {}`,

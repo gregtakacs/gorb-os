@@ -176,11 +176,17 @@ typedef struct {
     uint8_t       *icon;         /* §61: the app's icon (orb.icon), deflated disc, PSRAM */
     uint32_t       icon_n;
     uint16_t       icon_side;
+    orbapp_hdr_t   hdr;          /* the header orb_wasm_load was given: a restart reloads the
+                                  * same module without reading the slot's flash again */
+    uint32_t       code_len;     /* the byte count that came with it */
+    bool           init_themed;  /* its orb_init ran with a stage: theme-cache-plan §2.4 and
+                                  * the no-reboot restart, which decides from this half alone */
 } wasm_slot_t;
 
 static wasm_slot_t s_slot[WASM_N_SLOTS];
 
 static wasm_slot_t *slot_of_app(const orb_app_t *app);
+static esp_err_t    wasm_restart(orb_app_t *app, const char *why);
 
 /* m3 hands a raw import the runtime, not the app. This finds the slot a runtime came
  * from so the import can forward to the broker with its real caller. Linear over 8 —
@@ -2114,10 +2120,15 @@ static esp_err_t wasm_init(orb_app_t *app)
      * the task's own stack (it touches the bank, the scheduler and the layer table)
      * before its orb_init can ask what it holds. */
     s->stage = app->slug && orb_theme_has(app->slug);   /* theme-pool-plan P4: its own */
+    bool base = true;
     if (s->stage) {
-        bool base = true;
         if (stage_open(app, &base) != ESP_OK) s->stage = false;
     }
+    /* What its orb_init believed, recorded for the one thing that cannot be re-derived from
+     * the theme alone: an app that built its plain face under a theme it had not seen yet
+     * (a store chose after the boot load) must be restarted when that theme lands, and an
+     * app that built themed labels must be restarted when the theme is let go. */
+    s->init_themed = s->stage && !base;
     s_budget_ms = ORB_WASM_INIT_BUDGET_MS;
     const int32_t r = wasm_call_i32(s, W_INIT, NULL, 0, ESP_FAIL);
     s_budget_ms = ORB_WASM_CALL_BUDGET_MS;
@@ -2182,17 +2193,19 @@ static void wasm_resume(orb_app_t *app)
     if (s->stage) { (void)orb_theme_fill_post(app->slug); orb_strip_fill_face(app); }   /* §2.4 */
 }
 
-/* theme-cache-plan §2.4: the app's theme is back in the pool while it is on the glass on its
- * bare face. Its stage binds again, and the app is resumed, so it reads its stage anew (as
- * every app does at an arrival). LVGL task. */
+/* theme-cache-plan §2.4, §63: the app's theme landed while it was on the glass. An app decides
+ * at orb_init what its theme gives it (D50), and a resume cannot unmake the face it built
+ * without one, so every landing restarts the app in place whatever its init saw: the restart
+ * re-runs orb_init over the same bytes already in PSRAM, and the app answers with the layout
+ * its new theme calls for. (The old rebind-and-resume branch was the wrong answer twice over:
+ * Gold, 2026-11-09, a fresh flights install wore its theme over its own clock face, and an app
+ * that came up themed kept a stale face when its theme changed.) LVGL task. */
 void orb_wasm_theme_landed(orb_app_t *app)
 {
     wasm_slot_t *s = slot_of_app(app);
     if (!s || !s->rt || !s->on_glass) return;
-    s->stage = true;
-    orb_strip_drop_full();                        /* the face's big plane: the bind needs the room */
-    if (stage_rebind(app) == ESP_OK) stage_run(true);
-    (void)wasm_call(s, W_RESUME, NULL, 0);
+    orb_strip_drop_full();                        /* the face's big plane: the restart needs the room */
+    (void)wasm_restart(app, "its theme landed");
 }
 
 void orb_wasm_theme_release(orb_app_t *app)
@@ -2212,6 +2225,154 @@ void orb_wasm_theme_changed(orb_app_t *app)
     if (!s || !s->rt || !s->on_glass) return;
     s->stage = true;
     if (orb_theme_fill_post(app->slug)) orb_strip_fill_face(app);
+}
+
+/* ---- the in-place restart ---------------------------------------------------
+ *
+ * An app decides what it draws in orb_init (theme-cache-plan §2.4, D50): themed apps build
+ * the theme's labels, unthemed ones their own canvas and widgets. That decision used to be
+ * good until the reboot, and since a theme can now land (a fill) and go (a removal) with no
+ * reboot, an app can be left holding the wrong answer. Releasing the engine and loading the
+ * SAME code again is the one thing that runs its orb_init over — no reboot, no reinstall,
+ * and no flash read, because the engine already owns a PSRAM copy of the image.
+ *
+ * It is also the base a no-reboot install will use: that one swaps the code, this one only
+ * re-reads it, and both need the same release/load/init/activate ladder. */
+
+/* The page a restart puts up while its own comes down. orb_ui_release keeps a page that is
+ * LVGL's active screen standing (a trapping app must not leave the display with nothing to
+ * draw), so an on-glass app's widgets could never be freed under it: the dial looks at
+ * something else first. Made once, reused, never freed: one black screen with no children. */
+static lv_obj_t *s_restart_scr;
+
+static lv_obj_t *restart_placeholder(void)
+{
+    if (s_restart_scr) return s_restart_scr;
+    lv_obj_t *ph = lv_obj_create(NULL);
+    if (!ph) return NULL;
+    lv_obj_set_style_bg_color(ph, lv_color_black(), 0);
+    lv_obj_set_style_bg_opa(ph, LV_OPA_COVER, 0);
+    lv_obj_set_style_pad_all(ph, 0, 0);
+    lv_obj_set_scrollable(ph, false);
+    lv_obj_set_scrollbar_mode(ph, LV_SCROLLBAR_MODE_OFF);
+    s_restart_scr = ph;
+    return ph;
+}
+
+/* `why` is the caller's reason, for the log: "asked", "its theme landed", "its theme was
+ * removed". Every trigger is posted with lv_async_call, so this runs on the LVGL task and
+ * never on the guest's own stack or inside a guest call — releasing the runtime the caller
+ * would have come back into is exactly the fault that rule keeps off the dial. */
+static esp_err_t wasm_restart(orb_app_t *app, const char *why)
+{
+    wasm_slot_t *s = slot_of_app(app);
+    if (!s || !s->rt) return ESP_ERR_INVALID_STATE;
+    if (!app->slug) return ESP_ERR_INVALID_STATE;
+
+    const int  slot = slot_index(s);
+    const bool on   = s->on_glass;
+
+    /* The stage's layers are children of the app's page, and a stage still bound to this app
+     * would answer "already bound" to the new init and keep pointers into the page released
+     * below: let it go while the page still stands. */
+    stage_unbind(app);
+    if (on) {
+        lv_obj_t *ph = restart_placeholder();
+        if (!ph) ESP_LOGW(TAG, "\"%s\": restart: no placeholder page — its own stays until the dial moves",
+                          app->slug);
+        else lv_screen_load(ph);
+    }
+
+    /* The image comes out of the slot before the slot comes down: slot_release would free it
+     * with everything else, and the restart is loading those exact bytes. */
+    uint8_t     *bytes = s->code;
+    const uint32_t len = s->code_len;
+    orbapp_hdr_t   hdr = s->hdr;
+    s->code = NULL;
+    slot_release(s);
+
+    if (!bytes || !len) {                          /* a slot with no image to reload: nothing to restart */
+        ESP_LOGE(TAG, "\"%s\": restart (%s): the engine held no copy of its code", app->slug, why);
+        orb_svc_note_refused(app, "the engine held no copy of its code to reload");
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    esp_err_t e = orb_wasm_load(slot, &hdr, bytes, len);   /* makes its own copy */
+    heap_caps_free(bytes);
+    if (e != ESP_OK) {
+        /* Left unloaded, exactly as a boot load that refused leaves it: the row says why, the
+         * dial says why, and the next boot's apply_code tries again from flash. */
+        const char *w = orb_wasm_load_why()[0] ? orb_wasm_load_why() : "the engine refused its code on restart";
+        orb_svc_note_refused(app, w);
+        ESP_LOGE(TAG, "\"%s\" could not be restarted (%s): %s", app->slug, why, w);
+        if (on) ESP_LOGE(TAG, "\"%s\" left the glass showing nothing until the dial moves", app->slug);
+        return e;
+    }
+
+    orb_wasm_bind_app(slot, app);                  /* the broker sees its real caller again */
+    if (wasm_init(app) != ESP_OK)                  /* its orb_init, again, with today's answer */
+        ESP_LOGW(TAG, "\"%s\": restarted, and its init refused — as at a boot load", app->slug);
+
+    if (on) {
+        lv_obj_t *pg = orb_ui_screen(slot);        /* its init made it; NULL: no face to show */
+        if (!pg) {
+            ESP_LOGE(TAG, "\"%s\": restarted with no page — the placeholder stays", app->slug);
+        } else {
+            lv_screen_load(pg);
+            if (wasm_activate(app) != ESP_OK)
+                ESP_LOGW(TAG, "\"%s\": restarted on the glass, activate refused", app->slug);
+        }
+    }
+    ESP_LOGI(TAG, "\"%s\" restarted in place (%s)", app->slug, why);
+    return ESP_OK;
+}
+
+esp_err_t orb_wasm_restart(orb_app_t *app)
+{
+    return wasm_restart(app, "asked");
+}
+
+/* §63: the app that owned this slot was uninstalled while the dial was running, and
+ * its registry row is already gone — so nothing can call into the engine again, but
+ * the memory it holds is real and the owner's table says a delete frees it. The door
+ * runs on the httpd task, where a release would land beside a guest call in flight;
+ * it posts here instead, so this runs on the LVGL task like every other teardown.
+ * Idempotent: a slot with nothing resident is a success, not a fault.
+ *
+ * The one thing that must not happen is freeing a page the glass is showing. A row
+ * the dial still holds gets the restart path's placeholder first, and if even that
+ * cannot be built the state stays: the reboot it waited for is a smaller failure than
+ * a load of freed memory. */
+void orb_wasm_evict(int slot)
+{
+    if (slot < 0 || slot >= WASM_N_SLOTS) return;
+    wasm_slot_t *s = &s_slot[slot];
+    if (!s->rt && !s->env && !s->code && !s->beat) return;      /* nothing to evict */
+    orb_app_t *app = s->app;
+    /* §63: this must never run under a page that stands. The uninstall door moved the
+     * dial off the row before it posted this, and the beat timer parks off-glass, so
+     * the guard is for the case that should not happen — and when it does, the honest
+     * answer is to leave the memory alone and say so, not to tear the glass down. */
+    if (s->on_glass || (app && (orb_app_current() == app || app->active))) {
+        ESP_LOGW(TAG, "evict slot %d skipped: its page is still the glass — its engine "
+                      "state waits for a later eviction or a reboot", slot);
+        return;
+    }
+    if (app) stage_unbind(app);
+    slot_release(s);
+    ESP_LOGI(TAG, "evicted slot %d — its engine state is freed", slot);
+}
+
+/* A theme removal let this app's theme go (orb_theme.c's clear_job, posted to the LVGL task).
+ * The app built its themed face and there is no theme to draw now: an orb_theme_release's
+ * resume would leave it with labels pointed at a stage that is not there (the clock, Gold,
+ * 2026-11-09). Only a themed init is restarted — an app that came up bare stays bare. */
+void orb_wasm_theme_gone(orb_app_t *app)
+{
+    const wasm_slot_t *s = slot_of_app(app);
+    if (!s || !s->rt || !s->init_themed) return;
+    if (orb_theme_has(app->slug)) return;              /* its theme is still here or coming back */
+    (void)wasm_restart(app, "its theme was removed");
 }
 
 static void wasm_show(orb_app_t *app)
@@ -2637,6 +2798,10 @@ esp_err_t orb_wasm_load(int slot, const orbapp_hdr_t *hdr,
         }
         s->fn[i] = f;
     }
+    /* The restart's own copy of what made this instance: the header it was given and the
+     * length of the code, so a reload needs no flash read (the image is already here). */
+    s->hdr = *hdr;
+    s->code_len = len;
     ESP_LOGI(TAG, "slot %d: wasm module resident (%u B code, cap %u B mem)",
              slot, (unsigned)len, (unsigned)plan.mem_cap);
     return ESP_OK;

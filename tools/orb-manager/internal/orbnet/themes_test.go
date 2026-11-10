@@ -124,7 +124,7 @@ func TestThemeCallsMatchTheFirmwareRoutes(t *testing.T) {
 	steps := []func() error{
 		func() error { _, err := c.ThemeList(ip); return err },
 		func() error { _, err := c.ThemeStore(ip, "clock-aurora-9b89025ce7a6"); return err },
-		func() error { _, err := c.ThemeDelete(ip, "weather-x-f893c0d634b3"); return err },
+		func() error { _, err := c.ThemeDelete(ip, "weather-x-f893c0d634b3", ""); return err },
 		func() error { _, err := c.ThemeRescan(ip); return err },
 		func() error { _, err := c.ThemeUpload(ip, uploadable, false); return err },
 		func() error { _, err := c.ThemeUpload(ip, uploadable, true); return err },
@@ -203,7 +203,7 @@ func TestThemeIDsAreCheckedBeforeDialing(t *testing.T) {
 		if _, err := c.ThemeStore(ip, id); err == nil {
 			t.Errorf("store(%q) was accepted", id)
 		}
-		if _, err := c.ThemeDelete(ip, id); err == nil {
+		if _, err := c.ThemeDelete(ip, id, ""); err == nil {
 			t.Errorf("delete(%q) was accepted", id)
 		}
 	}

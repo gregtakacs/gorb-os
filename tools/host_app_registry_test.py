@@ -345,6 +345,14 @@ static void ck(const char *name, int ok)
 }
 static const orb_app_t *A(const char *slug) { return orb_app_find_slug(slug); }
 static void seed_factory(void);
+/* §63: the walkable set is the BUILT set — a card row the boot ladder never built has
+ * no page to draw. A fixture that models a dial which booted therefore has to say its
+ * seeded rows were built, which is the same word orb_app_init_all's card rung writes. */
+static void seed_built(int ix)
+{
+    orb_app_t *cr = (orb_app_t *)orb_app_row((size_t)ix);
+    if (cr) cr->init_done = true;
+}
 static void restore_table(void)
 {
     for (size_t i = 0; i < ORB_APP_N; i++) {
@@ -376,12 +384,12 @@ static void seed_factory(void)
     /* §57: the clock carries a settings schema and the picker none, so the options
      * checks below see both sides of orb_app_has_options's schema rule. */
     r.schema = CLOCK_SCHEMA; r.schema_len = (uint32_t)strlen(CLOCK_SCHEMA);
-    orb_app_card_upsert(&r);
+    seed_built(orb_app_card_upsert(&r));
     memset(&r, 0, sizeof r);
     r.slug = (char *)"color_picker"; r.title = (char *)"HSB";
     r.kind = ORB_APP_KIND_APP; r.behaviour_kind = ORB_BEHAVIOUR_WASM;
     r.flash_slot = 1; r.art_slot = -1;
-    orb_app_card_upsert(&r);
+    seed_built(orb_app_card_upsert(&r));
 }
 
 #define CLK ((orb_app_t *)orb_app_find_slug("clock"))
@@ -680,8 +688,11 @@ int main(void)
     const orb_app_t *crow = orb_app_row((size_t)cidx);
     ck("a card app's behaviour_kind resolves to the registered module's iface",
        cidx == ORB_APP_BASE && crow && crow->iface == &orb_wasm_iface);
-    ck("a card row lands installed from card_fill — installed is the whole state (§43.3)",
-       crow && crow->installed && orb_app_count() == 2 && orb_app_index_of(crow) == ORB_APP_BASE);
+    ck("a card row lands installed from card_fill — and §63 makes BUILT the walkable word (§43.3)",
+       crow && crow->installed && !crow->init_done && orb_app_count() == 1 &&
+       orb_app_index_of(crow) == ORB_APP_BASE);
+    ck("so an unbuilt row is in the owner's ledger and on no part of the dial",
+       orb_app_row((size_t)orb_app_index_of(crow)) == crow && orb_app_at(1) == NULL);
     TR(); orb_app_init_all();
     ck("an installed card app builds through its module iface on the boot ladder",
        AT("hsb2_init") != NULL);
@@ -710,6 +721,58 @@ int main(void)
            ridx == cidx && crow->iface == &orb_wasm_iface && crow->init_done &&
            strcmp(crow->title, "HSB Card") == 0 && orb_app_current() == crow);
     }
+    restore_table(); orb_app_card_reset();
+
+    /* §63: the live landing is the same rung off the boot ladder — an app that arrives
+     * while the dial runs is upserted by the worker and built by this call, and it is
+     * the only way an installed row joins the carousel without a reboot. */
+    restore_table(); orb_app_card_reset();
+    memset(&card, 0, sizeof card);
+    card.slug = (char *)"hsb2"; card.title = (char *)"HSB Card";
+    card.kind = ORB_APP_KIND_APP; card.behaviour_kind = ORB_BEHAVIOUR_WASM;
+    cidx = orb_app_card_upsert(&card);
+    crow = orb_app_row((size_t)cidx);
+    orb_app_t *land = (orb_app_t *)crow;             /* the fixture writes what the ladder owns */
+    ck("§63: an arrived card row stands in the ledger before it is built",
+       crow && crow->iface == &orb_wasm_iface && !crow->init_done && orb_app_count() == 1);
+    TR();
+    ck("§63: orb_app_card_land builds it and it joins the dial at once",
+       orb_app_card_land(land) == ESP_OK && crow->init_done &&
+       crow->installed && AT("hsb2_init") && orb_app_count() == 2 &&
+       orb_app_neighbour(A("menu"), 1) == crow);
+    TR();
+    ck("§63: landing a row that is already built is a no-op, not a second init",
+       orb_app_card_land(land) == ESP_OK && g_trace[0] == '\0' && crow->init_done);
+    land->failed = true; land->init_done = false;
+    ck("§63: a failed row is not landed — the carousel stays where it was",
+       orb_app_card_land(land) == ESP_ERR_INVALID_STATE &&
+       !crow->init_done && orb_app_neighbour(A("menu"), 1) == A("menu"));
+    land->failed = false;
+    ck("§63: and it walks again once its fault record is cleared and it is landed",
+       orb_app_card_land(land) == ESP_OK && crow->init_done &&
+       orb_app_neighbour(A("menu"), 1) == crow);
+    ck("§63: a compiled row has no landing — the boot ladder builds it or nothing does",
+       orb_app_card_land(A("menu")) == ESP_ERR_INVALID_ARG);
+    restore_table(); orb_app_card_reset();
+    memset(&card, 0, sizeof card);
+    card.slug = (char *)"nomod"; card.title = (char *)"No Module";
+    card.kind = ORB_APP_KIND_APP; card.behaviour_kind = ORB_BEHAVIOUR_NONE;
+    int nidx = orb_app_card_upsert(&card);
+    const orb_app_t *nrow = orb_app_row((size_t)nidx);
+    ck("§63: a row naming no module is refused the landing rather than drawn blank",
+       nrow && !nrow->iface && orb_app_card_land((orb_app_t *)nrow) == ESP_ERR_NOT_SUPPORTED &&
+       orb_app_count() == 1);
+    restore_table(); orb_app_card_reset();
+    memset(&card, 0, sizeof card);
+    card.slug = (char *)"clock"; card.title = (char *)"Clock";
+    card.kind = ORB_APP_KIND_APP; card.behaviour_kind = ORB_BEHAVIOUR_WASM;
+    card.schema = CLOCK_SCHEMA; card.schema_len = (uint32_t)strlen(CLOCK_SCHEMA);
+    const orb_app_t *frow = orb_app_row((size_t)orb_app_card_upsert(&card));
+    g_rc_clock = ESP_FAIL;
+    ck("§63: an init that refuses drops the landed row exactly as at boot",
+       orb_app_card_land((orb_app_t *)frow) == ESP_FAIL && frow->failed &&
+       !frow->init_done && orb_app_count() == 1);
+    g_rc_clock = ESP_OK;
     restore_table(); orb_app_card_reset();
 
     /* An unknown behaviour_kind names no module: the row is in the ledger but

@@ -1002,3 +1002,59 @@ func TestABusyCardIsNotAnEmptyOne(t *testing.T) {
 		t.Errorf("the orb was asked %d times, want 3 (two busy answers ridden out)", dials)
 	}
 }
+
+// TestAWornThemesRemovalNamesTheDefault: §63's hub half of "removed, worn". A theme an app
+// wears does not leave that app bare when the card already holds the app's shelf default:
+// the delete names that default as the theme to wear next, so the dial changes face in the
+// same motion instead of falling back to a plain one. A row nobody wears, and a worn row
+// whose default is not on the card, are deleted alone — the firmware's own newest-otherwise
+// rule is the better answer there, and a proposal the card cannot land is worse than none.
+func TestAWornThemesRemovalNamesTheDefault(t *testing.T) {
+	skel, err := os.ReadFile(filepath.Join("themes", "skeleton.orbtheme"))
+	if err != nil {
+		t.Skipf("no shipped shelf theme: %v", err)
+	}
+	dc, err := orbnet.ContainerName(skel)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct {
+		what string
+		card []orbfake.Theme
+		del  string // the row's name; "" means the shipped skeleton's id
+		next string // the substring the wire must carry, "" that it must carry none
+	}{
+		{"the worn row with its default on the card", []orbfake.Theme{
+			{Name: "aurora", Bytes: 99, Serial: 1, OK: true, Active: true},
+			{Name: "Skeleton", Bytes: 4096, Serial: 2, OK: true},
+		}, auroraID, dc.ID},
+		{"the worn row with its default nowhere on the card", []orbfake.Theme{
+			{Name: "aurora", Bytes: 99, Serial: 1, OK: true, Active: true},
+			{Name: "Scope", App: "weather", Bytes: 4096, Serial: 2, OK: true},
+		}, auroraID, ""},
+		{"a row nobody wears", []orbfake.Theme{
+			{Name: "aurora", Bytes: 99, Serial: 1, OK: true, Active: true},
+			{Name: "Skeleton", Bytes: 4096, Serial: 2, OK: true},
+		}, dc.ID, ""},
+		{"the worn row that IS the default", []orbfake.Theme{
+			{Name: "Skeleton", Bytes: 4096, Serial: 2, OK: true, Active: true},
+		}, dc.ID, ""},
+	} {
+		s, ip, called, _ := fakeOrbHubWith(t, orbfake.New(c.card...))
+		s.lib = &Library{ThemesDir: "themes"} // the shipped shelf: skeleton is the clock's default
+		env := decodeEnv(t, postTheme(t, s, "/api/theme/delete", themeBody(ip, c.del)))
+		if env["ok"] != true {
+			t.Fatalf("%s: the hub refused the delete: %v", c.what, env)
+		}
+		q := called().query
+		if c.next == "" {
+			if strings.Contains(q, "next=") {
+				t.Errorf("%s: the orb was asked %q; want no replacement named", c.what, q)
+			}
+			continue
+		}
+		if want := "next=" + c.next; !strings.Contains(q, want) {
+			t.Errorf("%s: the orb was asked %q; want it to name %s", c.what, q, want)
+		}
+	}
+}

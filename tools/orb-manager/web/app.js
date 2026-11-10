@@ -4582,9 +4582,14 @@ function themeLibraryRows(app, deviceRows, state, entries) {
         state.textContent = "installing " + (f.title || f.file) + " \u2014 the file is crossing";
         // The push streams its steps exactly like an app install: the bar moves
         // with the bytes, and the panel is the single place a refusal is read.
+        // §63: a theme whose app is not on this orb files and chooses for later, and the
+        // hub says so on its done line — the offer to install the app is this face's, so
+        // the step is caught here rather than left in the log an operator has to unfold.
+        let appMissing = "";
         const okPush = await streamSteps("/api/library/push?kind=theme&name="
           + encodeURIComponent(String(f.file).replace(/\.orbtheme$/i, ""))
-          + "&ip=" + encodeURIComponent(themeIP) + (over ? "&overwrite=1" : "") + (keep ? "&keep=1" : ""), ui, themeIP);
+          + "&ip=" + encodeURIComponent(themeIP) + (over ? "&overwrite=1" : "") + (keep ? "&keep=1" : ""),
+          ui, themeIP, (j) => { if (j.app_missing) appMissing = j.app_missing; });
         if (!okPush) {
           state.textContent = "install refused \u2014 read the progress panel";
           btn.disabled = false;
@@ -4602,6 +4607,30 @@ function themeLibraryRows(app, deviceRows, state, entries) {
           ui.log.textContent = "\u2717 " + e.message;   // the panel stays open with its reason
           state.textContent = "install refused: " + e.message;
           btn.disabled = false;
+        }
+        if (appMissing) {
+          // The hub names the app's title when its shelf carries the .orbapp; the slug is
+          // the honest fallback when it does not, and the offer only stands when the shelf
+          // HAS the app — the hub cannot install what it does not hold.
+          const a = ((libCache && libCache.apps) || []).find((x) => x.slug === appMissing);
+          const aTitle = (a && a.title) || appMissing;
+          if (a && typeof askConfirm === "function" && await askConfirm({
+            title: "Install " + aTitle + "?",
+            body: (f.title || f.file) + " is on " + orbName + "'s card, but " + aTitle + " isn't installed on it.",
+            detail: "Installing it puts " + aTitle + " on the dial wearing this theme.",
+            yes: "Install " + aTitle,
+          })) {
+            state.textContent = "installing " + aTitle + " on " + themeIP + "\u2026";
+            let okApp = false;
+            try {
+              okApp = await streamInstall(themeIP, appMissing, false, null, true, false,
+                (j, t) => { if (t) state.textContent = t; });
+            } catch (e) { state.textContent = aTitle + " install refused: " + e.message; }
+            if (!okApp) { state.textContent = aTitle + " did not install \u2014 the Apps face says why"; return; }
+            state.textContent = aTitle + " installed; re-reading the card";
+            await loadThemes(themeIP);
+            try { await loadApps(); } catch (e) { /* the Apps face re-reads itself */ }
+          }
         }
       };
       const cardActs = cardLi && cardLi.querySelector(".acts");

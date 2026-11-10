@@ -43,8 +43,13 @@ static const char *TAG = "jobs";
 /* The payload is copied by value into the queue, so a job's argument may live on
  * the poster's stack. One fixed slot per queued job keeps that copy bounded and
  * keeps the queue's own storage in static memory rather than on a heap the
- * framebuffer is competing with. */
-#define ORB_JOB_ARG_MAX 64
+ * framebuffer is competing with.
+ *
+ * 64 B held until §63 asked the theme removal to carry what the app should wear next
+ * alongside which app it removes: a slug and a theme handle, 80 B together. Widened to
+ * 96 B rather than shrinking either field — a truncated stem is a store that refuses,
+ * and the cost is 32 B per queue slot x 2 slots of static memory. */
+#define ORB_JOB_ARG_MAX 96
 #define ORB_JOB_Q_LEN   2
 
 typedef struct {

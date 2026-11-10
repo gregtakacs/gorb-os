@@ -112,6 +112,9 @@ void stage_live_ahead_drop(int l);
 bool stage_live_ahead_ready(int l);
 /* theme-cache-plan §2.4: bind `app` again, its bare-face binding let go first. */
 esp_err_t stage_rebind(orb_app_t *app);
+/* Let the stage go if it is bound to `app`, while the app's page still stands: its layers
+ * are children of that page (orb_app_wasm.c's in-place restart deletes the page next). */
+void stage_unbind(orb_app_t *app);
 /* The last swap's blip has been paid for: the next may go (stage_live_present's pace). */
 bool stage_live_swap_due(void);
 #if CONFIG_ORB_DEBUG_HTTP

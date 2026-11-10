@@ -128,14 +128,25 @@ int orb_app_install_owed(const char **out, int max);
 const char *orb_app_install_try_stem(void);
 const char *orb_app_install_try_why(void);
 
+/** §63 2b: load one installed row's module back from its flash slot, so a row that
+ *  ARRIVED while the dial was running can be built and put on the glass. It is the
+ *  boot ladder's own load rung (the slot base, the header parse, the CRC verify and
+ *  the engine hand-over all live in orb_app_install.c) with the partition it uses,
+ *  opened for the live landing's callback: ESP_OK when the engine now holds the
+ *  module (already resident counts), and `why` says what refused when it did not.
+ *  Call on the LVGL task or the install worker, never on the httpd task. */
+esp_err_t orb_app_install_load_row(orb_app_t *row, char *why, size_t whysz);
+
 /* ---- P4a: the owner's doors — uninstall and the fault clear ------------------------
  * An app is installed or it is not (§43.3): there is no enable door. Both doors take
  * the app's SLUG (not a card stem — an installed app has left the card; its identity
  * is the header's slug, which is FATFS-safe by the reader's own rule, so it passes
  * orb_sd_name_ok too), and both refuse while a card job owns the queue.
  *
- * Uninstall: a row on the glass is UNINSTALLABLE — the door first asks the
- * router for home (task-safe, applied on the LVGL poll) and waits, bounded,
+ * Uninstall: a row on the glass is UNINSTALLABLE — the door first asks the router
+ * for the NEXT app in the carousel order (task-safe, applied on the LVGL poll; §63
+ * moved the destination off home, and home is the answer only when there is no
+ * neighbour to name) and waits, bounded,
  * for the switch to land, so the knob never holds a row that vanishes under it
  * (D38). Then: erase the slot's HEADER sector first — from that byte the D9
  * rule makes it no app at all — then forget the row's owner words (grants,

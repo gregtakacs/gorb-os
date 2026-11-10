@@ -2797,6 +2797,11 @@ esp_err_t stage_rebind(orb_app_t *app)
     return stage_bind(app);
 }
 
+void stage_unbind(orb_app_t *app)
+{
+    if (s_opened && s_lay_app == app) stage_release();
+}
+
 esp_err_t stage_open(orb_app_t *app, bool *base)
 {
     const esp_err_t e = stage_bind(app);

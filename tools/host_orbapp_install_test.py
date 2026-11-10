@@ -568,15 +568,27 @@ def lint(src):
             bad.append("P4a: uninstall must erase exactly the header sector")
         if "APPS_SLOT_STRIDE" in ub:
             bad.append("P4a: uninstall must not erase the whole slot stride")
-        # D38: an app on the glass is uninstallable — the door homes the dial
+        # D38: an app on the glass is uninstallable — the door moves the dial itself
         # (task-safe request) and waits for the switch, instead of refusing the
-        # press and teaching the operator to carousel away.
-        if "input_router_request(orb_app_home())" not in ub or "orb_app_current()" not in ub:
-            bad.append("D38: uninstall must home a shown app and wait for the switch")
+        # press and teaching the operator to carousel away. §63 changed WHERE it
+        # moves: a delete lands on the deleted app's next carousel row, and home is
+        # the answer only when no neighbour can be named.
+        if "orb_app_neighbour(row, 1)" not in ub or "orb_app_current()" not in ub:
+            bad.append("§63: uninstall must move a shown app's dial to its next row")
+        if "orb_app_home()" not in ub:
+            bad.append("§63: uninstall must keep home as the no-neighbour answer")
+        if "input_router_request(orb_app_home())" in ub:
+            bad.append("§63: uninstall must not home a shown app when the carousel has a next row")
         if "carousel away from it first" in ub:
             bad.append("D38: uninstall must no longer refuse a row the knob is holding")
         if "UNHOME_WAIT_MS" not in ub:
-            bad.append("D38: the home wait must be bounded by UNHOME_WAIT_MS")
+            bad.append("D38: the move wait must be bounded by UNHOME_WAIT_MS")
+        # §63: "deleted … its engine is freed" — the release is POSTED, because this
+        # door runs on the httpd task. A door that released the slot inline is the
+        # race every other rule in this file exists to avoid.
+        i_ev = ub.find("evict_post(fslot)")
+        if i_ev < 0 or irem > i_ev:
+            bad.append("§63: uninstall must post its engine release after the row is gone")
     # §43.3: there is no enable door — an app is installed or it is not — and an
     #       uninstall erases the app's secrets with its other owner words.
     if "esp_err_t orb_app_enable(" in src or "orb_app_install_apply_enable" in src:

@@ -140,6 +140,59 @@ func (s *Server) handleThemeInstall(w http.ResponseWriter, r *http.Request) {
 	s.themeReply(w, raw, err)
 }
 
+// deleteNext is §63's hub half of "removed, worn": the theme a worn theme's app should
+// wear the moment the file is gone. It is that app's shelf default, and only when the
+// card already holds that exact id and it is not the file being deleted — the firmware's
+// worker takes the card's newest otherwise, so a proposal the card cannot land is worse
+// than none at all.
+//
+// The card read is the hub's cached one and never gates the delete: a worn row on a read
+// that failed, an app the shelf cannot name a default for, and a default that is itself
+// the doomed file all ask for no replacement. Wornness is the row's choice on a device
+// that reports one, and the stored/active flag for the devices too old to have it.
+func (s *Server) deleteNext(ip, id string) string {
+	raw, err := s.sdListRead(ip)
+	if err != nil {
+		return ""
+	}
+	var list orbnet.ThemeList
+	if json.Unmarshal(raw, &list) != nil {
+		return ""
+	}
+	row := themeRowByID(list.Themes, id)
+	if row == nil || (!row.Chosen && !row.Active) {
+		return ""
+	}
+	app := row.App
+	if app == "" {
+		app, _, _ = orbnet.StemParts(row.ID)
+	}
+	if app == "" {
+		return ""
+	}
+	_, blob, err := s.library().appTheme(app)
+	if err != nil {
+		return ""
+	}
+	c, err := orbnet.ContainerName(blob)
+	if err != nil || c.ID == row.ID {
+		return ""
+	}
+	if themeRowByID(list.Themes, c.ID) == nil {
+		return ""
+	}
+	return c.ID
+}
+
+func themeRowByID(rows []orbnet.ThemeEntry, id string) *orbnet.ThemeEntry {
+	for i := range rows {
+		if rows[i].ID == id {
+			return &rows[i]
+		}
+	}
+	return nil
+}
+
 // handleThemeDelete removes a theme from the card. It is the one theme call that is
 // not a queued job, so its body is the outcome and passes through as it is.
 func (s *Server) handleThemeDelete(w http.ResponseWriter, r *http.Request) {
@@ -156,7 +209,8 @@ func (s *Server) handleThemeDelete(w http.ResponseWriter, r *http.Request) {
 	}
 	defer release()
 	s.dropThemeCache(t.IP)
-	raw, err := s.device.ThemeDelete(t.IP, t.ID)
+	next := s.deleteNext(t.IP, t.ID)
+	raw, err := s.device.ThemeDelete(t.IP, t.ID, next)
 	if err == nil {
 		s.dropThemeCache(t.IP) // the row is gone from the next honest read
 		// The door answers "reboot":"none" on firmware that rebooted anyway, so the page

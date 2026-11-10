@@ -3765,6 +3765,94 @@ esp_err_t orb_theme_post_bundle(const char *id)
     return orb_jobs_post(bundle_job, &r, sizeof r);
 }
 
+/* The removal's last word, on the LVGL task and outside every guest call (the way a landed
+ * fill is announced, fill_landed): an app that built its face around its theme has to be
+ * asked to build it again, and only the app's own engine knows how. Its init ran bare, the
+ * engine says, nothing happens. */
+static char s_gone_slug[ORB_POOL_SLUG_MAX];
+
+static void gone_landed(void *arg)                   /* LVGL task */
+{
+    orb_app_t *app = (orb_app_t *)orb_app_find_slug((const char *)arg);
+    if (app) orb_wasm_theme_gone(app);
+}
+
+/* ---- §63: what an app wears after the theme it wore is removed ----------------
+ *
+ * The owner's rule: a theme removed from under the app that wears it is not that app's
+ * plain face, not while the card holds another theme for it. It wears its NEXT theme:
+ * the one the remover named — the hub knows the app's shelf default and sends it — and
+ * failing that, the one most recently added to the card. Only nothing left goes bare.
+ *
+ * It runs inside the removal's own job, on the worker, because the store of the next
+ * theme is that worker's own store path (orb_theme_install_bundle): a job cannot post a
+ * second job and wait on it, and posting the gone message instead would put the app on
+ * its plain face for a poll before its next theme landed. */
+#define CLEAR_SCAN_MAX 32       /* this app's card rows, one removal's worth (~7 kB PSRAM): an app
+                                 * with more themes than this wears the newest of what was seen */
+
+/* A card theme file's own mtime, or -1 when the card does not hold it. Mounted and locked
+ * here, in this one function, because the §63 picker also walks the card and the card mutex
+ * is not recursive: one function that both holds it and reaches that walk never returns.
+ * The same reason orb_theme_delete asks for the card before its unlink. */
+static time_t theme_card_mtime(const char *stem)
+{
+    char path[ORB_SD_PATH_MAX + 16];
+    if (!theme_file(stem, path, sizeof path)) return (time_t)-1;
+    if (orb_sd_ensure_mounted() != ESP_OK) return (time_t)-1;
+    struct stat st;
+    orb_sd_lock();
+    const int rc = stat(path, &st);
+    orb_sd_unlock();
+    return rc == 0 ? st.st_mtime : (time_t)-1;
+}
+
+/* The stem this app wears after `gone` is removed, or "" with nothing to wear. `want`
+ * names the caller's pick and is honoured only when it is a real card file of THIS app:
+ * an id the card does not hold, or that belongs to another app, is no answer at all and
+ * falls through to the newest row. Holds no card lock itself — every card touch below is
+ * theme_card_mtime()'s or the scan's own. */
+static bool next_theme_pick(const char *slug, const char *want, char *out, size_t outsz)
+{
+    out[0] = '\0';
+    if (want && want[0]) {
+        char wslug[ORB_BUNDLE_SLUG_MAX + 1], wid[THEME_ID_HEX + 1];
+        const bool mine = theme_stem_split(want, wslug, sizeof wslug, wid, sizeof wid) &&
+                          !strcmp(wslug, slug);
+        if (mine && theme_card_mtime(want) >= 0) {
+            strlcpy(out, want, outsz);
+            return true;
+        }
+        ESP_LOGW(TAG, "%s's next theme \"%s\" is not one it can wear: taking its newest", slug, want);
+    }
+    /* The newest of the app's loadable themes, by the card file's mtime. The scan reads one
+     * header per file — rows are ~230 B and an app can have many — so the array is PSRAM,
+     * never the worker's stack, and capped. The file just removed is already unlinked, so
+     * it is not among them. */
+    orb_theme_entry_t *e = heap_caps_malloc(CLEAR_SCAN_MAX * sizeof *e,
+                                            MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!e) return false;
+    orb_io_heavy_begin();                              /* a card walk beside a live app, as the store is */
+    const int n = orb_theme_scan_app(slug, e, CLEAR_SCAN_MAX);
+    orb_io_heavy_end();
+    if (n < 0) {                                   /* an upload or a store owns the card: no listing at all */
+        heap_caps_free(e);
+        ESP_LOGW(TAG, "%s: its other themes could not be listed (%d): nothing named to wear", slug, n);
+        return false;
+    }
+    int best = -1;
+    time_t newest = 0;
+    for (int i = 0; n > 0 && i < n; i++) {
+        if (e[i].err != ESP_OK) continue;            /* a damaged file: its store would refuse too */
+        const time_t m = theme_card_mtime(e[i].id);
+        if (m < 0) continue;                         /* gone under the walk's own feet */
+        if (best < 0 || m >= newest) { best = i; newest = m; }
+    }
+    if (best >= 0) strlcpy(out, e[best].id, outsz);
+    heap_caps_free(e);
+    return best >= 0;
+}
+
 /* ---- D38: removing the active theme takes it off the wall too ----------------
  *
  * Owner, 2026-11-09: "deleting a theme from the orb now reboots it. Again, this should not
@@ -3774,10 +3862,23 @@ esp_err_t orb_theme_post_bundle(const char *id)
  * on the LVGL task the app's voices stop, its voice bank's window comes down and its stage
  * rebinds bare; then its display entry, voice bank and preview leave the table and the
  * choice goes. The app runs on its base face; no park, no unmap of anyone else's, no reboot.
- * Worker only (a job), so no fill or store runs beside it. */
+ * Worker only (a job), so no fill or store runs beside it.
+ *
+ * §63 changed the last part of that for an app the card still holds another theme for: the
+ * base face is the fallback, not the outcome. After the release and the table writes this
+ * job stores the app's next theme (next_theme_pick) when it has one, and the store's own
+ * ladder — not this job — brings it onto the glass. */
+/* The removal job's argument: the app whose theme goes, and the stem the remover asked it
+ * to wear next ("" for no opinion). One queue slot's worth, copied by value. */
+typedef struct {
+    char slug[ORB_POOL_SLUG_MAX];
+    char next[ORB_THEME_HANDLE_MAX + 1];
+} clear_req_t;
+
 static void clear_job(void *arg)
 {
-    const char *app = arg && ((const char *)arg)[0] ? (const char *)arg : orb_theme_live_slug();
+    const clear_req_t *req = arg;
+    const char *app = req && req->slug[0] ? req->slug : orb_theme_live_slug();
     char gone[ORB_POOL_SLUG_MAX];
     strlcpy(gone, app, sizeof gone);
     if (!gone[0]) return;
@@ -3802,16 +3903,46 @@ static void clear_job(void *arg)
     }
     orb_io_heavy_end();
     choice_set(gone, NULL, 0);                         /* no choice: no fill brings it back */
+    strlcpy(s_gone_slug, gone, sizeof s_gone_slug);
     s_hide_slug[0] = '\0';
     if (!strcmp(gone, orb_theme_live_slug())) s_active_valid = false;
     orb_strip_preview_changed(gone);
     if (r) {
+        lv_async_call(gone_landed, s_gone_slug);       /* as ever: it goes bare even unrenewed */
         ESP_LOGE(TAG, "%s's theme is let go, but the table would not drop its copies (%d): "
                       "its pages stay held until the next store", gone, r);
         return;
     }
-    ESP_LOGI(TAG, "%s's theme removed: its copies left the pool and it draws its base face, "
-                  "no reboot", gone);
+    /* §63: the app wears its next theme, if the card holds one for it. Only with none left
+     * (or with a store that refused) does it fall to its plain face, and only then is the
+     * gone message posted: an app that is about to be restarted onto a new theme must not
+     * first be restarted onto nothing. An app that is not installed wears nothing, so its
+     * removal is the file's and the choice's, and this asks nobody. */
+    if (!orb_app_find_slug(gone)) {
+        lv_async_call(gone_landed, s_gone_slug);
+        ESP_LOGI(TAG, "%s's theme removed: no installed app could wear another", gone);
+        return;
+    }
+    char stem[ORB_THEME_HANDLE_MAX + 1];
+    if (!next_theme_pick(gone, req ? req->next : NULL, stem, sizeof stem)) {
+        lv_async_call(gone_landed, s_gone_slug);       /* its face comes back bare, no reboot */
+        ESP_LOGI(TAG, "%s's theme removed; no other theme on the card: its plain face", gone);
+        return;
+    }
+    /* The next theme stored on this worker, by the store's own ladder: it chooses the theme,
+     * lets the old one go (already gone here), refreshes the carousel's preview, and lands it
+     * on the glass when the app is standing there — which now restarts the app. */
+    char why[72] = "";
+    orb_io_heavy_begin();                              /* the store's flash writes beside a live app */
+    const esp_err_t se = orb_theme_install_bundle(stem, why, sizeof why);
+    orb_io_heavy_end();
+    if (se != ESP_OK) {
+        ESP_LOGW(TAG, "%s's theme removed; its next theme \"%s\" would not store (%s): its plain face",
+                 gone, stem, why[0] ? why : esp_err_to_name(se));
+        lv_async_call(gone_landed, s_gone_slug);
+        return;
+    }
+    ESP_LOGI(TAG, "%s's theme removed; it wears \"%s\" next", gone, stem);
 }
 
 /* ---- theme-cache-plan ruling 7: the flash copies follow the card file ------------------
@@ -3840,7 +3971,12 @@ static void reconcile_job(void *arg)
             ESP_LOGW(TAG, "reconcile: %s's theme file \"%s\" is gone from the card: %s", slug, stem,
                      held ? "its copies go with it" : "it had no copies; the choice goes");
             gone_set(slug, stem);        /* its page says so, after the reboot too */
-            if (held) clear_job((void *)slug);       /* the choice goes with its copies */
+            if (held) {                              /* the choice goes with its copies */
+                clear_req_t cr;
+                memset(&cr, 0, sizeof cr);
+                strlcpy(cr.slug, slug, sizeof cr.slug);
+                clear_job(&cr);          /* no remover to name a next: the card's newest */
+            }
             else choice_set(slug, NULL, 0);
             c--;                                     /* the choices moved down over it */
             continue;
@@ -3948,12 +4084,16 @@ esp_err_t orb_theme_post_clear(void)
     return orb_jobs_post(clear_job, NULL, 0);
 }
 
-/* theme-pool-plan P5: let one app's stored theme go, whichever app is on the glass. */
-static esp_err_t post_clear_app(const char *slug)
+/* theme-pool-plan P5: let one app's stored theme go, whichever app is on the glass.
+ * §63: `next` (may be "" or NULL) is the stem the remover would like this app to wear
+ * instead — honoured only if the card really holds it for this app. */
+static esp_err_t post_clear_app(const char *slug, const char *next)
 {
-    char a[ORB_POOL_SLUG_MAX];
-    strlcpy(a, slug, sizeof a);
-    return orb_jobs_post(clear_job, a, sizeof a);
+    clear_req_t a;
+    memset(&a, 0, sizeof a);
+    strlcpy(a.slug, slug, sizeof a.slug);
+    if (next) strlcpy(a.next, next, sizeof a.next);
+    return orb_jobs_post(clear_job, &a, sizeof a);
 }
 
 esp_err_t orb_theme_deactivate(void)
@@ -3967,7 +4107,7 @@ esp_err_t orb_theme_deactivate(void)
     return orb_jobs_post(clear_job, NULL, 0);
 }
 
-esp_err_t orb_theme_delete(const char *id, bool *deactivating)
+esp_err_t orb_theme_delete(const char *id, const char *next, bool *deactivating)
 {
     if (deactivating) *deactivating = false;
     /* Resolve-by-walk first — the same card_open_verified_id install uses — so the
@@ -3976,7 +4116,10 @@ esp_err_t orb_theme_delete(const char *id, bool *deactivating)
      * at install; unlinking never trusts a client string to reach a path builder.
      * D38 changed what deleting the ACTIVE theme means. It is no longer "the dial
      * keeps drawing it": deleting the file an app wears lets that theme go and the
-     * app draws its base face (clear_job, no reboot since 2026-11-09). The card file
+     * app draws its base face (clear_job, no reboot since 2026-11-09). §63 narrowed
+     * that: an installed app falls to its plain face only when the card holds no
+     * other theme for it — `next` is the remover's proposed replacement, and with it
+     * absent the card's newest for this app is tried instead (clear_job). The card file
      * is unlinked first either way, so the owner's delete always lands; when the
      * clear cannot be queued the face stands until the next store, and the answer
      * says so. */
@@ -4017,8 +4160,14 @@ esp_err_t orb_theme_delete(const char *id, bool *deactivating)
              !was_active ? "" : !strcmp(dslug, orb_theme_live_slug())
                               ? "the face on the wall, so the slot goes too"
                               : "its app's stored theme, so it leaves the pool");
-    if (was_active && deactivating)
-        *deactivating = (post_clear_app(dslug) == ESP_OK);
+    if (was_active && deactivating) {
+        /* A caller's "next" is a proposal, not an instruction: a stem that will not even
+         * parse as a theme id is dropped here rather than carried to the worker, where it
+         * would only be refused again with a louder log. */
+        *deactivating = (post_clear_app(dslug,
+                                        (next && next[0] && theme_id_ok(next)) ? next : NULL)
+                         == ESP_OK);
+    }
     return ESP_OK;
 }
 

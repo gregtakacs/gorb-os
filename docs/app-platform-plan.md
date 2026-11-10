@@ -7911,3 +7911,37 @@ firmware reads. The fault was the hub's upgrade of its own library:
   Update on each app.
 - Tests: `TestSeedReplacesAnOlderFormat`, `TestAnOlderFormatCardCopyIsReplaced`,
   `TestAnOlderFormatLibraryCopyIsNotSent`; each fails with its fix removed.
+
+## 63. Apps and themes land live: every add and remove, no reboot — 2026-11-09
+
+The owner's rulings, the whole table (2026-11-09). Each case happens on the dial at once,
+with no reboot of the orb.
+
+**Apps**
+
+| case | what happens |
+|---|---|
+| added | it is installed, loaded and lands on the glass at once |
+| deleted, not on the glass | it leaves the carousel and its engine is freed |
+| deleted, on the glass | the dial moves to the next app in the carousel order, then as above |
+
+A delete is the uninstall: the `.orbapp` stays on the card for a reinstall, and "Remove
+from card" stays its own press.
+
+**Themes**
+
+| case | what happens |
+|---|---|
+| added, its app installed | chosen and worn; on the glass the app's look changes now; its carousel preview refreshes |
+| added, its app not installed | filed on the card (and chosen for later); the hub says the app is not on this orb and offers to install it, which runs the app install |
+| removed, worn, app on the glass | gone; the app wears its next theme now; the dial and its carousel preview refresh |
+| removed, worn, app off the glass | gone; the app is given its next theme; its carousel preview refreshes |
+| removed, not worn | deleted, nothing else |
+| removed, its app not installed | deleted (its choice with it) |
+
+**The next theme** (owner): the app's shelf default theme if it is on the card; otherwise the
+theme for that app most recently added to the card; with none left, its plain face.
+
+**How** (built on §6.x of theme-cache-plan and the in-place restart, `orb_wasm_restart`):
+an app decides at `orb_init` what its theme gives it, so every theme landing restarts the
+app's engine in place, and every app install loads its module live instead of rebooting.

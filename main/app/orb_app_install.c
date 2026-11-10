@@ -34,6 +34,7 @@
 #include "orb_app_wasm.h"
 #include "orb_app_net.h"   /* orb_app_cred_forget: uninstall erases the app's secrets (§43) */  /* P7.4: orb_wasm_loaded/_load/_bind_app for the load rung */
 #include "input_router.h"  /* D38: input_router_request — the task-safe home switch */
+#include "lvgl.h"          /* §63: lv_async_call — a landed install builds its face on the LVGL task */
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
@@ -905,15 +906,99 @@ int orb_app_install_owed(const char **out, int max)
     return n;
 }
 
+/* ---- §63: the live landing -------------------------------------------------
+ *
+ * An app that ARRIVES while the dial runs goes on the dial: the ladder above has
+ * written its slot header and upserted its row, so the only steps a reboot used to
+ * be needed for are the ones the boot ladder takes anyway — read the module back
+ * into the engine, build its face, hand it to the router. They run on the LVGL task,
+ * posted the way a landed theme fill is (orb_theme.c:3719): a static slug the worker
+ * writes once its card lock is off, and one callback that re-reads the registry,
+ * because the row may be gone by the time the LVGL task gets to it.
+ *
+ * What stays on the reboot ladder is an UPDATE of a row this boot already built:
+ * orb_app_card_upsert deliberately leaves a built row alone (Gold, 2026-11-07 — the
+ * worker's row carries no iface and the page on the glass may hold the schema it
+ * frees), so the new bytes only land at the next boot, and owing a restart for them
+ * is the honest report rather than a courtesy. */
+#define LAND_WAIT_MS 2000
+
+static char          s_land_slug[ORB_APP_SLUG_MAX];
+static volatile bool s_land_busy;      /* the worker sets it, the landing clears it */
+
+static void land_landed(void *arg)                     /* LVGL task */
+{
+    orb_app_t *row = (orb_app_t *)orb_app_find_slug((const char *)arg);
+    s_land_busy = false;
+    if (!row) return;                       /* uninstalled between the copy and the glass */
+    if (row->init_done) return;             /* already standing: nothing to land (2a) */
+    char why[128] = "";
+    if (row->behaviour_kind == ORB_BEHAVIOUR_WASM && row->code_size) {
+        /* C2's rule is the live landing's rule too: a quarantined module stays cold
+         * and pays nothing, whether the ladder reached it at boot or a door reached
+         * it now. Refusing HERE is what keeps the refusal cheap, and it is the one
+         * state that must not be marked failed below: quarantine is a verdict the
+         * owner can lift with /apps/faults, a failed row is a dead one. */
+        if (orb_svc_faulted(row)) {
+            orb_svc_note_refused(row, "it is quarantined — clear its faults to land it");
+            ESP_LOGW(TAG, "live landing \"%s\": quarantined, so its module stays unloaded",
+                     row->slug);
+            return;
+        }
+        if (orb_app_install_load_row(row, why, sizeof why) != ESP_OK) {
+            /* 2b: the row is marked failed exactly as the boot ladder marks a row whose
+             * module it could not read, so the ledger says failed with a reason rather
+             * than showing an installed app that quietly is not on the dial. The bytes
+             * are on the flash and the row is in the registry, so clearing its faults
+             * (orb_app_clear_faults) and reinstalling is the way back. */
+            orb_svc_note_refused(row, why[0] ? why : "its module would not load");
+            row->failed = true;
+            ESP_LOGW(TAG, "live landing \"%s\": %s — installed, not on the dial yet",
+                     row->slug, why[0] ? why : "the engine refused its module");
+            return;
+        }
+        orb_svc_note_refused(row, "");                     /* as at boot: a good load clears the note */
+    }
+    if (orb_app_card_land(row) != ESP_OK) return;      /* 2c/2d: it says why, and marks itself failed */
+    input_router_request(row);                         /* 2e: the poll applies it within one tick */
+    ESP_LOGI(TAG, "\"%s\" installed live: on the glass", row->slug);   /* 2f */
+}
+
+static bool land_post(const char *slug)
+{
+    int waited = 0;
+    while (s_land_busy && waited < LAND_WAIT_MS) {
+        vTaskDelay(pdMS_TO_TICKS(20));
+        waited += 20;
+    }
+    if (s_land_busy) return false;      /* the dial is not taking landings: reboot instead */
+    strlcpy(s_land_slug, slug, sizeof s_land_slug);
+    s_land_busy = true;
+    lv_async_call(land_landed, s_land_slug);
+    return true;
+}
+
 static void install_job(void *arg)
 {
     const install_req_t *r = arg;
     char why[128] = "";
     s_installed_code = false;
+    /* §63: "new" is decided before the copy, from the registry the ladder reads and
+     * writes: a slug already on the dial is an update of a row that is built (or is
+     * faulted/quarantined) and belongs to the reboot ladder; a slug that is not is an
+     * ARRIVAL and lands live. The stem is the slug by the reader's identity triple
+     * (the file is <slug>.orbapp or the ladder refuses it), so one word serves both. */
+    const bool arrival = !orb_app_card_has(r->stem);
     const esp_err_t e = orb_app_install(r->stem, why, sizeof why);
     try_note(r->stem, (e == ESP_OK) ? NULL : (why[0] ? why : "the install failed"));
     if (e != ESP_OK) return;
-    if (r->defer) {
+    if (arrival && land_post(r->stem)) {
+        /* §63's added row: installed, loaded and on the glass at once. Nothing is owed,
+         * so a hub that posted ?defer=1 learns the same thing every other client does —
+         * there is no restart left to ask for. The landing itself logs the line the
+         * ledger-watcher waits on, from the LVGL task, once the row stands. */
+        ESP_LOGI(TAG, "\"%s\" installed; its live landing is posted", r->stem);
+    } else if (r->defer) {
         /* every deferred install is listed, code or not: the hub reads the stem
          * here as "copied", and the one restart at the end loads them all */
         owe(r->stem);
@@ -1164,6 +1249,22 @@ static esp_err_t wasm_row_load(const esp_partition_t *p, orb_app_t *row,
     return e;
 }
 
+/* §63 2b: the load rung opened to the live landing. It is wasm_row_load with the
+ * partition the boot ladder uses, so the caller that arrived over a door cannot get a
+ * slot read from a partition that is not there, and so the load stays in this one file:
+ * the flash layout is this module's secret and the landing callback has no business
+ * knowing slot bases and CRCs. LVGL task (the landing) or worker (the ladder) only. */
+esp_err_t orb_app_install_load_row(orb_app_t *row, char *why, size_t whysz)
+{
+    if (!row) return ESP_ERR_INVALID_ARG;
+    const esp_partition_t *p = apps_partition();
+    if (!p) {
+        if (why && whysz) snprintf(why, whysz, "the apps partition is not there");
+        return ESP_ERR_NOT_FOUND;
+    }
+    return wasm_row_load(p, row, why, whysz);
+}
+
 void orb_app_install_apply_code(void)
 {
     const esp_partition_t *p = apps_partition();
@@ -1276,6 +1377,44 @@ esp_err_t orb_app_clear_faults(const char *slug, char *why, size_t whysz)
     return ESP_OK;
 }
 
+/* §63: the engine states a door asked the LVGL task to free, one bit per flash slot.
+ * A door may not call orb_wasm_evict itself — it runs on the httpd task, and the
+ * release it wants frees a runtime the LVGL task may be inside — so it sets a bit and
+ * posts one callback that drains the whole mask. Bits set while a callback is in
+ * flight are drained by the next post, which is why the post waits (bounded) instead
+ * of dropping: an app the owner deleted keeps its memory until a later eviction or a
+ * reboot, and the delete itself already succeeded. */
+static volatile uint32_t s_evict_mask;
+static volatile bool     s_evict_busy;
+
+static void evict_landed(void *arg)                   /* LVGL task */
+{
+    (void)arg;
+    const uint32_t m = s_evict_mask;
+    s_evict_mask = 0;
+    s_evict_busy = false;
+    for (uint32_t bit = 0; bit < 8 * sizeof m; bit++)
+        if (m & (1u << bit)) orb_wasm_evict((int)bit);
+}
+
+static void evict_post(int slot)
+{
+    if (slot < 0 || slot >= (int)(8 * sizeof s_evict_mask)) return;
+    int waited = 0;
+    while (s_evict_busy && waited < UNHOME_WAIT_MS) {
+        vTaskDelay(pdMS_TO_TICKS(20));
+        waited += 20;
+    }
+    if (s_evict_busy) {
+        ESP_LOGW(TAG, "uninstall slot %d: its engine state waits for a later eviction — "
+                      "the app itself is gone", slot);
+        return;
+    }
+    s_evict_mask |= 1u << slot;
+    s_evict_busy = true;
+    lv_async_call(evict_landed, NULL);
+}
+
 esp_err_t orb_app_uninstall(const char *slug, char *why, size_t whysz)
 {
     if (why && whysz) why[0] = '\0';
@@ -1283,17 +1422,30 @@ esp_err_t orb_app_uninstall(const char *slug, char *why, size_t whysz)
     const orb_app_t *row = door_open(slug, why, whysz, &err);
     if (!row) return err;
     if (orb_app_current() == row || row->active) {
-        /* D38: an app on the glass is uninstallable — the door homes the dial
-         * itself instead of teaching the operator to carousel away. The rule
-         * the refusal protected stands: the registry may not lose the row the
-         * knob is holding (orb_app.c:563). What changed is who moves the knob.
-         * input_router_request is task-safe — it records a pointer the LVGL
-         * poll applies within one 10 ms tick, and leaving the glass clears the
-         * row's active bit (orb_app_activate's old->active=false). So this
-         * task asks for home and waits for the switch to land, bounded: a dial
-         * whose poll cannot run is a dial that will not take the erase either,
-         * and the honest answer stays a refusal. */
-        input_router_request(orb_app_home());
+        /* D38, amended by §63: an app on the glass is uninstallable — the door moves the
+         * dial itself. Where it moves it changed: the owner's table says the dial goes to
+         * the NEXT app in the carousel order, not to home, because a delete in the middle
+         * of a dial is a deletion and not an exit. The rule the refusal protected stands
+         * (the registry may not lose the row the knob is holding, orb_app.c:563) and so
+         * does the mechanism: input_router_request is task-safe, it records a pointer the
+         * LVGL poll applies within one 10 ms tick, and leaving the glass clears the row's
+         * active bit (orb_app_activate's old->active=false). So this task asks for the
+         * neighbour and waits for the switch to land, bounded: a dial whose poll cannot
+         * run is a dial that will not take the erase either, and the honest answer stays
+         * a refusal. With no neighbour to name — the deleted app is the only walkable row
+         * — home is the one place the knob can go. */
+        /* The next APP: the carousel's walk also stands on the Settings shell, and an
+         * uninstall that landed there read as the dial leaving the apps (Gold, 2026-11-09). */
+        const orb_app_t *next = orb_app_neighbour(row, 1);
+        for (int hop = 0; next && next != row && !orb_app_is_card(next) && hop < 16; hop++)
+            next = orb_app_neighbour(next, 1);
+        /* No other app on the orb: home, which is the Settings shell (D35), always there. */
+        if (!next || next == row || !orb_app_is_card(next)) next = orb_app_home();
+        if (!next || next == row)
+            return door_refuse(ESP_ERR_INVALID_STATE,
+                               "it is the only app the dial can show — nowhere to move",
+                               why, whysz);
+        input_router_request(next);
         int waited_ms = 0;
         while ((orb_app_current() == row || row->active) &&
                waited_ms < UNHOME_WAIT_MS) {
@@ -1339,12 +1491,16 @@ esp_err_t orb_app_uninstall(const char *slug, char *why, size_t whysz)
     /* Erase first, then the words, then the row: every power cut between the
      * three leaves the app already dead (D9) and at worst stale words on a
      * dirty slot, which the next fresh install wipes. */
-    /* A code app's engine state is deliberately NOT released here: this door
-     * runs on the httpd task while the LVGL task may be inside the module's
-     * service hook, and a slot_release under it is the race every rule here
-     * exists to avoid. The row is gone from the registry, so nothing reaches
-     * the slot again; the state goes at the next reboot, or at the install
-     * of whatever app takes this slot next, which releases before loading. */
+    /* §63: a code app's engine state IS released now — the door's own half of the
+     * owner's table ("deleted … its engine is freed"). It cannot be released HERE:
+     * this door runs on the httpd task while the LVGL task may be inside the module's
+     * service hook, and a slot_release under it is the race every rule here exists to
+     * avoid. So the release is posted (evict_post above) and the dial has already left
+     * the row, which is what makes posting it safe: the beat timer parks off-glass
+     * (orb_app_wasm.c:684) and no registry walk can reach the slot again, so the one
+     * frame between this line and the callback holds an idle runtime whose row is
+     * memset — the same exposure the state had, for a whole boot, under the rule this
+     * replaces. */
     /* §43: the app's secrets are owner words too — an API key must not outlive the
      * app it was entered for. Erased while the row still names what it declared. */
     orb_app_cred_forget(orb_app_find_slug(slug));
@@ -1355,6 +1511,7 @@ esp_err_t orb_app_uninstall(const char *slug, char *why, size_t whysz)
         return door_refuse(ESP_ERR_INVALID_STATE,
                            "it came off the flash but the registry still holds it",
                            why, whysz);
+    evict_post(fslot);
     ESP_LOGI(TAG, "uninstalled \"%s\" from app slot %d", slug, fslot);
     return ESP_OK;
 }

@@ -474,8 +474,8 @@ bool orb_app_card_remove(const char *slug)
     card_entry_t *s = card_find(slug);
     if (!s) return false;
     /* The knob may not be holding a row that vanishes under it: the caller has
-     * to carousel away (or home) first. The uninstall door sends the dial home
-     * itself and waits for the switch before it ever reaches here (D38). */
+     * to carousel away first. The uninstall door moves the dial to the row's next
+     * app itself (§63) and waits for the switch before it ever reaches here (D38). */
     if (s_current == &s->app || s->app.active) return false;
     if (s->schema_store) heap_caps_free(s->schema_store);   /* §57's two blocks */
     if (s->ui_store) heap_caps_free(s->ui_store);
@@ -483,12 +483,44 @@ bool orb_app_card_remove(const char *slug)
     return true;
 }
 
+/* §63: an app installed while the dial runs lands live, and this is the rung that
+ * makes it walkable. LVGL task only — it builds widgets, which is the one thing
+ * the input rules pin to that task, and it is the same build orb_app_activate's
+ * lazy rung does. It is separate because the two can part: a switch asked for by an
+ * install is refused while a theme store holds the glass (input_router.c:259), and
+ * an app whose engine is loaded must still join the carousel rather than wait on a
+ * glass it cannot have. The caller has already made any engine state resident;
+ * init here is the behaviour module's, not the loader's. */
+esp_err_t orb_app_card_land(orb_app_t *app)
+{
+    if (!orb_app_is_card(app)) return ESP_ERR_INVALID_ARG;
+    if (app->init_done) return ESP_OK;                   /* already standing: nothing to build */
+    if (app->failed) return ESP_ERR_INVALID_STATE;
+    if (!app->iface || !app->iface->init) return ESP_ERR_NOT_SUPPORTED;
+    const esp_err_t e = app->iface->init(app);
+    if (e != ESP_OK) {
+        app->failed = true;                              /* as at boot: a refused init drops the row */
+        ESP_LOGE(TAG, "%s: live init refused (%s) — dropped from the carousel",
+                 app->slug, esp_err_to_name(e));
+        return e;
+    }
+    app->init_done = true;
+    app->installed = true;
+    ESP_LOGI(TAG, "%s: landed live — walkable without a reboot", app->slug);
+    return ESP_OK;
+}
+
 /* ---- the combined walkable order (D1/C6) ----------------------------------
  *
  * The one definition of "what the knob can stop on": the compiled entries in
  * table order, then the qualified card rows in slot order. A card row is
- * qualified when it is used, not failed, and its behaviour_kind named a
- * registered module — so iface is non-NULL and there is code to run it. That
+ * qualified when it is used, not failed, INITIALIZED, and its behaviour_kind named
+ * a registered module — so iface is non-NULL and there is code to run it. §63's
+ * live install added the init_done clause: a row that arrives while the dial runs
+ * is in the table (used, iface resolved) the moment its slot header is written,
+ * and until its module is resident and its init has run it has no page to draw.
+ * Listing it a moment early put a blank row in the carousel and, through
+ * the route/press paths, an uninit'd iface on the glass. That
  * last clause is the whole point of the registry: an installed package cannot
  * walk the dial unless the firmware actually ships the module it names, exactly
  * as an unknown vocabulary kind is a skipped row in a theme (theme_schema.py:23).
@@ -507,7 +539,7 @@ static size_t orb_app_walk_gather(orb_app_t **list, size_t max)
     int rank[ORB_APP_CAP];
     if (s_card)
         for (int k = 0; k < ORB_APP_CAP && n < max; k++)
-            if (s_card[k].used &&
+            if (s_card[k].used && s_card[k].app.init_done &&
                 !s_card[k].app.failed && s_card[k].app.iface) {
                 rank[n - first_card] = orb_rotation_rank(s_card[k].app.slug, k);
                 list[n++] = &s_card[k].app;

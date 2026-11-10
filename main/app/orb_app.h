@@ -382,6 +382,14 @@ int orb_app_card_count(void);
  *  a partition that changed underneath it. Only main.c calls it, once. */
 void orb_app_card_reset(void);
 
+/** §63: build a card row that ARRIVED while the dial was running, so it joins the
+ *  carousel and can be shown without a reboot. LVGL task only — it constructs
+ *  widgets, and the caller has already made any engine state resident. Runs the
+ *  behaviour module's init exactly once: ESP_OK when the row stands (it may already
+ *  have stood), and the row is marked failed on a refused init exactly as the boot
+ *  loop marks it. The installer's landing rung is the only caller. */
+esp_err_t orb_app_card_land(orb_app_t *app);
+
 /* ---- the behaviour-module registry (D1 / C6) ------------------------------
  *
  * A `.orbapp` carries data, never code (D2). Its `behaviour_kind` word is an

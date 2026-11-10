@@ -170,6 +170,10 @@ type installStep struct {
 	// at 100% through the slot write, the store and both reboots, saying only "waiting").
 	Phase string     `json:"phase,omitempty"`
 	Plan  []planStep `json:"plan,omitempty"`
+	// AppMissing names, on a run's final "done" line, the theme's app that is not installed
+	// on the orb the theme just landed on (§63): the theme is filed and chosen for later,
+	// and the page offers the install the row could not do itself.
+	AppMissing string `json:"app_missing,omitempty"`
 }
 
 // planStep is one entry of a run's plan. Kind is "bytes" for a transfer the bar can
@@ -246,7 +250,27 @@ func installPlan(lib *Library, slugs []string, card, chooses bool, seeded map[st
 	}
 	secs := func(d time.Duration) int { return int(d / time.Second) }
 	restart := secs(cycleQuietGrace + installRebootWait)
+	seedRows := func() []planStep {
+		var rows []planStep
+		for _, slug := range slugs {
+			if !seedSlug(lib, slug, seeded) {
+				continue
+			}
+			for _, st := range themeSteps(title(slug)+"'s theme", restart, chooses) {
+				st.ID += ":" + slug
+				rows = append(rows, st)
+			}
+		}
+		return rows
+	}
 	plan := []planStep{{ID: "check", Label: "Checking the orb", Kind: "wait", Budget: restart}}
+	// On firmware whose store chooses without rebooting, the seed rows come FIRST: the run
+	// seeds every theme it can and installs the apps behind them, so the one restart it
+	// ends with boots each app wearing its theme. The rows are listed where the run walks
+	// them (owner, 2026-11-09).
+	if chooses {
+		plan = append(plan, seedRows()...)
+	}
 	for _, slug := range slugs {
 		if !card {
 			plan = append(plan, planStep{ID: "send:" + slug, Label: "Sending " + title(slug) + " to the orb's card", Kind: "bytes"})
@@ -254,16 +278,22 @@ func installPlan(lib *Library, slugs []string, card, chooses bool, seeded map[st
 		plan = append(plan, planStep{ID: "install:" + slug, Label: "Installing " + title(slug), Kind: "wait", Budget: secs(installHard)})
 	}
 	plan = append(plan, planStep{ID: "restart", Label: "Restarting the orb to load it", Kind: "wait", Budget: restart})
-	for _, slug := range slugs {
-		if slug != "clock" && !lib.hasAppTheme(slug) || seeded != nil && seeded[slug] {
-			continue
-		}
-		for _, st := range themeSteps(title(slug)+"'s theme", restart, chooses) {
-			st.ID += ":" + slug
-			plan = append(plan, st)
-		}
+	if !chooses {
+		plan = append(plan, seedRows()...)
 	}
 	return plan
+}
+
+// seedSlug is the seed gate, written once because the plan, the pre-app seed and the
+// post-app seed all walk it: the clock always asks (a clock with no face draws nothing, and
+// a library with no theme is an error worth saying); another app only when the library has
+// one for it; and neither when the card already carries a theme for it, which is why the
+// plan lists no rows for it either (seeded nil — the card did not answer — lists them all).
+func seedSlug(lib *Library, slug string, seeded map[string]bool) bool {
+	if slug != "clock" && !lib.hasAppTheme(slug) {
+		return false
+	}
+	return seeded == nil || !seeded[slug]
 }
 
 // themeSteps is a theme install's stages, the same five wherever a theme goes on: the
@@ -673,6 +703,40 @@ func (s *Server) installRun(ctx context.Context, ip, only string, force, card bo
 		return fmt.Errorf("no card in the socket — the install lands files on the card, so insert or mount one first")
 	}
 
+	// The theme goes on BEFORE the apps whenever the store chooses rather than reboots
+	// (owner, 2026-11-09: "We install the app, we reboot, then we install the theme. Why
+	// don't we just install the app, we install the theme and then reboot as the last
+	// thing?"). The firmware's store files a choice for an app that is not installed yet —
+	// it records it and builds the voice bank, and the app reads its choice when it boots —
+	// so installAppLive is deliberately NOT asked here: the app is not on the dial yet, and
+	// waiting for it is the ordering this step exists to remove. The run's one restart then
+	// lands every app already wearing its face. Older firmware reboots on the store itself,
+	// so it keeps the old order: install, restart, then seed.
+	//
+	// A seed that fails here is still the run's error, but it is no longer the run's end. At
+	// the old position the apps had already landed when the seed's complaint came, and a pass
+	// in front of them that returned at once would take the install down with it — the owner
+	// asked for the app, and the theme only dresses it. The first refusal is kept, said on the
+	// seed's own row, and returned once the run is through.
+	var seedErr error
+	if phases.chooses {
+		for _, slug := range slugs {
+			if !seedSlug(lib, slug, seeded) {
+				continue
+			}
+			phases.theme = slug
+			phases.cur = "theme-send:" + slug
+			if err := s.installTheme(ctx, ip, slug, send); err != nil {
+				if seedErr == nil {
+					seedErr = err
+				}
+				log.Printf("orb-manager: %s: seeding %s before the apps: %v", ip, slug, err)
+				send(installStep{Step: "theme", Action: "refused", Note: err.Error()})
+				continue
+			}
+		}
+	}
+
 	fwv, _ := firmware.ParseVersion(st.FW)
 	rebooted := false
 	cycled := false // the last install's reboot was seen through to the board's return
@@ -769,35 +833,38 @@ func (s *Server) installRun(ctx context.Context, ip, only string, force, card bo
 	// Every themed app, not the clock alone (owner, 2026-11-04: flights installed on Gold
 	// with no theme): each app this run installed that has a default in the library gets it
 	// when the card holds no theme of its own, and only once the app is live on the dial.
+	//
+	// This is the OLD ordering, and it runs only where the store still reboots the orb: on
+	// firmware that chooses (phases.chooses) the seed already went out above the apps, and a
+	// second pass here would re-read a card the run only just filed.
 	waited := !rebooted || cycled // nothing landed, or its reboot is already behind the run
-	for _, slug := range slugs {
-		// the clock always asks (a clock with no face draws nothing, and a library with no
-		// theme is an error worth saying); another app only when the library has one for it,
-		// and neither when the card already carries a theme for it (the plan lists no rows)
-		if slug != "clock" && !lib.hasAppTheme(slug) || seeded != nil && seeded[slug] {
-			continue
-		}
-		// An install ends with the orb rebooting to load the app, and a ledger read in that
-		// gap answers nothing; the seed waits the boot out and asks again rather than read
-		// silence as "not installed" (Gold, 2026-11-04: flights landed and got no theme).
-		// The orb also answers for a beat while it goes down, so the wait is the cycle-shaped
-		// one, once per run, before the first seed's question.
-		if !waited {
-			waited = true
-			phases.cur = "restart"
-			send(installStep{Step: "install", Action: "restarting", Note: "the orb restarts to load the app"})
-			if back, ok := s.waitOrbCycle(ctx, ip, installRebootWait,
-				beatFor(send, "theme", "waiting for the orb to come back before its theme")); ok {
-				ip = back
+	if !phases.chooses {
+		for _, slug := range slugs {
+			if !seedSlug(lib, slug, seeded) {
+				continue
 			}
-		}
-		if !s.installAppLive(ip, slug) {
-			continue
-		}
-		phases.theme = slug
-		phases.cur = "theme-send:" + slug
-		if err := s.installTheme(ctx, ip, slug, send); err != nil {
-			return err
+			// An install ends with the orb rebooting to load the app, and a ledger read in that
+			// gap answers nothing; the seed waits the boot out and asks again rather than read
+			// silence as "not installed" (Gold, 2026-11-04: flights landed and got no theme).
+			// The orb also answers for a beat while it goes down, so the wait is the cycle-shaped
+			// one, once per run, before the first seed's question.
+			if !waited {
+				waited = true
+				phases.cur = "restart"
+				send(installStep{Step: "install", Action: "restarting", Note: "the orb restarts to load the app"})
+				if back, ok := s.waitOrbCycle(ctx, ip, installRebootWait,
+					beatFor(send, "theme", "waiting for the orb to come back before its theme")); ok {
+					ip = back
+				}
+			}
+			if !s.installAppLive(ip, slug) {
+				continue
+			}
+			phases.theme = slug
+			phases.cur = "theme-send:" + slug
+			if err := s.installTheme(ctx, ip, slug, send); err != nil {
+				return err
+			}
 		}
 	}
 	// An install with no theme behind it still reboots the orb, and a run that said done
@@ -811,7 +878,10 @@ func (s *Server) installRun(ctx context.Context, ip, only string, force, card bo
 			return fmt.Errorf("the app landed but the orb has not answered again within %s", installRebootWait)
 		}
 	}
-	return nil
+	// The apps landed and the orb is back wearing them; a seed the run could not dress them
+	// with is the last thing the run says, so the page reports the run as the failed seeding it
+	// was without un-installing anything the owner paid for.
+	return seedErr
 }
 
 // library answers the one question a nil field would otherwise make a runtime surprise:
@@ -1288,6 +1358,10 @@ func (s *Server) installTheme(ctx context.Context, ip, slug string, send func(in
 	}
 	doUp := func() error { _, e := s.ota.ThemeUploadProgress(ip, blob, false, progress); return e }
 	terr := doUp()
+	if terr != nil && storeJobRefused(terr) {
+		// the file is on the card; only the store's queueing lost to a busy worker
+		terr = s.storeAfterBusy(ctx, ip, c.ID, send, "theme")
+	}
 	// No reboot-retry here, and none is coming back. The door used to speak one
 	// sentence for two failures — upload_begin resolved the themes dir through the
 	// CLOCK app's boot-only file-source registry, so a clock this run installed and
@@ -1477,6 +1551,56 @@ func themeRunSend(send func(installStep), what string, chooses bool) func(instal
 // keep is an upgrade (owner, 2026-11-09: "we're talking about upgrading them"): the newer
 // bake replaces the card copy and the app keeps the theme it wears; only the worn one is
 // stored again. An orb before removeNoRebootFW cannot file without choosing, so it is left.
+// themeAppMissing is §63's "added, its app not installed" half, asked after a push that
+// landed: the theme is filed and chosen for the day the app arrives, and the operator
+// deserves to know the dial cannot wear it yet. It returns the app's slug and its title
+// when ALL THREE of these hold — the orb's installed ledger has no such row, the hub's
+// own shelf holds the .orbapp the offer would send, and the theme names an app at all —
+// and the empty pair otherwise, including for an app list that would not read: a theme
+// is never reported missing on the strength of one failed GET.
+func (s *Server) themeAppMissing(ip string, c *orbnet.ThemeContainer) (string, string) {
+	app := "clock"
+	if len(c.Sections) > 0 {
+		app = c.Sections[0]
+	}
+	apps, err := s.device.AppsList(ip)
+	if err != nil {
+		return "", ""
+	}
+	for _, row := range apps.Installed {
+		if row.Slug == app {
+			return "", ""
+		}
+	}
+	lib := s.library()
+	if lib.AppsDir == "" {
+		return "", ""
+	}
+	p := &LibraryPayload{}
+	listAppLibrary(lib.AppsDir, p)
+	for _, a := range p.Apps {
+		if a.Slug == app {
+			return app, a.Title
+		}
+	}
+	return "", ""
+}
+
+// themeDone is a run's final line on a theme that landed, with §63's offer riding it when
+// the theme's app is not on the orb: the same note, the title of the missing app said in
+// it, and the slug in AppMissing for the page to install.
+func (s *Server) themeDone(ip string, c *orbnet.ThemeContainer, send func(installStep), note string) {
+	st := installStep{Step: c.ID, Action: "done", Note: note}
+	if slug, title := s.themeAppMissing(ip, c); slug != "" {
+		if title == "" {
+			title = slug
+		}
+		st.AppMissing = slug
+		st.Note = note + "; " + title + " is not installed on this orb"
+	}
+	send(st)
+}
+
 func (s *Server) streamThemeStore(ctx context.Context, ip string, blob []byte, label string, c *orbnet.ThemeContainer, overwrite, keep bool, send func(installStep)) bool {
 	if keep && s.firmwareBefore(ip, removeNoRebootFW) {
 		send(installStep{Step: c.ID, Action: "skipped",
@@ -1501,6 +1625,9 @@ func (s *Server) streamThemeStore(ctx context.Context, ip string, blob []byte, l
 		send(installStep{Step: c.ID, Action: "uploading",
 			Note: fmt.Sprintf("%d of %d KB", sent/1024, int64(total)/1024)})
 	})
+	if uerr != nil && storeJobRefused(uerr) {
+		uerr = s.storeAfterBusy(ctx, ip, c.ID, send, c.ID)
+	}
 	if uerr != nil {
 		send(installStep{Step: c.ID, Action: "refused",
 			Note: fmt.Sprintf("writing %s to the card: %s", label, plainDeviceErr(uerr, int(sentLast)))})
@@ -1514,7 +1641,7 @@ func (s *Server) streamThemeStore(ctx context.Context, ip string, blob []byte, l
 		State string `json:"state"`
 	}
 	if keep && json.Unmarshal(raw, &ans) == nil && ans.State == "filed" {
-		send(installStep{Step: c.ID, Action: "done", Note: "the newer bake is on the card; its app keeps the theme it wears"})
+		s.themeDone(ip, c, send, "the newer bake is on the card; its app keeps the theme it wears")
 		return true
 	}
 	// The upload door queued the store itself (h_theme_upload's post_bundle tail): the
@@ -1532,7 +1659,7 @@ func (s *Server) streamThemeStore(ctx context.Context, ip string, blob []byte, l
 	if outcome == "stored" && !restarted {
 		// firmware whose store chooses and does not reboot (storeNoRebootFW)
 		send(installStep{Step: c.ID, Action: "stored"})
-		send(installStep{Step: c.ID, Action: "done", Note: "stored; the orb wears it without a restart"})
+		s.themeDone(ip, c, send, "stored; the orb wears it without a restart")
 		return true
 	}
 	if outcome != "stored" {
@@ -1544,7 +1671,7 @@ func (s *Server) streamThemeStore(ctx context.Context, ip string, blob []byte, l
 			Note: fmt.Sprintf("the orb stored the theme but has not answered again within %s", installRebootWait)})
 		return false
 	}
-	send(installStep{Step: c.ID, Action: "done", Note: "stored, and the orb is back drawing it"})
+	s.themeDone(ip, c, send, "stored, and the orb is back drawing it")
 	return true
 }
 
@@ -1733,6 +1860,38 @@ func deviceSentence(err error) error {
 //
 // sent is the byte count the transport had written when the wait ended; pass 0 where the
 // call carried no progress.
+// storeJobRefused says whether a theme upload reached the card but its store could not be
+// queued because the orb's one job worker was busy (h_theme_upload: "stored on the card,
+// store job refused: ESP_ERR_INVALID_STATE"; owner, setting up Gold, 2026-11-09: the boot's
+// theme check held the worker as the seed landed).
+func storeJobRefused(err error) bool {
+	return strings.Contains(err.Error(), "store job refused")
+}
+
+// storeAfterBusy waits for the orb's job worker to go idle (up to a minute) and then asks for
+// the store of the file the upload already put on the card: one request, not a second crossing.
+func (s *Server) storeAfterBusy(ctx context.Context, ip, id string, send func(installStep), step string) error {
+	send(installStep{Step: step, Action: "waiting", Note: "the file is on the card; the orb is busy, so the store waits its turn"})
+	deadline := time.Now().Add(time.Minute)
+	for time.Now().Before(deadline) {
+		if tl, err := s.device.ThemeList(ip); err == nil && !tl.JobBusy {
+			_, serr := s.device.ThemeStore(ip, id)
+			if serr == nil {
+				return nil
+			}
+			if !strings.Contains(serr.Error(), "INVALID_STATE") && !strings.Contains(serr.Error(), "busy") {
+				return serr
+			}
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(2 * time.Second):
+		}
+	}
+	return fmt.Errorf("the file is on the card, but the orb stayed busy for a minute and never took the store: press Store on the Themes face")
+}
+
 // cardWriteTries is how many times an app crosses to the card when the orb refuses the
 // write; cardWriteRetryPause lets whatever held its DMA memory finish first.
 const cardWriteTries = 3

@@ -656,7 +656,7 @@ func (s *Server) updateBake(r *http.Request, lib *Library, origin *ThemeOrigin, 
 // fetchCheckedBundle is the import door's first half read off an origin record rather than a
 // pasted link: that design's bundle, checked, with the door's own refusals.
 func (s *Server) fetchCheckedBundle(r *http.Request, o *ThemeOrigin) (*siteBundle, error) {
-	raw, err := s.fetchSiteBundle(r, o.Site, o.DesignID)
+	raw, err := s.fetchSiteBundle(r, o.Site, o.DesignID, "")
 	if err != nil {
 		return nil, err
 	}

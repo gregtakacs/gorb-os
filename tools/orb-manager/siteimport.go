@@ -16,6 +16,12 @@ package main
 // gets back. The hub also never follows a redirect: a site that answers 302 is sending a
 // sign-in page, not a theme, and dialing the place it points at would hand the hub's
 // request to somewhere the owner never named.
+//
+// H2 §5 grows this door a second body, {"designId": …}: one of the signed-in owner's own
+// designs, named by id instead of pasted as a link, fetched from the site this hub is linked
+// to with that link's bearer on the same GET. Everything past the fetch is the same code —
+// one bundle door, one check, one ticket, one origin record — and an own design imports
+// exactly like a shared one and tags "from <host>" the same.
 
 import (
 	"context"
@@ -66,6 +72,12 @@ const siteTicketGone = "that import has expired: paste the link again"
 // siteLinkRe is the whole path a design link has: the /t/ prefix and the 22-character id,
 // with an optional trailing slash. Query and fragment are not the path's business.
 var siteLinkRe = regexp.MustCompile(`^/t/([A-Za-z0-9_-]{22})/?$`)
+
+// siteDesignIDRe is §5's import-by-id grammar: the same 22 characters siteLinkRe admits
+// inside a /t/ path, named on its own because the id body carries no path to match. A hub
+// that let a longer, shorter or punctuated id through would be dialing a design the site
+// cannot have, and §2.6's answer to that is the stranger's 404.
+var siteDesignIDRe = regexp.MustCompile(`^[A-Za-z0-9_-]{22}$`)
 
 // siteHexRe is a bundle image's content hash, as the site writes it: lowercase hex.
 var siteHexRe = regexp.MustCompile(`^[0-9a-f]{64}$`)
@@ -444,11 +456,28 @@ func (s *Server) siteHTTP() *http.Client {
 	return siteClientDefault
 }
 
+// siteFetchError is a site answer a caller must act on beyond the sentence the owner
+// reads: the HTTP status behind it, carried beside wording that is already final. Every
+// message a siteFetchError returns is the sentence fetchSiteBundle has always answered
+// with — the type exists so H2's import-by-id door can tell a 401 (the link died) from a
+// 404 (a wrong id is a wrong paste) without either one rewriting what the H1 door says.
+type siteFetchError struct {
+	status int
+	msg    string
+}
+
+func (e *siteFetchError) Error() string { return e.msg }
+
 // fetchSiteBundle asks the site for one design's bundle and returns its bytes. Every
 // failure comes back already worded for the owner: the site's name is in the sentence, and
 // the reason is one of the ones §7.1 distinguishes — unreachable, closed to us, private,
 // deleted, refused, oversized, or not a theme at all.
-func (s *Server) fetchSiteBundle(r *http.Request, site, id string) ([]byte, error) {
+//
+// bearer is H2 §2.6's own-bundle door: an empty bearer is the anonymous H1 paste, byte for
+// byte what it always sent, and a non-empty one is the hub's link credential, sent to the
+// site it was minted for and to nobody else. One client, one redirect rule, one cap — the
+// two doors differ by this header and nothing else.
+func (s *Server) fetchSiteBundle(r *http.Request, site, id, bearer string) ([]byte, error) {
 	host := siteHost(site)
 	req, err := http.NewRequestWithContext(r.Context(), http.MethodGet, site+"/api/hub/theme/"+id, nil)
 	if err != nil {
@@ -456,16 +485,24 @@ func (s *Server) fetchSiteBundle(r *http.Request, site, id string) ([]byte, erro
 	}
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("User-Agent", "orb-manager/"+version)
+	if bearer != "" {
+		req.Header.Set("Authorization", "Bearer "+bearer)
+	}
 	resp, err := s.siteHTTP().Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("could not reach %s: %v", host, err)
 	}
 	defer resp.Body.Close()
 	switch {
+	case resp.StatusCode == http.StatusUnauthorized && bearer != "":
+		// §2.6: a bearer that does not resolve to a live link is told so even for a public
+		// design, so a hub holding a dead token learns its token is dead. What the owner
+		// hears is the door's own sentence, which is this call's caller to word.
+		return nil, &siteFetchError{http.StatusUnauthorized, fmt.Sprintf("%s refused the link's credential", host)}
 	case resp.StatusCode >= 300 && resp.StatusCode < 400:
 		return nil, fmt.Errorf("%s sent a sign-in page instead of the theme: the site isn’t open to Orb Manager yet", host)
 	case resp.StatusCode == http.StatusNotFound:
-		return nil, fmt.Errorf("that theme is private, or %s has no such theme", host)
+		return nil, &siteFetchError{http.StatusNotFound, fmt.Sprintf("that theme is private, or %s has no such theme", host)}
 	case resp.StatusCode == http.StatusGone:
 		return nil, errors.New("that theme was deleted by its owner")
 	case resp.StatusCode == http.StatusConflict:
@@ -639,9 +676,12 @@ func (s *Server) routesSiteImport(mux *http.ServeMux) {
 	mux.Handle("/api/site/keep", s.requireControl(http.HandlerFunc(s.handleSiteKeep)))
 }
 
-// handleSiteImport answers POST /api/site/import with {"link": …}: the paste, fetched,
-// checked and held under a ticket. It files nothing; the theme reaches the shelf only when
-// a bake arrives at /api/site/keep.
+// handleSiteImport answers POST /api/site/import with one of two bodies: {"link": …}, the
+// paste §7.1 H1 opened, or {"designId": …}, H2 §5's own-design door — one of the signed-in
+// owner's designs fetched through the same bundle door with the link's bearer on it, which
+// is what makes the site answer with the owner's own bundle. Both shapes end at the same
+// fetch, the same checkBundle and the same ticket: one import path, one origin record. It
+// files nothing; the theme reaches the shelf only when a bake arrives at /api/site/keep.
 func (s *Server) handleSiteImport(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "POST only", http.StatusMethodNotAllowed)
@@ -653,19 +693,65 @@ func (s *Server) handleSiteImport(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var in struct {
-		Link string `json:"link"`
+		Link     string `json:"link"`
+		DesignID string `json:"designId"`
 	}
-	if json.Unmarshal(body, &in) != nil || strings.TrimSpace(in.Link) == "" {
+	link, designID := "", ""
+	if json.Unmarshal(body, &in) == nil {
+		link = strings.TrimSpace(in.Link)
+		designID = strings.TrimSpace(in.DesignID)
+	}
+	// One request, one shape. The two fields are alternatives, and a blank counts as absent:
+	// a body naming both names two designs at once, and a body naming neither was sent by a
+	// form nobody typed into. Both are the same mistake as an unreadable paste, so they are
+	// the same sentence.
+	if (link == "") == (designID == "") {
 		s.jsonErr(w, siteLinkRefused)
 		return
 	}
-	site, id, err := parseSiteLink(in.Link)
-	if err != nil {
-		s.jsonErr(w, err.Error())
-		return
+	site, id, bearer := "", "", ""
+	var own *siteLink
+	if link != "" {
+		site, id, err = parseSiteLink(link)
+		if err != nil {
+			s.jsonErr(w, err.Error())
+			return
+		}
+	} else {
+		own = s.liveSiteLink()
+		if own == nil {
+			// The door needs a link to be somebody's own design, and the hub says which half
+			// it is missing: no credential at all is "not connected", never a fetch attempted
+			// with nothing in the header.
+			s.jsonErr(w, siteMsgNotConnected)
+			return
+		}
+		if !siteDesignIDRe.MatchString(designID) {
+			s.jsonErr(w, siteLinkRefused)
+			return
+		}
+		// The site is never the caller's to name: an own design lives on the site this
+		// hub's credential was minted for, which is the only origin a bearer may be sent to.
+		site, id, bearer = siteReleaseBase(), designID, own.Token
 	}
-	raw, err := s.fetchSiteBundle(r, site, id)
+	raw, err := s.fetchSiteBundle(r, site, id, bearer)
 	if err != nil {
+		var stErr *siteFetchError
+		switch {
+		case errors.As(err, &stErr) && stErr.status == http.StatusUnauthorized:
+			// §2.6: a dead bearer is told it is dead even in front of a public design, so
+			// this is the moment the hub learns the link is over. It forgets the credential
+			// exactly as §5's designs door does, on the same answer from the same site.
+			s.forgetSiteLink(own)
+			s.jsonErr(w, siteMsgDisconnected)
+			return
+		case errors.As(err, &stErr) && stErr.status == http.StatusNotFound && bearer != "":
+			// §2.6 answers a design this link may not see with the stranger's 404, on
+			// purpose. A mistyped id and a mistyped paste are one user mistake, so they are
+			// one sentence.
+			s.jsonErr(w, siteLinkRefused)
+			return
+		}
 		s.jsonErr(w, err.Error())
 		return
 	}

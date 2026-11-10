@@ -146,6 +146,12 @@ type Server struct {
 	// siteTickets holds the bundles that door fetched and no bake has kept yet — the
 	// one-time imports /api/site/bundle and /api/site/keep work from. See siteimport.go.
 	siteTickets siteTicketStore
+	// siteAttempt is the connect in flight (sitelink.go): the one loopback listener that
+	// exists between the press and the death of an attempt, and not one second longer.
+	// nil means no connect is open. siteLinkMu guards it and the whole-and-rename writes
+	// of site-link.json, the credential's only home.
+	siteLinkMu  sync.Mutex
+	siteAttempt *siteAttempt
 	// themeBake is g3-3's seam onto H1b's own-editor bake: it turns a site's design bundle
 	// into the .orbtheme the update keeps under the design's current name. nil — which is
 	// every hub main() builds — means this hub has no baker of its own, and the apply door
@@ -1365,6 +1371,8 @@ func (s *Server) routes(mux *http.ServeMux) {
 	// editor's bake. The app side of this lives in the Themes tab, not here.
 	if !s.siteHidden {
 		s.routesSiteImport(mux)
+		// H2 §5: the press that starts a connect and the one question of its status.
+		s.routesSiteLink(mux)
 		// §7.6 G3: the site release check's cached verdict, read-only, for the Updates list.
 		mux.Handle("/api/release/latest", s.requireControl(http.HandlerFunc(s.serveReleaseLatest)))
 		// §7.6 G3-2: the one Updates list and its two refusals.

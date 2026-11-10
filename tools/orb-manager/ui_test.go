@@ -1738,7 +1738,7 @@ func TestSiteImportDoorInTheLibrary(t *testing.T) {
 	// The door and its list are the home view's: an import needs no orb, so neither does
 	// the shelf the import fills.
 	home := regionOf(t, page, `<main id="manage"`, "</main>")
-	for _, id := range []string{"mn-libthemes", "mn-site-btn", "mn-site-row", "mn-site-link", "mn-site-go", "mn-site-state", "mn-lib-list"} {
+	for _, id := range []string{"mn-libthemes", "mn-site-btn", "mn-site-row", "mn-site-link", "mn-site-go", "mn-site-state", "mn-lib-list", "mn-site-connect", "mn-site-conn", "mn-site-designs", "mn-site-disconnect"} {
 		if !strings.Contains(home, `id="`+id+`"`) {
 			t.Errorf(`#%s is not inside <main id="manage">: the Theme library is the home view's, and so is its door`, id)
 		}
@@ -1822,8 +1822,16 @@ func TestSiteImportDoorInTheLibrary(t *testing.T) {
 	if strings.Contains(hubDoor, "?orb=") {
 		t.Error("openLibraryEditor names an orb: the hub's own editor has none, and dialing a board is how a board gets blamed for a failed import")
 	}
-	if !strings.Contains(press, "openLibraryEditor(") {
-		t.Error("the import never opens Orb Manager's own editor on the ticket it fetched")
+	// The tail that opens the editor is shared, not copied. H2 grew a second door onto
+	// the same judgement (the signed-in owner's own design, imported by id), so the paste
+	// door hands its fetched data to finishSiteImport, and finishSiteImport is where the
+	// hub's own editor opens on the ticket. A copy would be two doors that drift apart.
+	if !strings.Contains(press, "finishSiteImport(data)") {
+		t.Error("siteImportPress does not hand its fetched data to the shared finishSiteImport tail: the two import doors would carry two copies of this judgement")
+	}
+	finish := blockOf(t, app, "async function finishSiteImport(data)")
+	if !strings.Contains(finish, "openLibraryEditor(") {
+		t.Error("finishSiteImport never opens Orb Manager's own editor on the ticket it fetched")
 	}
 	door := blockOf(t, app, "function openThemeEditor")
 	if strings.Contains(door, `"&import="`) {
@@ -1876,6 +1884,117 @@ func TestSiteImportDoorInTheLibrary(t *testing.T) {
 	lib := blockOf(t, app, "async function loadLibThemes()")
 	if !strings.Contains(lib, "t.origin") || !strings.Contains(lib, `"from "`) {
 		t.Error("an imported theme's home-view row carries no origin tag")
+	}
+}
+
+// H2 hub step 3 (design §5, §7.2): the human half of the site link is My orb-os.net, and it
+// lives in the Theme library right where Import lives — not as a new view. The binding is
+// the four-state sentence drawn straight from link-status, and the fact that the whole thing
+// waits behind the SAME door the closed hub already hides: every new id is inside #mn-site-row,
+// so a hub built without -site (every release to date) hides the connect block without a new
+// hiding line, and none of it reaches the DOM. These pins are the contract minus the pixels.
+func TestSiteUISectionIsThereAndShut(t *testing.T) {
+	page := readWebFile(t, "index.html")
+	app := readAppJS(t)
+	home := regionOf(t, page, `<main id="manage"`, "</main>")
+
+	// (a) The new ids exist and stand inside the home view.
+	for _, id := range []string{"mn-site-connect", "mn-site-conn", "mn-site-designs", "mn-site-disconnect", "mn-site-connect-block", "mn-site-designs-block"} {
+		if !strings.Contains(home, `id="`+id+`"`) {
+			t.Errorf(`#%s is missing from the home view: My orb-os.net is half built`, id)
+		}
+	}
+
+	// (b) The connect block is INSIDE #mn-site-row, not merely next to it, so the existing
+	// closed-hub hiding (row.hidden = true) puts it away with the paste door — a sibling
+	// would leak a Connect button onto a hub that cannot answer it. #mn-site-row closes at
+	// its first </div>, and every block here is a <span>, so that first </div> is the row's
+	// own end and the region is exactly its contents.
+	rowRegion := regionOf(t, page, `id="mn-site-row"`, "</div>")
+	for _, id := range []string{"mn-site-connect-block", "mn-site-designs-block"} {
+		if !strings.Contains(rowRegion, `id="`+id+`"`) {
+			t.Errorf(`#%s is not inside #mn-site-row, so a closed hub's hiding of that row does not hide it`, id)
+		}
+	}
+
+	// (c) The row is still hidden in markup, and loadLibThemes still hides the whole row for
+	// a closed hub (blockOfLine reads the one line the pin is about, as the existing door test does).
+	if b := blockOfLine(t, page, `id="mn-site-row"`); !strings.Contains(b, "hidden") {
+		t.Error(`#mn-site-row is not hidden in markup, so a closed hub would show the connect block at load`)
+	}
+	if !strings.Contains(app, `$("#mn-site-row").hidden = true`) {
+		t.Error("loadLibThemes no longer hides #mn-site-row for a closed hub, so the new block would show there")
+	}
+	// The manage render reads the link — and only for an open hub, so a shut hub's page
+	// never dials a route it does not register.
+	lib := blockOf(t, app, "async function loadLibThemes()")
+	if !strings.Contains(lib, "if (site) loadSiteLink()") {
+		t.Error("loadLibThemes's manage render does not read the site link for an open hub")
+	}
+
+	// (d) The four binding sentences and the two fallback lines, drawn from link-status.state.
+	for _, want := range []string{
+		"Connect to orb-os.net",        // none
+		"Waiting for orb-os.net",       // pending (the ellipsis is a \u2026 escape in source)
+		"Connected as @",               // linked, with a handle
+		"Connected to orb-os.net",      // linked, no handle
+		"Disconnected from orb-os.net", // disconnected
+		"Reconnect",                    // the disconnected button, which IS connect
+	} {
+		if !strings.Contains(app, want) {
+			t.Errorf("app.js never words the %q state the lead review bound", want)
+		}
+	}
+	// The empty list and the press fallback line the spec pinned.
+	for _, want := range []string{"Nothing saved on orb-os.net yet.", "open the link the hub printed if your browser stayed shut"} {
+		if !strings.Contains(app, want) {
+			t.Errorf("app.js is missing the pinned line %q", want)
+		}
+	}
+
+	// (e) The three reads and two presses go through the hub's own doors, never to the site.
+	for _, want := range []string{`"/api/site/link-status"`, `"/api/site/designs"`, `"/api/site/connect"`, `"/api/site/disconnect"`, `"/api/site/import"`} {
+		if !strings.Contains(app, want) {
+			t.Errorf("the section never reaches %s", want)
+		}
+	}
+	// The Import on a design row rides the SAME designId door step 2 opened, and feeds the
+	// SAME shared tail — the paste door's body stays {link}, the design door's is {designId}.
+	di := blockOf(t, app, "async function siteDesignImport(btn, designId)")
+	if !strings.Contains(di, `body: JSON.stringify({ designId: designId })`) {
+		t.Error("a design Import does not post {designId} to the hub's door")
+	}
+	if !strings.Contains(di, "finishSiteImport(data)") {
+		t.Error("a design Import does not feed its result to the shared finishSiteImport tail: the two doors would diverge")
+	}
+
+	// (f) No site word reaches the DOM unescaped: the list builds through the DOM, exactly
+	// like the shelf — a name only ever in textContent, never a += or an innerHTML.
+	draw := blockOf(t, app, "function siteDesignRow(d)")
+	if !strings.Contains(draw, "createElement") || !strings.Contains(draw, ".textContent") {
+		t.Error("a design row is not built through createElement/textContent: a design's name is foreign bytes")
+	}
+	if strings.Contains(draw, "innerHTML") {
+		t.Error("a design row uses innerHTML: foreign bytes must never become markup")
+	}
+
+	// (g) One named poll interval and one named stop function — the forever-poll bug a UI
+	// test cannot see, pinned by shape instead.
+	if !strings.Contains(app, "const SITE_LINK_POLL_MS = 2000") {
+		t.Error("the link poll's interval is not the one named constant SITE_LINK_POLL_MS")
+	}
+	if !strings.Contains(app, "const SITE_LINK_POLL_MAX_MS = 10 * 60 * 1000") {
+		t.Error("the link poll has no named ten-minute deadline constant")
+	}
+	stop := blockOf(t, app, "function stopSiteLinkPoll()")
+	if !strings.Contains(stop, "clearInterval(siteLinkPollTimer)") {
+		t.Error("the link poll's stop conditions are not funnelled through one stopSiteLinkPoll function")
+	}
+	// Leaving the manage view must stop the wait: an orb opened over the library cannot be
+	// the reason the hub keeps dialing a status endpoint nobody can see.
+	sh := blockOf(t, app, "function show(view)")
+	if !strings.Contains(sh, "stopSiteLinkPoll()") {
+		t.Error("leaving the manage view never stops the connect poll")
 	}
 }
 
@@ -2152,4 +2271,3 @@ func TestSafariIsWarnedAboutEditors(t *testing.T) {
 		}
 	}
 }
-

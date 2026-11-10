@@ -60,6 +60,16 @@
       <input type="url" id="mn-site-link" placeholder="https://orb-os.net/t/…" spellcheck="false" autocomplete="off" size="44">
       <button id="mn-site-go" type="button">Import</button>
       <span id="mn-site-state" class="hint"></span>
+      <span id="mn-site-connect-block" hidden>
+        <button id="mn-site-connect" class="ghost" type="button"
+                title="Link this Orb Manager to your orb-os.net account so it can read your designs. The hub opens your browser to sign in; nothing here uploads or changes anything on the site.">Connect to orb-os.net</button>
+        <span id="mn-site-conn" class="hint"></span>
+      </span>
+      <span id="mn-site-designs-block" hidden>
+        <h4 class="hint">My orb-os.net <span id="mn-site-linked" class="mut"></span></h4>
+        <button id="mn-site-disconnect" class="ghost" type="button">Disconnect</button>
+        <ul id="mn-site-designs" class="themelist"></ul>
+      </span>
     </div>
     <ul id="mn-lib-list" class="themelist"></ul>
     <p class="hint">The themes Orb Manager keeps. Open an orb and its Themes tab to put one on it.</p>

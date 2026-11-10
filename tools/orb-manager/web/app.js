@@ -82,6 +82,9 @@ function show(view) {
   if (view && !document.getElementById(view)) return false;
   $$(".view").forEach((v) => (v.hidden = v.id !== view));
   if (view) location.hash = view;
+  // The connect wait lives on the manage view only: leaving it stops the poll, so a hub
+  // is never left dialing link-status for a page nobody is looking at.
+  if (view && view !== "manage") stopSiteLinkPoll();
   // The home view's Theme library is the hub's own directory, and an import, an orb's
   // Install or a keep from a Themes tab can all have changed the shelf since the last
   // look, so the view that shows it re-reads it on the way in. The Updates list is read
@@ -5116,6 +5119,9 @@ async function loadLibThemes() {
   const site = data.site === true;
   for (const id of ["#mn-site-btn", "#mn-lib-upload"]) { const b = $(id); if (b) b.hidden = !site; }
   if (!site && $("#mn-site-row")) $("#mn-site-row").hidden = true;
+  // The site is open on this hub, so the manage view's render also reads the link: which
+  // of the four states it is in, and — linked — the account's designs beside the shelf.
+  if (site) loadSiteLink();
   const themes = (Array.isArray(data.themes) ? data.themes.slice() : []).sort((a, b) => {
     // App first, then theme, both case-insensitive: the shelf is scanned for a name
     // inside an app, and a shelf of one app must still read alphabetically.
@@ -5502,6 +5508,9 @@ $("#mn-site-btn").onclick = () => {
   if (!row) return;
   row.hidden = !row.hidden;
   if (!row.hidden && link) link.focus();
+  // Opening the door brings the My orb-os.net section on screen with it: read its state so
+  // a linked hub shows the list and an in-flight attempt resumes waiting.
+  if (!row.hidden) loadSiteLink();
 };
 $("#mn-site-go").onclick = () => { siteImportPress(); };
 $("#mn-site-link").onkeydown = (e) => { if (e.key === "Enter") siteImportPress(); };
@@ -5531,6 +5540,18 @@ async function siteImportPress() {
     siteImportEnded();
     return;
   }
+  await finishSiteImport(data);
+}
+
+// finishSiteImport is the shared tail of an orb-os.net import: the hub has fetched a
+// bundle and held it under a ticket, and this decides whether Orb Manager can bake it and,
+// if so, opens the hub's own copy of the app's editor on that ticket. It is reached from
+// both doors H2 §7.2 opened — the pasted link (siteImportPress) and a signed-in owner's own
+// design (siteDesignImport) — so the two share one copy of this judgement. It answers into
+// #mn-site-state and frees the door itself on every refusal.
+async function finishSiteImport(data) {
+  const st = $("#mn-site-state");
+  if (!st) return;
   const shared = (data && data.sharedName) || "the theme";
   // The two answers this needs are the library's, not any orb's, so the shelf is read
   // first when this page has not read it yet — which is exactly the state a home view
@@ -5585,6 +5606,323 @@ function siteImportClosed() {
   siteImportEnded();
   if (!st || String(st.textContent).indexOf("\u2713") === 0) return;
   st.textContent = "the editor closed without importing: its status line said why";
+}
+
+// ---- My orb-os.net (H2 §7.2, hub step 3) ---------------------------------------------
+//
+// The human half of the site link. The hub owns the PKCE client, the token and every
+// request that leaves the machine (steps 1 and 2); this page only reads /api/site/link-status
+// to learn which of four states the link is in, draws the matching block, drives a Connect
+// press and a Disconnect press through the hub's own doors, and — once linked — lists the
+// account's designs with an Import that rides step 2's designId door. It never speaks to the
+// site itself. Every name drawn here is foreign bytes off the site, so it goes in through
+// textContent and createElement, exactly like the shelf rows beside it.
+
+// The one poll is cheap and dumb on purpose: link-status reads one small file, and a
+// websocket for one boolean is how projects die. Both the interval and the deadline live
+// here, and every way the wait can end goes through stopSiteLinkPoll — a hub left polling
+// forever after the view moved on is a leak no UI test can see.
+const SITE_LINK_POLL_MS = 2000;
+const SITE_LINK_POLL_MAX_MS = 10 * 60 * 1000;
+let siteLinkPollTimer = null;
+let siteLinkPollStart = 0;
+// The URL a Connect press got back, kept so a redraw while the attempt is open can still
+// offer it as the fallback link the lead review asks for. It is cleared the moment the
+// attempt is no longer the state on screen.
+let siteConnectUrl = "";
+
+// stopSiteLinkPoll is the poll's only exit. A linked flip, the view leaving Manage, and the
+// deadline all call it; calling it while nothing polls is a no-op.
+function stopSiteLinkPoll() {
+  if (siteLinkPollTimer) { clearInterval(siteLinkPollTimer); siteLinkPollTimer = null; }
+  siteLinkPollStart = 0;
+}
+
+// startSiteLinkPoll begins the wait, timing the ten-minute deadline from this first call.
+// A second call while one is running is ignored, so the draw and the press can both ask.
+function startSiteLinkPoll() {
+  if (siteLinkPollTimer) return;
+  siteLinkPollStart = Date.now();
+  siteLinkPollTimer = setInterval(siteLinkPollTick, SITE_LINK_POLL_MS);
+}
+
+// siteLinkOnScreen is the connect block being somewhere a person can actually see it: on
+// the manage view, with the site row open and the connect block itself not hidden. The tick
+// asks this and stops the instant it goes false, so a wait never outlives the view it was
+// started on — which is the exit a UI test cannot observe and a reviewer will not forgive.
+function siteLinkOnScreen() {
+  const row = $("#mn-site-row"), blk = $("#mn-site-connect-block"), manage = $("#manage");
+  return !!(row && blk && manage && !row.hidden && !blk.hidden && !manage.hidden);
+}
+
+async function siteLinkPollTick() {
+  if (!siteLinkOnScreen()) { stopSiteLinkPoll(); return; }
+  if (siteLinkPollStart && Date.now() - siteLinkPollStart >= SITE_LINK_POLL_MAX_MS) { stopSiteLinkPoll(); return; }
+  await loadSiteLink();   // redraws; a linked draw stops the poll itself
+}
+
+// loadSiteLink asks the hub which state the link is in and draws it. A linked hub then
+// reads the design list too; any other state puts the list away, and an open attempt starts
+// the wait. A read that fails falls back to the connect block — the safest thing to offer a
+// person when the truth about their link did not come back.
+async function loadSiteLink() {
+  let data = { state: "none" };
+  try {
+    const r = await hubFetch("/api/site/link-status");
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok || !j || j.ok !== true) throw new Error((j && j.error) || ("HTTP " + r.status));
+    data = j.data || { state: "none" };
+  } catch (e) {
+    // The library said the site door is open but this read did not come back; keep the
+    // connect block up rather than freeze the section on a half-truth.
+  }
+  drawSiteLink(data);
+  if (data.state === "linked") { stopSiteLinkPoll(); await loadSiteDesigns(); }
+}
+
+// drawSiteLink shows exactly one of the two blocks for the state it was handed — the connect
+// block for none / pending / disconnected, the designs block for linked — and words the
+// unlinked button and line with the four sentences the lead review bound. Nothing about the
+// state is invented here that the hub's answer did not say.
+function drawSiteLink(data) {
+  const connect = $("#mn-site-connect"), conn = $("#mn-site-conn");
+  const connectBlock = $("#mn-site-connect-block"), designsBlock = $("#mn-site-designs-block");
+  const linked = $("#mn-site-linked");
+  const state = (data && data.state) || "none";
+  const isLinked = state === "linked";
+  if (connectBlock) connectBlock.hidden = isLinked;
+  if (designsBlock) designsBlock.hidden = !isLinked;
+  if (isLinked) {
+    siteConnectUrl = "";
+    const handle = data.handle ? String(data.handle) : "";
+    if (linked) linked.textContent = handle ? ("\u2014 Connected as @" + handle) : "\u2014 Connected to orb-os.net";
+    return;
+  }
+  if (connect) connect.textContent = state === "disconnected" ? "Reconnect" : "Connect to orb-os.net";
+  if (state === "pending") {
+    if (conn) {
+      conn.textContent = "Waiting for orb-os.net\u2026";
+      if (siteConnectUrl) appendSiteFallback(conn, siteConnectUrl);
+    }
+    startSiteLinkPoll();
+  } else if (state === "disconnected") {
+    siteConnectUrl = "";
+    if (conn) conn.textContent = "Disconnected from orb-os.net";
+    stopSiteLinkPoll();
+  } else {
+    siteConnectUrl = "";
+    if (conn) conn.textContent = "";
+    stopSiteLinkPoll();
+  }
+}
+
+// appendSiteFallback puts the connect URL a press got back under the waiting line as a
+// clickable link. The bytes are the hub's own, built from siteReleaseBase, and they go in as
+// an anchor's href property and text — never as markup.
+function appendSiteFallback(conn, url) {
+  const a = document.createElement("a");
+  a.className = "site-fallback";
+  a.href = url;
+  a.textContent = url;
+  a.target = "_blank";
+  a.rel = "noopener noreferrer";
+  conn.appendChild(document.createTextNode(" "));
+  conn.appendChild(a);
+}
+
+// The two presses the section answers to. Connect starts an attempt (the hub opens the
+// browser; this shows the URL and waits); Disconnect ends the link and redraws unlinked.
+function siteLinkWire() {
+  const connect = $("#mn-site-connect"), disc = $("#mn-site-disconnect");
+  if (connect) connect.onclick = siteConnectPress;
+  if (disc) disc.onclick = siteDisconnectPress;
+}
+
+// siteDesignsSeq keeps the list honest under two asks in flight: boot reads a linked hub's
+// designs and opening the row reads them again, and if the first reply lands after the second
+// has already drawn, that stale list must not append a second copy of the truth beneath the
+// fresh one. Each call takes the next number; a reply that is no longer the newest draws nothing.
+let siteDesignsSeq = 0;
+
+// loadSiteDesigns reads the account's designs through the hub (GET /api/site/designs,
+// which proxies the site's list with the stored bearer) and draws them. Nothing is cached:
+// the list is the page's claim about what is on the account right now, so an Import that
+// the site has since refused should not still be offered. An answer saying the link is gone
+// — "disconnected from orb-os.net", the token already cleared hub-side — flips the whole
+// section to the connect block with that sentence, because there is no state to invent: the
+// hub has already forgotten the credential.
+async function loadSiteDesigns() {
+  const ul = $("#mn-site-designs");
+  if (!ul) return;
+  ul.textContent = "";
+  const seq = ++siteDesignsSeq;
+  let data = null, refusal = "";
+  try {
+    const r = await hubFetch("/api/site/designs");
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok || !j || j.ok === false) refusal = (j && j.error) || ("HTTP " + r.status);
+    else data = j.data;
+  } catch (e) {
+    refusal = "the hub did not answer: " + orbWaitWords(e);
+  }
+  // A newer read is already drawing this same list; this reply is the past.
+  if (seq !== siteDesignsSeq) return;
+  if (refusal) {
+    if (refusal === "disconnected from orb-os.net") {
+      drawSiteLink({ state: "disconnected" });
+      const conn = $("#mn-site-conn");
+      if (conn) conn.textContent = "disconnected from orb-os.net";
+      return;
+    }
+    const li = document.createElement("li");
+    li.className = "hint";
+    li.textContent = "\u2717 the designs could not be read: " + refusal;
+    ul.appendChild(li);
+    return;
+  }
+  const designs = (data && Array.isArray(data.designs)) ? data.designs : [];
+  if (!designs.length) {
+    const li = document.createElement("li");
+    li.className = "hint";
+    li.textContent = "Nothing saved on orb-os.net yet.";
+    ul.appendChild(li);
+    return;
+  }
+  for (const d of designs) ul.appendChild(siteDesignRow(d));
+}
+
+// siteDesignRow builds one row of the My orb-os.net list through the DOM, the way the shelf
+// rows are built: the design's name is bytes off the site and only ever lands in textContent,
+// never in markup. Each row names the app and version it is, carries a private/unlisted hint
+// word so a person sees why it is not public, and offers an Import button.
+function siteDesignRow(d) {
+  const li = document.createElement("li");
+  li.className = "trow";
+  const info = document.createElement("div");
+  info.className = "tinfo";
+  const name = document.createElement("b");
+  name.textContent = (d && d.name) ? String(d.name) : "(untitled)";
+  const tags = document.createElement("div");
+  tags.className = "ttags";
+  const tag = (text, cls, tip) => {
+    const el = document.createElement("span");
+    el.className = "tag" + (cls ? " " + cls : "");
+    el.textContent = text;
+    if (tip) el.title = tip;
+    tags.appendChild(el);
+  };
+  const app = (d && d.app) ? String(d.app) : "";
+  const ver = (d && d.version != null) ? ("v" + d.version) : "";
+  // The site's row is a design's app and version; either can be absent, and the two join
+  // with a separator rather than a run-on, so a clock at seven and a timer with no version
+  // never collide into "timerunknown". A design with neither word reads just "unknown".
+  let label, note;
+  if (app && ver) { label = app + " \u00b7 " + ver; note = "A " + app + " design at " + ver; }
+  else if (app) { label = app + " \u00b7 no version"; note = "A " + app + " design"; }
+  else if (ver) { label = "no app \u00b7 " + ver; note = "A design at " + ver; }
+  else { label = "unknown"; note = "A design whose app is not named"; }
+  tag(label, "mut", note);
+  const vis = (d && d.visibility) ? String(d.visibility) : "";
+  if (vis === "private" || vis === "unlisted") tag(vis, "mut", "Only you" + (vis === "unlisted" ? " (anyone with the link)" : "") + " can see this design on orb-os.net");
+  info.append(name, tags);
+  li.appendChild(info);
+  const actions = document.createElement("div");
+  actions.className = "acts";
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = "ghost";
+  btn.textContent = "Import";
+  btn.onclick = () => { siteDesignImport(btn, String((d && d.id) || "")); };
+  actions.appendChild(btn);
+  li.appendChild(actions);
+  return li;
+}
+
+// siteDesignImport presses the designId door for one row. It is the same siteImportPending
+// claim the paste door uses (one import owns the hub at a time), the same fetch against
+// /api/site/import — this time carrying {designId} instead of {link} — and the same tail
+// (finishSiteImport) that decides whether the app can be baked and opens the editor. The
+// button disables itself on press so a second click cannot fetch a second ticket.
+async function siteDesignImport(btn, designId) {
+  if (siteImportPending) return;
+  if (!designId) return;
+  siteImportPending = true;
+  btn.disabled = true;
+  const st = $("#mn-site-state");
+  if (st) st.textContent = "fetching the theme\u2026";
+  let data = null, refusal = "";
+  try {
+    const r = await hubFetch("/api/site/import", {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ designId: designId }),
+    });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok || j.ok === false) refusal = j.error || ("HTTP " + r.status);
+    else data = j.data;
+  } catch (e) {
+    refusal = "the hub did not answer: " + orbWaitWords(e);
+  }
+  if (refusal) {
+    if (st) st.textContent = "\u2717 " + refusal;
+    siteImportPending = false;
+    btn.disabled = false;
+    return;
+  }
+  await finishSiteImport(data);
+  // finishSiteImport frees the door itself on any refusal; if it opened the editor the
+  // import is in flight and the row is replaced on the next redraw, so only a spent door
+  // puts this button back up.
+  if (!siteImportPending) btn.disabled = false;
+}
+
+// siteConnectPress asks the hub to start a connect. The hub opens the browser and hands back
+// the same URL; this shows it as the fallback link the lead review asks for (a browser that
+// stayed shut is not this press's failure) and starts the wait. The hub's own printed link,
+// if any, is what the person is told to open.
+async function siteConnectPress() {
+  const st = $("#mn-site-conn");
+  let url = "", refusal = "";
+  try {
+    const r = await hubFetch("/api/site/connect", { method: "POST" });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok || !j || j.ok === false) refusal = (j && j.error) || ("HTTP " + r.status);
+    else url = (j.data && j.data.url) ? String(j.data.url) : "";
+  } catch (e) {
+    refusal = "the hub did not answer: " + orbWaitWords(e);
+  }
+  if (refusal) {
+    if (st) st.textContent = "\u2717 " + refusal;
+    return;
+  }
+  siteConnectUrl = url;
+  if (st) {
+    st.textContent = "open the link the hub printed if your browser stayed shut";
+    appendSiteFallback(st, url);
+  }
+  startSiteLinkPoll();
+}
+
+// siteDisconnectPress ends the link through the hub's disconnect door and redraws the
+// section unlinked. The hub tells the site first (best effort) and then forgets the token,
+// so after this press the page must not keep a linked view standing for one more second.
+async function siteDisconnectPress() {
+  const disc = $("#mn-site-disconnect"), st = $("#mn-site-state");
+  if (disc) disc.disabled = true;
+  let refusal = "";
+  try {
+    const r = await hubFetch("/api/site/disconnect", { method: "POST" });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok || !j || j.ok === false) refusal = (j && j.error) || ("HTTP " + r.status);
+  } catch (e) {
+    refusal = "the hub did not answer: " + orbWaitWords(e);
+  }
+  if (disc) disc.disabled = false;
+  if (refusal) {
+    if (st) st.textContent = "\u2717 could not disconnect: " + refusal;
+    return;
+  }
+  stopSiteLinkPoll();
+  if (st) st.textContent = "disconnected from orb-os.net";
+  loadSiteLink();
 }
 function watchSendState(ip, st, f) {
   stopSendWatch();
@@ -5939,6 +6277,7 @@ refreshPorts();
 refreshBuild();
 watchOrbs();
 loadLibThemes();
+siteLinkWire();
 setInterval(() => { refreshPorts(); }, 5000);
 
 // The Close button is the frame's only chrome. An editor that wants to be dismissed

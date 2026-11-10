@@ -381,30 +381,30 @@ func TestSiteImportRefusesArtOutsideTheLimits(t *testing.T) {
 			map[string]string{sha: base64.StdEncoding.EncodeToString(body)})
 	}
 	sidecar(map[string]any{"prefix": "data:image/png;base64"}, pngArt(2000, 17, 7))
-	if got, want := importErr(t, s, siteLink(srv, siteDesignID)), size(2000, 17); !strings.HasSuffix(got, want) ||
+	if got, want := importErr(t, s, siteTestLink(srv, siteDesignID)), size(2000, 17); !strings.HasSuffix(got, want) ||
 		!strings.HasPrefix(got, "the theme from "+siteHostOf(srv)+" can't be imported: ") {
 		t.Errorf("oversized sidecar art: error = %q, want the size sentence", got)
 	}
 	sidecar(map[string]any{"prefix": "data:image/png;base64"}, []byte("not an image at all, and long enough"))
-	if got := importErr(t, s, siteLink(srv, siteDesignID)); !strings.HasSuffix(got, artRefusalUnreadable) {
+	if got := importErr(t, s, siteTestLink(srv, siteDesignID)); !strings.HasSuffix(got, artRefusalUnreadable) {
 		t.Errorf("unreadable sidecar art: error = %q", got)
 	}
 	sidecar(map[string]any{"mimetype": "image/png"}, pngArt(4, 4, 1))
-	if got := importErr(t, s, siteLink(srv, siteDesignID)); !strings.HasSuffix(got, artRefusalType) {
+	if got := importErr(t, s, siteTestLink(srv, siteDesignID)); !strings.HasSuffix(got, artRefusalType) {
 		t.Errorf("sidecar row with no prefix: error = %q", got)
 	}
 	set(map[string]any{"format": "wc-design", "icon": "data:image/svg+xml,<svg/>"}, nil)
-	if got := importErr(t, s, siteLink(srv, siteDesignID)); !strings.HasSuffix(got, artRefusalType) {
+	if got := importErr(t, s, siteTestLink(srv, siteDesignID)); !strings.HasSuffix(got, artRefusalType) {
 		t.Errorf("inline svg: error = %q", got)
 	}
 	set(map[string]any{"format": "wc-design", "icon": "data:image/png;base64,not base64 !!"}, nil)
-	if got := importErr(t, s, siteLink(srv, siteDesignID)); !strings.HasSuffix(got, artRefusalUnreadable) {
+	if got := importErr(t, s, siteTestLink(srv, siteDesignID)); !strings.HasSuffix(got, artRefusalUnreadable) {
 		t.Errorf("inline art that is not base64: error = %q", got)
 	}
 	set(map[string]any{"format": "wc-design",
 		"parts": []any{map[string]any{"fill": "data:image/png;base64," +
 			base64.StdEncoding.EncodeToString(pngArt(4000, 4000, 9))}}}, nil)
-	if got, want := importErr(t, s, siteLink(srv, siteDesignID)), size(4000, 4000); !strings.HasSuffix(got, want) {
+	if got, want := importErr(t, s, siteTestLink(srv, siteDesignID)), size(4000, 4000); !strings.HasSuffix(got, want) {
 		t.Errorf("inline oversized art: error = %q, want the size sentence", got)
 	}
 }
@@ -424,7 +424,7 @@ func TestSiteImportPassesArtItHasNoOpinionAbout(t *testing.T) {
 			"assets": nil,
 		}))
 	})
-	tk := ticketOf(t, siteImport(t, s, siteLink(srv, siteDesignID)))
+	tk := ticketOf(t, siteImport(t, s, siteTestLink(srv, siteDesignID)))
 	if tk == "" {
 		t.Fatal("no ticket")
 	}
@@ -437,7 +437,7 @@ func TestSiteImportKeepsArtExactlyAtTheBound(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write(goodBundle(t, siteDesignID, 3, "clock", "Skeleton by @greg", pngArt(1024, 1024, 3)))
 	})
-	ticketOf(t, siteImport(t, s, siteLink(srv, siteDesignID)))
+	ticketOf(t, siteImport(t, s, siteTestLink(srv, siteDesignID)))
 }
 
 // The update check asks the same gate the import does: an origin sidecar naming another
@@ -538,7 +538,7 @@ func TestCheckSharedNameRefusalIsNotDamage(t *testing.T) {
 		_, _ = w.Write(goodBundle(t, siteDesignID, 2, "clock", "Big—Sub by @greg"))
 	})
 	s, _, _ := libHub(t)
-	got := importErr(t, s, siteLink(srv, siteDesignID))
+	got := importErr(t, s, siteTestLink(srv, siteDesignID))
 	if !strings.HasPrefix(got, "the theme from "+siteHostOf(srv)+" can't be imported: ") {
 		t.Errorf("shared-name refusal = %q; want the can't-be-imported wrapper", got)
 	}

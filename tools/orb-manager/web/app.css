@@ -415,6 +415,19 @@ button.upd:hover{border-color:#fff}
    column would make the implicit second one and draw every name flush right. */
 #mn-lib-list li.trow{grid-template-columns:minmax(0,1fr)}
 #mn-lib-list li.trow>.tinfo{grid-column:1}
+/* H2 step 3: My orb-os.net. The connect block and the design list stand INSIDE the horizontal
+   #mn-site-row toolbar, so a shut hub's row-hiding puts them away with it — which also means each
+   has to be told to claim its own full-width line instead of flex-squishing beside the paste box.
+   .row does not wrap on its own, so the row is wrapped here and the two blocks made to break. */
+#mn-site-row{flex-wrap:wrap}
+#mn-site-connect-block{flex:1 1 100%;display:inline-flex;gap:10px;align-items:center}
+#mn-site-designs-block{flex:1 1 100%;display:block}
+#mn-site-connect-block[hidden],#mn-site-designs-block[hidden]{display:none}
+/* A design row carries no preview cell, so the shared three-column .trow grid would spend an empty
+   44px on one and strand its Import button over the name. Two columns: name and tags left, Import right. */
+#mn-site-designs li.trow{grid-template-columns:minmax(0,1fr) auto}
+#mn-site-designs li.trow>.tinfo{grid-column:1}
+#mn-site-designs li.trow>.acts{grid-column:2}
 /* §59: the app list is the carousel (owner, 2026-11-08): a grip to drag by, the rotation's
    checkbox while rotation is on, then the row as before. Rows off the dial keep both cells,
    empty, so the columns line up down the list. */

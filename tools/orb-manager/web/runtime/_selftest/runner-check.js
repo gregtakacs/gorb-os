@@ -252,7 +252,7 @@ const why = (r) => (r && r.why) || '';
     ok(HUB_SEEN.length === 0, '11 no run reached /api/', HUB_SEEN.join(' '));
   });
 
-  fs.rmSync(TMP, { recursive: true, force: true });
+  try { fs.rmSync(TMP, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }); } catch (e) { /* left in tmp */ }
   console.log(fails ? fails + ' FAILED' : 'all green (' + checked + ' checks)');
   process.exit(fails ? 1 : 0);
 })().catch((e) => { console.log('FAIL threw: ' + ((e && e.stack) || e)); process.exit(1); });

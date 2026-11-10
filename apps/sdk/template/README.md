@@ -28,6 +28,7 @@ You can also import `build/@SLUG@.orbapp` in Orb Manager: open **Apps**, then
 | `version.txt` | this app's release, `vMAJOR.MINOR.PATCH`; bump it whenever the bytes change |
 | `sdk.txt` | the gorb-os release whose SDK this app builds against |
 | `*.c` | the sources; every `.c` file here is compiled |
+| `editor/_fixtures/` | only once the app has a theme editor: one design per past schema, see apps/README.md |
 
 The SDK's `orb.h` documents every call the OS offers. The SDK guide is
 [apps/README.md](https://github.com/gregtakacs/gorb-os/blob/main/apps/README.md) in gorb-os.
@@ -35,4 +36,5 @@ The SDK's `orb.h` documents every call the OS offers. The SDK guide is
 ## Release
 
 Tag a commit with the version in `version.txt` (`git tag v0.1.0 && git push --tags`).
-The workflow builds the app and attaches the `.orbapp` to a GitHub release.
+The workflow checks the migrations of every design in `editor/_fixtures/` before it packs,
+and attaches the `.orbapp` to a GitHub release.

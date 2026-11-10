@@ -16,6 +16,9 @@ refused here rather than on the dial.
     orbsdk.py binds [--write]                    in a gorb-os clone: check (or rewrite)
                                                  binds.json against the firmware
     orbsdk.py dist [-o DIR]                      in a gorb-os clone: write the SDK tarball
+    orbsdk.py check-migrations [<appdir>...] [--runtime DIR] [--chrome PATH] [--save-current]
+                                                 open each app's schema fixtures in its packed
+                                                 editor (needs Node and Chromium, or save one)
 
 The same file runs in two places. In a gorb-os clone it is apps/sdk/orbsdk.py, it finds
 the container writer at tools/orbapp.py, and every build also checks binds.json and
@@ -396,8 +399,10 @@ def build(appdir, out_dir=None):
 # the directory's top-level files in name order, the fixed date and mode, read back
 # before it ships. Subdirectories (an editor's _selftest/) and dotfiles stay home. One member
 # is written here: orb-app.js, `window.__ORB_APP = {slug, version}`, the release the
-# theme@1 session stamps into every design (the clock's region sets the same).
-EDITOR_KEYS = {"baker", "editor", "entry", "host", "module", "runtime"}
+# theme@1 session stamps into every design (the clock's region sets the same), plus its
+# `schema` when editor.json names the design schema the editor reads (design §6.5 point 1,
+# so the session can refuse to start against an editor.json that disagrees with it).
+EDITOR_KEYS = {"baker", "editor", "entry", "host", "module", "runtime", "schema"}
 RUNTIME_ID = re.compile(r"^[a-z][a-z0-9_-]*@[0-9][0-9.]*$")
 ZIP_DATE = (1980, 1, 1, 0, 0, 0)
 
@@ -409,6 +414,74 @@ def editor_dir(appdir, m):
         return None
     d = os.path.join(appdir, e)
     return d if os.path.isdir(d) else None
+
+
+def editor_schema(ej, slug):
+    """editor.json's `schema`: the design schema the editor reads (design §6.5 point 1).
+    The int, or None when the editor names none and that is allowed — an editor with no
+    design document may leave it out. A standalone (entry) editor listing theme@1 drives a
+    session itself and must not; a hosted editor's page and session are Orb Manager's, its
+    schema is checked against the running editor at start (theme@1 §6.5 point 1), so it may
+    carry no design document and name none (radar)."""
+    if "schema" in ej:
+        schema = ej["schema"]
+        if isinstance(schema, bool) or not isinstance(schema, int) or schema < 1:
+            fail("editor.json's schema is the design schema the editor reads, a whole number from 1, not %r" % (schema,))
+        return schema
+    if "host" not in ej and "theme@1" in (ej.get("runtime") or []):
+        fail("%s's editor lists theme@1, so its editor.json must name the design schema it reads (\"schema\": 1 for a first release)" % slug)
+    return None
+
+
+# The app keeps one sample design per past schema (design §6.5 point 4), in a folder of
+# its editor's like the _selftest/ beside it: the fixtures stay out of the container, and
+# check-migrations is what runs them.
+FIXTURES = "_fixtures"
+
+
+def fixture_name(n):
+    return "schema-%d.orbdesign" % n
+
+
+def tree_region_builder(key):
+    """The clone's region-builder module an in-tree editor key names (the clock's), or None
+    when the key names no builder (a tarball has no tools/, and answers None for all)."""
+    if not isinstance(key, str) or not re.match(r"^[a-z0-9_]+$", key):
+        return None
+    p = os.path.join(ROOT, "tools", "make_%s_region.py" % key)
+    if not os.path.isfile(p):
+        return None
+    spec = importlib.util.spec_from_file_location("make_%s_region" % key, p)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def fixtures_dir(appdir, m):
+    """Where the app keeps its schema fixtures: its editor's _fixtures, for an app whose
+    app.json names an editor, else None."""
+    d = editor_dir(appdir, m)
+    if d:
+        return os.path.join(d, FIXTURES)
+    if tree_region_builder(m.get("editor")):
+        return os.path.join(appdir, "editor", FIXTURES)      # a tree-built editor (the clock's)
+    return None
+
+
+def schema_fixture_rule(slug, schema, fdir):
+    """An editor reading schema N > 1 must hold the fixture of schema N-1: the previous
+    release's designs migrate from it, and only check-migrations proves they still open
+    (design §6.5 point 4, ruling 21). Refused at build, not discovered on an orb."""
+    if not schema or schema <= 1 or fdir is None:
+        return
+    want = fixture_name(schema - 1)
+    if os.path.isfile(os.path.join(fdir, want)):
+        return
+    rel = os.path.relpath(os.path.join(fdir, want), os.path.dirname(os.path.dirname(fdir)))
+    fail("%s's editor reads design schema %d, so %s must keep a design of schema %d: the "
+         "previous release's designs migrate from it, and check-migrations proves they still "
+         "open. Save one with that release (orbsdk.py check-migrations --save-current, run "
+         "before raising schema) and commit it" % (slug, schema, rel, schema - 1))
 
 
 def editor_region(appdir, m, release):
@@ -425,11 +498,13 @@ def editor_region(appdir, m, release):
     except (OSError, ValueError) as e:
         fail("%s's editor has no readable editor.json (%s)" % (m["slug"], e))
     if not isinstance(ej, dict) or set(ej) - EDITOR_KEYS:
-        fail("editor.json carries %s; it names entry or host and module, runtime, editor and baker"
+        fail("editor.json carries %s; it names entry or host and module, runtime, schema, editor and baker"
              % ", ".join(sorted(set(ej) - EDITOR_KEYS)) if isinstance(ej, dict) else "editor.json is not an object")
     runtime = ej.get("runtime", [])
     if not isinstance(runtime, list) or not all(isinstance(r, str) and RUNTIME_ID.match(r) for r in runtime):
         fail("editor.json's runtime lists ids like theme@1, not %r" % (runtime,))
+    schema = editor_schema(ej, m["slug"])
+    schema_fixture_rule(m["slug"], schema, fixtures_dir(appdir, m))
     files = sorted(n for n in os.listdir(d)
                    if not n.startswith(".") and n != "editor.json" and os.path.isfile(os.path.join(d, n)))
     if "host" in ej:
@@ -461,6 +536,8 @@ def editor_region(appdir, m, release):
         fail("%s's editor carries orb-app.js, which the SDK writes" % m["slug"])
     members = [("editor.json", json.dumps(ej, sort_keys=True, separators=(",", ":")).encode())]
     st = {"slug": m["slug"], "version": release}
+    if schema is not None:
+        st["schema"] = schema
     if m.get("os_min"):
         st["os_min"] = m["os_min"]
     stamp = ("window.__ORB_APP = %s;\n" % json.dumps(st, sort_keys=True)).encode()
@@ -576,6 +653,11 @@ def cmd_new(a):
 
 def cmd_build(a):
     for d in a.appdir or ["."]:
+        m = manifest(d)
+        # the region first: a schema/fixture refusal needs no clang, and the editor
+        # checks outrank the compile (container keeps the same order for pack and install)
+        if editor_dir(d, m):
+            editor_region(d, m, version(d))
         wasm, imp, mem = build(d)
         print("%-14s %7d B code, %3d KB memory, %2d imports: %s"
               % (manifest(d)["slug"], len(wasm), mem // 1024, len(imp), " ".join(imp)))
@@ -621,8 +703,103 @@ def cmd_binds(a):
     print("binds.json matches the firmware (%d imports)" % len(firmware_binds()))
 
 
+# ---- check-migrations (design §6.5 point 4) ------------------------------------------
+
+FIXTURE_RE = re.compile(r"^schema-(\d+)\.orbdesign$")
+
+
+def _fixtures_to_run(slug, schema, fdir):
+    """The fixture names to run, in schema order. A stray file, a fixture newer than the
+    editor, or a past schema without one of its own is refused here, before anything
+    reaches node: the folder is the app's promise of one design per past schema."""
+    names = sorted(n for n in os.listdir(fdir) if os.path.isfile(os.path.join(fdir, n))) \
+        if os.path.isdir(fdir) else []
+    have = []
+    for n in names:
+        found = FIXTURE_RE.match(n)
+        if not found:
+            fail("%s: %s in _fixtures is not named schema-<n>.orbdesign" % (slug, n))
+        if int(found.group(1)) > schema:
+            fail("%s: %s is newer than the schema this editor reads (%d)" % (slug, n, schema))
+        have.append(int(found.group(1)))
+    for k in range(1, schema):
+        if k not in have:
+            fail("%s: no fixture for schema %d: check-migrations keeps one design per past schema"
+                 % (slug, k))
+    return [fixture_name(k) for k in sorted(have)]
+
+
+def _run_migrate(a, node, runtime, editor_tmp, extra):
+    cmd = [node, os.path.join(runtime, "_runner", "migrate.js"),
+           "--runtime", runtime, "--editor", editor_tmp]
+    if a.chrome:
+        cmd += ["--chrome", a.chrome]
+    cmd += list(extra)
+    return subprocess.run(cmd).returncode
+
+
+def cmd_check_migrations(a):
+    """Open each app's schema fixtures in its packed editor, through the migration runner.
+    Answers 0 only when every app passed; an app with no editor, or an editor with no
+    design schema, has nothing to migrate."""
+    node = os.environ.get("ORB_NODE") or "node"
+    runtime = a.runtime or (os.path.join(ROOT, "tools", "orb-manager", "web", "runtime")
+                            if IN_TREE else os.path.join(SDK, "runtime"))
+    for d in a.appdir or ["."]:
+        m = manifest(d)
+        slug = m["slug"]
+        if editor_dir(d, m):
+            region = editor_region(d, m, version(d))
+        else:
+            builder = tree_region_builder(m.get("editor"))
+            if builder:
+                region = builder.make_region()
+            elif m.get("editor"):
+                fail("%s declares an editor, which only tools/make_factory_apps.py builds "
+                     "(inside a gorb-os clone)" % slug)
+            else:
+                print("%s: no editor, nothing to migrate" % slug)
+                continue
+        import io
+        import zipfile
+        with tempfile.TemporaryDirectory() as td:
+            ed = os.path.join(td, "editor")
+            os.makedirs(ed)
+            zipfile.ZipFile(io.BytesIO(region)).extractall(ed)
+            with open(os.path.join(ed, "editor.json"), encoding="utf-8") as f:
+                ej = json.load(f)
+            schema = editor_schema(ej, slug)
+            if schema is None:
+                print("%s: its editor names no design schema, nothing to migrate" % slug)
+                continue
+            fdir = fixtures_dir(d, m)
+            if a.save_current:
+                target = os.path.join(fdir, fixture_name(schema))
+                if os.path.exists(target):
+                    fail("%s: %s exists: a fixture is the design that release wrote, keep it"
+                         % (slug, os.path.relpath(target, d)))
+                os.makedirs(fdir, exist_ok=True)
+                if _run_migrate(a, node, runtime, ed, ["--save-current", target]):
+                    fail("%s: the packed editor gave up no current design: see the runner "
+                         "output above" % slug)
+                continue
+            fixtures = _fixtures_to_run(slug, schema, fdir)
+            if not fixtures:
+                print("%s: schema 1 and no fixtures, nothing to migrate yet" % slug)
+                continue
+            if not shutil.which(node):
+                fail("check-migrations runs the editor in Node and Chromium: install Node 18+ "
+                     "and Chromium, or set ORB_NODE")
+            if not os.path.isfile(os.path.join(runtime, "_runner", "migrate.js")):
+                fail("no migration runner at %s: pass --runtime an editor runtime" % runtime)
+            if _run_migrate(a, node, runtime, ed, [os.path.join(fdir, n) for n in fixtures]):
+                fail("%s: a past design no longer opens in this editor" % slug)
+    return 0
+
+
 # What an SDK tarball carries, relative to this directory (plus orbapp.py, VERSION,
-# README.md and LICENSE from the clone). Everything else here is the clone's own.
+# README.md, LICENSE and the editor runtime as runtime/, from the clone). Everything
+# else here is the clone's own.
 DIST_FILES = ("orbsdk.py", "binds.json", "orb.h", "orb_stage.h", "orb_dial.h", "clk_types.h", "orb_rt.c")
 DIST_DIRS = ("libc", "template")
 
@@ -646,6 +823,17 @@ def cmd_dist(a):
     members += [("orbapp.py", os.path.join(ROOT, "tools", "orbapp.py")),
                 ("README.md", os.path.join(ROOT, "apps", "README.md")),
                 ("LICENSE", os.path.join(ROOT, "LICENSE"))]
+    # check-migrations runs its runner from the tarball (design §6.5 point 4), so the editor
+    # runtime rides as runtime/. The _selftest lane stays home, as it does from the hub's
+    # embed: it is the clone's own, and the runner is not a runtime id.
+    rt = os.path.join(ROOT, "tools", "orb-manager", "web", "runtime")
+    if not os.path.isdir(rt):
+        fail("dist needs tools/orb-manager/web/runtime to carry the migration runner")
+    for root_, dirs, files_ in os.walk(rt):
+        dirs[:] = sorted(x for x in dirs if x not in ("_selftest", "__pycache__"))
+        for f_ in sorted(files_):
+            full = os.path.join(root_, f_)
+            members.append((os.path.join("runtime", os.path.relpath(full, rt)), full))
     # Deterministic: sorted names, fixed owner and mtime, no gzip timestamp.
     raw = io.BytesIO()
     with tarfile.open(fileobj=raw, mode="w", format=tarfile.USTAR_FORMAT) as tf:
@@ -664,7 +852,8 @@ def cmd_dist(a):
     with open(path, "wb") as f:
         with gzip.GzipFile(fileobj=f, mode="wb", mtime=0, filename="") as gz:
             gz.write(raw.getvalue())
-    print("wrote %s (%d files)" % (path, len(members) + 1))
+    print("wrote %s (%d files, %d KB)"
+          % (path, len(members) + 1, os.path.getsize(path) // 1024))
 
 
 def main(argv=None):
@@ -687,6 +876,17 @@ def main(argv=None):
     s.add_argument("--write", action="store_true"); s.set_defaults(fn=cmd_binds)
     s = sub.add_parser("dist", help="write orb-sdk-<version>.tar.gz (clone only)")
     s.add_argument("-o", "--out"); s.set_defaults(fn=cmd_dist)
+    s = sub.add_parser("check-migrations",
+                       help="open each app's schema fixtures in its packed editor")
+    s.add_argument("appdir", nargs="*")
+    s.add_argument("--runtime", help="the editor runtime holding _runner/ (default: this "
+                                     "clone's, or the tarball's own runtime/)")
+    s.add_argument("--chrome", help="the Chromium to open the editors with (else $CHROME, "
+                                    "else a name on PATH)")
+    s.add_argument("--save-current", action="store_true",
+                   help="write the packed editor's own design as this schema's fixture "
+                        "instead of checking")
+    s.set_defaults(fn=cmd_check_migrations)
     a = p.parse_args(argv)
     a.fn(a)
     return 0

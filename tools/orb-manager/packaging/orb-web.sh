@@ -6,9 +6,11 @@
 #
 # It builds <out dir>/orb-web-<version>.tar.gz, one top folder with runtime/ (laid out by
 # the binary's own export-runtime, so the release's Linux build decides the runtime the
-# release's editors run against), apps/ (every shelf .orbapp) and contract/ (the hub's
-# editor API fixture, which the site replays), plus version.txt. A site unpacks it, runs
-# `orb-manager extract-editors` over apps/ and serves the editors beside that runtime.
+# release's editors run against), runner/ (the migration runner, which the site drives
+# with --runtime runtime/; export-runtime leaves it out, as _runner is not a runtime id),
+# apps/ (every shelf .orbapp) and contract/ (the hub's editor API fixture, which the
+# site replays), plus version.txt. A site unpacks it, runs `orb-manager extract-editors`
+# over apps/ and serves the editors beside that runtime.
 #
 # The archive is reproducible: sorted names, one fixed mtime, root owner, one mode set,
 # gzip -n. Two runs on the same tree give the same bytes, so a sha256 in a release's
@@ -31,12 +33,15 @@ if [ -f "$file" ]; then die "$file already exists: remove it to rebuild it"; fi
 stage=$(mktemp -d)
 trap 'rm -rf "$stage"' EXIT INT TERM
 root="$stage/$name"
-mkdir -p "$root/runtime" "$root/apps" "$root/contract"
+mkdir -p "$root/runtime" "$root/runner" "$root/apps" "$root/contract"
 
 set -- "$pkg"/apps/*.orbapp
 [ -f "$1" ] || die "no .orbapp files in $pkg/apps — run make apps first"
 cp "$@" "$root/apps/"
 "$bin" export-runtime "$root/runtime" >/dev/null
+# the migration runner rides beside the runtime it serves itself: the site's migration
+# check runs runner/migrate.js with --runtime runtime/, on this release's own runtime bytes
+cp -R "$pkg/web/runtime/_runner/." "$root/runner/"
 cp -R "$pkg/contract/." "$root/contract/"
 printf '%s\n' "$ver" > "$root/version.txt"
 

@@ -46,10 +46,29 @@ my_app/
 | `period_ms` | the fastest beat the app may ask for, at least 1000. Leave it out and the app never ticks |
 | `memory_kb` | the module's linear memory, 64 (default) or 128 |
 | `shelf` | in this repo only: `true` puts the app on the hub's shelf; `false` builds and checks it but keeps it off |
-| `editor` | the app's theme editor: names a folder of the app (`"editor": "editor"`) holding `editor.json` (`entry`, and the `runtime` ids it needs) and the editor's files. `orbsdk.py` packs that folder into the container's editor region, which Orb Manager opens from the Themes page (the clock's region is built by `tools/make_clock_region.py`) |
+| `editor` | the app's theme editor: names a folder of the app (`"editor": "editor"`) holding `editor.json` (`entry`, the `runtime` ids it needs, and `schema` — the design schema the editor reads, required when it lists `theme@1`) and the editor's files. `orbsdk.py` packs that folder into the container's editor region, which Orb Manager opens from the Themes page (the clock's region is built by `tools/make_clock_region.py`) |
 
 Kind, serial and the header's version all come from the SDK and `version.txt`, so
 there is nothing else to declare.
+
+## Theme designs, schemas and migrations
+
+A theme starts as a design document the app's editor writes: an envelope naming the app,
+the release that saved it and the schema it holds, and the art inside (a `.orbdesign`
+file is exactly that, with its art). `editor.json`'s `schema` must equal the schema the
+editor itself reads — the session refuses to start otherwise — and a design opens in any
+editor of the same schema, whichever release saved it: only a design from a *newer*
+schema is refused (ruling 21). So any change to what a design holds raises the schema by
+one and adds one pure step `n → n+1` to the editor's migrations, and the latest editor
+carries every past design forward.
+
+Each app keeps one sample design per past schema, in `editor/_fixtures/schema-<n>.orbdesign`
+(it stays out of the container, like `_selftest/` beside it). Before raising `schema`, save
+the current design with `orbsdk.py check-migrations --save-current` and commit it; the
+build refuses a raised schema with no fixture of the one before. `orbsdk.py
+check-migrations` runs the OS's migration runner over the fixtures in the app's own packed
+editor (it needs Node and Chromium), so deleting a migration step fails the check, and the
+template's CI workflow runs it before packing.
 
 ## The SDK
 

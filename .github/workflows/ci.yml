@@ -37,6 +37,7 @@ jobs:
           mkdir -p /tmp/sdk && tar -xzf build/orb-sdk-$v.tar.gz -C /tmp/sdk
           cd /tmp && python3 /tmp/sdk/orb-sdk-$v/orbsdk.py new hello
           cd hello && make SDK=/tmp/sdk/orb-sdk-$v
+          make check-migrations SDK=/tmp/sdk/orb-sdk-$v
           python3 /tmp/sdk/orb-sdk-$v/orbsdk.py inspect build/hello.orbapp
 
   hub:
@@ -61,6 +62,10 @@ jobs:
       - name: Toolchain
         run: sudo apt-get update && sudo apt-get install -y python3-pil python3-numpy
       - run: make check-editor
+      # The runner image carries Chrome (google-chrome on PATH, which both suites' own
+      # search answers), so no CHROME is set here.
+      - name: Migrations and runner
+        run: make check-runner check-migrations
 
   # The firmware build and the host suites share one job, because the suites need what
   # only a configured firmware tree has: build/config/sdkconfig.h (host_idle_dim pins the

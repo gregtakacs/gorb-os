@@ -15,6 +15,10 @@ jobs:
       - uses: actions/checkout@v7
       - name: Toolchain
         run: sudo apt-get update && sudo apt-get install -y clang lld
+      # Every past design schema's sample (editor/_fixtures/) must still open in this
+      # editor; an app with no editor passes. Node and Chrome come with the runner image.
+      - name: Migrations
+        run: make check-migrations
       - name: Build
         run: make pack
       - uses: actions/upload-artifact@v7

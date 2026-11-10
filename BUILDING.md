@@ -50,8 +50,11 @@ node suites. Two host suites read a configured firmware tree, so run `idf.py bui
 first. CI runs the same targets on every pull request. Each piece runs on its own
 too: `make check-host`, `check-apps`, `check-hub`, `check-editor`.
 
-`check-web` is the fifth and is deliberately not in `check`: it builds the release file and
-opens its editors in headless Chromium, so it needs a browser and a built hub.
+`check-web`, `check-runner` and `check-migrations` are deliberately not in `check`: they
+open editors (the release file's, a scratch one, each app's schema fixtures) in headless
+Chromium, so they need a browser and a few minutes. `check-migrations` is
+`orbsdk.py check-migrations` over every app in `apps/`, which needs Node 18+; apps/README.md
+§ Theme designs, schemas and migrations says what it checks.
 
 ## The hub
 
@@ -74,6 +77,7 @@ architecture, flags and endpoints.
 make apps                                 # re-bake the shelf into tools/orb-manager/apps/
 python3 apps/sdk/orbsdk.py build apps/flights    # compile one app, no packing
 python3 apps/sdk/orbsdk.py install apps/flights --orb 192.168.1.50
+make check-migrations                     # every app's schema fixtures, opened in its packed editor
 ```
 
 An app's bytes are tied to its stamp. If a change alters an app's container, bump

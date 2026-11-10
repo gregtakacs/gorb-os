@@ -12,11 +12,13 @@
 #   make dist           the hub's release archives (unsigned), into tools/orb-manager/bin/dist/
 #   make web            the release's web file, into tools/orb-manager/bin/web/ (design §6.1)
 #   make check-web      open the shipped editors in headless Chromium: needs Go, Chromium, minutes
+#   make check-runner   the migration runner against a scratch editor: needs Chromium
+#   make check-migrations  each app's schema fixtures, opened in its packed editor: needs Node and Chromium
 
 PYTHON ?= python3
 NODE   ?= $(shell command -v node 2>/dev/null || ls $$HOME/.local/share/nodeenv-gorb/bin/node 2>/dev/null)
 
-.PHONY: check check-host check-apps check-hub check-editor check-web firmware apps hub sdk dist web
+.PHONY: check check-host check-apps check-hub check-editor check-web check-runner check-migrations firmware apps hub sdk dist web
 
 check: check-host check-apps check-hub check-editor
 	@echo 'check: host suites, apps, hub and editor all green'
@@ -72,6 +74,19 @@ check-web: web
 	  tools/orb-manager/bin/orb-manager extract-editors "$$root/apps" "$$tmp/editors" && \
 	    $(NODE) tools/orb-manager/web/runtime/_selftest/editors-smoke.js --runtime "$$root/runtime" --editors "$$tmp/editors"; \
 	  rc=$$?; rm -rf "$$tmp"; exit $$rc
+
+## check-runner: the migration runner, checked against a scratch editor in headless Chromium.
+## Deliberately NOT part of `check`, like check-web: it needs a Chromium on PATH.
+check-runner:
+	@test -n "$(NODE)" || { echo 'no node on PATH (see BUILDING.md: the editor suites need node 20+)'; exit 1; }
+	$(NODE) tools/orb-manager/web/runtime/_selftest/runner-check.js
+
+## check-migrations: every app's schema fixtures (editor/_fixtures/), opened in that app's
+## packed editor by the migration runner (design §6.5 point 4). Deliberately NOT part of
+## `check`, like check-web: it needs Node and Chromium. Apps with no editor, and editors
+## with no design schema, say so and pass.
+check-migrations:
+	$(PYTHON) apps/sdk/orbsdk.py check-migrations $(sort $(dir $(wildcard apps/*/app.json)))
 
 firmware:
 	idf.py build

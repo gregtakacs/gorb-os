@@ -46,7 +46,7 @@ def app(files, editor="editor", ej=None):
         for n, b in files.items():
             open(os.path.join(e, n), "wb").write(b)
         open(os.path.join(e, "editor.json"), "w").write(json.dumps(
-            ej if ej is not None else {"runtime": ["theme@1", "react@18.3.1"], "entry": "index.html", "editor": 1}))
+            ej if ej is not None else {"runtime": ["theme@1", "react@18.3.1"], "entry": "index.html", "editor": 1, "schema": 1}))
     return d, {"slug": "radar", "editor": editor}
 
 
@@ -75,11 +75,11 @@ def run(sdk):
     ck(all(i.compress_type == zipfile.ZIP_STORED for i in zf.infolist()), "every member is STORE")
     ck(all(i.date_time == (1980, 1, 1, 0, 0, 0) for i in zf.infolist()), "every member carries the fixed date")
     ck(all("/" not in n for n in names), "names are flat, as the hub serves them")
-    ck(zf.read("editor.json") == b'{"editor":1,"entry":"index.html","runtime":["theme@1","react@18.3.1"]}',
+    ck(zf.read("editor.json") == b'{"editor":1,"entry":"index.html","runtime":["theme@1","react@18.3.1"],"schema":1}',
        "editor.json is canonical: sorted keys, no spaces (%r)" % zf.read("editor.json"))
     ck(zf.read("a.js") == b"a()", "a member's bytes are the file's")
-    ck(zf.read("orb-app.js") == b'window.__ORB_APP = {"slug": "radar", "version": "v9.9.9"};\n',
-       "orb-app.js names the app and its release (%r)" % zf.read("orb-app.js"))
+    ck(zf.read("orb-app.js") == b'window.__ORB_APP = {"schema": 1, "slug": "radar", "version": "v9.9.9"};\n',
+       "orb-app.js names the app, its release and the schema the editor reads (%r)" % zf.read("orb-app.js"))
     ck(sdk.editor_region(d, m, "v9.9.9") == r, "a rebuild is byte-identical")
     ck("_selftest" not in "".join(names) and ".DS_Store" not in names, "subdirectories and dotfiles stay home")
     # the clock's key names no directory of the app: the SDK leaves it to make_factory_apps
@@ -105,6 +105,8 @@ def run(sdk):
     zh = zipfile.ZipFile(io.BytesIO(sdk.editor_region(dh, mh, "v9.9.9")))
     ck([i.filename for i in zh.infolist()] == ["editor.json", "a.js", "b.js", "orb-app.js"], "a hosted editor packs its module and the stamp")
     ck(json.loads(zh.read("editor.json"))["module"] == ["b.js", "a.js"], "and keeps the module's load order")
+    ck(b'"schema"' not in zh.read("orb-app.js"),
+       "a hosted editor with no design document stamps no schema (radar)")
     for why, ej, files, needle in (
             ("a newer contract", dict(hj, host=2), None, "host must be 1"),
             ("an entry beside host", dict(hj, entry="index.html"), {"a.js": b"", "b.js": b"", "index.html": b""}, "names no entry"),
@@ -116,6 +118,106 @@ def run(sdk):
             ("a module without host", {"entry": "index.html", "module": ["a.js"], "runtime": []}, {"a.js": b"", "index.html": b""}, "only for a hosted editor")):
         dx, mx = app(files or {"a.js": b"", "b.js": b""}, ej=ej)
         ck(refused(lambda: sdk.editor_region(dx, mx, "v9.9.9"), needle), "a hosted editor with %s is refused" % why)
+    # the design schema editor.json names (design §6.5 point 1): a whole number from 1
+    for bad in (0, -1, 1.5, "2", True):
+        db, mb = app({"index.html": b"x"}, ej={"entry": "index.html", "runtime": ["theme@1"], "schema": bad})
+        ck(refused(lambda: sdk.editor_region(db, mb, "v9.9.9"), "design schema"),
+           "a schema of %r is refused: the editor's schema is a whole number from 1" % (bad,))
+    dn, mn = app({"index.html": b"x"}, ej={"entry": "index.html", "runtime": ["theme@1"]})
+    ck(refused(lambda: sdk.editor_region(dn, mn, "v9.9.9"), "must name the design schema"),
+       "a standalone editor listing theme@1 with no schema is refused: its session could not check itself")
+    dr, mr = app({"index.html": b"x"}, ej={"entry": "index.html", "runtime": ["ui@1"]})
+    rr = zipfile.ZipFile(io.BytesIO(sdk.editor_region(dr, mr, "v9.9.9")))
+    ck(b'"schema"' not in rr.read("orb-app.js"),
+       "an editor with no design document and no schema stamps none (%r)" % rr.read("orb-app.js"))
+    d9, m9 = app({"index.html": b"x"}, ej={"entry": "index.html", "runtime": ["theme@1"], "schema": 3})
+    os.makedirs(os.path.join(d9, "editor", "_fixtures"))  # the fixture rule: schema 3 keeps schema 2
+    open(os.path.join(d9, "editor", "_fixtures", "schema-2.orbdesign"), "w").write("{}\n")
+    r3 = zipfile.ZipFile(io.BytesIO(sdk.editor_region(d9, m9, "v9.9.9")))
+    ck(r3.read("orb-app.js") == b'window.__ORB_APP = {"schema": 3, "slug": "radar", "version": "v9.9.9"};\n'
+       and r3.read("editor.json") == b'{"entry":"index.html","runtime":["theme@1"],"schema":3}',
+       "a schema rides both the canonical editor.json and the stamp (%r, %r)" % (r3.read("orb-app.js"), r3.read("editor.json")))
+    ck(sdk.editor_schema({"runtime": ["theme@1"], "schema": 3}, "tint") == 3
+       and sdk.editor_schema({"runtime": ["ui@1"]}, "tint") is None
+       and sdk.editor_schema({"host": 1, "runtime": ["theme@1"]}, "radar") is None,
+       "editor_schema answers the schema, or None when the editor may name none")
+
+    # the fixture rule (design §6.5 point 4): schema N > 1 keeps a fixture of schema N-1
+    def with_fixtures(d, names):
+        fdir = os.path.join(d, "editor", sdk.FIXTURES)
+        os.makedirs(fdir)
+        for n in names:
+            open(os.path.join(fdir, n), "w").write("{}\n")
+        return d
+
+    def schema_app(schema, fixture_names=()):
+        d, m = app({"index.html": b"x"}, ej={"entry": "index.html", "runtime": ["theme@1"], "schema": schema})
+        if fixture_names:
+            with_fixtures(d, fixture_names)
+        return d, m
+
+    d10, m10 = schema_app(2)
+    ck(refused(lambda: sdk.editor_region(d10, m10, "v9.9.9"), "must keep a design of schema 1"),
+       "schema 2 with no _fixtures is refused: the previous release's designs would strand")
+    ck(not os.path.exists(os.path.join(d10, "editor", sdk.FIXTURES)),
+       "the refusal creates no folder")
+    d11, m11 = schema_app(2, ["schema-1.orbdesign"])
+    r11 = zipfile.ZipFile(io.BytesIO(sdk.editor_region(d11, m11, "v9.9.9")))
+    ck(r11.namelist() and not any("_fixtures" in n for n in r11.namelist()),
+       "schema 2 with the fixture of schema 1 packs, and _fixtures stays out of the region")
+    d12, m12 = app({"index.html": b"x"})                        # the helper's ej is schema 1
+    ck(sdk.editor_region(d12, m12, "v9.9.9") != b"", "schema 1 needs no fixture")
+    d13, m13 = schema_app(3, ["schema-1.orbdesign"])
+    ck(refused(lambda: sdk.editor_region(d13, m13, "v9.9.9"), "schema-2.orbdesign"),
+       "schema 3 holding only schema-1 is refused naming schema-2, the schema it must keep")
+
+    def disk(d, m, editor=True):                                # the same app, on disk for main()
+        json.dump({"slug": m["slug"], "title": "Radar", "editor": "editor"} if editor
+                  else {"slug": m["slug"], "title": "Radar"}, open(os.path.join(d, "app.json"), "w"))
+        open(os.path.join(d, "version.txt"), "w").write("v1.0.0\n")
+        return d
+
+    sdk.CLANG = "/nonexistent/clang"                             # a refusal before this one needs no clang
+    d14, m14 = schema_app(2)
+    msg = ""
+    try:
+        sdk.main(["build", disk(d14, m14)])
+    except SystemExit as e:
+        msg = str(e)
+    ck("must keep a design of schema 1" in msg and "clang" not in msg,
+       "build checks the editor before compiling: the fixture refusal, not the clang one (%s)" % msg)
+
+    import contextlib
+
+    def say(argv):                                              # what check-migrations prints and refuses
+        out = io.StringIO()
+        why = ""
+        with contextlib.redirect_stdout(out):
+            try:
+                rc = sdk.main(argv)
+            except SystemExit as e:
+                rc, why = 1, str(e)
+        return out.getvalue(), rc, why
+
+    dp = tempfile.mkdtemp(prefix="sdkapp.")
+    json.dump({"slug": "plain", "title": "Plain"}, open(os.path.join(dp, "app.json"), "w"))
+    txt, rc, why = say(["check-migrations", dp])
+    ck(rc == 0 and "plain: no editor, nothing to migrate" in txt,
+       "check-migrations on an app with no editor says so and passes (%r)" % txt)
+    de, me = app({"index.html": b"x"}, ej={"entry": "index.html", "runtime": ["ui@1"]})
+    txt, rc, why = say(["check-migrations", disk(de, me)])
+    ck(rc == 0 and "names no design schema" in txt,
+       "an editor with no theme@1 and no schema has nothing to migrate (%r)" % txt)
+    d5, m5 = schema_app(2, ["schema-1.orbdesign", "schema-5.orbdesign"])
+    txt, rc, why = say(["check-migrations", disk(d5, m5)])
+    ck(rc == 1 and "newer than" in why, "a fixture newer than the schema is refused (%s)" % why)
+    d3, m3 = schema_app(3, ["schema-2.orbdesign"])
+    txt, rc, why = say(["check-migrations", disk(d3, m3)])
+    ck(rc == 1 and "no fixture for schema 1" in why,
+       "schema 3 missing schema-1 fails the promise of one design per past schema (%s)" % why)
+    d1, m1 = app({"index.html": b"x"})
+    txt, rc, why = say(["check-migrations", disk(with_fixtures(d1, ["notes.txt"]), m1)])
+    ck(rc == 1 and "not named schema-<n>.orbdesign" in why, "a stray in _fixtures is refused (%s)" % why)
     return fails
 
 
@@ -135,8 +237,13 @@ MUTANTS = (
     ("hosted: no host@1 check", 'if "host@1" not in runtime:', 'if 0:'),
     ("hosted: module unchecked", '            if f not in files:', '            if 0:'),
     ("hosted: a page rides", 'if any(n.endswith((".html", ".htm")) for n in files):', 'if 0:'),
+    ("schema type unchecked", "if isinstance(schema, bool) or not isinstance(schema, int) or schema < 1:", "if 0:"),
+    ("theme@1 without schema passes", 'if "host" not in ej and "theme@1" in (ej.get("runtime") or []):', "if 0:"),
     ("an escaping editor path", 'if not isinstance(e, str) or not e or "/" in e or e.startswith("."):',
      'if not isinstance(e, str) or not e:'),
+    ("no fixture rule", "schema_fixture_rule(m[\"slug\"], schema, fixtures_dir(appdir, m))", "pass"),
+    ("build compiles first", "if editor_dir(d, m):\n            editor_region(d, m, version(d))",
+     "if 0:\n            editor_region(d, m, version(d))"),
 )
 
 

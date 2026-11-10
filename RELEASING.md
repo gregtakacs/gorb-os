@@ -12,8 +12,8 @@ firmware, the shelf apps and the default theme built in:
 | `orb-manager-<tag>-windows-amd64.zip` | Windows 10/11, x64 | Azure Artifact Signing |
 | `orb-manager-<tag>-macos.dmg` | macOS 12+, Apple silicon and Intel (universal) | Developer ID, notarized and stapled |
 | `orb-manager-<tag>-linux-amd64.tar.gz` | Linux x86-64 | none (the sha256sums cover it) |
-| `orb-sdk-<os version>.tar.gz` | app developers ([apps/README.md](apps/README.md)) | none |
-| `orb-web-<tag>.tar.gz` | a website that hosts the theme editors: the runtime, the shelf apps, the editor API fixtures (orb-os-net §6.1) | none (the sha256sums cover it) |
+| `orb-sdk-<os version>.tar.gz` | app developers ([apps/README.md](apps/README.md)); it carries the editor runtime and the migration runner, so `orbsdk.py check-migrations` works outside this repo | none |
+| `orb-web-<tag>.tar.gz` | a website that hosts the theme editors: the runtime, the migration runner (`runner/`), the shelf apps, the editor API fixtures (orb-os-net §6.1) | none (the sha256sums cover it) |
 
 `.github/workflows/release.yml` builds and signs all three on GitHub Actions. It does
 the signing only when the secrets below exist. Without them it still ships: the
@@ -185,6 +185,8 @@ step ran, before you push a tag.
 - **Not in the box: `orb-web-<tag>.tar.gz`.** The same release, loose, for a site
   that hosts the editors instead of a dial: `runtime/` as the hub serves it (laid out by
   `orb-manager export-runtime`, so the runtime is the bytes this build gives a dial),
+  `runner/` with the migration runner (the site's migration check runs `runner/migrate.js`
+  with `--runtime runtime/`; export-runtime leaves it out, as it is not a runtime id),
   `apps/` with every shelf `.orbapp`, `contract/` with the hub's editor API fixtures a
   site replays, and `version.txt`. A site unpacks it, runs `orb-manager extract-editors`
   over `apps/` and serves the editors beside that runtime. `make web` builds it

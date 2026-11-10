@@ -149,6 +149,10 @@ type Server struct {
 	// noAutoInstall turns the join-time install off and leaves every press intact (-no-autoseed),
 	// for a bench run that must not touch a board it is about to instrument.
 	noAutoInstall bool
+	// siteHidden keeps the door onto orb-os.net shut until the site opens (-site turns it on):
+	// no Import/Upload on the Theme library and no /api/site routes. The zero value is the
+	// door open, so a test's bare Server still reaches it.
+	siteHidden bool
 	// onlyOrb is -only-orb's canonical MAC: a development hub sees, lists and dials that
 	// one board and no other. Empty — every release launch — is every orb. See onlyorb.go.
 	onlyOrb string
@@ -431,7 +435,7 @@ func main() {
 
 	var addr, browser, repo, fwPath, orbPort, onlyOrb string
 	var libPath, libApps, libThemes string
-	var noAutoInstall bool
+	var noAutoInstall, site bool
 	var noWindow, allowRemote, allowForeignFirmware, probeCablesOnLaunch, traceOrb bool
 
 	flag.StringVar(&addr, "addr", fmt.Sprintf("127.0.0.1:%d", listenPort), "host:port to bind")
@@ -447,6 +451,7 @@ func main() {
 	flag.BoolVar(&allowRemote, "allow-remote", false, "permit -addr to bind somewhere other than loopback; every control route still needs this launch's token")
 	flag.StringVar(&orbPort, "orb-port", "80", "TCP port the hub dials on an orb; the device's httpd listens on 80, and only a bench run against cmd/orbfake has a reason to change it")
 	flag.StringVar(&onlyOrb, "only-orb", "", "development: see, list and dial only the orb with this base MAC, leaving every other board to the hub that owns it (make run passes the clone's .orb-target ORB_BASE_MAC); empty is every orb")
+	flag.BoolVar(&site, "site", false, "show the door onto orb-os.net (the Theme library's Import and Upload, and the /api/site routes); off until the site opens")
 	flag.BoolVar(&noAutoInstall, "no-autoinstall", false, "do not install the library clock onto a freshly joined orb; the Library card Install press still works")
 	// The flag shipped its first cut named -no-autoseed; the verb the operator reads is
 	// Install now, and a shortcut built against the old spelling keeps working.
@@ -637,6 +642,7 @@ func main() {
 		s.lib = resolve()
 	}
 	s.noAutoInstall = noAutoInstall || noAutoSeedAlias
+	s.siteHidden = !site
 	if onlyOrb = strings.TrimSpace(onlyOrb); onlyOrb != "" {
 		mac, why := orbmdns.CanonicalMAC(onlyOrb)
 		if why != "" {
@@ -1241,7 +1247,9 @@ func (s *Server) routes(mux *http.ServeMux) {
 	s.routesLibraryEntries(mux)
 	// orb-os-net §7.1 H1: paste a design's link, and the hub holds its bundle for the
 	// editor's bake. The app side of this lives in the Themes tab, not here.
-	s.routesSiteImport(mux)
+	if !s.siteHidden {
+		s.routesSiteImport(mux)
+	}
 	// radar-plan §2.4: the map tool's tile forwarder and its source.
 	s.routesMaps(mux)
 }

@@ -5004,6 +5004,10 @@ async function loadLibThemes() {
     return;
   }
   libApps = Array.isArray(data.apps) ? data.apps : [];
+  // the door onto orb-os.net shows only on a hub that has it open (-site)
+  const site = data.site === true;
+  for (const id of ["#mn-site-btn", "#mn-lib-upload"]) { const b = $(id); if (b) b.hidden = !site; }
+  if (!site && $("#mn-site-row")) $("#mn-site-row").hidden = true;
   const themes = (Array.isArray(data.themes) ? data.themes.slice() : []).sort((a, b) => {
     // App first, then theme, both case-insensitive: the shelf is scanned for a name
     // inside an app, and a shelf of one app must still read alphabetically.
@@ -5018,7 +5022,8 @@ async function loadLibThemes() {
     if (!themes.length) {
       const li = document.createElement("li");
       li.className = "hint";
-      li.textContent = "No themes yet. Import one from orb-os.net, or keep one from an orb\u2019s Themes tab.";
+      li.textContent = site ? "No themes yet. Import one from orb-os.net, or keep one from an orb\u2019s Themes tab."
+        : "No themes yet. Keep one from an orb\u2019s Themes tab.";
       list.appendChild(li);
     }
     for (const t of themes) {

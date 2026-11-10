@@ -164,8 +164,10 @@ orb_target_value = $(shell sed -n 's/^$(1)=//p' $(ORB_TARGET) 2>/dev/null | tail
 HUB_PORT     ?= $(or $(call orb_target_value,ORB_HUB_PORT),3779)
 HUB_CONFIG   ?= $(or $(call orb_target_value,ORB_HUB_CONFIG),$(if $(filter-out 3779,$(HUB_PORT)),$(REPO)/.hub-config))
 HUB_ONLY_ORB ?= $(call orb_target_value,ORB_BASE_MAC)
+## the development hub opens the door onto orb-os.net; a released binary keeps it shut (-site)
+HUB_SITE ?= -site
 run: manager
-	$(if $(HUB_CONFIG),XDG_CONFIG_HOME=$(HUB_CONFIG)) $(BIN_DIR)/orb-manager -addr 127.0.0.1:$(HUB_PORT) $(if $(HUB_ONLY_ORB),-only-orb $(HUB_ONLY_ORB)) $(ARGS)
+	$(if $(HUB_CONFIG),XDG_CONFIG_HOME=$(HUB_CONFIG)) $(BIN_DIR)/orb-manager -addr 127.0.0.1:$(HUB_PORT) $(if $(HUB_ONLY_ORB),-only-orb $(HUB_ONLY_ORB)) $(HUB_SITE) $(ARGS)
 
 ## desktop: alias for run, spelled for the app-window use case.
 desktop: run

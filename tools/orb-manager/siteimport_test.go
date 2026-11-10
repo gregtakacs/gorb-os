@@ -804,3 +804,30 @@ func TestSiteImportRefusesASiteItCannotReach(t *testing.T) {
 		t.Errorf("an unreachable site = %q, want the reach sentence naming the host and the error", got)
 	}
 }
+
+// Until the site opens the door is shut (-site off): the library says so, the page hides
+// Import and Upload on it, and no /api/site route answers. The zero Server is the door open.
+func TestSiteDoorShutWithoutTheFlag(t *testing.T) {
+	s, _, _ := libHub(t)
+	if env := designCall(t, s, http.MethodGet, "/api/library", nil); env["data"].(map[string]any)["site"] != true {
+		t.Errorf("an open hub's library says site = %v, want true", env["data"].(map[string]any)["site"])
+	}
+	s.siteHidden = true
+	if env := designCall(t, s, http.MethodGet, "/api/library", nil); env["data"].(map[string]any)["site"] != false {
+		t.Errorf("a shut hub's library says site = %v, want false", env["data"].(map[string]any)["site"])
+	}
+	for _, p := range []string{"/api/site/import", "/api/site/bundle", "/api/site/keep"} {
+		if rec := rawCall(t, s, http.MethodPost, p, []byte(`{}`)); rec.Code != http.StatusNotFound {
+			t.Errorf("POST %s on a shut hub = %d, want 404", p, rec.Code)
+		}
+	}
+	page, app := readWebFile(t, "index.html"), readAppJS(t)
+	for _, id := range []string{"mn-site-btn", "mn-lib-upload"} {
+		if b := blockOfLine(t, page, `id="`+id+`"`); !strings.Contains(b, "hidden") {
+			t.Errorf("#%s is not hidden in the markup, so it shows before the hub says the site is open", id)
+		}
+	}
+	if !strings.Contains(app, `const site = data.site === true;`) {
+		t.Error("loadLibThemes no longer reads the library's site word before showing the door")
+	}
+}

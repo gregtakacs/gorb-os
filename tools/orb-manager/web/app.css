@@ -389,6 +389,8 @@ button.upd:hover{border-color:#fff}
    trap .row.updall above steps around), so a collapsed row is drawn open without it. */
 #mn-site-row{flex-wrap:wrap}
 #mn-site-row[hidden]{display:none}
+/* the door is shut until the hub says the site is open (-site, /api/library's site) */
+#mn-site-btn[hidden],#mn-lib-upload[hidden]{display:none}
 #mn-site-link{flex:1 1 200px;min-width:0}
 #mn-site-state{flex:1 1 100%;min-width:0}
 /* The home view's library rows have no plane and no press, so the theme row's three

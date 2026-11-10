@@ -218,6 +218,8 @@ type LibraryPayload struct {
 	// Restorable is what the Apps face's "Restore bundled apps" press would put back:
 	// the compiled-in apps this library lacks or holds only at an older version (seed.go).
 	Restorable []RestorableApp `json:"restorable"`
+	// Site says the door onto orb-os.net is open on this hub (-site); the page shows it only then.
+	Site bool `json:"site"`
 }
 
 // h_library answers GET /api/library. Read-only, and it re-reads the directory every
@@ -240,6 +242,7 @@ func (s *Server) h_library(r *http.Request) (any, error) {
 		listThemeLibrary(lib.ThemesDir, out)
 	}
 	out.Restorable = restorableApps(shippedLib, out.Apps)
+	out.Site = !s.siteHidden
 	return out, nil
 }
 

@@ -11,6 +11,8 @@
  *   - slots 16, 17: the selection and emergency rings;
  *   - fonts 0..3 (body, accent, quiet, warning) and the labels: the header, footer and range
  *     at slots 20, 21, 23, and the info card at 22, or at 24 when it keeps clear of its contact;
+ *   - the range pill at slot 38 in font 5: the range, large on a backing, while a press-and-turn
+ *     changes it (as radar's zoom);
  *   - the picker's preview.
  * Needs a document (Image, canvas, document.fonts), flights-art.js and GorbBake. */
 (function (root) {
@@ -42,6 +44,9 @@
     { slot: 23, name: 'range', tones: [2, NONE, NONE, NONE] },
   ];
   var CARD_LINES = 4;
+  // the range while it changes (main.c PILL_SLOT): large on a backing, as radar's zoom, in its
+  // own font past the map names' (FONTS.length)
+  var PILL_SLOT = 38, PILL_FONT = FONTS.length + 1, PILL_PX = 36, PILL_W = 340, PILL_GROW = 16;
   // the runtime's faces (fonts@1) the editor offers
   var FACES = ['IBM Plex Sans', 'IBM Plex Mono', 'Space Grotesk', 'Space Mono', 'Barlow Condensed', 'Jost',
     'Oswald', 'Michroma', 'Orbitron', 'Playfair Display', 'Cormorant Garamond', 'DM Serif Display', 'VT323'];
@@ -785,6 +790,14 @@
     }
     return svgDoc('0 0 ' + w + ' ' + h, r, defs);
   }
+  // the pill's backing: the card's fill, a rounded bar, opaque enough to read over the map
+  function pillCanvas(d, w, h) {
+    var c = canvas(w, h), x = c.getContext('2d'), r = h / 2, F = d.frames;
+    x.globalAlpha = Math.max(0.78, Math.min(1, +F.opacity || 1));
+    x.fillStyle = F.fill || '#000000';
+    x.beginPath(); x.moveTo(r, 0); x.arcTo(w, 0, w, h, r); x.arcTo(w, h, 0, h, r); x.arcTo(0, h, 0, 0, r); x.arcTo(0, 0, w, 0, r); x.closePath(); x.fill();
+    return c;
+  }
   function panelSvg(d, name) {
     var L = layout(d)[name], b = L.box;
     return L.frame ? frameSvg(d, b, name === 'card') : svgDoc('0 0 ' + b[2] + ' ' + b[3], '');
@@ -961,6 +974,12 @@
         pivot_x: b[2] >> 1, pivot_y: b[3] >> 1, order: 4, alpha: 255, n_frames: 1, str: toneStr(lab.tones), radius: L.pad,
         digit: 1, end: 1 }, plane(await panelCanvas(d, lab.name)), true, false);
     }
+    var pf = await font(W.face, PILL_PX, '#FFFFFF', null), ph = pf.h + 2 + PILL_GROW;
+    S.font({ n: S.id(), class: TEXT, slot: PILL_FONT, x: 0, y: 0, w: pf.w, h: pf.h, order: 0,
+      pivot_x: Math.min(pf.space, pf.w), pivot_y: pf.track }, pf.glyphs.map(plane), W.body, null);
+    S.row({ n: S.id(), class: AUX, slot: PILL_SLOT, kind: 2, src: GB.SOURCES.indexOf('text'), x: a.cx - (PILL_W >> 1), y: a.cx - (ph >> 1),
+      w: PILL_W, h: ph, pivot_x: PILL_W >> 1, pivot_y: ph >> 1, order: 4, alpha: 255, n_frames: 1, str: toneStr([PILL_FONT, NONE, NONE, NONE]),
+      radius: 8, digit: 1, end: 1 }, plane(pillCanvas(d, PILL_W, ph)), true, false);
     // §60: the whole glass, deflated by the baker and inflated by the orb (owner, 2026-11-07)
     S.preview({ plane: plane(await picture(plateC, armC, ar.pivot, frames, px, 466, await mapPicture(d))), x: 0, y: 0, order: 3 });
     // the bake time rides the header (word 10) so the hub can tell a newer copy from an older one;
@@ -987,7 +1006,7 @@
     SCHEMA: SCHEMA, SHAPES: SHAPES, SHAPE_TITLES: SHAPE_TITLES, LABELS: LABELS, FACES: FACES, PRESETS: PRESETS, GROUNDS: GROUNDS,
     STARTS: STARTS, startInfo: startInfo,
     GROUND_TITLES: GROUND_TITLES, ARMS: ARMS, SCOPES: SCOPES, ARM_LOOKS: ARM_LOOKS, PERIOD_MIN: PERIOD_MIN, PERIOD_MAX: PERIOD_MAX,
-    PLANE_ROWS: PLANE_ROWS, SWEEP_FPS: SWEEP_FPS, CARD_SLOT: CARD_SLOT, CARD_CLEAR_SLOT: CARD_CLEAR_SLOT,
+    PLANE_ROWS: PLANE_ROWS, SWEEP_FPS: SWEEP_FPS, PILL_SLOT: PILL_SLOT, pillCanvas: pillCanvas, CARD_SLOT: CARD_SLOT, CARD_CLEAR_SLOT: CARD_CLEAR_SLOT,
     DOT_SLOTS: DOT_SLOTS, DOTS: DOTS, dotFrames: dotFrames, dotBox: dotBox,
     FRAME_STYLES: FRAME_STYLES, MARKS: MARKS, HEADINGS: HEADINGS, serialOf: serialOf, GRID_W: GRID_W,
     preset: preset, upgrade1: upgrade1, complete: complete, pictureFit: pictureFit, panelCanvas: panelCanvas, planeBox: planeBox, markers: markers, scopeOf: scopeOf, armOf: armOf, bake: bake, thumb: thumb, period: period,

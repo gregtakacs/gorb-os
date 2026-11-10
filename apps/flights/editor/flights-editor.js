@@ -14,9 +14,11 @@
   // the rows the tracker poses (arm, planes, rings, labels, the far dots) and, with a map,
   // its six names; an app seats CLK_ROW_MAX of them
   var G = 466, CX = 233, ROW_CAP = 64, CARD_MARGIN = 20;
-  var liveRows = function (d) { return 1 + 15 + 2 + 4 + (d.planes.dots && d.planes.dots.show !== 'off' ? 9 : 0) + (d.map && d.map.on ? 6 : 0); };
-  // main.c RANGES, nearest first, by the orb's distance unit; and a unit's km
-  var RANGES = { km: [20, 40, 80, 140], mi: [10, 25, 50, 90], nm: [10, 20, 40, 80] }, UNIT_KM = { km: 1, mi: 1.609344, nm: 1.852 };
+  var liveRows = function (d) { return 1 + 15 + 2 + 4 + 1 + (d.planes.dots && d.planes.dots.show !== 'off' ? 9 : 0) + (d.map && d.map.on ? 6 : 0); };
+  // main.c's ladder, nearest first (radar's four closest zooms, z11 to z8): the ring's reach in
+  // km at a latitude (range_km_at); and a unit's km
+  var RANGE_NAMES = ['Close', 'City', 'Area', 'Local'], UNIT_KM = { km: 1, mi: 1.609344, nm: 1.852 };
+  function rangeKm(lat, k) { return 156543.03392 * Math.cos((lat || 0) * Math.PI / 180) / Math.pow(2, 11 - k) * 184 / 1000; }
   var MODES = [['roam', 'Roam', 'The scope as it roams: the count in the header, the feed in the footer'],
     ['info', 'Info', 'A contact picked: the header in the accent tone, the info card and the selection ring'],
     ['alert', 'Alert', 'The feed is down: the footer in the warning tone']];
@@ -79,7 +81,7 @@
   /* ---- the preview's parts, each drawn again only when its own part of the design changes
    * (the host keeps them, c.part) ---- */
   // the orb's distance unit, as main.c reads it (a unit it has no ranges for is km)
-  var unitOf = function (c) { return RANGES[c.unit] ? c.unit : 'km'; };
+  var unitOf = function (c) { return UNIT_KM[c.unit] ? c.unit : 'km'; };
   function partsOf(d, c) {
     var plate = c.part('plate', JSON.stringify(d.scope), function () { return B.plateCanvas(d); });
     var arm = c.part('arm', JSON.stringify(d.arm) + d.scope.face, async function () { var a = B.arm(d); return { c: await B.rast(a.svg, a.size[0], a.size[1]), piv: a.pivot }; });
@@ -99,14 +101,14 @@
     // a level kept per range, so a step back is at once
     var home = c.home, unit = unitOf(c), rng = c.view.range, map = null;
     if (home && d.map && d.map.on && root.GorbMaps) {
-      var rangeKm = RANGES[unit][rng] * UNIT_KM[unit], z = M.levelOf(home.lat, rangeKm).z;
+      var rKm = rangeKm(home.lat, rng), z = M.levelOf(home.lat, rKm).z;
       var b = c.part('level' + rng, home.lat + '|' + home.lon + '|' + z, function () { return root.GorbMaps.fetchLevel(home.lat, home.lon, z); }, { fresh: true });
       if (b) map = c.part('map' + rng, JSON.stringify(d.map) + '|' + z + '|' + home.lat, function () {
         return document.fonts.load((d.map.nameSize | 0) + 'px "' + (d.map.nameFace || d.words.face) + '"').catch(function () {})
-          .then(function () { return M.view(d.map, b, home.lat, rangeKm, rng); });
+          .then(function () { return M.view(d.map, b, home.lat, rKm, rng); });
       });
     }
-    if (words) words = Object.assign({}, words, { rangeText: RANGES[unit][rng] + ' ' + unit });
+    if (words) words = Object.assign({}, words, { rangeText: Math.round(rangeKm(home ? home.lat : 0, rng) / UNIT_KM[unit]) + ' ' + unit });
     return { plate: plate, arm: arm, planes: planes, words: words, map: map };
   }
 
@@ -528,9 +530,8 @@
     views: [
       { key: 'mode', label: 'Shows', tip: 'What the scope shows', options: MODES, init: 'info' },
       { key: 'range', label: 'Range', tip: 'The map’s range', init: 2, show: function (d) { return !!(d.map && d.map.on); },
-        options: function (d, env, g) {
-          var unit = RANGES[g.unit] ? g.unit : 'km';
-          return RANGES[unit].map(function (r, k) { return [k, r + ' ' + unit, 'The map at the ' + ['nearest', 'second', 'third', 'widest'][k] + ' range, as a press steps it on the orb']; });
+        options: function () {
+          return RANGE_NAMES.map(function (r, k) { return [k, r, 'The map at ' + r + ', as a press-and-turn steps it on the orb']; });
         } },
     ],
     play: { fps: function () { return B.SWEEP_FPS; }, what: 'the traffic' },

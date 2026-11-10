@@ -87,7 +87,7 @@
 
   /* ---- what each range draws ---- */
   function bit(r) { return 1 << R[r]; }
-  // ranges nearest first (main.c RANGES): the roles drawn, the marks dotted and the names shown
+  // ranges nearest first (main.c RANGE_NAME: Close, City, Area, Local): the roles drawn, the marks dotted and the names shown
   function ranges(m) {
     var out = [];
     for (var k = 0; k < N_RANGES; k++) {

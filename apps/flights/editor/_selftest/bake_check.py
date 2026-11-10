@@ -7,7 +7,7 @@ Stages bake.html beside the runtime's baker and fonts and the editor's art and b
 folder Windows Chrome can read, runs it headless, and checks every theme it prints: it
 reads back through orbbundle and theme_schema, the shipped orb_clock3.c projects it under
 the flights slug, and its rows are the ones apps/flights/main.c finds (the arm at slot 0,
-fifteen planes of 49 picked frames, the marker rings at 16 and 17, four fonts, the header,
+fifteen planes of 49 picked frames, the marker rings at 16 and 17, four fonts (and the pill's), the header,
 footer and range at 20, 21 and 23 and the card at 22 or, keeping clear, at 24, the far-contact
 dots at 18, 19 and 25..31 when the design shows them, the preview),
 the arm's vmax its turn in seconds (§12.5), with the design region carried.
@@ -78,7 +78,7 @@ def check(name, raw, exe, card, period, mapped):
     if any(dots) and not all(d is not None and int(d["n_frames"]) in (1, 7) and not int(d["delay"])
                              and int(d["n_frames"]) == int(dots[0]["n_frames"]) for d in dots):
         bad.append("the dot pool is not nine rows of 1 or 7 picked frames")
-    want_fonts = [0, 1, 2, 3, 4] if mapped else [0, 1, 2, 3]    # 4: the map's names
+    want_fonts = [0, 1, 2, 3, 4, 5] if mapped else [0, 1, 2, 3, 5]    # 4: the map's names, 5: the pill
     if sorted(int(f["slot"]) for f in fonts) != want_fonts:
         bad.append("fonts: %s" % [int(f["slot"]) for f in fonts])
     # the map (flights-map-plan §2.2): six names at 32..37 and the values, or neither
@@ -95,6 +95,9 @@ def check(name, raw, exe, card, period, mapped):
                 bad.append("values of %r B, not fl_values_t's %d" % (b and b["w"], VALUES_B))
     elif vals:
         bad.append("values with no map")
+    pill = aux.get(38)                   # main.c PILL_SLOT: the range while it changes
+    if pill is None or int(pill["kind"]) != ts.SHAPE_TEXT or (int(pill["str"]) & 0xF) != 5:
+        bad.append("no range pill at 38 in font 5")
     labels = [aux.get(s) for s in (20, 21, 23, card)]
     if not all(lb is not None and int(lb["kind"]) == ts.SHAPE_TEXT for lb in labels):
         bad.append("the labels are not at 20, 21, 23 and %d" % card)

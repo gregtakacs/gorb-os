@@ -35,16 +35,18 @@
  * the arrows themselves (theme-text-plan §2.1). Picked at init. */
 static const char *SYM_UP = "\xEF\x81\xB7", *SYM_DOWN = "\xEF\x81\xB8", *SYM_RIGHT = "\xEF\x81\x94";
 
-/* The range steps in the orb's distance unit (weather-plan §2.2): round numbers in each
- * unit, never a converted nautical mile, and no outer step wider than 80 nm (148 km, 92 mi),
- * the radius the parse budget below was measured on. The stored `range` stays an index, so
- * a unit change keeps the step. Rows by ORB_UNIT_KM, _MI, _NM. */
-static const uint16_t RANGES[3][4] = { { 20, 40, 80, 140 }, { 10, 25, 50, 90 }, { 10, 20, 40, 80 } };
+/* The range steps are radar's zoom ladder, its four closest (owner, 2026-11-10): the glass's
+ * edge at a whole map zoom, Close z11 to Local z8, each twice as far as the one before, so the
+ * map draws at its own scale and matches the radar's at the same name. The scope's ring stands
+ * at RING_R of the glass's 233 px, so the range is the ring's. Local at the equator is 112 km
+ * at the ring, inside the 80 nm (148 km) the parse budget below was measured on. The stored
+ * `range` stays an index, nearest first. */
+static const char *const RANGE_NAME[] = { "Close", "City", "Area", "Local" };
 static const double   UNIT_KM[3]   = { 1.0, 1.609344, 1.852 };
 static const uint32_t BG_MS[]     = { 0, 60000, 120000, 300000 };
 static const char *const BG_TXT[] = { "off", "1 min", "2 min", "5 min" };
 static const char *const SRC_TXT[] = { "adsb.lol", "adsb.fi" };
-#define N_RANGES (int)(sizeof RANGES[0] / sizeof RANGES[0][0])
+#define N_RANGES (int)(sizeof RANGE_NAME / sizeof RANGE_NAME[0])
 #define N_BG     (int)(sizeof BG_MS / sizeof BG_MS[0])
 
 enum { SRC_LOL = 0, SRC_FI = 1 };
@@ -61,17 +63,26 @@ typedef struct {
 } settings_t;
 
 static settings_t s_set = { .range = 2, .source = 1, .bg = 2, .boost = 0, .ground = 1 };
+/* The `range` setting is where the app opens (as radar's zoom): a press-and-turn moves
+ * s_set.range for now and writes nothing; the setting moves it only when it changes. */
+static int32_t    s_range_cfg = -1;
 static uint32_t   s_cfg_gen, s_home_gen = 0xFFFFFFFFu, s_units_gen, s_places_gen = 0xFFFFFFFFu;
 static orb_units_t s_units;          /* the orb's units (OS v1.2.10): distance only here */
 
 static int dist_unit(void) { return s_units.dist <= ORB_UNIT_NM ? s_units.dist : ORB_UNIT_KM; }
-static float range_km(void) { return (float)(RANGES[dist_unit()][s_set.range] * UNIT_KM[dist_unit()]); }
+/* radar.c rd_radius_m at the step's map zoom, at the centre's latitude, scaled to the ring */
+static double range_km_at(int step)
+{
+    const double glass_m = 156543.03392 * cos(s_set.latd * M_PI / 180.0) / (double)(1u << (11 - step)) * 233.0;
+    return glass_m * RING_R / 233.0 / 1000.0;
+}
+static float range_km(void) { return (float)range_km_at(s_set.range); }
 /* The feeds take a whole number of nautical miles: the step, rounded up so the scope's
  * edge is always inside what was asked for. */
 static unsigned range_req_nm(void) { return (unsigned)ceil(range_km() / 1.852 - 1e-9); }
 static void range_text_at(int step, char *b, size_t n)
 {
-    snprintf(b, n, "%u %s", (unsigned)RANGES[dist_unit()][step], orb_dist_label(&s_units));
+    snprintf(b, n, "%u %s", (unsigned)lround(range_km_at(step) / UNIT_KM[dist_unit()]), orb_dist_label(&s_units));
 }
 static void range_text(char *b, size_t n) { range_text_at(s_set.range, b, n); }
 static bool       s_visible;
@@ -167,7 +178,7 @@ static const char *place_said(void)
 static void load_settings(void)
 {
     int32_t v;
-    if (orb_cfg_get("range", &v) == ORB_OK)  s_set.range = v;
+    if (orb_cfg_get("range", &v) == ORB_OK && v != s_range_cfg) s_set.range = s_range_cfg = v;
     if (orb_cfg_get("source", &v) == ORB_OK) s_set.source = v;
     if (orb_cfg_get("bg", &v) == ORB_OK)     s_set.bg = v;
     if (orb_cfg_get("boost", &v) == ORB_OK)  s_set.boost = v;
@@ -589,6 +600,7 @@ enum { LAB_HEAD, LAB_FOOT, LAB_CARD, LAB_RNG, LAB_N };
 #define CARD_MARGIN 20                   /* px around the card a contact under it may not enter */
 #define SEL_SLOT    16
 #define EM_SLOT     17
+#define PILL_SLOT   38                   /* the range, large on its backing, while it changes */
 static orb_stage_info_t s_stage;
 static bool    s_themed;
 static int32_t s_arm = -1;
@@ -604,7 +616,7 @@ static int32_t s_dots[DOT_MAX];
 static int     s_ndots;
 static bool    s_dot_bands;
 static int     s_nplanes;
-static int32_t s_sel_row = -1, s_em_row = -1, s_rng;
+static int32_t s_sel_row = -1, s_em_row = -1, s_rng, s_pill = -1;
 static int32_t s_lab[LAB_N] = { -1, -1, -1, -1 };
 static bool    s_labels;                 /* all four labels: the theme writes the words */
 static int32_t s_sweep_ms = SWEEP_MS;
@@ -846,10 +858,27 @@ static void draw_text(void)
      * choosing, the place a press went to, or which aircraft the card is, so a turn is never
      * a guess. */
     const bool choosing = s_rng_want >= 0;
-    const bool note = choosing || now_ms() < s_rng_until, accent = note || s_sel[0];
-    if (choosing || (note && !s_say_place)) {
+    bool note = choosing || now_ms() < s_rng_until;
+    /* The range while it changes: large mid-glass on the theme's pill, as radar's zoom (owner,
+     * 2026-11-10), its name and the ring's reach; a theme without the pill says it here. */
+    const bool ranging = choosing || (note && !s_say_place);
+    if (s_pill >= 0) {
+        if (ranging) {
+            const int st = choosing ? s_rng_want : s_set.range;
+            char r[12], pb[32];
+            range_text_at(st, r, sizeof r);
+            snprintf(pb, sizeof pb, "%s  %s", RANGE_NAME[st], r);
+            orb_stage_text(s_pill, pb, 0);
+            orb_stage_pose(s_pill, 0, 0, 62);
+            note = false;                               /* the header carries on as it was */
+        } else {
+            orb_stage_pose(s_pill, ORB_STAGE_HIDDEN, 0, 0);
+        }
+    }
+    const bool accent = note || s_sel[0];
+    if (note && ranging) {
         char r[12]; range_text_at(choosing ? s_rng_want : s_set.range, r, sizeof r);
-        snprintf(b, sizeof b, "range  %s", r);
+        snprintf(b, sizeof b, "%s  %s", RANGE_NAME[choosing ? s_rng_want : s_set.range], r);
     }
     else if (note)
         snprintf(b, sizeof b, "%s", place_said());
@@ -1102,7 +1131,7 @@ static void stage_rows(void)
     s_nplanes = 0;
     s_ndots = 0;
     s_dot_bands = false;
-    s_sel_row = s_em_row = -1;
+    s_sel_row = s_em_row = s_pill = -1;
     s_card_clear = false; s_card_dy = 0;
     for (int k = 0; k < LAB_N; k++) s_lab[k] = -1;
     for (int k = 0; k < N_NAMES; k++) s_name[k] = -1;
@@ -1123,6 +1152,8 @@ static void stage_rows(void)
             s_lab[r.tag - LAB_SLOT0] = i;
         else if (r.shape == CLK_SHAPE_TEXT && r.tag >= NAME_SLOT0 && r.tag < NAME_SLOT0 + N_NAMES)
             s_name[r.tag - NAME_SLOT0] = i;
+        else if (r.shape == CLK_SHAPE_TEXT && r.tag == PILL_SLOT)
+            s_pill = i;
         else if (r.shape == CLK_SHAPE_TEXT && r.tag == CARD_CLEAR) {
             s_lab[LAB_CARD] = i;
             s_card_clear = true;
@@ -1348,9 +1379,7 @@ static void range_step(void)
     s_say_place = false;
     s_rng_until = now_ms() + 2000;
     if (r != s_set.range) {
-        s_set.range = r;
-        orb_cfg_set("range", s_set.range);
-        s_cfg_gen = orb_cfg_gen();              /* ours: the hub's re-read must not re-apply it */
+        s_set.range = r;                        /* for now: the setting stays where it opens */
         F.kick = true;                          /* the new radius, at the next gap */
     }
 }

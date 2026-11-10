@@ -110,6 +110,21 @@ static void drop(app_blobs_t *b, int i)
     e->card = false;
 }
 
+/* Under s_mx. An orphaned job nobody is running gives up its buffer (the caller frees it,
+ * outside the lock) and the entry is free again. A running one stays: blobio still holds its
+ * buffer, and reaps it itself when the piece in hand ends. Whoever reuses an entry calls this
+ * first, so a new job never writes over an orphan's jbuf and loses it. */
+static uint8_t *reap_locked(ent_t *e)
+{
+    if (e->job == J_NONE || e->running || !(e->orphan || e->jgen != e->gen)) return NULL;
+    uint8_t *jb = e->jbuf;
+    e->job = J_NONE;
+    e->done = D_NONE;
+    e->jbuf = NULL;
+    e->orphan = false;
+    return jb;
+}
+
 esp_err_t orb_blob_put(int app_slot, int i, uint8_t *buf, uint32_t len)
 {
     app_blobs_t *b = of(app_slot);
@@ -205,8 +220,10 @@ esp_err_t orb_blob_park(int app_slot, int i)
     ent_t *e = &b->e[i];
     if (!e->buf) return e->card ? ESP_OK : ESP_ERR_NOT_FOUND;
     lock();
-    const uint8_t job = e->orphan ? J_NONE : e->job;
+    uint8_t *gone = reap_locked(e);
+    const uint8_t job = e->job == J_NONE ? J_NONE : e->orphan ? 0xff : e->job;
     unlock();
+    orb_glass_free(gone);
     if (job == J_WRITE) return ESP_OK;
     if (job != J_NONE) return ESP_ERR_INVALID_STATE;
     if (e->card) {                                      /* already there: the PSRAM goes now */
@@ -237,8 +254,10 @@ esp_err_t orb_blob_load(int app_slot, int i)
     if (e->buf) return ESP_OK;
     if (!e->card) return ESP_ERR_NOT_FOUND;
     lock();
-    const uint8_t job = e->orphan ? J_NONE : e->job;
+    uint8_t *gone = reap_locked(e);
+    const uint8_t job = e->job == J_NONE ? J_NONE : e->orphan ? 0xff : e->job;
     unlock();
+    orb_glass_free(gone);
     if (job == J_READ) return ESP_OK;
     if (job != J_NONE) return ESP_ERR_INVALID_STATE;
     if (b->used + e->len > ORB_BLOB_BUDGET) return ESP_ERR_NO_MEM;
@@ -404,7 +423,9 @@ static bool run_job(int a, int i)
     lock();
     e->running = false;
     e->done = ok ? D_OK : D_FAIL;
-    unlock();
+    uint8_t *gone = reap_locked(e);     /* the slot moved on: its app may be gone, and with it */
+    unlock();                           /* the service call that would have freed this */
+    orb_glass_free(gone);
     ESP_LOGI(TAG, "slot %d body %d: %s %u B %s in %d ms", a, i, job == J_WRITE ? "parked" : "loaded",
              (unsigned)len, ok ? "" : "(failed)", (int)((esp_timer_get_time() - t0) / 1000));
     return true;
@@ -421,7 +442,13 @@ static bool pick(int *a_out, int *i_out, bool writes)
             for (int i = 0; i < ORB_BLOB_N; i++) {
                 const ent_t *e = &s_b[a].e[i];
                 if (e->job != want || e->done != D_NONE || e->running) continue;
-                if (e->orphan) { s_b[a].e[i].done = D_FAIL; continue; }   /* nothing to move */
+                if (e->orphan || e->jgen != e->gen) {            /* nothing to move */
+                    uint8_t *gone = reap_locked(&s_b[a].e[i]);
+                    unlock();
+                    orb_glass_free(gone);
+                    lock();
+                    continue;
+                }
                 unlock();
                 *a_out = a;
                 *i_out = i;

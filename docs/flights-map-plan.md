@@ -17,6 +17,10 @@ flight map's magentas, blues and yellows, with a matching clock."
    words, cut at the outer range ring so the bezel stays the theme's.
 3. What is drawn is the theme's (its editor's Map step), never an app setting.
 4. Off in every design saved before the map; on in the new starts.
+5. An airport is never drawn as nothing (owner, 2026-11-10). Where a theme draws runways
+   (Airports: "Runways at the nearest range"), an airport whose runways the map data does not
+   carry gets the airport symbol the theme chose instead. The OS decides per airport at draw
+   time: no RUNWAY pixel near the mark means no runways (`ORB_MAP_MARK_BARE`, OS v1.6.9).
 
 ## 1. What the OS adds (v1.2.38)
 

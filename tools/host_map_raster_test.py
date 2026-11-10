@@ -121,6 +121,10 @@ MUTATIONS = [
     ("pen_t p = { raster, role, (uint8_t)(st->width[role & 15] & 7), NULL, 0, 0 };", "pen_t p = { raster, role, (uint8_t)(st->width[role & 15] & 15), NULL, 0, 0 };"),
     ("const int shape = look & 7, r = (look >> 3) < 2 ? 2 : look >> 3, th = r >= 5 ? 2 : 1;",
      "const int shape = look & 7, r = (look >> 3) < 2 ? 2 : look >> 3, th = 1;"),
+    # OS v1.6.9 ORB_MAP_MARK_BARE: each guard the bare branch leans on, one at a time
+    ("if (orb_map_role_at(raster, xx, yy) == ORB_MAP_RUNWAY) near = 1;", ";"),
+    ("if (!(st->role_on >> ORB_MAP_RUNWAY & 1)) continue;", ";"),
+    ("if (st->dash[ORB_MAP_AIRPORT] && rank > st->dash[ORB_MAP_AIRPORT]) continue;", ";"),
 ]
 
 def synthetic_checks(lib):
@@ -246,6 +250,40 @@ def synthetic_checks(lib):
     check(role_at(ras, c + 50, c) == orbmap.LAND and role_at(ras, c + 120, c) == orbmap.LAKE
           and role_at(ras, c + 150, c) == orbmap.LAND,
           "rotated 45 degrees, the island's and the lake's corners reach out along the axis")
+    # OS v1.6.9 (flights-map-plan §0 ruling 5): a runway-less airport keeps its symbol where a
+    # theme draws runways. Three airport marks: A has a runway line crossing it, B has no runway
+    # for 188 px, C is a low rank the cap can reject. Airports draw as the old 5 px square (width 0).
+    AIRPORT_BIT, RUNWAY_BIT = 1 << orbmap.AIRPORT, 1 << orbmap.RUNWAY
+    def bstyle(role_on, mark_on, cap=0):
+        s = Style(); s.scale = 1.0; s.rot_rad = 0.0; s.role_on = role_on; s.mark_on = mark_on
+        for r, w in ((4, 1), (5, 1), (6, 2), (7, 1), (8, 2), (orbmap.RUNWAY, 2)): s.width[r] = w
+        s.dash[orbmap.AIRPORT] = cap
+        return s
+    bbuf = orbmap.encode(0.0, 0.0, 8,
+                         [(orbmap.RUNWAY, orbmap.LINE, [[(-6 * U, 0), (12 * U, 0)]])],
+                         [(orbmap.MARK_AIRPORT, 1, 0, 0, "A"), (orbmap.MARK_AIRPORT, 1, 200 * U, 0, "B"),
+                          (orbmap.MARK_AIRPORT, 8, 100 * U, 100 * U, "C")])
+    near_airport, far_airport, capped_airport = (c, c), (c + 200, c), (c + 100, c + 100)
+    on_off = 0xFFFF & ~AIRPORT_BIT                             # every role but the airport
+    bare, no_bare = 0x0B | 0x80, 0x0B                          # the airport kind bit (8), then BARE (0x80)
+    rc, ras, st, _ = render(lib, bbuf, bstyle(on_off, bare))  # (a) BARE set, RUNWAY on, AIRPORT off
+    check(rc == 0 and role_at(ras, *far_airport) == orbmap.AIRPORT and role_at(ras, *near_airport) != orbmap.AIRPORT,
+          "BARE: the runway-less airport keeps its symbol and the one under a runway does not")
+    rc, ras, st, _ = render(lib, bbuf, bstyle(on_off, no_bare))   # (b) BARE clear
+    check(role_at(ras, *far_airport) != orbmap.AIRPORT and role_at(ras, *near_airport) != orbmap.AIRPORT,
+          "without BARE an off-role airport draws nothing, runway or no runway")
+    rc, ras, st, _ = render(lib, bbuf, bstyle(on_off & ~RUNWAY_BIT, bare))   # (c) BARE set, RUNWAY off
+    check(role_at(ras, *far_airport) != orbmap.AIRPORT and role_at(ras, *near_airport) != orbmap.AIRPORT,
+          "BARE means nothing where the theme draws no runways: the RUNWAY role off draws neither")
+    rc, ras, st, _ = render(lib, bbuf, bstyle(0xFFFF, bare))       # (d) AIRPORT role on, whatever BARE says
+    check(role_at(ras, *far_airport) == orbmap.AIRPORT and role_at(ras, *near_airport) == orbmap.AIRPORT,
+          "with the AIRPORT role on both airports draw as today, BARE set")
+    rc, ras, st, _ = render(lib, bbuf, bstyle(0xFFFF, no_bare))
+    check(role_at(ras, *far_airport) == orbmap.AIRPORT and role_at(ras, *near_airport) == orbmap.AIRPORT,
+          "with the AIRPORT role on both airports draw as today, BARE clear")
+    rc, ras, st, _ = render(lib, bbuf, bstyle(on_off, bare, cap=1))   # (e) a rank-capped bare airport
+    check(role_at(ras, *capped_airport) != orbmap.AIRPORT and role_at(ras, *far_airport) == orbmap.AIRPORT,
+          "the rank cap still bites a bare airport: the airfield stays out, the IATA airport keeps its symbol")
 
 PAL = {0: (10, 16, 30), 1: (30, 36, 46), 2: (45, 51, 63), 3: (22, 46, 92), 4: (40, 82, 140), 5: (64, 70, 82),
        6: (150, 130, 80), 7: (200, 200, 212), 8: (240, 240, 250), 9: (200, 200, 212), 10: (255, 255, 255),

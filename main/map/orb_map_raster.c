@@ -469,9 +469,26 @@ static int render_body(rd_t r, uint32_t nf, uint32_t nm, const orb_map_style_t *
         if (st->mark) st->mark(st->mark_ctx, kind, rank, ox, oy, name, n);
         if (kind > 7 || !(st->mark_on >> kind & 1)) continue;
         const uint8_t role = kind == ORB_MAP_MARK_AIRPORT ? ORB_MAP_AIRPORT : ORB_MAP_CITY;
-        if (!(st->role_on >> role & 1)) continue;
-        if (st->dash[role] && rank > st->dash[role]) continue;
         const int cx = (int)floorf(ox + 0.5f), cy = (int)floorf(oy + 0.5f);
+        if (st->role_on >> role & 1) {
+            if (st->dash[role] && rank > st->dash[role]) continue;
+        } else {
+            /* ORB_MAP_MARK_BARE (v1.6.9): an airport the AIRPORT role is off but the RUNWAY role
+             * is on keeps its symbol unless a runway lies near: no runways drawn means no runways
+             * in the map data, and an airport is never drawn as nothing. */
+            if (!(kind == ORB_MAP_MARK_AIRPORT && (st->mark_on & ORB_MAP_MARK_BARE))) continue;
+            if (!(st->role_on >> ORB_MAP_RUNWAY & 1)) continue;
+            if (st->dash[ORB_MAP_AIRPORT] && rank > st->dash[ORB_MAP_AIRPORT]) continue;
+            const int x0 = cx - ORB_MAP_BARE_R < 0 ? 0 : cx - ORB_MAP_BARE_R,
+                      x1 = cx + ORB_MAP_BARE_R >= W ? W - 1 : cx + ORB_MAP_BARE_R;
+            const int y0 = cy - ORB_MAP_BARE_R < 0 ? 0 : cy - ORB_MAP_BARE_R,
+                      y1 = cy + ORB_MAP_BARE_R >= W ? W - 1 : cy + ORB_MAP_BARE_R;
+            int near = 0;
+            for (int yy = y0; yy <= y1 && !near; yy++)
+                for (int xx = x0; xx <= x1 && !near; xx++)
+                    if (orb_map_role_at(raster, xx, yy) == ORB_MAP_RUNWAY) near = 1;
+            if (near) continue;
+        }
         if (st->width[role]) mark_look(raster, cx, cy, st->width[role], role);
         else if (role == ORB_MAP_AIRPORT) {
             for (int dy = -2; dy <= 2; dy++) if ((unsigned)(cy + dy) < W) span(raster, cy + dy, cx - 2, cx + 3, role);

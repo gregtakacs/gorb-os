@@ -120,6 +120,10 @@ def random_tile(rng):
                   for _ in range(rng.randrange(1, 8))]
     L["aerodrome_label"] = [(1, dict({"icao": "K%03d" % rng.randrange(1000)}, **({"iata": "D%02d" % rng.randrange(99)}
                              if rng.random() < 0.5 else {})), [[P()]]) for _ in range(rng.randrange(0, 3))]
+    # a runway and an airport in every tile, drawn without a random draw so the stream (and the
+    # f32 mutant's coverage) is unchanged: the OS v1.6.9 bare rule is then compared on random tiles
+    L["aeroway"].append((2, {"class": "runway"}, [[(2000, 2000), (2100, 2060)]]))
+    L["aerodrome_label"].append((1, {"icao": "KZZZ", "iata": "ZZ1"}, [[(3700, 300)]]))
     return L
 
 def write_tiles(d, lat, lon, rng):
@@ -185,9 +189,9 @@ STYLES = [
     dict(scale=1.2, rot=math.radians(-120), dash={5: 4, 7: 1, 12: 3}, widths={4: 3, 5: 4, 6: 4, 8: 3}),
     # v1.2.38 (flights-map-plan §2.1): the marks' looks and rank caps, the fills' floors, the clip
     dict(scale=1.0, rot=0.0, dash={0: 3, 2: 8, 3: 5, 10: 4, 11: 1}, widths={10: 1 | 3 << 3, 11: 7 | 6 << 3}, clip=92),
-    dict(scale=1.3, rot=math.radians(17), dash={3: 12, 10: 2}, widths={10: 2 | 5 << 3, 11: 3 | 7 << 3}, clip=110),
+    dict(scale=1.3, rot=math.radians(17), dash={3: 12, 10: 2}, widths={10: 2 | 5 << 3, 11: 3 | 7 << 3}, clip=110, bare=True),
     dict(scale=0.8, rot=0.0, dash={}, widths={10: 5 | 2 << 3, 11: 4 | 9 << 3}),
-    dict(scale=1.0, rot=0.0, dash={11: 8}, widths={10: 6 | 4 << 3, 11: 6 | 15 << 3}, clip=116),
+    dict(scale=1.0, rot=0.0, dash={11: 8}, widths={10: 6 | 4 << 3, 11: 6 | 15 << 3}, clip=116, bare=True),
     dict(scale=1.1, rot=math.radians(8), dash={4: 3, 6: 1}, widths={4: 2 | 6 << 3, 6: 3 | 2 << 3, 12: 1 | 31 << 3}),
 ]
 
@@ -195,6 +199,9 @@ def c_style(s):
     st = HR.style(s["scale"], s["rot"], s["dash"])
     for r, w in s.get("widths", {}).items(): st.width[r] = w
     st.clip = s.get("clip", 0)
+    if s.get("bare"):                                   # OS v1.6.9: the AIRPORT role off, RUNWAY on, marks BARE
+        st.role_on = st.role_on & ~(1 << orbmap.AIRPORT)
+        st.mark_on = st.mark_on | 0x80
     return st
 
 def js_style(s):

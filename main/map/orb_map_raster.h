@@ -29,6 +29,14 @@ enum {
 enum { ORB_MAP_DASH_SOLID, ORB_MAP_DASH_SHORT, ORB_MAP_DASH_LONG, ORB_MAP_DASH_DOT,
        ORB_MAP_DASH_DASHDOT, ORB_MAP_DASH_N };
 enum { ORB_MAP_MARK_CITY, ORB_MAP_MARK_TOWN, ORB_MAP_MARK_VILLAGE, ORB_MAP_MARK_AIRPORT };
+/* OS v1.6.9 (flights-map-plan §0 ruling 5): a bit of mark_on, set with the AIRPORT mark-kind bit.
+ * An airport mark is drawn even when the AIRPORT role is off, provided the RUNWAY role is on and no
+ * RUNWAY pixel lies within ORB_MAP_BARE_R px of it (the Chebyshev box [cx-r, cx+r] x [cy-r, cy+r] of
+ * glass pixels), so an airport whose runways the map data does not carry keeps its symbol wherever a
+ * theme draws runways and is never drawn as nothing. An older OS ignores the bit: bit 7 is no mark
+ * kind (kinds run 0-3), so it draws nothing extra. */
+#define ORB_MAP_MARK_BARE 0x80u
+#define ORB_MAP_BARE_R 24          /* glass px, the half-box a bare mark searches for a nearby runway */
 /* OS v1.2.38 (flights-map-plan §2.1), every one 0 for the old draw:
  *  - width[CITY], width[AIRPORT]: the mark's look, ORB_MAP_LOOK(shape, radius px 2-15);
  *    0 is the old 5 px dot and square;

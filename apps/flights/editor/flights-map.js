@@ -7,7 +7,8 @@
  *   - water: lakes and the sea filled, the coast and the rivers drawn (never streams: the
  *     map tool keeps none), the smallest lakes left out by the floor;
  *   - roads: motorways at every range, the main roads only at the nearest;
- *   - airports: a symbol, or the runways at the nearest range and the symbol wider out;
+ *   - airports: a symbol, or the runways at the nearest range and the symbol wider out (where the
+ *     runways are drawn, an airport with no runways in the map data keeps its symbol);
  *     the airline airports alone (an IATA code) or every airfield;
  *   - towns: a dot and a name, the cities or the towns too; urban areas a tint; state and
  *     country lines.
@@ -99,7 +100,7 @@
         if (m.roads !== 'off') on |= bit('road1');
         if (m.roads === 'main' && near) on |= bit('road2');
         if (m.borders) on |= bit('state') | bit('border');
-        if (m.airports === 'runways' && near) on |= bit('runway');
+        if (m.airports === 'runways' && near) { on |= bit('runway'); marks |= 8 | 0x80; }   // the airport kind bit and BARE: a runway-less airport keeps its symbol
         if (m.airports === 'symbols' || (m.airports === 'runways' && !near)) { on |= bit('airport'); marks |= 8; }
         if (m.dots) { on |= bit('city'); marks |= 1 | (m.which === 'towns' ? 2 : 0); }
         if (!on) on = bit('land');                        // the layer still opens: nothing drawn

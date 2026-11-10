@@ -26,6 +26,8 @@
   DRAW[STATE] = 5; DRAW[BORDER] = 6; DRAW[COAST] = 7; DRAW[RUNWAY] = 8;
   var FILL = 0, LINE = 1;
   var MARK_CITY = 0, MARK_TOWN = 1, MARK_VILLAGE = 2, MARK_AIRPORT = 3;
+  var BARE = 0x80, BARE_R = 24;    /* OS v1.6.9 ORB_MAP_MARK_BARE: an airport keeps its symbol where a theme
+                                   * draws runways (orb_map_raster.h; the C's and this rule are identical) */
   var ROLES = ['water', 'land', 'urban', 'lake', 'river', 'primary road', 'motorway', 'state line',
     'border', 'coast', 'city', 'airport', 'runway', 'secondary road', 'tertiary road'];
 
@@ -638,9 +640,21 @@
       marksOut.push({ kind: mk, rank: rank, x: mo[0], y: mo[1], name: name });
       if (mk > 7 || !((st.mark_on >> mk) & 1)) continue;
       var mrole = mk === MARK_AIRPORT ? AIRPORT : CITY;
-      if (!((st.role_on >> mrole) & 1)) continue;
-      if (st.dash[mrole] && rank > st.dash[mrole]) continue;
       var cxp = rnd32(mo[0]), cyp = rnd32(mo[1]), dy2;
+      if ((st.role_on >> mrole) & 1) {
+        if (st.dash[mrole] && rank > st.dash[mrole]) continue;
+      } else {
+        if (!(mk === MARK_AIRPORT && (st.mark_on & BARE))) continue;
+        if (!((st.role_on >> RUNWAY) & 1)) continue;
+        if (st.dash[AIRPORT] && rank > st.dash[AIRPORT]) continue;
+        var x0 = cxp - BARE_R < 0 ? 0 : cxp - BARE_R, x1 = cxp + BARE_R >= W ? W - 1 : cxp + BARE_R;
+        var y0 = cyp - BARE_R < 0 ? 0 : cyp - BARE_R, y1 = cyp + BARE_R >= W ? W - 1 : cyp + BARE_R;
+        var near = 0;
+        for (var yy = y0; yy <= y1 && !near; yy++)
+          for (var xx = x0; xx <= x1 && !near; xx++)
+            if (roleAt(ras, xx, yy) === RUNWAY) near = 1;
+        if (near) continue;
+      }
       if (st.width[mrole]) markLook(ras, cxp, cyp, st.width[mrole], mrole);
       else if (mrole === AIRPORT) {
         for (dy2 = -2; dy2 <= 2; dy2++) if (cyp + dy2 >= 0 && cyp + dy2 < W) span(ras, cyp + dy2, cxp - 2, cxp + 3, mrole);

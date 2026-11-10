@@ -325,6 +325,16 @@ func skipped(reason string) regionOutcome { return regionOutcome{status: "skippe
 //
 // Nothing is written until every member has been named, sized and resolved: an archive
 // refused at its tenth entry must leave no trace of its first nine.
+// extractMaxMembers and extractMaxTotal bound one editor as a whole. Each member is held
+// to editorMaxEntry and the packed region to orbnet.MaxEditorRegion, but a region of many
+// small members that each inflate to the per-file limit would still unpack to gigabytes, all
+// held in memory here. extract-editors reads uploads from strangers on orb-os.net (D1), so
+// the whole editor is capped too: far above any real editor (the shelf clock is under 1 MB).
+const (
+	extractMaxMembers = 1000
+	extractMaxTotal   = 32 << 20
+)
+
 func extractEditorRegion(root *os.Root, slug string, region []byte) (regionOutcome, error) {
 	zr, err := zip.NewReader(bytes.NewReader(region), int64(len(region)))
 	if err != nil {
@@ -369,14 +379,21 @@ func extractEditorRegion(root *os.Root, slug string, region []byte) (regionOutco
 			return skipped(fmt.Sprintf("the editor member %q is both a file and a folder", name)), nil
 		}
 	}
+	if len(names) > extractMaxMembers {
+		return skipped(fmt.Sprintf("the editor carries %d files, past the %d one editor may ship", len(names), extractMaxMembers)), nil
+	}
 	// Bytes next, through the hub's own reader, so the per-file limit is the same one a
 	// live dial pays: a declared size is a promise until the bytes are in hand.
 	bodies := make(map[string][]byte, len(names))
 	files := make([]extractFile, 0, len(names))
+	total := 0
 	for _, name := range names {
 		data, _, err := editorBytes(zr, name)
 		if err != nil {
 			return skipped(err.Error()), nil
+		}
+		if total += len(data); total > extractMaxTotal {
+			return skipped(fmt.Sprintf("the editor unpacks to more than %d B, past what one editor may ship", extractMaxTotal)), nil
 		}
 		bodies[name] = data
 		files = append(files, extractFile{Name: name, Bytes: len(data), SHA256: hexSha(data)})

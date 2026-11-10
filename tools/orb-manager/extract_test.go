@@ -407,6 +407,10 @@ func TestExtractEditorsRefusesUnsafeArchives(t *testing.T) {
 		{"past the limit", []zipMember{{name: "big.js", size: editorMaxEntry + 1}},
 			fmt.Sprintf("the editor member %q claims %d B, past the %d B one file may ship",
 				"big.js", editorMaxEntry+1, editorMaxEntry)},
+		{"too many members", manyMembers(extractMaxMembers + 1),
+			fmt.Sprintf("the editor carries %d files, past the %d one editor may ship", extractMaxMembers+1, extractMaxMembers)},
+		{"past the total", bigMembers(extractMaxTotal/editorMaxEntry + 1),
+			fmt.Sprintf("the editor unpacks to more than %d B, past what one editor may ship", extractMaxTotal)},
 		{"manifest without an entry", []zipMember{{name: "editor.json", body: `{"runtime":["support@1"]}`}},
 			"editor.json names no entry the hub can open"},
 		{"manifest naming a missing file", []zipMember{
@@ -658,4 +662,23 @@ func TestExtractEditorsExitCodes(t *testing.T) {
 			}
 		}
 	})
+}
+
+// manyMembers is n one-byte files: a region that is small packed but past the member cap.
+func manyMembers(n int) []zipMember {
+	out := make([]zipMember, 0, n)
+	for i := 0; i < n; i++ {
+		out = append(out, zipMember{name: fmt.Sprintf("f%04d.js", i), body: "x"})
+	}
+	return out
+}
+
+// bigMembers is n files of exactly editorMaxEntry bytes each: every one under the per-file
+// limit, together past the whole-editor total.
+func bigMembers(n int) []zipMember {
+	out := make([]zipMember, 0, n)
+	for i := 0; i < n; i++ {
+		out = append(out, zipMember{name: fmt.Sprintf("b%02d.js", i), size: editorMaxEntry})
+	}
+	return out
 }

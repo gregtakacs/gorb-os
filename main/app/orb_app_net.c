@@ -82,6 +82,42 @@ typedef struct {
 } net_slot_t;
 
 static net_slot_t  *s_net[ORB_APP_CAP];
+/* A slot released while BUSY, for the worker to free between fetches. Release takes it
+ * out of s_net, so a request still queued behind another app's fetch (a theme store's
+ * job gate holds a fetch up to 20 s, and its landing restarts apps) was never seen by
+ * the worker again and leaked its slot, buffers, TLS session and socket (leak audit,
+ * 2026-11-10). Entries move by atomic exchange: release on the app's task, the reap on
+ * the worker's. */
+static net_slot_t  *s_reap[ORB_APP_CAP * 2];
+
+static void net_free(net_slot_t *n)
+{
+    if (n->cli) orb_https_free(n->cli);
+    heap_caps_free(n->body);
+    heap_caps_free(n->jbuf);
+    heap_caps_free(n->req_body);
+    heap_caps_free(n);
+}
+
+/* The worker's half: free every released slot. Called between fetches only, so none
+ * of them is being fetched; one released mid-fetch was freed by the fetch's own end. */
+static void net_reap(void)
+{
+    for (int i = 0; i < (int)(sizeof s_reap / sizeof s_reap[0]); i++) {
+        net_slot_t *n = __atomic_exchange_n(&s_reap[i], NULL, __ATOMIC_ACQ_REL);
+        if (n) net_free(n);
+    }
+}
+
+/* Take a reaped slot back off the list (the fetch's own end freed it). */
+static void net_unreap(net_slot_t *n)
+{
+    for (int i = 0; i < (int)(sizeof s_reap / sizeof s_reap[0]); i++) {
+        net_slot_t *want = n;
+        if (__atomic_compare_exchange_n(&s_reap[i], &want, NULL, false, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE))
+            return;
+    }
+}
 static TaskHandle_t s_task;
 
 /* ---- the gate ------------------------------------------------------------------ */
@@ -213,15 +249,15 @@ static void net_task(void *arg)
             n->queued = false;
             any = true;
             fetch(n);
-            if (n->dead) {
-                if (n->cli) orb_https_free(n->cli);
-                heap_caps_free(n->body);
-                heap_caps_free(n);
+            if (__atomic_load_n(&n->dead, __ATOMIC_ACQUIRE)) {
+                net_unreap(n);                 /* released mid-fetch: freed here, once */
+                net_free(n);
                 continue;
             }
             const bool ok = n->err == ESP_OK && n->status > 0;
             __atomic_store_n(&n->state, ok ? ORB_NET_DONE : ORB_NET_FAILED, __ATOMIC_RELEASE);
         }
+        net_reap();                            /* released while queued, or just after its fetch */
         if (!any) ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
     }
 }
@@ -429,14 +465,25 @@ void orb_app_net_release(int slot)
     if (!n) return;
     s_net[slot] = NULL;
     if (__atomic_load_n(&n->state, __ATOMIC_ACQUIRE) == ORB_NET_BUSY) {
-        n->dead = true;                        /* the worker frees it when it lands */
+        /* the worker frees it: at the end of its fetch if it is fetching it now, else
+         * from the reap list between fetches (queued and never picked up included).
+         * Listed BEFORE it is marked dead: a fetch that ends seeing dead takes it off the
+         * list and frees it, so it must already be there, or a late push would list a freed slot. */
+        for (int i = 0; i < (int)(sizeof s_reap / sizeof s_reap[0]); i++) {
+            net_slot_t *empty = NULL;
+            if (__atomic_compare_exchange_n(&s_reap[i], &empty, n, false, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) {
+                __atomic_store_n(&n->dead, true, __ATOMIC_RELEASE);
+                if (s_task) xTaskNotifyGive(s_task);
+                return;
+            }
+        }
+        /* reap list full (never: two per app slot, and the worker drains it every pass):
+         * marked dead, the mid-fetch path still frees it if it is the one being fetched */
+        __atomic_store_n(&n->dead, true, __ATOMIC_RELEASE);
+        ESP_LOGW(TAG, "release: reap list full, a queued request may leak");
         return;
     }
-    if (n->cli) orb_https_free(n->cli);
-    heap_caps_free(n->body);
-    heap_caps_free(n->jbuf);
-    heap_caps_free(n->req_body);
-    heap_caps_free(n);
+    net_free(n);
 }
 
 /* ---- credentials (§43: an app's declared secrets) ----------------------------------

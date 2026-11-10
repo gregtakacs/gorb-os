@@ -115,6 +115,12 @@ func parseSiteLink(raw string) (site, id string, err error) {
 	if m == nil {
 		return "", "", errors.New(siteLinkRefused)
 	}
+	// S3 (ruling 35): a well-formed link to a host this hub never opens is refused here,
+	// before any request — which is the whole point of the gate. A paste that is not a
+	// link at all still gets the one link sentence, because shape is the first question.
+	if site := scheme + "://" + strings.ToLower(u.Host); !siteAllowed(site) {
+		return "", "", siteNotAllowed(site)
+	}
 	return scheme + "://" + strings.ToLower(u.Host), m[1], nil
 }
 
@@ -197,8 +203,36 @@ func checkBundle(raw []byte, id string) (*siteBundle, error) {
 // checkBundleArt walks the design's orbAssets sidecar and proves the bundle carries the
 // art it claims: every hash has a body in assets, every body decodes, and every decoded
 // body still is the bytes its hash names. A bundle that fails this imports an image the
-// editor would draw wrong, so it does not import.
+// editor would draw wrong, so it does not import. S3 (ruling 35) adds the site's own
+// bounds beside those promises: every picture, sidecar or inline, is a PNG, JPEG, GIF or
+// WebP whose header names sides within artMaxSide. Art refusals come back as
+// *bundleArtError so the owner hears "can't be imported", not "is damaged".
 func checkBundleArt(design map[string]json.RawMessage, assets map[string]string) error {
+	if err := checkSidecarArt(design, assets); err != nil {
+		return err
+	}
+	// Art the design carries inline — a data URL in the document itself, not in the
+	// sidecar — clears the same bar. The sidecar is the site's storage shape, not a
+	// permission: a bundle may sketch around it, and the hub is the last checkpoint.
+	// checkInlineArt walks the document with sorted keys, so one bundle refuses with
+	// one sentence every time.
+	doc := make(map[string]any, len(design))
+	for k, raw := range design {
+		if k == "orbAssets" {
+			continue
+		}
+		var v any
+		if json.Unmarshal(raw, &v) != nil {
+			continue
+		}
+		doc[k] = v
+	}
+	return checkInlineArt(doc)
+}
+
+// checkSidecarArt proves the orbAssets rows hold what they promise, and then that what
+// they hold is a picture a design may carry.
+func checkSidecarArt(design map[string]json.RawMessage, assets map[string]string) error {
 	raw, ok := design["orbAssets"]
 	if !ok || string(raw) == "null" {
 		return nil // a design with no sidecar has no art to fail
@@ -226,6 +260,16 @@ func checkBundleArt(design map[string]json.RawMessage, assets map[string]string)
 		}
 		if sum := sha256.Sum256(img); hex.EncodeToString(sum[:]) != sha {
 			return fmt.Errorf("an image came back changed (%s)", siteHex12(sha))
+		}
+		// S3 (ruling 35): the bytes are the ones the bundle promised; now the site's
+		// rules say what they are allowed to be. The prefix is checked after the hashes
+		// so a damaged bundle still reports itself as damaged, never as oversized art.
+		prefix, ok := siteJSONString(row["prefix"])
+		if !ok {
+			return &bundleArtError{artRefusalType}
+		}
+		if s := artRefusal(prefix, img); s != "" {
+			return &bundleArtError{s}
 		}
 	}
 	return nil
@@ -530,6 +574,12 @@ func (s *Server) resolveOrigin(ctx context.Context, o *ThemeOrigin) (*resolveAns
 	if o == nil || o.Site == "" || o.DesignID == "" {
 		return nil, errors.New("this theme has no origin to resolve")
 	}
+	// S3 (ruling 35): the update check asks the same gate the import does. An origin
+	// sidecar naming another host is refused before its socket opens, so the check
+	// reports it exactly as plainly as an import does — and stops the asking.
+	if !siteAllowed(o.Site) {
+		return nil, siteNotAllowed(o.Site)
+	}
 	u := o.Site + "/api/hub/resolve?site=" + url.QueryEscape(o.Site) +
 		"&designId=" + url.QueryEscape(o.DesignID) +
 		"&version=" + strconv.Itoa(o.Version)
@@ -613,9 +663,16 @@ func (s *Server) handleSiteImport(w http.ResponseWriter, r *http.Request) {
 	}
 	b, err := checkBundle(raw, id)
 	if err != nil {
-		if errors.Is(err, errSiteBundleNo) {
+		var artErr *bundleArtError
+		switch {
+		case errors.Is(err, errSiteBundleNo):
 			s.jsonErr(w, siteHost(site)+" did not answer with a theme")
-		} else {
+		case errors.As(err, &artErr):
+			// S3 (ruling 35): the bundle is whole; its art is outside what a design may
+			// hold. Re-downloading fixes a damaged theme and fixes nothing here, so the
+			// sentence says which one the owner is holding.
+			s.jsonErr(w, "the theme from "+siteHost(site)+" can't be imported: "+artErr.sentence)
+		default:
 			s.jsonErr(w, "the theme from "+siteHost(site)+" is damaged: "+err.Error())
 		}
 		return

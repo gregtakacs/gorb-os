@@ -12,13 +12,14 @@
 #   make dist           the hub's release archives (unsigned), into tools/orb-manager/bin/dist/
 #   make web            the release's web file, into tools/orb-manager/bin/web/ (design §6.1)
 #   make check-web      open the shipped editors in headless Chromium: needs Go, Chromium, minutes
+#   make check-pictures the studio kit's picture fitter in headless Chromium: needs Node, Chromium
 #   make check-runner   the migration runner against a scratch editor: needs Chromium
 #   make check-migrations  each app's schema fixtures, opened in its packed editor: needs Node and Chromium
 
 PYTHON ?= python3
 NODE   ?= $(shell command -v node 2>/dev/null || ls $$HOME/.local/share/nodeenv-gorb/bin/node 2>/dev/null)
 
-.PHONY: check check-host check-apps check-hub check-editor check-web check-runner check-editor-origin check-migrations rebake firmware apps hub sdk dist web
+.PHONY: check check-host check-apps check-hub check-editor check-web check-pictures check-runner check-editor-origin check-migrations rebake firmware apps hub sdk dist web
 
 check: check-host check-apps check-hub check-editor
 	@echo 'check: host suites, apps, hub and editor all green'
@@ -61,12 +62,20 @@ check-editor:
 	@# the hub's map tool (maps@1) against tools/orbmap.py's bytes and orb_map_raster.c's pixels
 	$(PYTHON) tools/host_orbmap_js_test.py
 
+## check-pictures: the studio kit's picture fitter, run in a headless Chromium: a picked
+## picture is scaled to fit 1024 x 1024 and an SVG rasterised before an editor stores it.
+## Deliberately NOT part of `check`, like check-web: it needs Node and Chromium.
+check-pictures:
+	@test -n "$(NODE)" || { echo 'no node on PATH (see BUILDING.md: the editor suites need node 20+)'; exit 1; }
+	$(NODE) tools/orb-manager/web/runtime/_selftest/picture-fit.js
+
 ## check-web: the release's own web file, opened as a site would open it — unpack the
 ## archive, extract-editors the shelf out of it, and smoke every editor it unpacked in
 ## headless Chromium (no GorbHost, hub host, web host). Deliberately NOT part of `check`:
 ## it needs the Go toolchain, a Chromium on PATH and a few minutes, none of which the
 ## board-free `make check` ladder asks of a contributor.
 check-web: web
+	$(MAKE) check-pictures
 	@test -n "$(NODE)" || { echo 'no node on PATH (see BUILDING.md: the editor suites need node 20+)'; exit 1; }
 	@tmp=$$(mktemp -d); \
 	  tar -xzf "$$(ls tools/orb-manager/bin/web/orb-web-*.tar.gz | head -1)" -C "$$tmp"; \

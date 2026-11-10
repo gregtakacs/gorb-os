@@ -45,16 +45,28 @@
     if (!x.frames.card) return 'that design has no info card';
     return null;
   }
-  // a picture read from a file, at most `max` px on its longer side (an SVG kept as drawn)
+  // a picture read from a file, at most `max` px on its longer side (never past the 1024 the
+  // shelf keeps art inside, and an SVG is drawn to pixels here too, so what is stored is a
+  // picture the orb can hold). The studio kit does the work when it is on the page.
   function readPicture(f, max) {
+    var cap = Math.min(max, 1024);
+    if (root.OrbStudio && typeof root.OrbStudio.fitPicture === 'function') {
+      return root.OrbStudio.fitPicture(f, { max: cap, type: 'image/png' }).then(function (r) { return r.dataUrl; });
+    }
     return new Promise(function (ok, bad) {
       var rd = new FileReader();
       rd.onerror = function () { bad(new Error('the file could not be read')); };
       rd.onload = function () {
-        if (/svg/.test(f.type)) { ok(rd.result); return; }
-        B.image(rd.result).then(function (im) {
-          var k = Math.min(1, max / Math.max(im.width, im.height)), c = document.createElement('canvas');
-          c.width = Math.max(1, Math.round(im.width * k)); c.height = Math.max(1, Math.round(im.height * k));
+        var url = String(rd.result);
+        var svg = /svg/.test(f.type) || /^data:image\/svg/i.test(url);
+        B.image(url).then(function (im) {
+          var w = im.naturalWidth || im.width || 0, h = im.naturalHeight || im.height || 0;
+          if (svg && !(w > 0 && h > 0)) { w = cap; h = cap; }
+          var long = Math.max(w, h) || 1;
+          var k = svg ? cap / long : Math.min(1, cap / long);
+          if (!isFinite(k) || k <= 0) k = 1;
+          var c = document.createElement('canvas');
+          c.width = Math.max(1, Math.round(w * k)); c.height = Math.max(1, Math.round(h * k));
           c.getContext('2d').drawImage(im, 0, 0, c.width, c.height);
           ok(c.toDataURL('image/png'));
         }, bad);

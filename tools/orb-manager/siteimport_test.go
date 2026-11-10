@@ -71,7 +71,7 @@ func goodBundle(t *testing.T, id string, version int, app, sharedName string, ar
 		sum := sha256.Sum256(body)
 		sha := hex.EncodeToString(sum[:])
 		assets[sha] = base64.StdEncoding.EncodeToString(body)
-		orbAssets = append(orbAssets, map[string]any{"sha256": sha, "mimetype": "image/png"})
+		orbAssets = append(orbAssets, map[string]any{"sha256": sha, "prefix": "data:image/png;base64"})
 	}
 	design := map[string]any{"format": "wc-design", "schema": 1, "app": app, "themeName": sharedName}
 	if orbAssets != nil {
@@ -82,6 +82,23 @@ func goodBundle(t *testing.T, id string, version int, app, sharedName string, ar
 		"sharedName": sharedName, "name": sharedName, "handle": "greg",
 		"design": design, "assets": assets,
 	})
+}
+
+// pngArt is a picture as the site's rules read one: a real PNG header naming w × h,
+// then filler bytes seeded so two pictures of one size are still two pictures. The hub
+// reads only the header, so no CRC here is the CRC a decoder would check.
+func pngArt(w, h int, seed byte) []byte {
+	b := []byte{0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
+		0, 0, 0, 13, 'I', 'H', 'D', 'R',
+		byte(w >> 24), byte(w >> 16), byte(w >> 8), byte(w),
+		byte(h >> 24), byte(h >> 16), byte(h >> 8), byte(h),
+		8, 6, 0, 0, 0}
+	crc := []byte{seed, seed ^ 0x5a, seed ^ 0xa5, seed ^ 0xff}
+	b = append(b, crc...)
+	for i := 0; i < 8; i++ {
+		b = append(b, seed+byte(i))
+	}
+	return b
 }
 
 // siteImport posts a paste and answers the hub's envelope.
@@ -193,7 +210,7 @@ func TestSiteImportDoorAnswersWhatTheSiteSaid(t *testing.T) {
 	}{
 		{"the design as served", func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write(goodBundle(t, siteDesignID, 3, "clock", "Skeleton by @greg", []byte("a png pretending to be one")))
+			_, _ = w.Write(goodBundle(t, siteDesignID, 3, "clock", "Skeleton by @greg", pngArt(9, 9, 40)))
 		}, nil},
 		{"a sign-in redirect", func(w http.ResponseWriter, r *http.Request) {
 			if r.URL.Path == "/signin" {
@@ -268,7 +285,7 @@ func TestSiteImportDoorAnswersWhatTheSiteSaid(t *testing.T) {
 // not the art its hash names. Those refusals blame the theme, and say which.
 func TestSiteImportRefusesADamagedDesign(t *testing.T) {
 	s, _, _ := libHub(t)
-	art := []byte("a png pretending to be one")
+	art := pngArt(4, 4, 11)
 	shaOf := func(b []byte) string { sum := sha256.Sum256(b); return hex.EncodeToString(sum[:]) }
 	artSha := shaOf(art)
 	damaged := func(why string, doc map[string]any) {

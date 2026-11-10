@@ -414,6 +414,59 @@
     if ((m = t.match(/^(?:rgb\s*\()?\s*(\d{1,3})[\s,]+(\d{1,3})[\s,]+(\d{1,3})\s*\)?$/))) { var v = [m[1], m[2], m[3]].map(Number); if (v.every(function (x) { return x <= 255; })) return '#' + v.map(function (x) { return x.toString(16).padStart(2, '0'); }).join(''); }
     return null;
   };
+  /* ---- picked pictures (ruling 35): the one helper an editor calls before it stores a file a
+   * user chose. The shelf keeps art as PNG, JPEG, GIF or WebP at most 1024 × 1024, so anything
+   * bigger is scaled down to fit here — aspect kept — and an SVG, which has no pixels to lose,
+   * is rasterised instead. A picture already inside the bounds, of a type the caller is happy
+   * with, comes back byte for byte: nothing is re-encoded, so nothing is lost.
+   * opts: { max = 1024, type, quality = 0.9 }; max is clamped to at most 1024 whatever is
+   * passed, type 'image/png' or 'image/jpeg' forces the output.
+   * → Promise<{ dataUrl, type, width, height, scaled }> */
+  S.FIT_MAX = 1024;
+  S.fitPicture = function (file, opts) {
+    opts = opts || {};
+    var max = Math.min(S.FIT_MAX, Math.max(1, +opts.max > 0 ? +opts.max : S.FIT_MAX));
+    var want = opts.type ? String(opts.type).toLowerCase() : '';
+    var quality = opts.quality == null ? 0.9 : +opts.quality;
+    var src = String((file && file.type) || '').toLowerCase();
+    return new Promise(function (ok, bad) {
+      var noPicture = function () { bad(new Error('That file is not a picture this browser can read')); };
+      if (!file || typeof FileReader === 'undefined' || !root.document) { noPicture(); return; }
+      var rd = new FileReader();
+      rd.onerror = noPicture;
+      rd.onload = function () {
+        var url = String(rd.result);
+        var svg = src === 'image/svg+xml' || /^data:image\/svg/i.test(url);
+        var im = new Image();
+        im.onerror = noPicture;
+        im.onload = function () {
+          var w = im.naturalWidth || im.width || 0, h = im.naturalHeight || im.height || 0;
+          // a viewBox-only SVG has no intrinsic size: the box we are asked to fit is its size
+          if (svg && !(w > 0 && h > 0)) { w = max; h = max; }
+          if (!(w > 0 && h > 0)) { noPicture(); return; }
+          var kept = ['image/png', 'image/jpeg', 'image/gif', 'image/webp'];
+          if (!svg && kept.indexOf(src) >= 0 && w <= max && h <= max && (!want || want === src)) {
+            ok({ dataUrl: url, type: src, width: w, height: h, scaled: false }); return;
+          }
+          // a vector is drawn at whatever the box holds; a raster is only ever scaled down
+          var long = Math.max(w, h);
+          var k = svg ? max / long : Math.min(1, max / long);
+          if (!isFinite(k) || k <= 0) k = 1;
+          var cw = Math.max(1, Math.round(w * k)), ch = Math.max(1, Math.round(h * k));
+          var out = want || (src === 'image/jpeg' ? 'image/jpeg' : 'image/png');
+          var c = root.document.createElement('canvas');
+          c.width = cw; c.height = ch;
+          try {
+            c.getContext('2d').drawImage(im, 0, 0, cw, ch);
+            ok({ dataUrl: c.toDataURL(out, out === 'image/jpeg' ? quality : undefined), type: out, width: cw, height: ch, scaled: true });
+          } catch (e) { noPicture(); }   // a source that taints or will not paint is not a picture
+        };
+        im.src = url;
+      };
+      rd.readAsDataURL(file);
+    });
+  };
+
   /* o: drafts (an object the app keeps, so a half-typed hex survives a render), refresh() (redraw
    * after a draft changes), scope() (the draft key's prefix, e.g. the selected part), inherit:
    * [{re, src}] (a select's option whose label matches re is "follow src"; first rule first) */

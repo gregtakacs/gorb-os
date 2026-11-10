@@ -1,0 +1,13 @@
+{
+  "name": "g2b",
+  "repo": "../..",
+  "base": "g2b",
+  "retries": 2,
+  "steps": [
+    {
+      "name": "g2b-1-stale-tab-handoff",
+      "spec": "docs/specs/g2b-1-stale-tab-handoff.md",
+      "verify": "export GOFLAGS=-buildvcs=false PATH=/usr/local/go/bin:$PATH && R=$PWD && cd tools/orb-manager/web/runtime/_selftest && node headless-session.test.js | tail -1 | grep -q 'all green' && node headless-gorbhost.test.js | tail -3 | grep -q 'all green' && node headless-send.test.js && PY=python3 node headless-test.js && cd $R/apps/clock/editor/_selftest && node headless-test.js && cd $R && test -z \"$(git diff h1 -- tools/orb-manager/web/runtime/_selftest/headless-gorbhost.test.js | grep '^-[^-]')\" && test -z \"$(git diff --name-only h1 -- tools/orb-manager/*.go tools/orb-manager/contract apps tools/orb-manager/web/runtime/theme@1/send.js tools/orb-manager/web/runtime/host@1 tools/orb-manager/web/runtime/studio@1)\" && make check-web && make check-runner && python3 apps/sdk/orbsdk.py check-migrations apps/clock/ apps/flights/ apps/weather/ apps/radar/ apps/color_picker/ && node -e \"for (const f of ['tools/orb-manager/web/runtime/theme@1/session.js','tools/orb-manager/web/runtime/theme@1/send.js']) new Function(require('fs').readFileSync(f,'utf8'))\""
+    }
+  ]
+}

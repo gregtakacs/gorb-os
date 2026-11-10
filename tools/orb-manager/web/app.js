@@ -82,6 +82,10 @@ function show(view) {
   if (view && !document.getElementById(view)) return false;
   $$(".view").forEach((v) => (v.hidden = v.id !== view));
   if (view) location.hash = view;
+  // The home view's Theme library is the hub's own directory, and an import, an orb's
+  // Install or a keep from a Themes tab can all have changed the shelf since the last
+  // look, so the view that shows it re-reads it on the way in.
+  if (view === "manage") loadLibThemes();
   return true;
 }
 
@@ -4011,11 +4015,37 @@ function openThemeEditor(row, theme) {
   frame.src = base + "?orb=" + encodeURIComponent(themeIP) + "&app=" + encodeURIComponent(row.slug) +
     (orbName ? "&label=" + encodeURIComponent(orbName) : "") +
     (theme && theme.id ? "&theme=" + encodeURIComponent(theme.id) + (theme.src === "shelf" ? "&src=shelf" : "") : "") +
-    (theme && theme.entry ? "&entry=" + encodeURIComponent(theme.entry) : "") + (theme && theme.rebake ? "&rebake=1" : "") +
-    (theme && theme.import ? "&import=" + encodeURIComponent(theme.import) : "");
+    (theme && theme.entry ? "&entry=" + encodeURIComponent(theme.entry) : "") + (theme && theme.rebake ? "&rebake=1" : "");
   title.textContent = themeAppTitle(row.slug) + " theme editor";
   state.textContent = "";
+  themeEditorFrom = "orb";
   themeEditorApp = row.slug;
+  pane.hidden = false;
+  document.body.classList.add("editing");
+}
+// openLibraryEditor opens the same pane on Orb Manager's OWN copy of an app's editor
+// (design ruling 32): /editor/hub/<app>/ is served out of the hub's app library, so the
+// import needs no board in hand, no address, and no card to read an archive off. The
+// ticket is the one the hub answered the site's bundle with, and the editor bakes from it
+// and reports back through the same bridge — with nothing to send to, which is what the
+// hub half of themeBridge enforces.
+function openLibraryEditor(slug, ticket) {
+  const pane = $("#mn-theme-editor"), frame = $("#mn-theme-editor-frame");
+  const title = $("#mn-theme-editor-title"), state = $("#mn-theme-editor-state");
+  if (!pane || !frame) return;
+  const app = libAppTitle(slug);
+  // The veil says what is loading without asking editorVeilSource, which reads an
+  // orb's card and would name a board this import never dialed. The hub serves its
+  // own bytes, so the wait is short and the sentence is plain.
+  const veil = $("#mn-theme-editor .edveil");
+  if (veil) veil.textContent = "Opening Orb Manager\u2019s " + app + " editor\u2026";
+  pane.classList.add("loading");
+  frame.src = "/editor/hub/" + encodeURIComponent(slug) + "/?app=" + encodeURIComponent(slug) +
+    "&import=" + encodeURIComponent(ticket);
+  title.textContent = app + " theme editor";
+  state.textContent = "";
+  themeEditorFrom = "hub";
+  themeEditorApp = slug;
   pane.hidden = false;
   document.body.classList.add("editing");
 }
@@ -4067,6 +4097,11 @@ async function editorVeilSource(slug) {
 // themeEditorApp is which app the open frame belongs to, so a message from a frame
 // that has since been replaced cannot file a theme under the previous app.
 let themeEditorApp = "";
+// themeEditorFrom says whose editor the open frame is: "orb" for the board in hand's own
+// copy, "hub" for Orb Manager's copy opened from the home view's Theme library. The bridge
+// and the close both ask it, because a hub editor has no orb to send a bake to and no card
+// list to repaint when it closes.
+let themeEditorFrom = "orb";
 let themeSayTimer = 0;
 // themeEditorBusy is the editor's own word (theme.busy) that a send is under way. The
 // send is modal (owner ruling, 2026-11-03): until it answers, no door closes the pane,
@@ -4096,8 +4131,10 @@ function closeThemeEditor() {
   // The editor writes the card behind this page's back (its sends dial the hub
   // directly), so the list under the pane is whatever it was before the editor opened.
   // Closing re-reads it, so a theme sent from the editor is on the list the owner returns
-  // to (owner report, 2026-11-03).
-  if (wasOpen && themeIP) loadThemes(themeIP);
+  // to (owner report, 2026-11-03). An editor opened from the home view's Theme library
+  // wrote the hub's library instead of a card, and that is the list it returns to.
+  if (wasOpen && themeEditorFrom === "hub") loadLibThemes();
+  else if (wasOpen && themeIP) loadThemes(themeIP);
   if (wasImport) siteImportClosed();
 }
 
@@ -4127,11 +4164,22 @@ async function themeBridge(ev) {
   const back = (payload) => {
     try { ev.source.postMessage(Object.assign({ type: "theme.status" }, payload), ev.origin); } catch (e) {}
   };
+  // H1b ruling 32: this frame is Orb Manager's own editor, opened from the home view's
+  // Theme library. It may report itself ready, close, say it is busy, and say a bake
+  // landed in the library — the four things that need no board — and it may not ask for
+  // the two that do: there is no orb here to update, and no card to send to.
+  if (themeEditorFrom === "hub") {
+    if (m.type === "theme.update") return;
+    if (m.type === "theme.save") {
+      back({ state: "error", message: "this editor has no orb: open an orb\u2019s Themes tab to send a theme" });
+      return;
+    }
+  }
   if (m.type === "theme.ready") { back({ state: "ok" }); return; }
   if (m.type === "theme.close") { closeThemeEditor(); return; }
   if (m.type === "theme.busy") { themeEditorBusy = !!m.on; return; }
   // H1-3: an orb-os.net import's own word that the bake landed in the hub's library.
-  // The message is the editor's half of the door; the Themes tab's link field is the
+  // The message is the editor's half of the door; the Theme library's link field is the
   // other, and this is the only place the two meet. An import for an app this frame
   // did not open is not this frame's news, so it is dropped like any other stranger.
   if (m.type === "theme.imported") {
@@ -4921,18 +4969,107 @@ $("#mn-up-btn").onclick = () => {
   $("#mn-fw-file").click();
 };
 
+// ---- The Theme library on the home view ------------------------------------------
+//
+// Orb Manager's own shelf of themes, listed under the fleet (orb-os-net design ruling
+// 32). The shelf belongs to the hub rather than to a board, so this is the one place
+// themes are read with no orb in hand — which is also why the door onto orb-os.net
+// lives here and not in an orb's Themes tab: an import is fetched by the hub, baked by
+// the hub's own copy of the app's editor, and kept on the hub's shelf, and none of that
+// ever asks a board. Getting one ONTO a board stays that board's Themes tab's Install.
+//
+// libApps is the same listing's app rows, kept for two answers this view needs and has
+// no orb to ask: what an app is called, and whether Orb Manager carries an editor for it.
+let libApps = [];
+
+function libAppTitle(slug) {
+  const row = libApps.find((a) => a.slug === slug);
+  if (row && row.title) return row.title;
+  return String(slug == null ? "" : slug);
+}
+
+// loadLibThemes draws the shelf. A read that fails leaves the rows on screen standing —
+// they were the truth a moment ago and are better than a blank list — and says so in
+// the state line, which is the same rule every other read on this page keeps.
+async function loadLibThemes() {
+  const list = $("#mn-lib-list"), state = $("#mn-lib-state");
+  let data = null;
+  try {
+    const r = await hubFetch("/api/library");
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok || !j || j.ok !== true) throw new Error((j && j.error) || ("HTTP " + r.status));
+    data = j.data || {};
+  } catch (e) {
+    if (state) state.textContent = "the library could not be read: " + e.message;
+    return;
+  }
+  libApps = Array.isArray(data.apps) ? data.apps : [];
+  const themes = (Array.isArray(data.themes) ? data.themes.slice() : []).sort((a, b) => {
+    // App first, then theme, both case-insensitive: the shelf is scanned for a name
+    // inside an app, and a shelf of one app must still read alphabetically.
+    const ka = [libAppTitle(a.app).toLowerCase(), String(a.title || a.file || "").toLowerCase()];
+    const kb = [libAppTitle(b.app).toLowerCase(), String(b.title || b.file || "").toLowerCase()];
+    if (ka[0] !== kb[0]) return ka[0] < kb[0] ? -1 : 1;
+    if (ka[1] !== kb[1]) return ka[1] < kb[1] ? -1 : 1;
+    return 0;
+  });
+  if (list) {
+    list.textContent = "";
+    if (!themes.length) {
+      const li = document.createElement("li");
+      li.className = "hint";
+      li.textContent = "No themes yet. Import one from orb-os.net, or keep one from an orb\u2019s Themes tab.";
+      list.appendChild(li);
+    }
+    for (const t of themes) {
+      const li = document.createElement("li");
+      li.className = "trow";
+      li.dataset.file = String(t.file || "");
+      const info = document.createElement("div");
+      info.className = "tinfo";
+      const tags = document.createElement("div");
+      tags.className = "ttags";
+      const name = document.createElement("b");
+      name.textContent = t.title || t.file || "";
+      // The same builder the Themes tab's library rows use, for the same reason: the
+      // name and the host are bytes off disk, so they go in through the DOM and never
+      // as markup.
+      const tag = (text, cls, tip) => {
+        const el = document.createElement("span");
+        el.className = "tag" + (cls ? " " + cls : "");
+        el.textContent = text;
+        if (tip) el.title = tip;
+        tags.appendChild(el);
+      };
+      tag(libAppTitle(t.app), "mut", "A theme for the " + libAppTitle(t.app) + " app");
+      // An imported theme wears where it came from, exactly as it does on an orb's
+      // Themes tab: the tag names the host, the tooltip carries the address and the
+      // version that was baked.
+      if (t.origin) {
+        tag("from " + siteHostOf(t.origin.site), "mut",
+          "Imported from " + t.origin.site + "/t/" + t.origin.designId + " (version " + t.origin.version + ")");
+      }
+      info.append(name, tags);
+      li.appendChild(info);
+      list.appendChild(li);
+    }
+  }
+  if (state) {
+    const n = themes.length;
+    state.textContent = `${n} theme${n === 1 ? "" : "s"}`;
+  }
+}
+
 // ---- Import from orb-os.net ------------------------------------------------------
 //
-// The Themes tab's door onto the site (orb-os-net design §7.1, slice H1). The hub
-// does the fetching (h1-1's POST /api/site/import): it dials GET <site>/api/hub/theme/
-// <id>, checks the bundle, and holds it under a one-time ticket. This page never
-// speaks to the site — it hands the ticket to the orb's own editor for the app the
-// design names, and the editor bakes it under the shared name and keeps it in the
-// hub's library (h1-2). What is left here is the part only the page can do: say
-// which app the design turned out to be for, and say what came of it.
-function siteOrbName() {
-  return current.name || themeIP || "this orb";
-}
+// The Theme library's door onto the site (orb-os-net design §7.1, slices H1 and H1b).
+// The hub does the fetching (h1-1's POST /api/site/import): it dials GET
+// <site>/api/hub/theme/<id>, checks the bundle, and holds it under a one-time ticket.
+// This page never speaks to the site — it hands the ticket to Orb Manager's OWN copy of
+// the editor for the app the design names (h1b-1's /editor/hub/<app>/), and that editor
+// bakes it under the shared name and keeps it in the library (h1b-2). What is left here
+// is the part only the page can do: say which app the design turned out to be for, say
+// whether Orb Manager can bake it at all, and say what came of it.
 
 // siteHostOf names the site a library row came from off its origin record. An
 // unparsable site is still a site: the row says where it came from in kind, and the
@@ -4958,7 +5095,6 @@ async function siteImportPress() {
   const link = $("#mn-site-link"), go = $("#mn-site-go"), st = $("#mn-site-state");
   if (!link || !go || !st) return;
   if (siteImportPending) return;
-  if (!themeIP) { st.textContent = "load an orb first"; return; }
   const text = String(link.value || "").trim();
   if (!text) { st.textContent = "paste a theme\u2019s link from orb-os.net first"; return; }
   siteImportPending = true;
@@ -4981,26 +5117,24 @@ async function siteImportPress() {
     return;
   }
   const shared = (data && data.sharedName) || "the theme";
-  const title = themeAppTitle(data.app);
-  const row = themeAppsRows.find((a) => a.slug === data.app);
-  if (!row) {
-    st.textContent = "\u2717 \u201c" + shared + "\u201d is a theme for the " + title + " app, which " +
-      siteOrbName() + " doesn\u2019t run";
+  // The two answers this needs are the library's, not any orb's, so the shelf is read
+  // first when this page has not read it yet — which is exactly the state a home view
+  // that has never left the fleet is in.
+  if (!libApps.length) await loadLibThemes();
+  const title = libAppTitle(data.app);
+  const app = libApps.find((a) => a.slug === data.app);
+  if (!app) {
+    st.textContent = "\u2717 \u201c" + shared + "\u201d is a theme for the " + title + " app, which Orb Manager doesn\u2019t carry";
     siteImportEnded();
     return;
   }
-  if (!row.has_editor || !row.editor_url) {
-    st.textContent = "\u2717 \u201c" + shared + "\u201d needs the " + title + " editor, and " +
-      siteOrbName() + "\u2019s " + title + " app has none here";
+  if (!app.has_editor) {
+    st.textContent = "\u2717 \u201c" + shared + "\u201d needs the " + title + " editor, and Orb Manager\u2019s copy of " + title + " has none";
     siteImportEnded();
     return;
   }
-  // The face shows one app at a time, and the pane the operator returns to when the
-  // editor closes is the one holding the row. So the face moves to the app the design
-  // names before the editor opens on it, by the same act a pressed tab performs.
-  if (themeFaceScope() !== data.app) themeChooseApp(data.app);
-  st.textContent = "baking \u201c" + shared + "\u201d in the " + title + " editor\u2026";
-  openThemeEditor(row, { import: data.ticket });
+  st.textContent = "baking \u201c" + shared + "\u201d in Orb Manager\u2019s " + title + " editor\u2026";
+  openLibraryEditor(data.app, data.ticket);
 }
 
 // siteImportEnded frees the door after a fetch that never reached an editor. The
@@ -5013,15 +5147,17 @@ function siteImportEnded() {
 }
 
 // siteImportLanded is the import's own success line, posted by the editor through
-// themeBridge once the hub has kept the bake. The row is in the library and NOT on
-// this orb yet, which is what the sentence says: Install is still its own press.
+// themeBridge once the hub has kept the bake. The theme is in Orb Manager's library and
+// not on any board yet, which is what the sentence says: opening that board's Themes tab
+// and pressing Install is still its own step. The shelf is re-read so the new row is
+// there before the operator looks for it.
 function siteImportLanded(name) {
   siteImportPending = false;
   const st = $("#mn-site-state"), link = $("#mn-site-link"), go = $("#mn-site-go");
-  if (st) st.textContent = "\u2713 \u201c" + (name || "?") + "\u201d is in the hub library. Install puts it on " +
-    siteOrbName() + "; Close the editor to see it in the list.";
+  if (st) st.textContent = "\u2713 \u201c" + (name || "?") + "\u201d is in the theme library. Open an orb\u2019s Themes tab to put it on the orb; Close the editor to see it in the list.";
   if (link) link.value = "";
   if (go) go.disabled = false;
+  loadLibThemes();
 }
 
 // siteImportClosed words the ending the page cannot explain. The editor refused, or
@@ -5387,6 +5523,7 @@ fillConsolePorts();
 refreshPorts();
 refreshBuild();
 watchOrbs();
+loadLibThemes();
 setInterval(() => { refreshPorts(); }, 5000);
 
 // The Close button is the frame's only chrome. An editor that wants to be dismissed

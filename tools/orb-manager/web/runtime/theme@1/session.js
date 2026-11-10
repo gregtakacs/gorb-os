@@ -313,6 +313,16 @@
       'the library is kept by the site: open this editor from one of your designs, or download the .orbtheme');
     var err = function (e) { return e && e.message ? e.message : String(e); };
     var extrasOf = function (x) { var o = {}; Object.keys(x).forEach(function (k) { if (k !== 'name' && k !== 'doc' && k !== 'at') o[k] = x[k]; }); return o; };
+    /* Orb Manager's own copy of an app's editor, opened with no orb (orb-os-net ruling 32):
+     * /editor/hub/<slug>/ is a hub page whose library is the hub's, with no orb behind it.
+     * It answers what a web host answers, {ip: null, slug}. */
+    var hubOrbOfPath = api.hubOrb;
+    api.hubOrb = function () {
+      var o = hubOrbOfPath();
+      if (o || OrbTheme.hostInfo().kind === 'web') return o;
+      var m = /^\/editor\/hub\/([a-z0-9_-]{1,32})\//i.exec(String((root.location && root.location.pathname) || ''));
+      return m ? { ip: null, slug: m[1] } : null;
+    };
     var saveDraft = async function (name, doc, extra, asNew) {
       var flags = OrbTheme.hostInfo();
       var body = Object.assign({}, doc, { saved: { extra: extra || {} } });

@@ -384,13 +384,19 @@ button.upd:hover{border-color:#fff}
   border:1px solid var(--warn);border-radius:8px}
 .row.updall #mn-updall-go{margin-left:auto}
 .row.updall[hidden]{display:none}
-/* H1-3: the orb-os.net link row, collapsed until the Themes toolbar's door is pressed.
-   Not decoration: .row's own display:flex beats the UA [hidden] rule (the same trap
-   .row.updall above steps around), so a collapsed row is drawn open without it. */
+/* H1-3 / H1b: the orb-os.net link row, collapsed until the Theme library's door is
+   pressed. Not decoration: .row's own display:flex beats the UA [hidden] rule (the same
+   trap .row.updall above steps around), so a collapsed row is drawn open without it. */
 #mn-site-row{flex-wrap:wrap}
 #mn-site-row[hidden]{display:none}
 #mn-site-link{flex:1 1 200px;min-width:0}
 #mn-site-state{flex:1 1 100%;min-width:0}
+/* The home view's library rows have no plane and no press, so the theme row's three
+   columns would spend 44px plus four empty press cells on nothing. One column, and the
+   info cell named along with it: .tinfo is placed in column 2 above, which an unheld
+   column would make the implicit second one and draw every name flush right. */
+#mn-lib-list li.trow{grid-template-columns:minmax(0,1fr)}
+#mn-lib-list li.trow>.tinfo{grid-column:1}
 /* §59: the app list is the carousel (owner, 2026-11-08): a grip to drag by, the rotation's
    checkbox while rotation is on, then the row as before. Rows off the dial keep both cells,
    empty, so the columns line up down the list. */

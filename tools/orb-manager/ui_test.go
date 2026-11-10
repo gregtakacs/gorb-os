@@ -1725,25 +1725,56 @@ func TestInstallStepsWordALiveLanding(t *testing.T) {
 	}
 }
 
-// H1-3 (design §7.1): the Themes tab's door onto orb-os.net. The hub's half (h1-1)
-// and the editor's half (h1-2) are tested where they live; what is at stake here is
-// the seam between them — the markup the press needs, the fetch the press makes, the
-// ticket the editor door is opened on, and the one message that says a bake landed.
-// Every pin below is the difference between a button that imports a theme and a
-// button that fetches a bundle and then says nothing at all.
-func TestSiteImportDoorInThemesTab(t *testing.T) {
+// H1b-3 (design ruling 32): the door onto orb-os.net is Orb Manager's own, so it stands
+// on the home view's Theme library rather than in an orb's Themes tab, and it asks for no
+// board. The hub's half (h1b-1) and the editor's half (h1b-2) are tested where they live;
+// what is at stake here is the seam between them — the markup the press needs, the fetch
+// the press makes, the ticket Orb Manager's own copy of an editor is opened on, and the
+// one message that says a bake landed. Every pin below is the difference between a button
+// that imports a theme and a button that fetches a bundle and then says nothing at all.
+func TestSiteImportDoorInTheLibrary(t *testing.T) {
 	page := readWebFile(t, "index.html")
 	app := readAppJS(t)
-	for _, id := range []string{"mn-site-btn", "mn-site-row", "mn-site-link", "mn-site-go", "mn-site-state"} {
-		if !strings.Contains(page, `id="`+id+`"`) {
-			t.Errorf("index.html is missing #%s", id)
+	// The door and its list are the home view's: an import needs no orb, so neither does
+	// the shelf the import fills.
+	home := regionOf(t, page, `<main id="manage"`, "</main>")
+	for _, id := range []string{"mn-libthemes", "mn-site-btn", "mn-site-row", "mn-site-link", "mn-site-go", "mn-site-state", "mn-lib-list"} {
+		if !strings.Contains(home, `id="`+id+`"`) {
+			t.Errorf(`#%s is not inside <main id="manage">: the Theme library is the home view's, and so is its door`, id)
 		}
 	}
 	// The link row starts folded: a door that stands open over the toolbar every
-	// time the pane loads is a field the operator has to dismiss, not a door.
-	row := blockOfLine(t, page, `id="mn-site-row"`)
+	// time the page loads is a field the operator has to dismiss, not a door.
+	row := blockOfLine(t, home, `id="mn-site-row"`)
 	if !strings.Contains(row, "hidden") {
 		t.Error(`#mn-site-row is not hidden in the markup, so the link field is open before it is asked for`)
+	}
+	// Uploading needs an account, and an account needs a link that does not exist yet
+	// (H2). The door is labelled and dead rather than hidden, so the release says what
+	// it has left out.
+	upload := blockOfLine(t, home, `id="mn-lib-upload"`)
+	if !strings.Contains(upload, "disabled") {
+		t.Error("Upload to orb-os.net is not disabled: no Orb Manager can upload a theme yet")
+	}
+	// The Themes card keeps its own import (a file onto an orb) and loses the site's,
+	// which is the one thing about that tab this step changes.
+	card := cardMarkup(page, "mn-themecard")
+	if card == "" {
+		t.Fatal("index.html has no #mn-themecard to read")
+	}
+	for _, gone := range []string{"mn-site-btn", "mn-site-row"} {
+		if strings.Contains(card, `id="`+gone+`"`) {
+			t.Errorf("#%s is still in the Themes card, where it can only be pressed with an orb in hand", gone)
+		}
+	}
+	// The editor pane fills the window from outside BOTH views, because the home view
+	// opens it too: a pane inside the hidden #orb view is display:none there whatever
+	// the class says.
+	if strings.Contains(card, `id="mn-theme-editor"`) {
+		t.Error("#mn-theme-editor is back inside the Themes card, where the home view cannot show it")
+	}
+	if strings.Contains(regionOf(t, page, `<section id="orb"`, "</section>"), `id="mn-theme-editor"`) {
+		t.Error(`#mn-theme-editor is inside <section id="orb">, so it cannot open on the home view`)
 	}
 	// The paste, the press and the Enter in the field all reach the same act.
 	press := blockOf(t, app, "async function siteImportPress()")
@@ -1759,10 +1790,17 @@ func TestSiteImportDoorInThemesTab(t *testing.T) {
 	if !strings.Contains(press, "go.disabled = true") {
 		t.Error("a press does not disable its own button, so the second one fetches a second ticket for the same link")
 	}
-	// The empty field is refused in the state line and not by the hub: an empty POST
-	// buys an error sentence from the far end for nothing.
+	// No orb, and no orb's app listing either: the shelf's own rows are what says
+	// whether an editor for this app is on this machine.
+	for _, gone := range []string{"themeIP", "openThemeEditor(", "themeAppsRows"} {
+		if strings.Contains(press, gone) {
+			t.Errorf("the import still reaches for %s: an import needs no board and no board's apps", gone)
+		}
+	}
+	// The empty field is refused in the door's own words and not by the hub: an empty
+	// POST buys an error sentence from the far end for nothing.
 	if !strings.Contains(press, `"paste a theme\u2019s link from orb-os.net first"`) {
-		t.Error("an empty field is not refused in the tab's own words")
+		t.Error("an empty field is not refused in the door's own words")
 	}
 	if !strings.Contains(press, `"the hub did not answer: "`) {
 		t.Error("a hub that never answers is reported as a hub that never answers, not as its own error")
@@ -1772,24 +1810,44 @@ func TestSiteImportDoorInThemesTab(t *testing.T) {
 			t.Errorf("app.js has no %s: the door is missing one of its three endings", want)
 		}
 	}
-	// The ticket reaches the frame the editor reads it from, beside the rebake and
-	// entry flags it rides with.
+	// The ticket reaches the frame that reads it, and that frame is Orb Manager's own
+	// editor: the hub's copy of the app, at the hub's own address, with no orb named.
+	hubDoor := blockOf(t, app, "function openLibraryEditor")
+	if !strings.Contains(hubDoor, `"/editor/hub/"`) {
+		t.Error("openLibraryEditor does not open /editor/hub/, so the import is baked by an orb's editor after all")
+	}
+	if !strings.Contains(hubDoor, `"&import="`) {
+		t.Error("openLibraryEditor never appends &import=, so the fetched bundle is never shown to an editor")
+	}
+	if strings.Contains(hubDoor, "?orb=") {
+		t.Error("openLibraryEditor names an orb: the hub's own editor has none, and dialing a board is how a board gets blamed for a failed import")
+	}
+	if !strings.Contains(press, "openLibraryEditor(") {
+		t.Error("the import never opens Orb Manager's own editor on the ticket it fetched")
+	}
 	door := blockOf(t, app, "function openThemeEditor")
-	if !strings.Contains(door, `"&import="`) {
-		t.Error("openThemeEditor never appends &import=, so the fetched bundle is never shown to an editor")
+	if strings.Contains(door, `"&import="`) {
+		t.Error("openThemeEditor still carries an import ticket: the Themes tab no longer imports, and a stale clause there is a door that half-works")
 	}
 	// The one message that says it worked, and the guard that makes it the RIGHT
 	// frame's message: an editor for another app must not colour this import's line.
 	bridge := blockOf(t, app, "async function themeBridge(ev)")
-	if !strings.Contains(bridge, `m.type === "theme.imported"`) {
-		t.Error("the bridge ignores theme.imported, so a landed bake leaves the tab saying \"+baking\" forever")
+	at := strings.Index(bridge, `m.type === "theme.imported"`)
+	if at < 0 {
+		t.Fatal("the bridge ignores theme.imported, so a landed bake leaves the door saying \"+baking\" forever")
 	}
-	imp := bridge[strings.Index(bridge, `m.type === "theme.imported"`) :]
-	if !strings.Contains(imp[:200], "m.app !== themeEditorApp") {
+	if !strings.Contains(bridge[at:min(at+200, len(bridge))], "m.app !== themeEditorApp") {
 		t.Error("theme.imported is accepted from any app, so a replaced frame can report an import it never made")
 	}
-	if !strings.Contains(imp[:200], "themeEditorApp") {
-		t.Error("theme.imported is not gated on the open editor's app at all")
+	// A hub editor has no card to write and no firmware to update, and says so rather
+	// than dialing whatever address this page happens to be remembering.
+	at = strings.Index(bridge, `themeEditorFrom === "hub"`)
+	if at < 0 {
+		t.Fatal("the bridge never asks whose editor the frame is, so a hub editor is offering to send to an orb")
+	}
+	if hubGate := bridge[at:min(at+400, len(bridge))]; !strings.Contains(hubGate, `m.type === "theme.save"`) ||
+		!strings.Contains(hubGate, "this editor has no orb") {
+		t.Error("a hub editor's theme.save is not refused in the door's own words")
 	}
 	// Closing without the message is its own answer, and a ✓ already standing is not
 	// overwritten by it.
@@ -1799,13 +1857,41 @@ func TestSiteImportDoorInThemesTab(t *testing.T) {
 			t.Errorf("siteImportClosed has no %s", want)
 		}
 	}
+	closer := blockOf(t, app, "function closeThemeEditor()")
+	if !strings.Contains(closer, "loadLibThemes()") {
+		t.Error("closing an editor opened from the library never re-reads the library, so the theme the operator just baked is not on the list they return to")
+	}
+	if !strings.Contains(closer, `themeEditorFrom === "hub"`) {
+		t.Error("closing the editor never asks whose editor it was, so a hub close re-reads an orb's card and the shelf the operator is looking at goes stale")
+	}
 	if !strings.Contains(app, "if (wasImport) siteImportClosed();") {
 		t.Error("closing the editor never tells the import it ended, so the button stays disabled forever")
 	}
-	// The library row says where it came from, built the way every other tag on the
-	// row is built: through the DOM, from bytes the hub wrote.
+	// The library row says where it came from, on both views that list themes, built the
+	// way every other tag on the row is built: through the DOM, from bytes the hub wrote.
 	rows := blockOf(t, app, "function themeLibraryRows")
 	if !strings.Contains(rows, "th.origin") || !strings.Contains(rows, `tag("from "`) {
-		t.Error("an imported theme's library row carries no origin tag")
+		t.Error("an imported theme's Themes-tab row carries no origin tag")
 	}
+	lib := blockOf(t, app, "async function loadLibThemes()")
+	if !strings.Contains(lib, "t.origin") || !strings.Contains(lib, `"from "`) {
+		t.Error("an imported theme's home-view row carries no origin tag")
+	}
+}
+
+// regionOf returns the slice of a document from the first occurrence of open through the
+// first close tag after it, for the two questions a moved element raises: is this id
+// inside that container, and is it not inside the one it left. cardMarkup answers them for
+// an <article>; the home view is a <main> and the orb face is a <section>.
+func regionOf(t *testing.T, src, open, close string) string {
+	t.Helper()
+	i := strings.Index(src, open)
+	if i < 0 {
+		t.Fatalf("the page has no %q — the container this pin asks about is gone", open)
+	}
+	j := strings.Index(src[i:], close)
+	if j < 0 {
+		t.Fatalf("%q never closes", open)
+	}
+	return src[i : i+j+len(close)]
 }

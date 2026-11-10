@@ -161,8 +161,13 @@ type editorVersionPair struct{ orb, hub string }
 
 func (s *Server) editorVersions(ip, slug string) editorVersionPair {
 	var v editorVersionPair
-	if row := s.installedRow(ip, slug); row != nil {
-		v.orb = row.Version
+	// An empty ip, or the hub door's own key, names no board: the hub carries this editor
+	// itself, so there is no release on an orb to read and — the point of the rule — no dial
+	// to make from a hub whose fleet is empty.
+	if ip != "" && ip != hubEditorIP {
+		if row := s.installedRow(ip, slug); row != nil {
+			v.orb = row.Version
+		}
 	}
 	if lib := s.library(); lib != nil && lib.AppsDir != "" {
 		if body, err := lib.Container(slug); err == nil {

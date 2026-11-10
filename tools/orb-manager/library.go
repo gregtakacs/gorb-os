@@ -159,6 +159,11 @@ type LibraryFile struct {
 	// OSMin is the oldest OS release the app runs on, from the stamp in its editor region
 	// (app.json's os_min); empty when the app names none.
 	OSMin string `json:"os_min,omitempty"`
+	// Origin is a theme's import record, read from its `.origin.json` sidecar: where the
+	// design came from and which version was baked. H1b put it on the listing so a view
+	// with no orb in hand can still say where a shelf theme came from. Nil for a theme the
+	// hub never imported (or whose sidecar will not read), and never set on an app row.
+	Origin *ThemeOrigin `json:"origin,omitempty"`
 }
 
 var osMinRe = regexp.MustCompile(`"os_min":\s*"(v\d{1,2}\.\d{1,2}\.\d{1,2})"`)
@@ -348,7 +353,8 @@ func listThemeLibrary(dir string, out *LibraryPayload) {
 			app = c.Sections[0]
 		}
 		found = append(found, LibraryFile{File: e.Name(), Slug: c.ID, Title: c.Name,
-			Bytes: len(body), App: app, Design: c.DesignSize})
+			Bytes: len(body), App: app, Design: c.DesignSize,
+			Origin: readThemeOrigin(filepath.Join(dir, e.Name()))})
 	}
 	sort.Slice(found, func(i, j int) bool { return found[i].Slug < found[j].Slug })
 	out.Themes = append(out.Themes, found...)

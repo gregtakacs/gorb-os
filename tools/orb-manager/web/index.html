@@ -41,6 +41,29 @@
   <p class="hint" id="mn-empty" hidden>No orbs yet. A board on a cable that stayed silent
   when the hub asked it runs no orb: give it one with the New Orb button. Add an orb by its
   address if the hub cannot hear it announce.</p>
+
+  <!-- Orb Manager's own shelf of themes, and the only door onto orb-os.net (design
+       ruling 32). Both belong to the home view rather than to an orb because neither
+       needs one: the library is the hub's own directory, and an import is baked by the
+       hub's own copy of an app's editor. A theme gets onto a board from that board's
+       Themes tab, which is where Install still lives. -->
+  <section id="mn-libthemes" class="fleet">
+    <h3>Theme library</h3>
+    <div class="row toolbar">
+      <button id="mn-site-btn" class="ghost" type="button"
+              title="Paste the link of a theme on orb-os.net. Orb Manager fetches its design, bakes it with its own editor for that app under its shared name (“name by @creator”), and keeps it here. No orb and no sign-in are needed.">Import from orb-os.net</button>
+      <button id="mn-lib-upload" class="ghost" type="button" disabled
+              title="Not yet: uploading a theme to your orb-os.net account needs this Orb Manager connected to it (Connect to orb-os.net, coming in a later release).">Upload to orb-os.net</button>
+      <span id="mn-lib-state" class="hint"></span>
+    </div>
+    <div class="row" id="mn-site-row" hidden>
+      <input type="url" id="mn-site-link" placeholder="https://orb-os.net/t/…" spellcheck="false" autocomplete="off" size="44">
+      <button id="mn-site-go" type="button">Import</button>
+      <span id="mn-site-state" class="hint"></span>
+    </div>
+    <ul id="mn-lib-list" class="themelist"></ul>
+    <p class="hint">The themes Orb Manager keeps. Open an orb and its Themes tab to put one on it.</p>
+  </section>
 </main>
 
 <!-- The New Orb dialog: the one decision a blank chip gets, taken without
@@ -381,33 +404,8 @@
       <span id="mn-theme-editrow"></span>
       <input type="file" id="mn-fw-file" accept=".orbtheme" hidden>
       <button id="mn-up-btn" class="ghost" title="Choose a .orbtheme and put it on this orb's card, with the hub keeping a copy on its shelf. The theme's name is baked inside the file by the Theme Editor; the orb files it under that name and no other.">Import a theme</button>
-      <button id="mn-site-btn" class="ghost" type="button"
-              title="Paste the link of a theme on orb-os.net. The hub fetches its design, this orb's editor for that app bakes it under its shared name (“name by @creator”), and it lands in the hub library. No sign-in is needed.">Import from orb-os.net</button>
       <span id="mn-up-state" class="hint"></span>
     </div>
-    <div class="row" id="mn-site-row" hidden>
-      <input type="url" id="mn-site-link" placeholder="https://orb-os.net/t/…" spellcheck="false" autocomplete="off" size="44">
-      <button id="mn-site-go" type="button">Import</button>
-      <span id="mn-site-state" class="hint"></span>
-    </div>
-    <!-- D37 §6.2: one app's editor opens from this card rather than in a new tab the
-         operator has to find again; since D43 §4.2 it fills the whole window, over the
-         page, with the editor's own bar as the only one (app.css #mn-theme-editor).
-         The frame is same-origin by construction — the hub built the URL from an ip
-         the hub learned — which is what lets the bridge below postMessage to it
-         without a channel id. -->
-    <section id="mn-theme-editor" class="themee" hidden>
-      <div class="row ehead">
-        <b id="mn-theme-editor-title">Theme editor</b>
-        <button id="mn-theme-editor-close" class="ghost" type="button"
-                title="Put the editor away. The orb keeps what it has.">Close</button>
-      </div>
-      <div class="edwrap">
-        <iframe id="mn-theme-editor-frame" title="Theme editor" sandbox="allow-scripts allow-same-origin"></iframe>
-        <div class="edveil" aria-live="polite">Opening the editor…</div>
-      </div>
-      <p class="hint" id="mn-theme-editor-state"></p>
-    </section>
     <ul id="mn-themes" class="themelist"></ul>
     <p class="hint">A theme's name lives inside its file, and the orb files it under that name. The card filename is the hash of it, which is what these buttons send.</p>
   </article>
@@ -453,6 +451,27 @@
     </div>
     <pre id="mn-con-log" class="log" aria-live="polite"></pre>
   </article>
+</section>
+
+<!-- D37 §6.2: one app's editor opens in a pane over the page rather than in a new tab the
+     operator has to find again; since D43 §4.2 it fills the whole window, over the
+     page, with the editor's own bar as the only one (app.css #mn-theme-editor).
+     The frame is same-origin by construction — the hub built the URL from an ip
+     the hub learned — which is what lets the bridge below postMessage to it
+     without a channel id. Since H1b it lives outside both views rather than in the
+     Themes card, because the home view's Theme library opens it too and a pane
+     inside the hidden #orb view could not show there. -->
+<section id="mn-theme-editor" class="themee" hidden>
+  <div class="row ehead">
+    <b id="mn-theme-editor-title">Theme editor</b>
+    <button id="mn-theme-editor-close" class="ghost" type="button"
+            title="Put the editor away. The orb keeps what it has.">Close</button>
+  </div>
+  <div class="edwrap">
+    <iframe id="mn-theme-editor-frame" title="Theme editor" sandbox="allow-scripts allow-same-origin"></iframe>
+    <div class="edveil" aria-live="polite">Opening the editor…</div>
+  </div>
+  <p class="hint" id="mn-theme-editor-state"></p>
 </section>
 
 <!-- The forget dialog: the page's own answer to pressing Forget, in place of a

@@ -686,8 +686,11 @@ that for a bench build, and a hand-loaded `.zip` is still accepted whatever it s
 so a deliberate downgrade stays possible.
 - **Theme Editor** — an app's editor, served out of the app's own container at
   `/editor/<orb-ip>/<app>/` (D37), from the hub's library copy when its version stamp
-  equals the installed one and from the orb's card otherwise. The clock's editor is
-  the watch composer, whose sources live in `apps/clock/editor/`. Since D43 the
+  equals the installed one and from the orb's card otherwise. `/editor/hub/<app>/` is the
+  same editor with no orb at all: the region inside the `.orbapp` the hub's own app library
+  holds, the file this listing shows and `orb-manager extract-editors` unpacks, so Import
+  from orb-os.net bakes a theme without waiting for a board that runs the app. The clock's
+  editor is the watch composer, whose sources live in `apps/clock/editor/`. Since D43 the
   pieces every editor builds with are the hub's **OS theme runtime**, compiled in under
   `web/runtime/` and served at `/runtime/<name>@<version>/`: the dc-runtime
   (`support@1`), the theme builder (`baker@1`), React and ReactDOM (`react@18.3.1`),
@@ -827,17 +830,21 @@ so a deliberate downgrade stays possible.
 
 ### Import from orb-os.net
 
-**Import from orb-os.net** sits in the Themes tab's toolbar beside **Import a theme** and
-opens a link field: paste a theme's page on the site, press Import. The hub fetches the
-design itself — `GET <site>/api/hub/theme/<id>`, no sign-in and no account, and the site
-never sees the orb — holds the bundle it gets back under a one-time ticket, and opens
-**this orb's** editor for the app that design names on it. The editor is what bakes: the
-design comes out as a `.orbtheme` under the shared name the site gave it, `<name> by
-@<handle>`, and the hub keeps that bake in its library with a `<theme file>.origin.json`
-sidecar `{site, designId, version, importedAt}` — which is what the row's `from <site>` tag
-reads. Nothing is written to the orb by an import: the new row's `Install` is the same door
-it always was. Only `https://` links are accepted, with plain `http` allowed for
-`127.0.0.1`/`localhost` so a site under development can be imported from the bench.
+**Import from orb-os.net** sits in the **Theme library** on the home view, under the Orbs
+list, and opens a link field: paste a theme's page on the site, press Import. No orb is
+asked for — the hub fetches the design itself (`GET <site>/api/hub/theme/<id>`, no
+sign-in and no account, and the site never learns of a board), holds the bundle it gets
+back under a one-time ticket, and opens **its own** copy of the app's editor on it:
+`/editor/hub/<app>/`, the region inside the `.orbapp` the hub's app library holds. That
+editor is what bakes: the design comes out as a `.orbtheme` under the shared name the site
+gave it, `<name> by @<handle>`, and the hub keeps that bake in its library with a
+`<theme file>.origin.json` sidecar `{site, designId, version, importedAt}` — which is what
+the row's `from <site>` tag reads, on the library list and on an orb's Themes tab alike.
+Getting it ONTO a board stays that board's business: its Themes tab's `Install` is the same
+door it always was. **Upload to orb-os.net** is shown disabled beside the door, since
+pushing a theme to an account needs this Orb Manager connected to one. Only `https://`
+links are accepted, with plain `http` allowed for `127.0.0.1`/`localhost` so a site under
+development can be imported from the bench.
 
 ## Headless flasher
 

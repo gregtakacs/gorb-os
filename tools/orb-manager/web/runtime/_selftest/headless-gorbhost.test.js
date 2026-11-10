@@ -665,6 +665,61 @@ async function scenario(host, pathname, themeQuery, map) {
     ok(await badparent.ses.openTheme() && badparent.hub.keeps.length === 1 && badparent.state.status === 'Imported “Skeleton by @greg” into the library',
       'and a parent that throws on the message costs the import nothing', badparent.state.status);
     global.parent = { postMessage: (m, origin) => posted.push({ m: m, origin: origin }) };
+    // the hub's own editor with no orb (/editor/hub/<slug>/): Orb Manager's library copy, ruling 32
+    const hb = irun({ pathname: '/editor/hub/tint/' });
+    ok(hb.ses.hubOrb() && hb.ses.hubOrb().ip === null && hb.ses.hubOrb().slug === 'tint',
+      'on /editor/hub/tint/ hubOrb answers {ip: null, slug: “tint”}, the shape a web host answers', JSON.stringify(hb.ses.hubOrb()));
+    const ho = irun({ pathname: '/editor/192.0.2.7/tint/' });
+    ok(ho.ses.hubOrb().ip === '192.0.2.7' && ho.ses.hubOrb().slug === 'tint', 'a page under an orb still answers that orb', JSON.stringify(ho.ses.hubOrb()));
+    ok(irun({ pathname: '/editor/hub/' }).ses.hubOrb() === null && irun({ pathname: '/editor/hubx/tint/' }).ses.hubOrb() === null && irun({ pathname: '/' }).ses.hubOrb() === null,
+      'no slug, /editor/hubx/ and a page off the hub answer nothing as before', '/editor/hub/ + /editor/hubx/tint/ + /');
+    const webhub = irun({ host: { kind: 'web' }, pathname: '/editor/hub/tint/' });
+    const webroot = irun({ host: { kind: 'web' }, pathname: '/' });
+    ok(JSON.stringify(webhub.ses.hubOrb()) === JSON.stringify(webroot.ses.hubOrb()) && webroot.ses.hubOrb().ip === null && webroot.ses.hubOrb().slug === 'tint',
+      'under a web host the hub path changes nothing: the answer is what web answers on /', JSON.stringify([webhub.ses.hubOrb(), webroot.ses.hubOrb()]));
+    const webalt = irun({ host: { kind: 'web' }, pathname: '/editor/hub/other/' });
+    ok(webalt.ses.hubOrb().slug === 'tint', 'and under web the path’s slug never becomes the answer', String(webalt.ses.hubOrb().slug));
+    const ipn = posted.length;
+    const imp = irun({ pathname: '/editor/hub/tint/' });
+    await imp.ses.boot();
+    ok(calls.some((c) => /library\/entries/.test(c[1])) && !calls.some((c) => /site\//.test(c[1])) && !/Heads up/.test(imp.state.status),
+      'its boot reads the hub’s library, asks no import door and says no Heads up', calls.map((c) => c[1]).join(' ') + ' | ' + imp.state.status);
+    ok(await imp.ses.openTheme(), 'the import runs on the page with no orb');
+    ok(imp.baked[0] === SN && imp.hub.keeps.length === 1 && imp.hub.keeps[0].bytes.join() === THEME7.join() &&
+      (calls.find((c) => /site\/keep/.test(c[1])) || ['', ''])[1] === '/api/site/keep?ticket=' + TICKET,
+      'one bake under the shared name, and exactly that bake posted with the ticket', JSON.stringify([imp.baked, calls.filter((c) => /site\/keep/.test(c[1])).map((c) => c[1])]));
+    ok(imp.state.status === 'Imported “Skeleton by @greg” into the library' && imp.ses.library().length === 1 && imp.downloads.length === 0 &&
+      calls[calls.length - 1][1] === '/api/library/entries?app=tint',
+      'the line ends at the hub’s library, read again after the keep, with nothing downloaded', imp.state.status + ' | ' + calls[calls.length - 1][1]);
+    ok(posted.length === ipn + 1 && posted[posted.length - 1].m.type === 'theme.imported' && posted[posted.length - 1].m.app === 'tint' &&
+      posted[posted.length - 1].m.name === SN && posted[posted.length - 1].origin === 'http://hub',
+      'the parent was told the app, the name and the file, at the hub’s own origin', JSON.stringify(posted[posted.length - 1] || null));
+    // the hub refuses the orb-less page's /editor/source ask, and boot swallows it
+    const bad = irun({ pathname: '/editor/hub/tint/' });
+    const badIn = bad.hub.fetch;
+    let srcAsk = '';
+    bad.hub.fetch = (u, o) => {
+      const p = new URL(String(u), 'http://hub').pathname.replace(/^\/studio-api/, '/api');
+      if (p === '/api/editor/source') { srcAsk = String(u); return Promise.resolve(resp(400, { ok: false, error: 'expected ?ip=<ipv4>&slug=<app>' })); }
+      return badIn(u, o);
+    };
+    ok((await bad.ses.boot()) === true && bad.ses.orbNote === '' && !/Heads up/.test(bad.state.status) && /ip=null&slug=tint/.test(srcAsk),
+      'the 400 costs the page nothing: boot is true, orbNote empty, no Heads up line', srcAsk + ' | ' + bad.state.status);
+    ok(await bad.ses.openTheme() && bad.hub.keeps.length === 1 && bad.state.status === 'Imported “Skeleton by @greg” into the library' && !/Heads up/.test(bad.state.status),
+      'and the import still lands with the hub refusing that ask', bad.state.status);
+    // the same page with no ?import=: the hub’s library is the page’s library, with no orb behind it
+    const plain = irun({ pathname: '/editor/hub/tint/', search: '' });
+    const plainIn = plain.hub.fetch;
+    plain.hub.fetch = (u, o) => new URL(String(u), 'http://hub').pathname === '/api/design/save'
+      ? Promise.resolve(resp(200, { ok: true, data: { name: 'Two' } })) : plainIn(u, o);
+    await plain.ses.boot();
+    ok(await plain.ses.saveDraft({ name: 'Two', doc: { format: 'wc-design', schema: 1, app: 'tint', appVersion: 'v1.3.0', color: 'teal', size: 5, name: 'Two' } }) &&
+      plain.state.status === 'Saved “Two” to the library as a draft' && calls.some((c) => /design\/save\?app=tint&name=Two/.test(c[1])),
+      'Save to the library works there, at the hub’s own base', plain.state.status + ' | ' + calls.map((c) => c[1]).join(' '));
+    ok(await plain.ses.openEntry('One') && plain.applied[plain.applied.length - 1] === 'the library' && plain.state.color === 'plum',
+      'and a library entry opens as it does under an orb', JSON.stringify([plain.applied, plain.state.color]));
+    ok(irun({ pathname: '/editor/hub/tint' }).ses.hubOrb() === null && irun({ pathname: '/editor/hub/../tint/' }).ses.hubOrb() === null,
+      'a hub path with no trailing slash, and one with a dot segment, answer nothing', '/editor/hub/tint + /editor/hub/../tint/');
     location.search = ''; location.pathname = '/';
     global.parent = lastParent;
     delete global.GorbBake; delete global.GorbHost;

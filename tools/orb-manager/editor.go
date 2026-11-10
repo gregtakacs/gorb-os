@@ -77,6 +77,10 @@ func (s *Server) routesEditor(mux *http.ServeMux) {
 	// theme-surface GET that dials a device is guarded the same way for the same
 	// reason — the token is what says the requester is a page this hub served.
 	mux.Handle("/editor/", s.requireControl(http.HandlerFunc(s.serveEditor)))
+	// The hub's own copy of an app's editor, read out of the .orbapp in its app library.
+	// Go's mux prefers the longer pattern, so /editor/hub/… never reaches serveEditor and
+	// this door never dials. Design H1b ruling 32: an import bakes with this one.
+	mux.Handle("/editor/hub/", s.requireControl(http.HandlerFunc(s.serveHubEditor)))
 	mux.Handle("/api/editor/source", s.requireControl(http.HandlerFunc(s.handleEditorSource)))
 }
 
@@ -409,6 +413,101 @@ func (s *Server) serveEditor(w http.ResponseWriter, r *http.Request) {
 		editorRefused(w, r, err)
 		return
 	}
+	s.serveEditorFile(w, r, t.IP, slug, file, zr)
+}
+
+// serveHubEditor answers GET /editor/hub/<slug>/<file> (design H1b, ruling 32): the editor
+// for an app as Orb Manager itself carries it — the region inside the .orbapp its app
+// library holds, the same file /api/library lists, the per-orb door serves when the orb
+// runs the hub's release, and `orb-manager extract-editors` unpacks.
+//
+// There is no orb in this door at all. No address is checked, no ledger is read, nothing is
+// dialled: the hub's own disk is the source, so an import from orb-os.net needs no board to
+// be running the app it bakes a theme for. The memo keeps the parsed reader under the
+// non-address ip "hub", keyed on the library file's stamp, so a rewritten .orbapp is served
+// on the next request rather than when the window ages out.
+func (s *Server) serveHubEditor(w http.ResponseWriter, r *http.Request) {
+	rest := strings.TrimPrefix(r.URL.Path, "/editor/hub/")
+	slug, file, ok := strings.Cut(rest, "/")
+	if !ok {
+		slug, file = rest, ""
+	}
+	if !orbnet.AppStemOK(slug) {
+		http.Error(w, "not an app name", http.StatusNotFound)
+		return
+	}
+	if strings.Contains(file, "..") || strings.HasPrefix(file, "/") {
+		http.Error(w, "not found", http.StatusNotFound)
+		return
+	}
+	file = path.Clean("/" + strings.ReplaceAll(file, "\\", "/"))[1:]
+	zr, err := s.hubEditorRegion(slug)
+	if err != nil {
+		editorRefused(w, r, err)
+		return
+	}
+	s.serveEditorFile(w, r, hubEditorIP, slug, file, zr)
+}
+
+// hubEditorIP is the memo key's address for a region that came off this hub's own shelf.
+// It is not an IP and never a dial target: dropEditorRegions, which retires an address's
+// memo at a rescan or a reflash, cannot name it, and no code dials a host called "hub".
+const hubEditorIP = "hub"
+
+// hubEditorRegion is the hub door's memo: the same map, a key of its own, and the library
+// file's stamp as its expiry. A held error is never reused — the read is a local file, so
+// the next request pays for it again rather than inheriting a stale refusal.
+func (s *Server) hubEditorRegion(slug string) (*zip.Reader, error) {
+	k := editorKey{hubEditorIP, slug}
+	stamp := s.library().ContainerStamp(slug)
+	regions.mu.Lock()
+	defer regions.mu.Unlock()
+	if sl, ok := regions.slots[k]; ok && sl.err == nil && sl.lib == stamp &&
+		stamp != "" && time.Since(sl.fetched) < editorFetchTTL {
+		return sl.zr, nil
+	}
+	zr, err := s.libraryContainerEditorRegion(slug)
+	regions.slots[k] = &editorSlot{zr: zr, err: err, fetched: time.Now(), lib: stamp}
+	return zr, err
+}
+
+// libraryContainerEditorRegion reads the editor region out of the container this hub's app
+// library holds, with no opinion about versions: whatever release the shelf carries IS the
+// editor Orb Manager offers. Absent and unreadable are ErrNoEditor (a 404 at the door)
+// because no board is at fault; a file that will not parse, or a region that is not a ZIP,
+// is the hub's own disk talking and answers 502.
+func (s *Server) libraryContainerEditorRegion(slug string) (*zip.Reader, error) {
+	body, err := s.library().Container(slug)
+	if err != nil {
+		return nil, err
+	}
+	if body == nil {
+		return nil, fmt.Errorf("%w: Orb Manager carries no %s app", orbnet.ErrNoEditor, slug)
+	}
+	if _, err := orbnet.ParseApp(body); err != nil {
+		return nil, err
+	}
+	region, err := orbnet.AppEditorRegion(body)
+	if err != nil {
+		return nil, err
+	}
+	if len(region) == 0 {
+		return nil, fmt.Errorf("%w: Orb Manager’s copy of the %s app has no editor", orbnet.ErrNoEditor, slug)
+	}
+	zr, err := zip.NewReader(bytes.NewReader(region), int64(len(region)))
+	if err != nil {
+		return nil, fmt.Errorf("the library editor region for %s is not a ZIP archive: %w", slug, err)
+	}
+	return zr, nil
+}
+
+// serveEditorFile is the half of an editor request that does not care where the archive
+// came from: which member a bare directory request opens, who gets the launch token, and
+// how a runtime the hub lacks is refused. Both doors hand it a reader — the per-orb door a
+// region it dialled or read from the shelf for that orb's release, the hub door the region
+// inside its own library file. The ip arrives only so a runtime refusal can name the two
+// releases beside each other; for the hub door it is hubEditorIP, which names no board.
+func (s *Server) serveEditorFile(w http.ResponseWriter, r *http.Request, ip, slug, file string, zr *zip.Reader) {
 	if file == "" || file == "." {
 		file = editorManifestName
 	}
@@ -417,7 +516,7 @@ func (s *Server) serveEditor(w http.ResponseWriter, r *http.Request) {
 	if file == editorManifestName {
 		if raw, found := editorMember(zr, editorManifestName); found {
 			if hp, isHosted, why := hostedEditor(raw, zr); isHosted {
-				s.serveHostedEditor(w, r, t.IP, slug, raw, hp, why)
+				s.serveHostedEditor(w, r, ip, slug, raw, hp, why)
 				return
 			}
 			if entry := rawEntryName(raw); entry != "" {
@@ -452,7 +551,7 @@ func (s *Server) serveEditor(w http.ResponseWriter, r *http.Request) {
 	if isHTMLDoc(file) {
 		if raw, found := editorMember(zr, editorManifestName); found {
 			if missing := editorRuntimeMissing(raw); len(missing) > 0 {
-				runtimeRefused(w, r, slug, missing, s.editorVersions(t.IP, slug))
+				runtimeRefused(w, r, slug, missing, s.editorVersions(ip, slug))
 				return
 			}
 		}

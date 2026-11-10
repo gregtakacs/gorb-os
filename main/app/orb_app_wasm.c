@@ -2127,11 +2127,22 @@ static esp_err_t wasm_init(orb_app_t *app)
     return r == 0 ? ESP_OK : ESP_FAIL;
 }
 
+/* An app decides at init whether it has a stage (wasm_init), and on a fresh install it is
+ * loaded at the boot the install asks for, before the hub's seed has chosen its theme: it
+ * came up stageless, the store chose for it off the glass, and every arrival after found no
+ * stage and posted no fill. Flights on a clean Gold never wore its theme (owner, 2026-11-09).
+ * An arrival looks again, as a store for the app on the glass does (orb_wasm_theme_changed). */
+static void stage_recheck(wasm_slot_t *s, orb_app_t *app)
+{
+    if (!s->stage && app->slug && orb_theme_has(app->slug)) s->stage = true;
+}
+
 static esp_err_t wasm_activate(orb_app_t *app)
 {
     wasm_slot_t *s = slot_of_app(app);
     if (!s || !s->rt) return ESP_FAIL;
     s->on_glass = true;
+    stage_recheck(s, app);
     if (!wasm_call(s, W_ACTIVATE, NULL, 0)) return ESP_FAIL;
     if (s->rt) beat_apply(s);
     if (s->stage && stage_bind(app) == ESP_OK)   /* its own theme on its own page */
@@ -2164,6 +2175,7 @@ static void wasm_resume(orb_app_t *app)
     wasm_slot_t *s = slot_of_app(app);
     if (!s || !s->rt) return;
     s->on_glass = true;
+    stage_recheck(s, app);
     (void)wasm_call(s, W_RESUME, NULL, 0);
     if (s->rt) beat_apply(s);
     if (s->stage && stage_bind(app) == ESP_OK) stage_run(true);

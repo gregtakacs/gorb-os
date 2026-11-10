@@ -8179,7 +8179,7 @@ static esp_err_t h_theme_upload(httpd_req_t *req)
      * does not reboot (2026-11-09); the app wears the new theme as its fill lands. */
     orb_edge_arc_set(-1);
     char b[192];
-    if (keep && !orb_theme_is_chosen(committed)) {
+    if (keep && !orb_theme_chosen(committed)) {
         snprintf(b, sizeof b, "{\"state\":\"filed\",\"id\":\"%s\",\"bytes\":%d,\"reboot\":\"none\"}",
                  committed, got);
         return httpd_resp_sendstr(req, b);

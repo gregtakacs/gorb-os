@@ -1674,6 +1674,7 @@ const JOURNEY = [
   { id: "join", label: "Join the network", kind: "wait" },
   { id: "home", label: "Set its home", kind: "wait" },
   { id: "seed", label: "Install the clock and its face", kind: "wait" },
+  { id: "maps", label: "Make its home maps", kind: "wait" },
 ];
 let journey = null;
 function journeyAt(id) { if (journey) journey.enter(id); }
@@ -1996,6 +1997,8 @@ async function autoInstall(ip) {
   // unless the dial itself was read enabled, backed by card bytes, and wearing a theme).
   // No card is a finished setup, not a failed one (owner, 2026-11-07): the firmware and the
   // WiFi are on the orb, and the hub's sentence names the one thing left for the owner.
+  if (done && !noCard) await journeyMaps(ip);
+  else if (done && journey) { journeyAt("maps"); journey.skip("waits for an SD card"); }
   if (done && noCard) {
     seedVerdict = "nocard";
     releaseSeed(watch, noCard.charAt(0).toUpperCase() + noCard.slice(1) + ".");
@@ -2014,6 +2017,25 @@ async function autoInstall(ip) {
     const lever = /flick the knob|press Install/.test(seedVerdict) ? ""
       : " Open the orb and press Install on Clock on the Apps tab to run it again.";
     releaseSeed(watch, "the seed did not finish: " + seedVerdict + "." + lever);
+  }
+}
+
+// journeyMaps makes the new orb's home maps once its clock is seeded (owner, 2026-11-09:
+// "the initial install should also make the home maps"), so radar and the other map apps
+// draw from the first time they open. The tiles come from the internet through the hub; a
+// failure leaves setup complete and says where to make them later.
+async function journeyMaps(ip) {
+  if (!journey || typeof buildPlaceMaps !== "function") return;
+  journeyAt("maps");
+  const watch = $("#ob-watch");
+  if (watch) watch.textContent = "making its home maps \u2014 keep this window open\u2026";
+  try {
+    const r = await buildPlaceMaps(ip, (t) => { journey.note(t); if (/writing /.test(t)) watchLog(t); });
+    if (!r) journey.skip("no home set: Make maps on the Orb tab once it has one");
+    else watchLog("home maps made: " + r.levels + " levels from " + r.tiles + " tiles");
+  } catch (e) {
+    journey.skip("not made: " + e.message + " \u2014 Make maps on the Orb tab");
+    watchLog("the home maps were not made: " + e.message);
   }
 }
 

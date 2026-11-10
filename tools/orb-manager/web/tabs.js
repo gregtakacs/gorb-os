@@ -930,7 +930,7 @@ function loadMapsKit() {
   });
   return mapsKit;
 }
-const orbURL = (path) => "/orb/" + encodeURIComponent(current.ip) + path;
+const orbURL = (path, ip) => "/orb/" + encodeURIComponent(ip || current.ip) + path;
 async function hubData(url, opts) {
   const r = await hubFetch(url, opts);
   const j = await r.json();
@@ -938,9 +938,9 @@ async function hubData(url, opts) {
   return j.data;
 }
 // Home and the places as the OS names their maps: [{place, label, latE6, lonE6}] (set ones).
-async function mapsPlaces() {
-  const [h, p] = await Promise.all([readDeviceJSON(await hubFetch(homeURL())),
-                                    readDeviceJSON(await hubFetch(placesURL()))]);
+async function mapsPlaces(ip) {
+  const [h, p] = await Promise.all([readDeviceJSON(await hubFetch(orbURL("/api/v1/home", ip))),
+                                    readDeviceJSON(await hubFetch(orbURL("/api/v1/places", ip)))]);
   const out = [];
   const e6 = (v) => Math.round(+v * 1e6);
   if (h.home && h.home.set) out.push({ place: 0, label: "Home", latE6: e6(h.home.lat), lonE6: e6(h.home.lon) });
@@ -948,8 +948,8 @@ async function mapsPlaces() {
     if (q.set) out.push({ place: q.i + 1, label: q.name || "Place " + (q.i + 1), latE6: e6(q.lat), lonE6: e6(q.lon) });
   return out;
 }
-async function mapsListing() {
-  const r = await hubFetch(orbURL("/api/v1/sd/ls?path=" + encodeURIComponent(MAPS_DIR)));
+async function mapsListing(ip) {
+  const r = await hubFetch(orbURL("/api/v1/sd/ls?path=" + encodeURIComponent(MAPS_DIR), ip));
   const d = await r.json().catch(() => ({}));
   if (!r.ok) {
     if (/no such directory/.test(d.error || "")) return {};
@@ -960,9 +960,9 @@ async function mapsListing() {
   return files;
 }
 // What the card holds against what home and the places need.
-async function mapsCompute() {
+async function mapsCompute(ip) {
   const G = await loadMapsKit();
-  const [places, files] = await Promise.all([mapsPlaces(), mapsListing()]);
+  const [places, files] = await Promise.all([mapsPlaces(ip), mapsListing(ip)]);
   const want = {};
   for (const pl of places) {
     pl.names = G.ZOOMS.map((z) => G.mapName(pl.place, pl.latE6, pl.lonE6, z));
@@ -1079,37 +1079,46 @@ async function mapsLevel(G, tmpl, pl, z, onTile) {
   await Promise.all([worker(), worker(), worker(), worker()]);
   return G.build(tiles, lat, lon, z).bytes;
 }
+// buildPlaceMaps makes the maps the orb at ip lacks (every place's again when none is
+// missing, or always with all), writes them to its card, removes the ones no place names and
+// tells the OS. say(text) hears each step. It answers null when the orb has no home or place
+// set, else what it did. The Orb face's Make maps and the setup journey both run it (owner,
+// 2026-11-09: "the initial install should also make the home maps").
+async function buildPlaceMaps(ip, say, all) {
+  const G = await loadMapsKit();
+  const st = await mapsCompute(ip);
+  if (!st.places.length) return null;
+  const todo = all || !st.need.length ? st.places : st.need;   /* nothing missing: remake all */
+  const n = todo.length * G.ZOOMS.length;
+  let step = 0, tiles = 0;
+  say("reading the Map tiles source…");
+  const tmpl = await mapsTemplate();
+  await readDeviceJSON(await hubFetch(orbURL("/api/v1/sd/mkdir?path=" + encodeURIComponent(MAPS_DIR), ip), { method: "POST" }));
+  for (const pl of todo) {
+    for (const z of G.ZOOMS) {
+      step++;
+      const tell = () => say("Step " + step + " of " + n + ": " + pl.label + ", level z" + z + " (" + tiles + " tiles fetched)");
+      tell();
+      const bytes = await mapsLevel(G, tmpl, pl, z, () => { tiles++; tell(); });
+      const name = G.mapName(pl.place, pl.latE6, pl.lonE6, z);
+      say("Step " + step + " of " + n + ": writing " + name + " (" + Math.round(bytes.length / 1024) + " KB)");
+      await readDeviceJSON(await hubFetch(orbURL("/api/v1/sd/write?overwrite=1&path=" +
+        encodeURIComponent(MAPS_DIR + "/" + name), ip), { method: "POST", body: bytes }));
+    }
+  }
+  for (const name of st.stale)
+    await readDeviceJSON(await hubFetch(orbURL("/api/v1/sd/rm?path=" + encodeURIComponent(MAPS_DIR + "/" + name), ip), { method: "POST" }));
+  await readDeviceJSON(await hubFetch(orbURL("/api/v1/places/maps", ip), { method: "POST" }));
+  return { places: todo.length, levels: n, tiles, removed: st.stale.length };
+}
 async function makeMaps() {
   if (mapsBusy || !mapsState) return;
   const msg = $("#maps-msg"), make = $("#maps-make");
   mapsBusy = true; make.disabled = true;
   try {
-    const G = await loadMapsKit();
-    const st = await mapsCompute();
-    const todo = st.need.length ? st.need : st.places;          /* nothing missing: remake all */
-    const n = todo.length * G.ZOOMS.length;
-    let step = 0, tiles = 0;
-    msg.textContent = "reading the Map tiles source…";
-    const tmpl = await mapsTemplate();
-    await readDeviceJSON(await hubFetch(orbURL("/api/v1/sd/mkdir?path=" + encodeURIComponent(MAPS_DIR)), { method: "POST" }));
-    for (const pl of todo) {
-      for (const z of G.ZOOMS) {
-        step++;
-        const say = () => { msg.textContent = "Step " + step + " of " + n + ": " + pl.label + ", level z" + z +
-                                              " (" + tiles + " tiles fetched)"; };
-        say();
-        const bytes = await mapsLevel(G, tmpl, pl, z, () => { tiles++; say(); });
-        const name = G.mapName(pl.place, pl.latE6, pl.lonE6, z);
-        msg.textContent = "Step " + step + " of " + n + ": writing " + name + " (" + Math.round(bytes.length / 1024) + " KB)";
-        await readDeviceJSON(await hubFetch(orbURL("/api/v1/sd/write?overwrite=1&path=" +
-          encodeURIComponent(MAPS_DIR + "/" + name)), { method: "POST", body: bytes }));
-      }
-    }
-    for (const name of st.stale)
-      await readDeviceJSON(await hubFetch(orbURL("/api/v1/sd/rm?path=" + encodeURIComponent(MAPS_DIR + "/" + name)), { method: "POST" }));
-    await readDeviceJSON(await hubFetch(orbURL("/api/v1/places/maps"), { method: "POST" }));
-    msg.textContent = "DONE: " + todo.length + " place" + (todo.length === 1 ? "" : "s") + ", " + n + " levels, " + tiles +
-      " tiles" + (st.stale.length ? "; " + st.stale.length + " old file" + (st.stale.length === 1 ? "" : "s") + " removed" : "") +
+    const r = await buildPlaceMaps(current.ip, (t) => { msg.textContent = t; });
+    if (r) msg.textContent = "DONE: " + r.places + " place" + (r.places === 1 ? "" : "s") + ", " + r.levels + " levels, " + r.tiles +
+      " tiles" + (r.removed ? "; " + r.removed + " old file" + (r.removed === 1 ? "" : "s") + " removed" : "") +
       ". Apps redraw their maps now.";
   } catch (e) {
     msg.textContent = "the maps were not made: " + e.message;

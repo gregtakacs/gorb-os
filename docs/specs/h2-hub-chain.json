@@ -1,0 +1,25 @@
+{
+  "name": "h2-hub",
+  "repo": "../..",
+  "base": "h2",
+  "retries": 2,
+  "timeout": 5400,
+  "steps": [
+    {
+      "name": "h2-hub-1-link-state-machine",
+      "spec": "docs/specs/h2-hub-1-link-state-machine.md",
+      "hard": true,
+      "verify": "set -o pipefail; export GOFLAGS=-buildvcs=false PATH=/usr/local/go/bin:$PATH && cd tools/orb-manager && go vet ./... && go test -run 'TestSiteLink|TestSiteConnect|TestSiteDoorShut|TestStateFileHoldsNoSecrets|TestEditorAPI' -v . 2>&1 | tee /tmp/h2-hub-1.log && grep -q -- '--- PASS: TestSiteConnectEndToEnd' /tmp/h2-hub-1.log && grep -q -- '--- PASS: TestSiteConnectURLIsTheContract' /tmp/h2-hub-1.log && grep -q -- '--- PASS: TestSiteLinkFileRoundTrip' /tmp/h2-hub-1.log && grep -q -- '--- PASS: TestSiteDoorShutWithoutTheFlag' /tmp/h2-hub-1.log && grep -q -- '--- PASS: TestSiteConnectWrongStateKeepsWaiting' /tmp/h2-hub-1.log && grep -q -- '--- PASS: TestSiteConnectRevokesTheOldToken' /tmp/h2-hub-1.log && grep -q -- '--- PASS: TestSiteLinkRoutesRefuseEditorCreds' /tmp/h2-hub-1.log && ! grep -q -- '--- FAIL' /tmp/h2-hub-1.log && grep -q 'site-link.json' sitelink.go && git diff --exit-code h2 -- state.go siteimport.go web internal"
+    },
+    {
+      "name": "h2-hub-2-site-api-routes",
+      "spec": "docs/specs/h2-hub-2-site-api-routes.md",
+      "verify": "set -o pipefail; export GOFLAGS=-buildvcs=false PATH=/usr/local/go/bin:$PATH && cd tools/orb-manager && go vet ./... && go test -run 'TestSiteDesigns|TestSiteDisconnect|TestSiteImportId|TestSiteDoorShut|TestEditorAPI' -v . 2>&1 | tee /tmp/h2-hub-2.log && grep -q -- '--- PASS: TestSiteDesigns401ClearsTheLink' /tmp/h2-hub-2.log && grep -q -- '--- PASS: TestSiteDisconnectForgetsTheToken' /tmp/h2-hub-2.log && grep -q -- '--- PASS: TestSiteDesignsProxiesAndSendsBearer' /tmp/h2-hub-2.log && ! grep -q -- '--- FAIL' /tmp/h2-hub-2.log && git diff --exit-code h2 -- web internal state.go"
+    },
+    {
+      "name": "h2-hub-3-my-orb-os-net-ui",
+      "spec": "docs/specs/h2-hub-3-my-orb-os-net-ui.md",
+      "verify": "set -o pipefail; export GOFLAGS=-buildvcs=false PATH=/usr/local/go/bin:$PATH && cd tools/orb-manager && go vet ./... && go test -run 'TestSiteUI|TestSiteLink|TestSiteConnect|TestSiteDesigns|TestSiteDisconnect|TestSiteImportId|TestSiteDoorShut|TestStateFileHoldsNoSecrets|TestEditorAPI' -v . 2>&1 | tee /tmp/h2-hub-3.log && grep -q -- '--- PASS: TestSiteLinkFullPress' /tmp/h2-hub-3.log && grep -q -- '--- PASS: TestSiteUISectionIsThereAndShut' /tmp/h2-hub-3.log && ! grep -q -- '--- FAIL' /tmp/h2-hub-3.log && go test ./... -count=1 && cd ../.. && make check-apps check-hub check-editor check-web check-runner check-migrations check-editor-origin"
+    }
+  ]
+}

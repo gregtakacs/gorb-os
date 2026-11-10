@@ -12,6 +12,7 @@ refused here rather than on the dial.
     orbsdk.py pack [<appdir>] [-o DIR]           build, then write DIR/<slug>.orbapp
     orbsdk.py install <appdir|file.orbapp> --orb HOST
                                                  pack, upload to the orb's card, install
+    orbsdk.py publish --site HOST <file.orbapp>  post a built container to an orb-os.net site
     orbsdk.py inspect <file.orbapp>              read a container back
     orbsdk.py binds [--write]                    in a gorb-os clone: check (or rewrite)
                                                  binds.json against the firmware
@@ -622,6 +623,57 @@ def install(blob, host):
     return slug
 
 
+# ---- the site -----------------------------------------------------------------------
+
+RELEASE_PATH = "/api/dev/release"       # the site's CI door (orb-os-net design.md §6.2)
+RELEASE_STATUSES = ("pending", "live", "skipped", "duplicate")
+LOCAL_HOSTS = ("localhost", "127.0.0.1")    # the only hosts a plain --site may speak http to
+
+
+def site_url(site):
+    """The release URL for a --site value: https://<host>/api/dev/release.
+
+    The value is a host or host:port; a literal scheme in front of it is the caller
+    repeating what the command already decided, so it is stripped and honoured, with one
+    exception: http on anything but a localhost name is refused the way a missing token
+    is, because the token rides in the request and an http POST would hand a developer
+    token to whoever is listening. A bare localhost name may be http — that is how the
+    host suite stands a stub server in for the site."""
+    v = (site or "").strip()
+    low = v.lower()
+    if low.startswith("http://"):
+        v, given = v[7:], "http"
+    elif low.startswith("https://"):
+        v, given = v[8:], "https"
+    else:
+        given = None
+    host = v.split("/")[0].strip()
+    if given == "http" and host.split(":")[0].lower() not in LOCAL_HOSTS:
+        print("publish: --site must be https")
+        raise SystemExit(2)
+    scheme = given or ("http" if host.split(":")[0].lower() in LOCAL_HOSTS else "https")
+    return "%s://%s%s" % (scheme, host, RELEASE_PATH)
+
+
+def site_post(url, token, blob):
+    """One POST of the raw container to the site, the token from the environment.
+
+    The token is never an argument — argv lands in CI logs and in `ps` — and is never
+    printed here; a refusal quotes the site's own sentence or a bare HTTP status. It goes
+    as an unredirected header, so a 3xx answer can move the request but not the token."""
+    req = urllib.request.Request(url, data=blob, method="POST")
+    req.add_header("Content-Type", "application/octet-stream")
+    req.add_unredirected_header("Authorization", "Bearer " + token)
+    try:
+        with urllib.request.urlopen(req, timeout=120) as r:
+            return r.status, r.read()
+    except urllib.error.HTTPError as e:      # the site answered: its body decides the line
+        return e.code, e.read()
+    except (urllib.error.URLError, OSError, ValueError) as e:
+        print("publish: could not reach %s: %s" % (url, getattr(e, "reason", None) or e))
+        raise SystemExit(1)
+
+
 # ---- commands -----------------------------------------------------------------------
 
 def sdk_version():
@@ -681,6 +733,50 @@ def cmd_install(a):
         blob = open(a.target, "rb").read()
     slug = install(blob, a.orb)
     print("installed %s on %s; the orb reboots to load it" % (slug, a.orb))
+
+
+def cmd_publish(a):
+    """Post a built .orbapp to an orb-os.net site's CI door with the developer token."""
+    url = site_url(a.site)
+    token = os.environ.get("ORB_SITE_TOKEN")
+    if not token and not a.dry_run:
+        print("publish: ORB_SITE_TOKEN is not set")
+        raise SystemExit(2)
+    try:
+        with open(a.file, "rb") as f:
+            blob = f.read()
+    except OSError:
+        print("publish: cannot read %s" % a.file)
+        raise SystemExit(2)
+    if a.dry_run:
+        print("publish: would POST %s (%d B) to %s" % (a.file, len(blob), url))
+        return
+    # the reader is only here to name the app on the line: a file the reader refuses is
+    # still the site's to judge, so the site's 400 sentence is what prints (ruling 15)
+    try:
+        hdr = orbapp.parse_header(blob)
+    except ValueError:
+        hdr = {}
+    st, body = site_post(url, token, blob)
+    try:
+        got = json.loads(body.decode("utf-8", "replace"))
+    except ValueError:
+        got = None
+    if 200 <= st < 300:
+        status = got.get("status") if isinstance(got, dict) else None
+        if status not in RELEASE_STATUSES:
+            print("publish: HTTP %d" % st)
+            raise SystemExit(1)
+        ver = got.get("version")
+        if not isinstance(ver, str) or not ver:
+            ver = hdr.get("version") or ""      # a duplicate answer names no version
+        slug = hdr.get("slug") or os.path.splitext(os.path.basename(a.file))[0]
+        label = "already published" if status == "duplicate" else status
+        print("publish: %s -> %s" % (" ".join(w for w in (slug, ver) if w), label))
+        return
+    err = got.get("error") if isinstance(got, dict) else None
+    print("publish: " + (err if isinstance(err, str) and err else "HTTP %d" % st))
+    raise SystemExit(1)
 
 
 def cmd_inspect(a):
@@ -875,6 +971,13 @@ def main(argv=None):
     s = sub.add_parser("install", help="pack, upload to an orb, install")
     s.add_argument("target"); s.add_argument("--orb", required=True, help="the orb's IP or name")
     s.set_defaults(fn=cmd_install)
+    s = sub.add_parser("publish", help="publish a built .orbapp to an orb-os.net site")
+    s.add_argument("file"); s.add_argument("--site", required=True,
+                                           help="the site's host (or host:port); https, "
+                                                "except a localhost test site")
+    s.add_argument("--dry-run", action="store_true",
+                   help="print what would be sent and stop: no token, no request")
+    s.set_defaults(fn=cmd_publish)
     s = sub.add_parser("inspect", help="read a container back")
     s.add_argument("file"); s.set_defaults(fn=cmd_inspect)
     s = sub.add_parser("binds", help="check binds.json against the firmware (clone only)")

@@ -32,3 +32,17 @@ jobs:
         run: |
           test "$(cat version.txt)" = "${GITHUB_REF_NAME}" || { echo "tag ${GITHUB_REF_NAME} != version.txt $(cat version.txt)"; exit 1; }
           gh release create "${GITHUB_REF_NAME}" build/*.orbapp --generate-notes
+      # With ORB_SITE_TOKEN set (an orb-os.net developer token for this app's slug), a tag push
+      # also queues the release on that site — docs/design.md §6.2 of orb-os-net. No secret,
+      # no step; the GitHub release alone is still a complete release.
+      - name: Publish to orb-os.net
+        # (the secret is checked in the script: a step's own env is not visible to its `if`)
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          ORB_SITE_TOKEN: ${{ secrets.ORB_SITE_TOKEN }}
+          ORB_SITE: ${{ vars.ORB_SITE || 'orb-os.net' }}
+        run: |
+          if [ -z "$ORB_SITE_TOKEN" ]; then echo "publish: no ORB_SITE_TOKEN secret, skipped (GitHub release only)"; exit 0; fi
+          SDK=$(find .sdk -name orbsdk.py | head -1)
+          test -n "$SDK" || { echo "publish: no SDK found under .sdk"; exit 1; }
+          python3 "$SDK" publish --site "$ORB_SITE" build/*.orbapp

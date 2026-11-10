@@ -38,3 +38,11 @@ The SDK's `orb.h` documents every call the OS offers. The SDK guide is
 Tag a commit with the version in `version.txt` (`git tag v0.1.0 && git push --tags`).
 The workflow checks the migrations of every design in `editor/_fixtures/` before it packs,
 and attaches the `.orbapp` to a GitHub release.
+
+To release to GitHub and to the site with one tag push, set the repository **secret**
+`ORB_SITE_TOKEN` (a developer token from the site's `/dev` page, scoped to this app's slug,
+shown once when created) and optionally the **variable** `ORB_SITE` (default `orb-os.net`):
+a `v*` tag then also queues the `.orbapp` on the site, and an unset secret leaves that step
+skipped — the release stays GitHub-only, exactly as before. If the site refuses the upload
+the job fails with the GitHub release already out; fix and re-push the tag, and since the
+same version with new bytes is refused, bump `version.txt`.

@@ -681,23 +681,37 @@ void orb_ui_cv_flush(int slot, int32_t h)
     if (cv_of(u, h)) lv_obj_invalidate(u->obj[h]);
 }
 
-void orb_ui_release(int slot)
+/* A page and everything it holds. */
+static void page_free(ui_slot_t *u)
 {
-    ui_slot_t *u = slot_get(slot, false);
-    if (!u) return;
-    /* A page still on the glass is left standing: the second strike of a trapping
-     * app lands while it is showing, and deleting LVGL's active screen leaves the
-     * display with nothing to draw. The dial moves off it on the next switch, and the
-     * next boot never builds it (C2), so what stays is one page of orphaned widgets
-     * and its canvases, not a leak that grows. */
-    if (u->scr && u->scr == lv_screen_active()) {
-        ESP_LOGW(TAG, "slot %d: page is on the glass — kept until the dial moves", slot);
-        s_ui[slot] = NULL;
-        return;
-    }
     if (u->scr) lv_obj_delete(u->scr);           /* takes every child with it */
     for (int i = 0; i < u->n_cv; i++)
         if (u->cv[i].px) orb_glass_free(u->cv[i].px);
     heap_caps_free(u);
+}
+
+static void orphan_free(void *p) { page_free(p); }
+
+/* The dial moved off a page released while it showed: it goes now, after the load that
+ * replaced it has finished (deleting inside the screen-change event is not allowed). */
+static void orphan_unloaded(lv_event_t *e)
+{
+    lv_async_call(orphan_free, lv_event_get_user_data(e));
+}
+
+void orb_ui_release(int slot)
+{
+    ui_slot_t *u = slot_get(slot, false);
+    if (!u) return;
     s_ui[slot] = NULL;
+    /* A page still on the glass is left standing: the second strike of a trapping
+     * app lands while it is showing, and deleting LVGL's active screen leaves the
+     * display with nothing to draw. It goes, widgets and canvases, when the dial
+     * moves off it. */
+    if (u->scr && u->scr == lv_screen_active()) {
+        ESP_LOGW(TAG, "slot %d: page is on the glass — freed when the dial moves", slot);
+        lv_obj_add_event_cb(u->scr, orphan_unloaded, LV_EVENT_SCREEN_UNLOADED, u);
+        return;
+    }
+    page_free(u);
 }

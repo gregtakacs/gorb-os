@@ -2363,13 +2363,13 @@ class Component extends DCLogic {
     else F.push(Rg('Gap', gap, -60, 160, 0.5, put('gap'), (gap > 0 ? '+' : '') + gap + ' px → ' + R + ' px'));
     F.push(Nt('', fixed ? 'The scale stands at this radius whatever the hand’s length.' : 'The scale stands this far past the hand’s tip, and follows the hand when its length changes.'));
     const faces = [{ v: '', label: 'The look’s own' }].concat(opt(E.TYPEFACES)), sz = (q) => (sc[q] == null ? 1 : +sc[q]);
-    const figs = fam !== 'chapter' || !['batons', 'sticks', 'station', 'plots', 'framed'].includes(st), ticksOnly = st === 'ticks';   // Fine ticks alone prints no figures
+    const figs = fam !== 'chapter' || !['batons', 'sticks', 'station', 'plots', 'framed', 'noir'].includes(st), ticksOnly = st === 'ticks';   // Fine ticks alone prints no figures
     if (fam === 'chapter') {
       F.push(Sl('Figures', sc.figures || 'all', opt(E.FIGURES), put('figures')));
       if (figs && sc.figures !== 'none') F.push(Ch('Orientation', sc.orient || (st === 'roman' ? 'radial' : 'upright'), [{ v: 'upright', label: 'Upright' }, { v: 'radial', label: 'Radial' }], put('orient')),
         Sl('Typeface', sc.font || '', faces, put('font')));
       if (sc.figures !== 'none') {
-        const plots = st === 'plots' || st === 'framed';
+        const plots = st === 'plots' || st === 'framed' || st === 'noir';
         if (st !== 'batons') F.push(Co(plots ? 'Plot colour' : 'Colour', sc.color, put('color'), plots ? 'Lume' : 'Ink'));
         if (plots) F.push(Co('Plot rim', sc.rim, put('rim'), 'Silver'));
         F.push(Rg(plots ? 'Plot size' : figs ? 'Figure size' : 'Marker size', sz('size'), 0.5, 2, 0.05, put('size'), sz('size').toFixed(2) + '×'));
@@ -4243,7 +4243,7 @@ class Component extends DCLogic {
       if (s.sndMsg) fields.push(Nt('', s.sndMsg));
     }
     if (ready && s.tab === 'case') {
-      fields.push(H('Case metal'), Ch('Metal', s.caseMetal, ['auto', 'brass', 'copper', 'gunmetal', 'steel', 'rose'].map((id) => ({ v: id, label: id === 'auto' ? 'Match movement' : cap(id) })), (v) => this.setState({ caseMetal: v })));
+      fields.push(H('Case metal'), Ch('Metal', s.caseMetal, ['auto', 'brass', 'copper', 'gunmetal', 'steel', 'rose', 'green'].map((id) => ({ v: id, label: id === 'auto' ? 'Match movement' : cap(id) })), (v) => this.setState({ caseMetal: v })));
       // every bezel and the enamel insert take an insert colour; black unless the design says
       if (E.BEZEL[s.caseStyle] || s.caseStyle === 'insert') { const D2 = this.design() || {}; fields.push(H('Bezel insert'), Co('Insert colour', D2.bezelInk, (v) => this.upd((d) => { d.bezelInk = v; }), 'Black')); }
       /* The opening is only authorable under "no case": every other style owns its own rim

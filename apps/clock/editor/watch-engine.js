@@ -114,9 +114,9 @@
   const rulerPx = (cal) => Math.round((RULER_MM / 25.4) * PANEL.cssInch * (cal > 0 ? cal : 1));
   const screenInch = (css, cal) => css / (PANEL.cssInch * (cal > 0 ? cal : 1));
 
-  const SEC_STYLES = { classic: 'Classic counterweight', lollipop: 'Lollipop', ring: 'Open ring', arrowtip: 'Arrow tip', paddle: 'Lume paddle', bolt: 'Lightning', crescent: 'Crescent tail', star: 'Star tail', needle: 'Long needle', station: 'Station · disc at tip', flieger: 'Flieger · three lume discs', disc: 'Lume disc · paddle tail' };
+  const SEC_STYLES = { classic: 'Classic counterweight', lollipop: 'Lollipop', ring: 'Open ring', arrowtip: 'Arrow tip', paddle: 'Lume paddle', bolt: 'Lightning', boltarrow: 'Lightning \u00b7 arrow tip', crescent: 'Crescent tail', star: 'Star tail', needle: 'Long needle', station: 'Station · disc at tip', flieger: 'Flieger · three lume discs', disc: 'Lume disc · paddle tail' };
   const HAND_STYLES = { station: 'Station bar', aviator: 'Aviator sword', cathedral: 'Cathedral', poire: 'Poire', fleur: 'Fleur-de-lis', serpentine: 'Serpentine', louis: 'Louis XV', breguet: 'Breguet', spade: 'Spade', leaf: 'Leaf', baton: 'Baton', sword: 'Sword', dauphine: 'Dauphine', pencil: 'Pencil', skeleton: 'Skeleton', framed: 'Framed lume', rails: 'Twin rail', arrow: 'Arrow', broad: 'Broad arrow', crescent: 'Crescent tip', diamond: 'Diamond tip', sunburst: 'Sunburst tip', pierced: 'Pierced ring', pennant: 'Pennant' };
-  const HAND_FINISHES = { blued: 'Blued', gilt: 'Gilt', black: 'Black', steel: 'Steel', white: 'White', orange: 'Orange', red: 'Red', magenta: 'Magenta', yellow: 'Yellow', lime: 'Lime', mint: 'Mint', cyan: 'Cyan', violet: 'Violet', royal: 'Royal blue' };
+  const HAND_FINISHES = { blued: 'Blued', gilt: 'Gilt', black: 'Black', steel: 'Steel', white: 'White', orange: 'Orange', red: 'Red', magenta: 'Magenta', yellow: 'Yellow', lime: 'Lime', mint: 'Mint', cyan: 'Cyan', violet: 'Violet', royal: 'Royal blue', green: 'Green' };
   const DENSITY = { all: () => true, even: (h) => h % 2 === 0, quarters: (h) => h % 3 === 0, twelve: (h) => h === 0, none: () => false };
   const NUMERALS = { all: 'All twelve', even: 'Even hours', quarters: 'Quarters', twelve: '12 only', none: 'None' };
   const OPENWORK = { none: 'Solid dial', x: 'X bridges', xarch: 'X bridges + arch', cross: 'Cross', star: 'Six spokes', ring: 'Chapter ring only' };
@@ -1087,6 +1087,19 @@
         { id: 'h2', type: 'hand', host: 'c2', shows: 'second', length: 54.87, width: 1.8, cap: 2.6, scale: { style: 'classic', gap: 9.13 } },
         { id: 'h3', type: 'hand', host: 'dial', shows: 'minute', length: 197.76, width: 7.828, cap: 7.004, scale: { style: 'regulator', gap: 18.24 } },
       ] } },
+    // after a black lacquer tourbillon with green lume: framed batons, a lightning seconds hand, a
+    // green case; the 12 is left for a logo (a crown and the name are flares to retype)
+    noir: { name: 'Noir tourbillon', blurb: 'Black lacquer · framed batons · green lume and lightning seconds · tourbillon at 6', hands: 'framed', handFinish: 'steel', train: 'noirtour', caseMetal: 'green', cfg: { temp: 2700, glow: 0.9, outerTemp: 2900 }, design: {
+      surface: 'enamel', color: 'black', aging: 0, stains: 0, dust: 0, handLume: '#141618', secStyle: 'boltarrow', comps: [
+        { id: 'c1', type: 'opening', host: 'dial', angle: 180, dist: 107, rot: 0, size: 72, shape: 'circle', style: 'bevel', show: 'balance', hour: 12 },
+        { id: 'c2', type: 'flare', host: 'dial', angle: 0, dist: 156, rot: 0, size: 15, style: 'applied', icon: 'crown', color: 'auto' },
+        { id: 'c3', type: 'flare', host: 'dial', angle: 0, dist: 117, rot: 0, size: 13, style: 'applied', icon: 'text', text: 'GORB', font: 'dmserif', weight: 'bold', spacing: 0.08, color: 'auto' },
+        { id: 'c4', type: 'flare', host: 'dial', angle: 0, dist: 90, rot: 0, size: 9, style: 'print', icon: 'text', text: 'TOURBILLON', font: 'plex', weight: 'regular', spacing: 0.08, color: '#ecebe6' },
+        { id: 'c5', type: 'flare', host: 'dial', angle: 0, dist: 68, rot: 0, size: 9, style: 'print', icon: 'text', text: 'NOIR', font: 'jost', weight: 'regular', spacing: 0.4, color: '#1fbf4a' },
+        { id: 'h1', type: 'hand', host: 'dial', shows: 'hour', length: 128, width: 11, cap: 6.8, scale: { style: 'noir', color: '#1fbf4a', gap: 88 } },
+        { id: 'h2', type: 'hand', host: 'dial', shows: 'minute', length: 186, width: 8.4, cap: 6.8 },
+        { id: 'h3', type: 'hand', host: 'dial', shows: 'second', finish: 'green', length: 198, width: 3, cap: 5.6 },
+      ] } },
     // D41's two exercise dials: every path a hand can take, on faces built around them.
     // D43 P5d.2: Flux rebuilt from faces -- the retrograde fans and the sliding bar are a fan
     // and a slider sub-dial now, printing their own scales, and its hands ride them
@@ -1750,6 +1763,18 @@
         if (!NX) { X.lineWidth = 3.2 / hs; X.lineJoin = 'round'; X.strokeStyle = rim; X.stroke(); }
         X.restore();
       }
+    } else if (P_ === 'noir') {
+      // fine minute ticks at the rim, a lume square at each hour in their place (a wider one at
+      // 12); the framed batons are applied (applied())
+      ctx.lineWidth = 0.8;
+      for (let i = 0; i < M; i++) if (i % KM) tick(A(i, M), 207, 215, 0.8);
+      for (let h = 0; h < N; h++) {
+        const hs = hS(h), a = A(h, N), q = P(C, C, 211, a); if (blocked(q[0], q[1], holes, 4 * hs)) continue;
+        X.save(); X.translate(q[0], q[1]); X.rotate(a + Math.PI / 2); X.scale(hs, hs); X.globalAlpha = 1; X.beginPath();
+        if (h === 0) X.rect(-7.5, -4.5, 15, 9); else X.rect(-4.5, -4.5, 9, 9);
+        if (!NX) { X.shadowColor = 'rgba(0,0,0,.6)'; const sk = devS(X); X.shadowBlur = 1.5 * sk; X.shadowOffsetY = sk; }
+        X.fillStyle = hC(h, okc(D.numColor) ? D.numColor : '#1fbf4a'); X.fill(); X.restore();
+      }
     } else if (P_ === 'station') {
       for (let i = 0; i < M; i++) {
         const hr = i % KM === 0, h = i / KM, big = hr && show(h), hs = big ? hS(h) : 1;
@@ -1783,6 +1808,7 @@
     ctx.restore();
   }
   function applied(ctx, D, pal, holes) {
+    if (D.print === 'noir') return appliedNoir(ctx, D, pal, holes);
     if (D.print !== 'baton') return;
     const N = D.__N || 12, Q = N % 4 === 0 ? N / 4 : 0, isQ = (h) => !!Q && h % Q === 0;
     const show = D.__show && (!D.numerals || D.numerals === 'all') ? D.__show : D.numerals === 'quarters' ? isQ : DENSITY[D.numerals] || DENSITY.all, ns = Math.max(0.3, +D.numScale || 1);
@@ -1799,6 +1825,27 @@
         ctx.fillStyle = g; ctx.fillRect(r0, -w / 2, 204 - r0, w);
         ctx.restore();
       });
+    }
+  }
+  /* Noir's batons: a long polished frame with a black lacquer inlay at every hour but 12, which
+   * it leaves to a logo; a shown hour's size scales its baton as the baton print's does */
+  function appliedNoir(ctx, D, pal, holes) {
+    const N = D.__N || 12, Q = N % 4 === 0 ? N / 4 : 0, isQ = (h) => !!Q && h % Q === 0;
+    const show = D.__show && (!D.numerals || D.numerals === 'all') ? D.__show : D.numerals === 'quarters' ? isQ : DENSITY[D.numerals] || DENSITY.all, ns = Math.max(0.3, +D.numScale || 1);
+    for (let h = 1; h < N; h++) {
+      const a = (h / N) * TAU - Math.PI / 2, m = P(C, C, 174, a);
+      if (!show(h) || blocked(m[0], m[1], holes, 2)) continue;
+      const hs = ns * (isQ(h) ? +D.nQScale || 1 : 1), w = 15 * Math.sqrt(hs), r1 = 198, r0 = r1 - 46 * hs, b = Math.max(2, w * 0.17);
+      ctx.save(); ctx.translate(C, C); ctx.rotate(a);
+      ctx.save(); ctx.shadowColor = 'rgba(0,0,0,.65)'; const sk = devS(ctx); ctx.shadowBlur = 3 * sk; [ctx.shadowOffsetX, ctx.shadowOffsetY] = away(2.1 * sk);
+      ctx.fillStyle = pal.lo; ctx.fillRect(r0, -w / 2, r1 - r0, w); ctx.restore();
+      let g = ctx.createLinearGradient(0, -w / 2, 0, w / 2);
+      g.addColorStop(0, pal.hi); g.addColorStop(0.48, pal.mid); g.addColorStop(0.52, pal.lo); g.addColorStop(1, pal.mid);
+      ctx.fillStyle = g; ctx.fillRect(r0, -w / 2, r1 - r0, w);
+      g = ctx.createLinearGradient(0, -w / 2 + b, 0, w / 2 - b);
+      g.addColorStop(0, '#3a3e44'); g.addColorStop(0.35, '#0d0e10'); g.addColorStop(1, '#16181b');
+      ctx.fillStyle = g; ctx.fillRect(r0 + b, -w / 2 + b, r1 - r0 - b * 2, w - b * 2);
+      ctx.restore();
     }
   }
   function printSub(ctx, s, en, holes, dialFont) {
@@ -2000,12 +2047,12 @@
    *   ring          -- the old calendar perimeter ring, its outer ticks at the radius
    * A fan or a slider takes the face look nearest each chapter look (TRACK_OF). */
   const SCALE_STYLES = { none: 'None', roman: 'Roman', breguet: 'Breguet arabic', regulator: 'Regulator', sans: 'Modern sans', railway: 'Railway', sector: 'Sector',
-    batons: 'Applied batons', sticks: 'Minimal batons', station: 'Station bars', pilot: 'Pilot · triangle & dots', plots: 'Lume plots', framed: 'Bracket track · framed plots',
+    batons: 'Applied batons', sticks: 'Minimal batons', station: 'Station bars', pilot: 'Pilot · triangle & dots', plots: 'Lume plots', framed: 'Bracket track · framed plots', noir: 'Noir · framed batons, lume squares',
     classic: 'Classic', rail: 'Fine railway', dots: 'Dots', ticks: 'Fine ticks', bold: 'Bold figures', numerals: 'Figures only', quadrant: 'Quadrant', ring: 'Calendar ring' };
   const FIGURES = { all: 'All', even: 'Even', quarters: 'Quarters', twelve: 'The top one', none: 'None \u00b7 marks only' };
-  const CHAPTER_OF = { roman: 'roman', breguet: 'arabic', regulator: 'regulator', sans: 'sans', railway: 'railway', sector: 'sector', batons: 'baton', sticks: 'minimal', station: 'station', pilot: 'pilot', plots: 'diver', framed: 'framed' };
+  const CHAPTER_OF = { roman: 'roman', breguet: 'arabic', regulator: 'regulator', sans: 'sans', railway: 'railway', sector: 'sector', batons: 'baton', sticks: 'minimal', station: 'station', pilot: 'pilot', plots: 'diver', framed: 'framed', noir: 'noir' };
   const FACE_OF = { classic: 'classic', rail: 'railway', dots: 'dots', ticks: 'minimal', bold: 'bold', numerals: 'numerals', quadrant: 'sector' };
-  const TRACK_OF = { roman: 'classic', breguet: 'classic', regulator: 'classic', sans: 'bold', railway: 'railway', sector: 'sector', batons: 'minimal', sticks: 'minimal', station: 'minimal', pilot: 'bold', plots: 'dots', framed: 'dots', ring: 'classic' };
+  const TRACK_OF = { roman: 'classic', breguet: 'classic', regulator: 'classic', sans: 'bold', railway: 'railway', sector: 'sector', batons: 'minimal', sticks: 'minimal', station: 'minimal', pilot: 'bold', plots: 'dots', framed: 'dots', noir: 'minimal', ring: 'classic' };
   const scaleFamily = (st) => (st === 'ring' ? 'ring' : CHAPTER_OF[st] ? 'chapter' : FACE_OF[st] ? 'face' : null);
   // the gap a new scale leaves beyond its hand's tip
   const SCALE_GAP = { chapter: 16, face: 10, ring: 8 };
@@ -2073,7 +2120,7 @@
         if (unM) unM();
         ctx.restore(); if (nx) nx.restore();
         if (nx && kk !== 1) nx.restore();
-        if (D.print === 'baton') after.push((ux) => { frame(ux); applied(ux, D, pal, frameHoles(holes, hd.x, hd.y, z, k, false)); ux.restore(); });
+        if (D.print === 'baton' || D.print === 'noir') after.push((ux) => { frame(ux); applied(ux, D, pal, frameHoles(holes, hd.x, hd.y, z, k, false)); ux.restore(); });
         if (NM) fins.push((ux) => {
           const okc = (v) => v && v !== 'auto', explicit = [D.numColor, D.n12Color, D.nQColor].some(okc), gx = C + (hd.x - C) * kk, gy = C + (hd.y - C) * kk;
           finishMask(ux, NM, nst, { fill: explicit ? null : nst === 'applied' ? L().grad(ux, gx, gy, DR * 0.9 * k * kk, pal) : nst === 'lume' ? '#e8f4cf' : null, glow: okc(D.numColor) ? D.numColor : '#e8f4cf' });
@@ -2845,6 +2892,7 @@
     gunmetal: ['#0e1012', '#4f555c', '#c9ced4', '#3a3f45', '#060708'],
     steel: ['#202326', '#8b9198', '#f4f6f8', '#6c7178', '#0c0d0e'],
     rose: ['#2a1410', '#a8705e', '#f6cbb6', '#8a5444', '#140806'],
+    green: ['#021a0c', '#0f6b34', '#5ccf86', '#0c4f26', '#010904'],
   };
   const CASE_STYLES = { polished: 'Polished', stepped: 'Stepped', coin: 'Coin edge', riveted: 'Riveted', insert: 'Enamel insert', mariner: 'Mariner bezel', scallop: 'Diver bezel · scalloped', tachy: 'Tachymetre', none: 'None' };
   /* The radius the case leaves open, in dial px, and the one place it is worked out.
@@ -3226,6 +3274,7 @@
       cyan: { a: '#05616e', m: '#19d6ec', b: '#c4f8ff', edge: 'rgba(0,20,26,.8)' },
       violet: { a: '#2a0f73', m: '#8b46ff', b: '#d6c2ff', edge: 'rgba(12,0,34,.8)' },
       royal: { a: '#0a1c86', m: '#1f45e0', b: '#9db2ff', edge: 'rgba(2,6,32,.85)' },
+      green: { a: '#064a1a', m: '#12b543', b: '#9ff2b6', edge: 'rgba(0,22,6,.85)' },
     })[k] || { a: '#0d1d48', m: '#24499a', b: '#7aa4ec', edge: 'rgba(4,8,22,.85)' };
   }
   function handParts(style, kind, len, w, tail, sec) {
@@ -3251,6 +3300,10 @@
       else if (ss === 'bolt') {
         const z = big(1.1); Pp.push(thick([[0, tail], [0, -len * 0.3], [z, -len * 0.42], [-z, -len * 0.56], [z * 0.5, -len * 0.66], [0, -len * 0.74], [0, -len]], (t) => w * (0.32 - 0.18 * t)));
         Pp.push(poly([[-w * 0.18, -len * 0.98], [0, -len - 0.5], [w * 0.18, -len * 0.98]])); cw(); span = Math.max(span, z + w + 1.5);
+      } else if (ss === 'boltarrow') {
+        // the lightning bolt part-way out and a broad arrowhead at the tip
+        const z = big(1.1), a = big(2.1); Pp.push(thick([[0, tail], [0, -len * 0.36], [z, -len * 0.46], [-z, -len * 0.58], [z * 0.5, -len * 0.67], [0, -len * 0.74], [0, -len * 0.86]], (t) => w * (0.34 - 0.14 * t)));
+        Pp.push(poly([[-a, -len * 0.84], [0, -len], [a, -len * 0.84], [0, -len * 0.88]])); cw(); span = Math.max(span, a + w + 1.5);
       } else if (ss === 'crescent') { const R = cr * 1.6; shaft(-len, w * 0.3, w * 0.14); Pp.push(circ(0, tail * 0.55, R)); cut.push(circ(0, tail * 0.55 + R * 0.5, R * 0.85)); span = Math.max(span, R + 1.5); }
       else if (ss === 'star') { const R = cr * 1.9; shaft(-len, w * 0.3, w * 0.14); Pp.push(star(0, tail * 0.55, R, R * 0.45, 5)); span = Math.max(span, R + 1.5); }
       else if (ss === 'station') {
@@ -3983,6 +4036,14 @@
       parts: [{ k: 'front' }, { k: 'poly', pts: bar(C - 78, 128, C + 78, 128, 9) }, { k: 'screw', x: C - 72, y: 128, r: 3.6 }, { k: 'screw', x: C + 72, y: 128, r: 3.6, sl: 1.1 },
         { k: 'post', i: 0 }, { k: 'post', i: 1 }, { k: 'post', i: 4 }, { k: 'post', i: 5 }, { k: 'post', i: 6 }, { k: 'cage' }],
     },
+    noirtour: {
+      name: 'Noir tourbillon', blurb: 'Tourbillon at 6: a big screwed balance under a slender three-arm bridge, the fixed wheel round it, a blackened bar beneath',
+      plate: 'anthracite', bridgePal: 'black', finish: 'rhodium', spokes: 'thin', rear: 'match', cage: 56, carriage: 'noir',
+      gears: { front: [{ x: C, y: C + 107, N: 84, p: 0 }, { parent: 0, ang: -150, N: 28 }, { parent: 0, ang: -30, N: 42 }], fm: 1.5, rear: [], rm: 5, bal: { x: C, y: C + 107, r: 31 } },
+      names: ['Fixed wheel', 'Third wheel', 'Intermediate wheel'],
+      parts: [{ k: 'front' }, { k: 'poly', pts: bar(C - 96, C + 196, C + 92, C + 30, 18) }, { k: 'screw', x: C - 84, y: C + 186, r: 4 }, { k: 'screw', x: C + 80, y: C + 41, r: 4, sl: 1.3 },
+        { k: 'post', i: 1 }, { k: 'post', i: 2 }, { k: 'cage' }],
+    },
     inline: {
       name: 'Inline', blurb: 'Vertical train between rails, Geneva stripes', plate: 'stripes', spokes: 'straight',
       gears: { front: [{ x: C, y: 96, N: 56, p: 0 }, { parent: 0, ang: 90, N: 42 }, { parent: 1, ang: 90, N: 56 }, { parent: 2, ang: 90, N: 28 }], fm: 2,
@@ -4102,6 +4163,58 @@
     };
     _.solid(ctx, frame, x, y, R, _.STEEL, { shadows: _.sideShadows(x, 0.7), depth: 3, sheen: 1 });
     for (let i = 0; i < 3; i++) { const q = P(x, y, R - 2.5, rot + (i / 3) * TAU + Math.PI / 6); _.screw(ctx, q[0], q[1], 2.8, rot + i); }
+    staffJewel(ctx, x, y);
+  }
+  /* Noir's carriage: a fine lower ring, the escape wheel and pallet beside the balance, the
+   * screwed balance, then a slender three-arm upper bridge -- curved arms out to screwed pads
+   * on a thin ring, the ruby on its hub. Everything stays inside R, the cage layer's crop. */
+  function drawNoirCarriage(ctx, R, pal, gold, t) {
+    const _ = L(), x = _.BAL.x, y = _.BAL.y, rot = _.BAL.rot, ST = _.STEEL, pad = R - 7;
+    const ring = (r0, r1) => (dx, dy) => { ctx.beginPath(); ctx.moveTo(x + dx + r1, y + dy); ctx.arc(x + dx, y + dy, r1, 0, TAU); ctx.moveTo(x + dx + r0, y + dy); ctx.arc(x + dx, y + dy, r0, 0, TAU, true); };
+    _.solid(ctx, ring(R - 4.5, R - 1.5), x, y, R, ST, { shadows: _.sideShadows(x, 0.5), depth: 2, sheen: 0.6 });
+    // the escape wheel (15 club teeth, two teeth a loop so the loop closes) and its pallet, under the balance
+    const ea = rot + Math.PI * 0.32, ex = x + Math.cos(ea) * (R - 15), ey = y + Math.sin(ea) * (R - 15), er = 10, sp = t * TAU * 2 / 15;
+    const esc = (dx, dy) => {
+      ctx.beginPath();
+      for (let i = 0; i < 15; i++) {
+        const a = sp + (i / 15) * TAU, q0 = P(ex + dx, ey + dy, er - 2.6, a), q1 = P(ex + dx, ey + dy, er + 1.2, a + 0.12), q2 = P(ex + dx, ey + dy, er, a + 0.3), q3 = P(ex + dx, ey + dy, er - 2.6, a + 0.34);
+        i ? ctx.lineTo(q0[0], q0[1]) : ctx.moveTo(q0[0], q0[1]); ctx.lineTo(q1[0], q1[1]); ctx.lineTo(q2[0], q2[1]); ctx.lineTo(q3[0], q3[1]);
+      }
+      ctx.closePath(); ctx.moveTo(ex + dx + 3, ey + dy); ctx.arc(ex + dx, ey + dy, 3, 0, TAU, true);
+    };
+    _.solid(ctx, esc, ex, ey, er, pal, { shadows: _.sideShadows(ex, 0.6), depth: 2, sheen: 0.8 });
+    const pa = Math.atan2(ey - y, ex - x), pv = P(x, y, R - 26, pa + 0.5);
+    const fork = (dx, dy) => {
+      const arm = (a, l) => { const q = P(pv[0] + dx, pv[1] + dy, l, a); return q; };
+      const a0 = pa - 0.15, f1 = arm(a0 + 0.9, 9), f2 = arm(a0 - 0.6, 10), tip = arm(a0 + Math.PI, 11);
+      ctx.beginPath(); ctx.moveTo(f1[0], f1[1]); ctx.lineTo(pv[0] + dx, pv[1] + dy); ctx.lineTo(f2[0], f2[1]);
+      ctx.moveTo(pv[0] + dx, pv[1] + dy); ctx.lineTo(tip[0], tip[1]);
+    };
+    ctx.save(); ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+    fork(0.8, 1.2); ctx.strokeStyle = 'rgba(0,0,0,.5)'; ctx.lineWidth = 3.6; ctx.stroke();
+    fork(0, 0); ctx.strokeStyle = ST.hi; ctx.lineWidth = 2.6; ctx.stroke();
+    [P(pv[0], pv[1], 9, pa + 0.75), P(pv[0], pv[1], 10, pa - 0.75)].forEach((q) => { ctx.fillStyle = '#c2182a'; ctx.fillRect(q[0] - 1.2, q[1] - 1.2, 2.4, 2.4); });
+    ctx.restore();
+    _.screw(ctx, pv[0], pv[1], 2, rot);
+    _.drawBalance(ctx, t, pal, gold);
+    // the upper bridge: three arms that sweep as they reach out, each to a screwed pad on the ring
+    const arms = (dx, dy) => {
+      ctx.beginPath();
+      ctx.moveTo(x + dx + R - 1.5, y + dy); ctx.arc(x + dx, y + dy, R - 1.5, 0, TAU); ctx.moveTo(x + dx + R - 4, y + dy); ctx.arc(x + dx, y + dy, R - 4, 0, TAU, true);
+      for (let i = 0; i < 3; i++) {
+        const b = rot + (i / 3) * TAU - Math.PI / 2, side = [], back = [];
+        for (let j = 0; j <= 12; j++) {
+          const u = j / 12, r = 9 + (pad - 9) * u, a = b + 0.42 * Math.sin(u * Math.PI) * (1 - u * 0.4), hw = 4.2 - 2.2 * u;
+          const c = P(x + dx, y + dy, r, a), n = a + Math.PI / 2;
+          side.push([c[0] + Math.cos(n) * hw, c[1] + Math.sin(n) * hw]); back.push([c[0] - Math.cos(n) * hw, c[1] - Math.sin(n) * hw]);
+        }
+        side.concat(back.reverse()).forEach((q, j) => (j ? ctx.lineTo(q[0], q[1]) : ctx.moveTo(q[0], q[1]))); ctx.closePath();
+        const q = P(x + dx, y + dy, pad, b + 0.42 * Math.sin(Math.PI) * 0.6); ctx.moveTo(q[0] + 5.5, q[1]); ctx.arc(q[0], q[1], 5.5, 0, TAU);
+      }
+      ctx.moveTo(x + dx + 12, y + dy); ctx.arc(x + dx, y + dy, 12, 0, TAU);
+    };
+    _.solid(ctx, arms, x, y, R, RHOD, { shadows: _.sideShadows(x, 0.8), depth: 3, sheen: 1 });
+    for (let i = 0; i < 3; i++) { const b = rot + (i / 3) * TAU - Math.PI / 2, q = P(x, y, pad, b); _.screw(ctx, q[0], q[1], 3, rot + i * 0.9); }
     staffJewel(ctx, x, y);
   }
   // kite carriage: slim kite frame with toothed rails and a recessed inlay groove, spine to a ringed balance
@@ -4240,7 +4353,7 @@
     const tp = (pts) => pts.map(([x, y]) => rotAbout(x, y, o.trainRot));
     const bw = rotAbout(_.BAL.x, _.BAL.y, lr);
     const cageAt = T.orbital ? [C, C] : T.cage ? bw : null, cageOff = T.orbital ? Math.atan2(bw[0] - C, -(bw[1] - C)) : 0;
-    const drawCageArt = (cx, t) => { if (T.orbital) (T.orbital.shape === 'kite' ? drawKite : drawOrbital)(cx, T.orbital, pal, gold, t, bp); else drawCarriage(cx, T.cage, pal, gold, t); };
+    const drawCageArt = (cx, t) => { if (T.orbital) (T.orbital.shape === 'kite' ? drawKite : drawOrbital)(cx, T.orbital, pal, gold, t, bp); else (T.carriage === 'noir' ? drawNoirCarriage : drawCarriage)(cx, T.cage, pal, gold, t); };
     // export path: carriage drawn straight into final kit space (inset scale k about the canvas centre, then a sub-texel shift) so it is never resampled
     function cageFrame(f, X) {
       _.setTrain(T.gears); _.configure(o);

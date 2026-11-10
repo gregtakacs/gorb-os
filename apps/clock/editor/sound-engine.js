@@ -759,6 +759,7 @@
     neon:      { tick: 'neon_buzz', pattern: 'none', slots: { chime_half: 'synth_bell', chime_hour: 'synth_pad_bell' } },
     phase:     { tick: 'soft', pattern: 'count', slots: { chime_q1: 'teacup_clink', chime_half: 'teacup_clink', chime_q3: 'teacup_clink', chime_hour: 'glass_bell', strike_hour: 'glass_bell' } },
     regulator: { tick: 'regulator', pattern: 'count', slots: { chime_q1: 'regulator_tingtang_1', chime_half: 'regulator_tingtang_2', chime_q3: 'regulator_tingtang_3', chime_hour: 'regulator_tingtang_4', strike_hour: 'regulator_gong' } },
+    noir:      { tick: 'tourbillon', pattern: 'none', slots: { chime_hour: 'glass_dingdong' } },
     perpetual: { tick: 'pocket', pattern: 'count', slots: W4({ jump_date: 'teacup_clink' }) }
   };
 

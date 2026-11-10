@@ -341,6 +341,19 @@ func (s *Server) dropPreviews(ip string) {
 	}
 }
 
+// putPreviewLocked files one plane and sweeps the expired ones. The TTL was checked only
+// when an entry was read, so every theme on every card the hub had ever drawn (and every
+// address an orb ever held) stayed in memory for the hub's life: up to 1 MB a plane, a
+// copy of what the disk cache already keeps (leak audit, 2026-11-10). Caller holds previewMu.
+func (s *Server) putPreviewLocked(key string, hit previewHit) {
+	for k, h := range s.previews {
+		if time.Since(h.at) >= previewCacheTTL {
+			delete(s.previews, k)
+		}
+	}
+	s.previews[key] = hit
+}
+
 // ---- the session's card memory: reads, read-ahead, and their retirement -----
 //
 // The Theme page's cost is not the bytes; it is the walk. GET /api/v1/sd answers
@@ -489,9 +502,11 @@ func (s *Server) sdListReadOn(ip string, dialClient *orbnet.Client, cuttable boo
 			}
 			cur.dial = nil
 			s.cardReads[ip] = cur
+			close(ch)
 		}
+		// retired under this dial: dropThemeCache already closed ch for its riders, and
+		// a second close panics (and the warm pass has no recover: the hub exited)
 		s.cardMu.Unlock()
-		close(ch)
 		if err != nil {
 			if laneCut(err) {
 				return nil, err // a cut is not the card's failure; no debounce stamp
@@ -695,7 +710,7 @@ func (s *Server) fetchPreviewPlaneOn(ip, id string, fetch func(string, string) (
 		if body, ok := s.planeCache.get(name); ok {
 			hit := previewHit{body: body, code: http.StatusOK, at: time.Now()}
 			s.previewMu.Lock()
-			s.previews[key] = hit
+			s.putPreviewLocked(key, hit)
 			delete(s.pvFly, key)
 			s.previewMu.Unlock()
 			close(ch)
@@ -730,7 +745,7 @@ func (s *Server) fetchPreviewPlaneOn(ip, id string, fetch func(string, string) (
 		s.previewRelease()
 		s.previewMu.Lock()
 		if err == nil && code == http.StatusOK {
-			s.previews[key] = previewHit{body: body, code: code, at: time.Now()}
+			s.putPreviewLocked(key, previewHit{body: body, code: code, at: time.Now()})
 			s.planeCache.put(name, body)
 		}
 		delete(s.pvFly, key)

@@ -2,6 +2,8 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -780,5 +782,76 @@ func TestThePassParksForADemandAndResumesItsOwnQueue(t *testing.T) {
 	}
 	if got := planeDials(fake); got != 2 {
 		t.Fatalf("the resumed pass dialed %d planes, want the two-row queue it parked in front of: %#v", got, fake.Calls())
+	}
+}
+
+// A cache drop (a store, delete, ship or rescan) while a card read is in flight retires
+// that read's dial: dropThemeCache closes it for the riders. The leader must not close
+// it a second time when its read returns — a double close panics, and on the warm pass
+// there is no recover, so the whole hub exited (leak audit, 2026-11-10).
+func TestADropUnderAnInFlightCardReadDoesNotCrashTheHub(t *testing.T) {
+	f := orbfake.New(orbfake.Theme{Name: "aurora", Bytes: 99, Serial: 1, OK: true, Active: true})
+	entered, release := make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	orb := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet && r.URL.Path == "/api/v1/sd" {
+			once.Do(func() { close(entered); <-release })
+		}
+		f.ServeHTTP(w, r)
+	}))
+	t.Cleanup(orb.Close)
+	hp := strings.TrimPrefix(orb.URL, "http://")
+	i := strings.LastIndex(hp, ":")
+	ip, port := hp[:i], hp[i+1:]
+	s := newHub()
+	s.device = orbnet.NewClient(2 * time.Second)
+	s.device.DevicePort = port
+	s.gate = orbnet.NewDialGate()
+
+	done := make(chan error, 1)
+	go func() {
+		defer func() {
+			if p := recover(); p != nil {
+				done <- errors.New("panic: " + fmt.Sprint(p))
+			}
+		}()
+		_, err := s.sdListReadOn(ip, s.device, false)
+		done <- err
+	}()
+	select {
+	case <-entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the card read never reached the orb")
+	}
+	s.dropThemeCache(ip) // retires the in-flight dial and closes it for its riders
+	close(release)
+	select {
+	case err := <-done:
+		if err != nil && strings.HasPrefix(err.Error(), "panic:") {
+			t.Fatalf("the read's leader closed a dial the drop had already closed: %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("the read never returned")
+	}
+	// the retired read stored nothing; the next read walks the card afresh
+	if _, err := s.sdListReadOn(ip, s.device, false); err != nil {
+		t.Fatalf("the read after the drop failed: %v", err)
+	}
+}
+
+// The memory's planes expire on the way in, not only when read: a plane the hub drew
+// once for an address it never sees again is swept by the next plane it files.
+func TestAnExpiredPlaneIsSweptByTheNextOne(t *testing.T) {
+	s := newHub()
+	s.previewMu.Lock()
+	s.previews["10.0.0.9|old"] = previewHit{body: make([]byte, 1024), code: http.StatusOK, at: time.Now().Add(-previewCacheTTL - time.Second)}
+	s.previews["10.0.0.9|fresh"] = previewHit{body: []byte("x"), code: http.StatusOK, at: time.Now()}
+	s.putPreviewLocked("10.0.0.7|new", previewHit{body: []byte("y"), code: http.StatusOK, at: time.Now()})
+	_, old := s.previews["10.0.0.9|old"]
+	_, fresh := s.previews["10.0.0.9|fresh"]
+	_, nw := s.previews["10.0.0.7|new"]
+	s.previewMu.Unlock()
+	if old || !fresh || !nw {
+		t.Errorf("after a put: expired kept=%v, fresh kept=%v, new filed=%v; want false, true, true", old, fresh, nw)
 	}
 }

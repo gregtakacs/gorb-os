@@ -198,6 +198,12 @@ func (r *opRegistry) finish(o *op) {
 	if first {
 		close(o.done)
 	}
+	// the operation's own context dies with its claim: a sweep or probe round under the
+	// hub-lifetime cable context otherwise kept its timer and child registration until the
+	// budget ran out (leak audit, 2026-11-10). A CancelFunc is safe to call twice.
+	if o.cancel != nil {
+		o.cancel()
+	}
 }
 
 // cancel asks the operation on port to stop. It reports whether one was there. The

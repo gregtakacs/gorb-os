@@ -101,7 +101,7 @@ func TestExtractEditorsMatchesWhatTheHubServes(t *testing.T) {
 		}
 	}
 	// stdout is one line per app: the status, then the app or the reason.
-	for _, line := range []string{"ok         clock v1.6.1+0569cae (9 files)",
+	for _, line := range []string{"ok         clock v1.6.2+e969d69 (9 files)",
 		"no-editor  color_picker.orbapp: this app ships no editor"} {
 		if !strings.Contains(stdout, line) {
 			t.Errorf("stdout lacks %q:\n%s", line, stdout)

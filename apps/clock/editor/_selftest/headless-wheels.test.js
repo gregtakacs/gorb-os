@@ -451,6 +451,46 @@ const face = (comps) => E.face(Object.assign({ design: E.canonDesign({ print: 'r
   const w = f.lay.wheels[0], hole = f.lay.dialHoles.find((q) => q.kind === 'moon');
   ok(w.spec.moon && hole && near(hole.x, w.x) && near(hole.y, w.y) && hole.a === w.r && hole.seal, 'a moon cutout is the moonphase aperture over its wheel\u2019s own centre, sealed on the dial');
 }
+// the pose: which way the disc turns is what the humps read, so the moons' places on the
+// glass are the assertion. Read back off the geometry the disc painted, in the aperture's
+// own frame (up the opening is where the hole faces, whatever the wheel reads at).
+{
+  const { FakeCanvas } = require('./headless-stub.js');
+  const f = face([{ id: 'm', type: 'wheel', host: 'dial', angle: 210, dist: 90, size: 40, rot: 12, shows: 'moon' },
+    { id: 'k', type: 'cutout', host: 'm', shape: 'moon' }]);
+  const w = f.lay.wheels[0], a = w.r, mr = a * (w.msize || 0.33), or = a * (w.mpos || 0.5), rd = w.read;
+  const moons = (idx) => {
+    const c = new FakeCanvas(); c.width = c.height = 400;
+    const x = c.getContext('2d');
+    f.wheelDisc(x, 'm', idx);
+    const g = x.geom, i0 = g.findIndex((o) => o.op === 'translate' && near(o.a[0], w.x) && near(o.a[1], w.y));
+    const th = (g[i0 + 1] && g[i0 + 1].op === 'rotate' ? g[i0 + 1].a[0] : 0) - rd;
+    return g.filter((o) => o.op === 'arc' && near(o.a[2], mr, 1e-9))
+      .map((o) => { const c = Math.cos(g[i0 + 1].a[0]), s = Math.sin(g[i0 + 1].a[0]);
+        const px = o.a[0] * c - o.a[1] * s, py = o.a[0] * s + o.a[1] * c;
+        return [px * Math.cos(rd) + py * Math.sin(rd), px * Math.sin(rd) - py * Math.cos(rd)]; });
+  };
+  const q = (idx) => moons(idx);
+  ok(q(0).length === 2 && q(0).every((p) => near(p[1], 0, 1e-6) && near(Math.abs(p[0]), or, 1e-6)),
+    'a new moon sits both its discs behind the humps, on the aperture\u2019s baseline', JSON.stringify(q(0)));
+  ok(q(15).some((p) => near(p[0], 0, 1e-6) && near(p[1], or, 1e-6)),
+    'a full moon stands centred up the aperture', JSON.stringify(q(15)));
+  const up = (idx) => q(idx).filter((p) => p[1] > 1e-6);
+  // the classic moonphase reads left to right across the top: the lit moon WAXES up the LEFT
+  // lobe to a FULL at the aperture's own top (plate 15), then WANES down the RIGHT lobe. A
+  // sign flip in moonDisc mirrors this and is exactly what a firmware/bake lag would not, so
+  // the two quarters and the sweep's direction are the assertion — not which way ctx.rotate spins.
+  ok(up(8).length === 1 && up(8)[0][0] < 0, 'the waxing first quarter shows its disc climbing the left-hand lobe', JSON.stringify(q(8)));
+  ok(up(23).length === 1 && up(23)[0][0] > 0, 'the waning last quarter shows it descending the right-hand lobe', JSON.stringify(q(23)));
+  const climb = [2, 5, 8, 11, 14].map((i) => { const u = up(i); return u.length ? u[0][0] : -or; });
+  const fall = [16, 19, 22, 25, 28].map((i) => { const u = up(i); return u.length ? u[0][0] : or; });
+  ok(climb.every((x, i) => i === 0 || x > climb[i - 1]) && climb[climb.length - 1] < 0 && fall.every((x, i) => i === 0 || x > fall[i - 1]) && fall[0] > 0,
+    'the disc sweeps left to right across the aperture, monotonically across the whole lunation', JSON.stringify([climb, fall]));
+  ok(q(8).every((p) => near(Math.hypot(p[0], p[1]), or, 1e-6)) && q(23).every((p) => near(Math.hypot(p[0], p[1]), or, 1e-6)),
+    'both discs ride the same ring all the way round the lunation');
+  ok(q(4).concat(q(26)).every((p) => Math.abs(p[1]) <= or + 1e-6),
+    'a gibbous never leaves the aperture’s reach');
+}
 // ---- the panels and adding -------------------------------------------------------------------------
 {
   const DCLogic = function () { };

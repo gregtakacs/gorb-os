@@ -7850,6 +7850,26 @@ static esp_err_t h_sd_write(httpd_req_t *req)
  * is cancelled to .part and never reaches a loadable name. ?overwrite=1 is the only
  * client decision, and only governs replacing a DIFFERENT app already filed under
  * the same slug. */
+/* A copy to the card freezes the dial (owner, 2026-11-10): from v1.6.4 a copy ran under a
+ * live dial, and the card now and then took a write error mid-copy and stopped answering until
+ * the orb was power-cycled (it has no power switch: it sits on SPI, GPIO 1/2/3/41, on the bare
+ * rail). Every copy before v1.6.4 parked the dial and none did. The ticks stop for the copy (no
+ * frames go out but the arc's rows) and the dial comes back as it was; a dial something else had
+ * stopped stays stopped. httpd task, one copy at a time (the doors' busy gates). */
+static bool s_copy_froze;
+static void copy_quiet_begin(void)
+{
+    orb_edge_arc_set(0);
+    s_copy_froze = orb_sched_running();
+    if (s_copy_froze) orb_sched_set_running(false);
+}
+static void copy_quiet_end(void)
+{
+    orb_edge_arc_set(-1);
+    if (s_copy_froze) orb_sched_set_running(true);
+    s_copy_froze = false;
+}
+
 static esp_err_t h_app_upload(httpd_req_t *req)
 {
     httpd_resp_set_type(req, "application/json");
@@ -7898,7 +7918,7 @@ static esp_err_t h_app_upload(httpd_req_t *req)
      * twice with "card write failed (I/O error)". The card has its own DMA arena since
      * 2026-11-09 (orb_sd_dma.c) and radar's parks write under a live sweep (radar-plan
      * §7.7), so the park's reason is gone. */
-    orb_edge_arc_set(0);
+    copy_quiet_begin();
 
     /* The receive buffer lives in PSRAM, not internal .bss. This file already
      * carries the theme upload's static rx[4096] and the OTA chunk; a SECOND
@@ -7918,7 +7938,7 @@ static esp_err_t h_app_upload(httpd_req_t *req)
         rx = heap_caps_malloc(APP_RX, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
         if (!rx) {
             orb_app_upload_cancel(&up);
-            orb_edge_arc_set(-1);
+            copy_quiet_end();
             httpd_resp_set_status(req, "503 Service Unavailable");
             return httpd_resp_sendstr(req, "{\"error\":\"out of memory for the upload buffer\"}");
         }
@@ -7931,7 +7951,7 @@ static esp_err_t h_app_upload(httpd_req_t *req)
             /* Client vanished: cancel() deletes the .part, so nothing survives on the
              * card to be listed as an app and fail to load. */
             orb_app_upload_cancel(&up);
-            orb_edge_arc_set(-1);
+            copy_quiet_end();
             httpd_resp_set_status(req, "400 Bad Request");
             return httpd_resp_sendstr(req, "{\"error\":\"upload aborted by client\"}");
         }
@@ -7939,7 +7959,7 @@ static esp_err_t h_app_upload(httpd_req_t *req)
         if (de != ESP_OK) {
             const int we = errno;          /* the write's own; the cancel's unlink may move it */
             orb_app_upload_cancel(&up);
-            orb_edge_arc_set(-1);
+            copy_quiet_end();
             if (de == ESP_ERR_INVALID_SIZE) {
                 httpd_resp_set_status(req, "413 Payload Too Large");
                 return httpd_resp_sendstr(req, "{\"error\":\"upload too large\"}");
@@ -7974,7 +7994,7 @@ static esp_err_t h_app_upload(httpd_req_t *req)
 
     const char *why = NULL;
     const esp_err_t ee = orb_app_upload_end(&up, overwrite, &why);
-    orb_edge_arc_set(-1);   /* the file is verified (or refused): the arc goes */
+    copy_quiet_end();   /* the file is verified (or refused): the arc goes */
     if (ee == ORB_APP_UPLOAD_E_DUP) {
         /* A different app already lives under that slug. 409, not 422: nothing is
          * wrong with the upload — the owner decides, and the page re-sends with
@@ -8108,7 +8128,7 @@ static esp_err_t h_theme_upload(httpd_req_t *req)
      * as the app door's does (the park it replaced is told there). The slot itself is
      * NOT touched on this path (orb_theme.c, 2026-10-27): an aborted upload leaves the
      * live face exactly where it was. */
-    orb_edge_arc_set(0);
+    copy_quiet_begin();
 
     /* Static, never a local: HTTPD_DEFAULT_CONFIG() sizes this task's stack at 4096
      * (esp_http_server.h:57), which is also why the OTA chunk buffer is static. */
@@ -8122,7 +8142,7 @@ static esp_err_t h_theme_upload(httpd_req_t *req)
             /* Client vanished: cancel() deletes the .part, so nothing is left on the
              * card that could later be listed as a theme and fail to load. */
             orb_theme_upload_cancel(&up);
-            orb_edge_arc_set(-1);
+            copy_quiet_end();
             httpd_resp_set_status(req, "400 Bad Request");
             return httpd_resp_sendstr(req, "{\"error\":\"upload aborted by client\"}");
         }
@@ -8130,7 +8150,7 @@ static esp_err_t h_theme_upload(httpd_req_t *req)
         if (de != ESP_OK) {
             const int we = errno;          /* the write's own; the cancel's unlink may move it */
             orb_theme_upload_cancel(&up);
-            orb_edge_arc_set(-1);
+            copy_quiet_end();
             if (de == ESP_ERR_INVALID_SIZE) {
                 httpd_resp_set_status(req, "413 Payload Too Large");
                 return httpd_resp_sendstr(req, "{\"error\":\"upload too large\"}");
@@ -8173,7 +8193,7 @@ static esp_err_t h_theme_upload(httpd_req_t *req)
          * any client too old or too new to know about the token. The upload armed
          * the slot invalid before it ran, so this refusal leaves the dial base-faced
          * until a store lands — the commit, the re-send, or a plain re-store. */
-        orb_edge_arc_set(-1);
+        copy_quiet_end();
         httpd_resp_set_status(req, "409 Conflict");
         char db[256];
         snprintf(db, sizeof db,
@@ -8187,7 +8207,7 @@ static esp_err_t h_theme_upload(httpd_req_t *req)
          * page has no serial cable and no reason to go and get one. The upload armed the
          * slot invalid before it ran, so a rejected upload leaves the base face — recover
          * by re-uploading or re-storing a good file. */
-        orb_edge_arc_set(-1);
+        copy_quiet_end();
         char b[256];
         httpd_resp_set_status(req, "422 Unprocessable Entity");
         snprintf(b, sizeof b, "{\"error\":\"rejected\",\"detail\":\"%s\",\"reboot\":\"none\"}",
@@ -8198,7 +8218,7 @@ static esp_err_t h_theme_upload(httpd_req_t *req)
      * that id: the same press the Store button and the dial make, so the upload door
      * cannot hold a second opinion about what storing a theme does. The store chooses and
      * does not reboot (2026-11-09); the app wears the new theme as its fill lands. */
-    orb_edge_arc_set(-1);
+    copy_quiet_end();
     char b[192];
     if (keep && !orb_theme_chosen(committed)) {
         snprintf(b, sizeof b, "{\"state\":\"filed\",\"id\":\"%s\",\"bytes\":%d,\"reboot\":\"none\"}",

@@ -23,6 +23,15 @@ fixed, set its status to `fixed`, add the commit or release, and leave the entry
   whether it fails in the editor, on Download/bake, on send to an orb, or on the orb itself.
 - **Notes:** —
 
+## B2. Import a file (.orbtheme) on the site posts to the hub's URL
+
+- **Status:** fixed (the commit that adds this entry, "theme@1: Import a file on the site keeps through hostUrl")
+- **Reported:** 2026-11-10, found during H1b's review
+- **Area:** theme@1 `importFile`
+- **Symptom:** on orb-os.net's studio, importing an `.orbtheme` file posted to `/api/library/keep`,
+  which the site does not serve; the hub was unaffected.
+- **Fix:** the keep call goes through `OrbTheme.hostUrl`, like every other library call.
+
 ## B3. TestThePassParksForADemandAndResumesItsOwnQueue is flaky
 
 - **Status:** open

@@ -327,6 +327,19 @@ const edit = (app, p) => { app.set(p); app.ses.track(); };
     const d = mk(); await d.ses.boot(); d.set({ color: 'grey' });
     ok(await d.ses.importFile(fileOf(bake('Bare'), 'bare.orbtheme'), o(true)) && fh.themes.get('tint').has('Bare') && d.state.color === 'grey' &&
       /carries no design, so it installs from the Themes tab but cannot be opened here/.test(d.state.status), 'a theme with no design is kept, not opened', d.state.status);
+    // B2: on a hub host (no GorbHost) the keep is asked for at the hub's own base
+    ok(fh.calls.indexOf('/api/library/keep?app=tint') >= 0, 'on a hub host an .orbtheme import posts to /api/library/keep?app=tint', String(fh.calls[fh.calls.length - 1]));
+    // B2: under a web host the same import posts to the site's base, like every other library call
+    global.GorbHost = { kind: 'web', api: '/studio-api' };
+    const webAsked = [];
+    const wasRest = hub;
+    hub = async (url, o) => { webAsked.push(String(url)); return fh.fetch(String(url).replace(/^\/studio-api/, '/api'), o); };
+    location.pathname = '/v1.4.2/';
+    const w = mk(); await w.ses.boot();
+    ok(await w.ses.importFile(fileOf(bake('Weft', dsn('Weft', 'navy')), 'weft.orbtheme'), o(true)) &&
+      webAsked.indexOf('/studio-api/library/keep?app=tint') >= 0 && fh.themes.get('tint').has('Weft') && w.state.color === 'navy',
+      'under a web host an .orbtheme import posts to /studio-api/library/keep?app=tint', webAsked.join(' '));
+    hub = wasRest; delete global.GorbHost;
     location.pathname = '/';
     ok(!(await mk().ses.importFile(fileOf(bake('Off', dsn('Off', 'red')), 'off.orbtheme'), o(true))), 'off the hub nothing imports');
     // the export's Save dialog, and the download where there is none

@@ -627,7 +627,7 @@
       opening('Importing ' + (file && file.name ? '“' + file.name + '”' : 'the file') + '…');
       try {
         if (theme) {
-          var kept = await hubJson('/api/library/keep' + app(), { method: 'POST', headers: { 'Content-Type': 'application/octet-stream' }, body: bytes });
+          var kept = await hubJson(OrbTheme.hostUrl('/library/keep') + app(), { method: 'POST', headers: { 'Content-Type': 'application/octet-stream' }, body: bytes });
           name = (kept && kept.name) || name;
         } else await saveDraft(name, doc, { thumb: o.thumb ? await o.thumb(c.doc) : null });
       } catch (e) { say('Not imported: ' + err(e)); return false; }

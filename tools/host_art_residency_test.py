@@ -80,6 +80,7 @@ def lint_shipped_source():
         # the installer's bind check (2026-11-10): no booking, the primary it replaces not counted
         "const size_t prim = s_map ? art_bank_pages_for(s_bytes) : 0;",
         "const size_t others = art_pages_accounted() - prim;",
+        "pages += orb_pagemap_pages() - (s_pm.ptr ? s_pm.pages : 0);",   # the other windows billed
         "if (others + need > ORB_ART_PAGE_BUDGET) {",
         # ---- mechanism B (docs/app-platform-plan.md §3.3/§6 M3): the arena rules.
         # Same contract as above — if any of these stops matching the shipping
@@ -168,6 +169,7 @@ class ArtResidency:
 
         self.extra = [None] * EXTRA_MAX  # each entry: (bytes, offset, is_psram) once mapped
         self.res = [0] * RESERVE_MAX     # s_res_bytes (booked, not yet mapped)
+        self.windows = 0                 # pages of the other orb_pagemap windows (previews, voices)
         self.refusals = 0
         self.part_size = 0x800000        # 8 MB 'assets' partition
         self.mech_b = mech_b             # ORB_ART_MECH_B: map_extra fills arenas, not maps
@@ -188,6 +190,7 @@ class ArtResidency:
         for r in self.res:
             if r:
                 pages += art_bank_pages_for(r)
+        pages += self.windows
         return pages
 
     def mmu_pages(self):
@@ -293,7 +296,7 @@ class ArtResidency:
         # so its pages are not counted; nothing is booked (2026-11-10's leak).
         if span_bytes == 0:
             return (ERR_INVALID_ARG, 0)
-        prim = art_bank_pages_for(self.primary) if self.primary and self.primary_kind == "map" else 0
+        prim = art_bank_pages_for(self.primary) if self.primary_kind == "map" and self.primary else 0
         others = self.pages_accounted() - prim
         need = art_bank_pages_for(art_round_pages(span_bytes))
         free = PAGE_BUDGET - others if others < PAGE_BUDGET else 0
@@ -365,6 +368,11 @@ def run_checks(mutations=()):
     ok(m3.check_bind(40 * PAGE_SIZE)[0] == E_NM,
        "bind check: another bank's outstanding booking still counts")
     ok(new_model(mutations).check_bind(0)[0] == E_ARG, "bind check: a zero span is refused as an argument")
+    m4 = new_model(mutations)
+    m4.primary_map(0, 120 * PAGE_SIZE)
+    m4.windows = 30                                       # 8 previews and their voice banks
+    ok(m4.check_bind(100 * PAGE_SIZE)[0] == E_OK and m4.check_bind(205 * PAGE_SIZE)[0] == E_NM,
+       "bind check: the preview and voice windows hold DROM pages too (30 + 205 > 234)")
 
     # 1. page rounding matches the real bank sizes the firmware reports as art_pages.
     p = model(mutations)["art_bank_pages_for"]
@@ -571,6 +579,7 @@ MUTATIONS = [
     ("def art_bank_pages_for(b):\n    return (b + PAGE_SIZE - 1) // PAGE_SIZE",
      "def art_bank_pages_for(b):\n    return b // PAGE_SIZE"),              # truncates rounding
     ("pages += art_bank_pages_for(r)", "pages += 0"),                       # reservations unaccounted
+    ("pages += self.windows", "pages += 0"),                                # preview/voice windows unbilled
     ("if want > PAGE_BUDGET:\n            self.refusals += 1\n            return (ERR_NO_MEM, -1)",
      "if want > PAGE_BUDGET:\n            return (ERR_NO_MEM, -1)"),        # map overflow not counted
     ("want -= art_bank_pages_for(self.extra[slot][0])", "want -= 0"),       # re-grow not credited

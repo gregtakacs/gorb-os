@@ -15,13 +15,13 @@
 
 static const char *TAG = "pagemap";
 
-#define SLOTS      16u
+#define SLOTS      32u                       /* the primary, 8 previews, 8 voice banks, and room */
 #define SLOT_SPAN  0x800000u                 /* one placeholder slot: the whole pool's size */
 #define PH_BASE    0x20000000u               /* 512 MB: no flash there, none mapped */
 
 static SemaphoreHandle_t s_mx;
 EXT_RAM_BSS_ATTR static StaticSemaphore_t s_mx_buf;   /* PSRAM: internal RAM is the board's cliff */
-static uint16_t s_slots;                     /* placeholder slots in use */
+static uint32_t s_slots;                     /* placeholder slots in use */
 static uint32_t s_pages;                     /* pages mapped through windows */
 
 /* With the caches off (nothing here may touch flash or PSRAM): point the window's entries at
@@ -84,7 +84,7 @@ void orb_pageunmap(orb_pagemap_t *m)
     xSemaphoreTake(s_mx, portMAX_DELAY);
     const esp_err_t e = esp_mmu_unmap((void *)m->ptr);
     if (e != ESP_OK) ESP_LOGE(TAG, "a window would not unmap: %s", esp_err_to_name(e));
-    if (m->slot >= 0) s_slots &= (uint16_t)~(1u << m->slot);
+    if (m->slot >= 0) s_slots &= ~(1u << m->slot);
     s_pages -= m->pages;
     xSemaphoreGive(s_mx);
     m->ptr = NULL; m->pages = 0; m->slot = -1;

@@ -488,6 +488,10 @@ static size_t art_pages_accounted(void)
     for (unsigned i = 0; i < ORB_ART_RESERVE_MAX; i++)
         if (s_res_bytes[i])
             pages += art_bank_pages_for(s_res_bytes[i]);
+    /* The other windows through the same DROM: the carousel's previews and the voice banks
+     * (orb_theme.c). Each holds its pages as long as it is up, so a bind is priced with them;
+     * the primary's own window is already billed above, once. */
+    pages += orb_pagemap_pages() - (s_pm.ptr ? s_pm.pages : 0);
     return pages;
 }
 

@@ -3898,6 +3898,7 @@ static void clear_job(void *arg)
     orb_io_heavy_begin();                              /* table writes beside a live app */
     if (p && s_pool && pool_io(p)) {
         /* theme-cache-plan ruling 7: the file it wore is gone, so both of its copies go */
+        preview_unmap(gone);                           /* its window off the pages going */
         r = orb_pool_remove(&s_pool_io, s_pool, &s_pool_which, gone);
         if (!r) r = orb_pool_remove_kind(&s_pool_io, s_pool, &s_pool_which, gone, ORB_POOL_VOICE);
         if (!r) r = orb_pool_remove_kind(&s_pool_io, s_pool, &s_pool_which, gone, ORB_POOL_PREVIEW);

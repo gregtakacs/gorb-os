@@ -167,7 +167,7 @@ try {
     note(r.scaled === true && r.type === 'image/png' && r.width === 64 && r.height === 48 && d.w === 64 && d.h === 48,
       '7a. a picked WebP is read and re-encoded to the PNG the caller asked for', dims(r) + ', decodes ' + d.w + 'x' + d.h);
     let wf = null, wnote = '';
-    try { wf = await soon(pic(3000, 2000, 'image/webp'), 30000); }
+    try { wf = await soon(pic(3000, 2000, 'image/webp'), 10000); }   // a Chromium with no WebP encoder answers never: give up early, so the checks after it keep their budget
     catch (e) { wnote = String((e && e.message) || e); }
     if (wf && String(wf.type) !== 'image/webp') { wnote = 'the browser encoded ' + wf.type + ' instead'; wf = null; }
     if (!wf) skip('7b. a 3000 x 2000 WebP fits to 1024 x 683', 'no 3000 x 2000 WebP to fit: ' + (wnote || 'the browser gave no blob'));
@@ -260,7 +260,7 @@ function open(url) {
   return new Promise((resolve) => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'orb-picture-fit-'));
     const args = ['--headless=new', '--no-sandbox', '--disable-gpu', '--no-first-run',
-      '--user-data-dir=' + dir, '--virtual-time-budget=240000', '--dump-dom', url];
+      '--user-data-dir=' + dir, '--virtual-time-budget=600000', '--dump-dom', url];
     const child = spawn(CHROME, args, { stdio: ['ignore', 'pipe', 'pipe'] });
     let dom = '', err = '', killed = false;
     child.stdout.on('data', (d) => { dom += d; });

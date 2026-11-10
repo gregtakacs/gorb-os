@@ -45,6 +45,7 @@
 #include "orb_layout_carry.h" /* storage across the Layout B -> C table change */
 #include "orb_theme.h"
 #include "art_bank.h"
+#include "orb_edge_arc.h"
 
 static const char *TAG = "main";
 
@@ -59,6 +60,7 @@ static void lvgl_task(void *arg)
          * idle task cannot guarantee at its own priority. No-op when it posted
          * nothing; its decision latency does not depend on this running. */
         idle_dim_render_drain();
+        orb_edge_arc_service();        /* the system arc's rows ride this pass's flush */
         const int64_t t_h = esp_timer_get_time();
         uint32_t sleep_ms = lv_timer_handler();
         const int64_t t_s = esp_timer_get_time();

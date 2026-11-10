@@ -75,6 +75,7 @@ static uint8_t s_ap_last_mac[6];    /* DIAGNOSTIC: the client we are watching */
 #include "art_bank.h"
 #include "orb_io_window.h"  /* h_ota brackets itself for the wasm time budget */
 #include "display.h"        /* h_fb: the one-shot frame capture over the panel mirror */
+#include "orb_edge_arc.h"   /* the card uploads' progress round the rim */
 #include "orb_fx.h"         /* h_debug_fx: the shell-transition bench */
 #include "orb_gfx.h"        /* h_debug_dial: the ink-span bench */
 #include "orb_sched.h"
@@ -6197,11 +6198,8 @@ static esp_err_t h_theme_del(httpd_req_t *req)
         httpd_resp_set_status(req, "400 Bad Request");
         return httpd_resp_sendstr(req, "{\"error\":\"id is missing or not a theme id\"}");
     }
-    /* D38: a delete that lands on the worn theme also empties the slot, and the
-     * reboot that draws the base face rides the erase's tail. The answer says
-     * which of the three outcomes happened, so a page can wait for silence (the
-     * reboot) instead of polling a listing that truthfully still shows the
-     * theme until the board comes back. */
+    /* D38: a delete that lands on a worn theme lets it go, and its app draws its base
+     * face without a reboot (2026-11-09). The answer says whether it was worn. */
     bool deactivating = false;
     const esp_err_t e = orb_theme_delete(id, &deactivating);
     if (e == ESP_ERR_NOT_FOUND) {
@@ -7100,6 +7098,25 @@ static esp_err_t h_apps_list(httpd_req_t *req)
     /* Close the card tier, then the installed tier (P4a), then the object. */
     httpd_resp_send_chunk(req, "],\"installed\":[", HTTPD_RESP_USE_STRLEN);
     apps_send_installed(req, row, APPS_ROW_MAX);
+    /* The installs holding their restart (?defer=1): the hub reads a stem here as
+     * copied, and the key's presence as this firmware taking defer at all. */
+    httpd_resp_send_chunk(req, "],\"restart_owed\":[", HTTPD_RESP_USE_STRLEN);
+    {
+        const char *owed[16];
+        const int n = orb_app_install_owed(owed, 16);
+        for (int i = 0; i < n && i < 16; i++) {
+            snprintf(row, APPS_ROW_MAX, "%s\"%s\"", i ? "," : "", owed[i]);
+            httpd_resp_send_chunk(req, row, HTTPD_RESP_USE_STRLEN);
+        }
+        /* and the last install that failed, so a deferred one that will never be
+         * owed is named rather than waited on */
+        char t_stem[ORB_SD_NAME_MAX + 1], t_why[160];
+        json_put(t_stem, sizeof t_stem, orb_app_install_try_stem());
+        json_put(t_why, sizeof t_why, orb_app_install_try_why());
+        snprintf(row, APPS_ROW_MAX, "],\"try_stem\":\"%s\",\"try_why\":\"%s", t_stem, t_why);
+        httpd_resp_send_chunk(req, row, HTTPD_RESP_USE_STRLEN);
+        snprintf(closer, sizeof closer, "\"}");
+    }
     /* the chunked-encoding contract (esp_http_server.h:1129): finish by calling
      * the chunk API with length 0 — that is the terminating chunk. */
     httpd_resp_send_chunk(req, closer, HTTPD_RESP_USE_STRLEN);
@@ -7125,7 +7142,11 @@ static esp_err_t h_apps_install(httpd_req_t *req)
         httpd_resp_set_status(req, "400 Bad Request");
         return httpd_resp_sendstr(req, "{\"error\":\"id is missing or not a usable app name\"}");
     }
-    const esp_err_t e = orb_app_install_post(stem);
+    /* defer=1: copy now, restart later (the hub's batched update ends its run with
+     * one /api/v1/reboot, or with an install that does not defer) */
+    char dv[4] = "";
+    const bool defer = q_param(req, "defer", dv, sizeof dv) && dv[0] == '1';
+    const esp_err_t e = orb_app_install_post(stem, defer);
     if (e == ESP_ERR_INVALID_STATE) {
         /* One job at a time (orb_jobs' gate): a second press while a copy runs is
          * 409, not 422 — the app may be perfectly installable and the answer is to
@@ -7849,14 +7870,14 @@ static esp_err_t h_app_upload(httpd_req_t *req)
                 : "{\"error\":\"could not open the app file on the card\"}");
     }
 
-    /* The file is open: park the dial for the copy, as the theme door does. A card write
-     * under a running dial competes with the panel for internal DMA RAM, and the sdmmc
-     * driver's small asks lose on a fragmented pool: Gold, 2026-11-08, a clock.orbapp
-     * update refused twice with "card write failed (I/O error)" under the Clock and went
-     * through on the third (§17.6's shape). Parked, the clock's scheduler stops, the home
-     * screen takes the glass under the copying overlay, and the copy names itself there.
-     * A park that loses to a raced resume proceeds anyway: the bytes are the job. */
-    const bool parked = orb_theme_upload_park((uint32_t)clen, "copying");
+    /* The file is open: the copy shows as the system's edge arc over a running dial
+     * (owner, 2026-11-09: "an arch around the edge while copying not a full blown
+     * block"). The dial was parked for this from 2026-11-08: a card write under the
+     * Clock competed with the panel for internal DMA RAM and Gold refused a clock.orbapp
+     * twice with "card write failed (I/O error)". The card has its own DMA arena since
+     * 2026-11-09 (orb_sd_dma.c) and radar's parks write under a live sweep (radar-plan
+     * §7.7), so the park's reason is gone. */
+    orb_edge_arc_set(0);
 
     /* The receive buffer lives in PSRAM, not internal .bss. This file already
      * carries the theme upload's static rx[4096] and the OTA chunk; a SECOND
@@ -7876,7 +7897,7 @@ static esp_err_t h_app_upload(httpd_req_t *req)
         rx = heap_caps_malloc(APP_RX, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
         if (!rx) {
             orb_app_upload_cancel(&up);
-            if (parked) orb_theme_upload_unpark();
+            orb_edge_arc_set(-1);
             httpd_resp_set_status(req, "503 Service Unavailable");
             return httpd_resp_sendstr(req, "{\"error\":\"out of memory for the upload buffer\"}");
         }
@@ -7889,14 +7910,15 @@ static esp_err_t h_app_upload(httpd_req_t *req)
             /* Client vanished: cancel() deletes the .part, so nothing survives on the
              * card to be listed as an app and fail to load. */
             orb_app_upload_cancel(&up);
-            if (parked) orb_theme_upload_unpark();
+            orb_edge_arc_set(-1);
             httpd_resp_set_status(req, "400 Bad Request");
             return httpd_resp_sendstr(req, "{\"error\":\"upload aborted by client\"}");
         }
         const esp_err_t de = orb_app_upload_data(up, rx, (size_t)r);
         if (de != ESP_OK) {
+            const int we = errno;          /* the write's own; the cancel's unlink may move it */
             orb_app_upload_cancel(&up);
-            if (parked) orb_theme_upload_unpark();
+            orb_edge_arc_set(-1);
             if (de == ESP_ERR_INVALID_SIZE) {
                 httpd_resp_set_status(req, "413 Payload Too Large");
                 return httpd_resp_sendstr(req, "{\"error\":\"upload too large\"}");
@@ -7913,17 +7935,25 @@ static esp_err_t h_app_upload(httpd_req_t *req)
              * declared cap, and nothing else. */
             httpd_resp_set_status(req, de == ESP_ERR_NO_MEM ? "507 Insufficient Storage"
                                                             : "500 Internal Server Error");
-            return httpd_resp_sendstr(req, de == ESP_ERR_NO_MEM
-                ? "{\"error\":\"out of memory for the card write buffer\"}"
-                : "{\"error\":\"the card refused the write\"}");
+            /* The card's own word and the internal DMA RAM at the refusal: an EIO here is
+             * as often the driver's DMA ask refused as the card itself (Gold, 2026-11-09,
+             * radar.orbapp refused once under a live dial and not in 13 tries after). */
+            char eb[160];
+            snprintf(eb, sizeof eb, "{\"error\":\"%s (%s)\",\"dma_free\":%u,\"dma_largest\":%u}",
+                     de == ESP_ERR_NO_MEM ? "out of memory for the card write buffer"
+                                          : "the card refused the write", strerror(we),
+                     (unsigned)heap_caps_get_free_size(MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL),
+                     (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL));
+            ESP_LOGW(TAG, "card upload refused: %s", eb);
+            return httpd_resp_sendstr(req, eb);
         }
         got += r;
-        if (parked) orb_theme_upload_progress((uint32_t)got, (uint32_t)clen);
+        orb_edge_arc_set((int)((int64_t)got * 1000 / clen));
     }
 
     const char *why = NULL;
     const esp_err_t ee = orb_app_upload_end(&up, overwrite, &why);
-    if (parked) orb_theme_upload_unpark();   /* the file is verified (or refused): the dial is back */
+    orb_edge_arc_set(-1);   /* the file is verified (or refused): the arc goes */
     if (ee == ORB_APP_UPLOAD_E_DUP) {
         /* A different app already lives under that slug. 409, not 422: nothing is
          * wrong with the upload — the owner decides, and the page re-sends with
@@ -8048,13 +8078,11 @@ static esp_err_t h_theme_upload(httpd_req_t *req)
                 : "{\"error\":\"could not open the theme file on the card\"}");
     }
 
-    /* The file is open: from here to a queued store the dial
-     * is promised to the overlay, so the copy names itself on the glass. A park
-     * that loses to a raced resume says so once and the upload proceeds anyway —
-     * the frames are courtesy, the bytes are the job. The slot itself is NOT
-     * touched on this path any more (orb_theme.c, 2026-10-27): an aborted upload
-     * now leaves the live face exactly where it was. */
-    const bool parked = orb_theme_upload_park((uint32_t)clen, "copying");
+    /* The file is open: the copy shows as the system's edge arc over the running dial,
+     * as the app door's does (the park it replaced is told there). The slot itself is
+     * NOT touched on this path (orb_theme.c, 2026-10-27): an aborted upload leaves the
+     * live face exactly where it was. */
+    orb_edge_arc_set(0);
 
     /* Static, never a local: HTTPD_DEFAULT_CONFIG() sizes this task's stack at 4096
      * (esp_http_server.h:57), which is also why the OTA chunk buffer is static. */
@@ -8068,14 +8096,15 @@ static esp_err_t h_theme_upload(httpd_req_t *req)
             /* Client vanished: cancel() deletes the .part, so nothing is left on the
              * card that could later be listed as a theme and fail to load. */
             orb_theme_upload_cancel(&up);
-            if (parked) orb_theme_upload_unpark();
+            orb_edge_arc_set(-1);
             httpd_resp_set_status(req, "400 Bad Request");
             return httpd_resp_sendstr(req, "{\"error\":\"upload aborted by client\"}");
         }
         const esp_err_t de = orb_theme_upload_data(up, rx, (size_t)r);
         if (de != ESP_OK) {
+            const int we = errno;          /* the write's own; the cancel's unlink may move it */
             orb_theme_upload_cancel(&up);
-            if (parked) orb_theme_upload_unpark();
+            orb_edge_arc_set(-1);
             if (de == ESP_ERR_INVALID_SIZE) {
                 httpd_resp_set_status(req, "413 Payload Too Large");
                 return httpd_resp_sendstr(req, "{\"error\":\"upload too large\"}");
@@ -8089,12 +8118,20 @@ static esp_err_t h_theme_upload(httpd_req_t *req)
              * refusal and a 413 body in the same second. */
             httpd_resp_set_status(req, de == ESP_ERR_NO_MEM ? "507 Insufficient Storage"
                                                             : "500 Internal Server Error");
-            return httpd_resp_sendstr(req, de == ESP_ERR_NO_MEM
-                ? "{\"error\":\"out of memory for the card write buffer\"}"
-                : "{\"error\":\"the card refused the write\"}");
+            /* The card's own word and the internal DMA RAM at the refusal: an EIO here is
+             * as often the driver's DMA ask refused as the card itself (Gold, 2026-11-09,
+             * radar.orbapp refused once under a live dial and not in 13 tries after). */
+            char eb[160];
+            snprintf(eb, sizeof eb, "{\"error\":\"%s (%s)\",\"dma_free\":%u,\"dma_largest\":%u}",
+                     de == ESP_ERR_NO_MEM ? "out of memory for the card write buffer"
+                                          : "the card refused the write", strerror(we),
+                     (unsigned)heap_caps_get_free_size(MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL),
+                     (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL));
+            ESP_LOGW(TAG, "card upload refused: %s", eb);
+            return httpd_resp_sendstr(req, eb);
         }
         got += r;
-        if (parked) orb_theme_upload_progress((uint32_t)got, (uint32_t)clen);
+        orb_edge_arc_set((int)((int64_t)got * 1000 / clen));
     }
 
     const char *why = NULL;
@@ -8110,7 +8147,7 @@ static esp_err_t h_theme_upload(httpd_req_t *req)
          * any client too old or too new to know about the token. The upload armed
          * the slot invalid before it ran, so this refusal leaves the dial base-faced
          * until a store lands — the commit, the re-send, or a plain re-store. */
-        if (parked) orb_theme_upload_unpark();
+        orb_edge_arc_set(-1);
         httpd_resp_set_status(req, "409 Conflict");
         char db[256];
         snprintf(db, sizeof db,
@@ -8124,26 +8161,23 @@ static esp_err_t h_theme_upload(httpd_req_t *req)
          * page has no serial cable and no reason to go and get one. The upload armed the
          * slot invalid before it ran, so a rejected upload leaves the base face — recover
          * by re-uploading or re-storing a good file. */
-        if (parked) orb_theme_upload_unpark();
+        orb_edge_arc_set(-1);
         char b[256];
         httpd_resp_set_status(req, "422 Unprocessable Entity");
         snprintf(b, sizeof b, "{\"error\":\"rejected\",\"detail\":\"%s\",\"reboot\":\"none\"}",
                  why ? why : "not a valid theme file");
         return httpd_resp_sendstr(req, b);
     }
-    /* The bytes are verified and on the card under `committed`. The upload armed the
-     * single slot invalid, so the theme is not live until it is stored. Queue the store
-     * door for that id: bundle_job copies card-to-slot, writes the header last, and
-     * reboots onto it. This is the same press the Store button and the dial make, so the
-     * upload door cannot hold a second opinion about what storing a theme does. */
+    /* The bytes are verified and on the card under `committed`. Queue the store door for
+     * that id: the same press the Store button and the dial make, so the upload door
+     * cannot hold a second opinion about what storing a theme does. The store chooses and
+     * does not reboot (2026-11-09); the app wears the new theme as its fill lands. */
+    orb_edge_arc_set(-1);
     char b[192];
     const esp_err_t pe = orb_theme_post_bundle(committed);
     if (pe != ESP_OK) {
         /* On the card but not queued. The slot stays armed invalid; the page says so and
-         * the owner re-presses Store. No store is coming, so the glass comes back too —
-         * a parked dial with no job ahead of it is the frozen clock this frame set
-         * exists to end, not a state to leave anybody in. */
-        if (parked) orb_theme_upload_unpark();
+         * the owner re-presses Store. */
         httpd_resp_set_status(req, "500 Internal Server Error");
         snprintf(b, sizeof b, "{\"error\":\"stored on the card, store job refused: %s\","
                  "\"id\":\"%s\",\"reboot\":\"none\"}", esp_err_to_name(pe), committed);

@@ -190,6 +190,12 @@ bool install_decide(const orbapp_hdr_t *h, const orbapp_install_slots_t *sl,
 #include "orb_jobs.h"           /* orb_app_install_post's worker posting */
 #include "sd/orb_files.h"       /* the OS owns the walk; this interprets it */
 #include "sd/orb_sd.h"          /* lock/unlock, mounted, name_ok, path */
+#if __has_include("esp_attr.h")
+#include "esp_attr.h"
+#endif
+#ifndef EXT_RAM_BSS_ATTR
+#define EXT_RAM_BSS_ATTR                    /* the host build */
+#endif
 
 static const char *TAG = "appinstall";
 
@@ -874,7 +880,30 @@ esp_err_t orb_app_install_image(const uint8_t *img, size_t len, char *why, size_
 /* The worker's request: the stem, nothing else — small enough the queue owns it
  * outright and the httpd caller's stack may vanish on return (orb_theme.c's
  * install_req_t, same shape). */
-typedef struct { char stem[ORB_SD_NAME_MAX + 1]; } install_req_t;
+typedef struct { char stem[ORB_SD_NAME_MAX + 1]; bool defer; } install_req_t;
+
+/* The installs that held their reboot back (defer), in install order. Written only on
+ * the worker; the /apps listing reads it from httpd, and a stem is complete before
+ * the count that publishes it moves. PSRAM: internal RAM is the DMA ring's. */
+#define INSTALL_OWED_MAX 16
+EXT_RAM_BSS_ATTR static char s_owed[INSTALL_OWED_MAX][ORB_SD_NAME_MAX + 1];
+static volatile int s_n_owed;
+
+static void owe(const char *stem)
+{
+    for (int i = 0; i < s_n_owed; i++)
+        if (!strcmp(s_owed[i], stem)) return;
+    if (s_n_owed >= INSTALL_OWED_MAX) return;   /* still owed: the list is only a report */
+    snprintf(s_owed[s_n_owed], sizeof s_owed[0], "%s", stem);
+    s_n_owed = s_n_owed + 1;
+}
+
+int orb_app_install_owed(const char **out, int max)
+{
+    const int n = s_n_owed;
+    for (int i = 0; i < n && i < max; i++) out[i] = s_owed[i];
+    return n;
+}
 
 static void install_job(void *arg)
 {
@@ -883,7 +912,15 @@ static void install_job(void *arg)
     s_installed_code = false;
     const esp_err_t e = orb_app_install(r->stem, why, sizeof why);
     try_note(r->stem, (e == ESP_OK) ? NULL : (why[0] ? why : "the install failed"));
-    if (e == ESP_OK && s_installed_code) (void)orb_jobs_reboot_soon("a code app was installed");
+    if (e != ESP_OK) return;
+    if (r->defer) {
+        /* every deferred install is listed, code or not: the hub reads the stem
+         * here as "copied", and the one restart at the end loads them all */
+        owe(r->stem);
+        ESP_LOGI(TAG, "\"%s\" installed; its restart waits for the rest (%d owed)", r->stem, s_n_owed);
+    } else if (s_installed_code || s_n_owed) {
+        (void)orb_jobs_reboot_soon(s_n_owed ? "apps were installed" : "a code app was installed");
+    }
 }
 
 /* Queue an install onto the worker. The name is validated here, on the caller's
@@ -891,12 +928,16 @@ static void install_job(void *arg)
  * can answer it directly; the worker re-validates against the card anyway.
  * ESP_ERR_INVALID_STATE when one install is already outstanding — orb_jobs keeps
  * the single-job gate — so a double-tap on Load cannot queue two copies. */
-esp_err_t orb_app_install_post(const char *stem)
+esp_err_t orb_app_install_post(const char *stem, bool defer)
 {
     if (!stem || !orb_sd_name_ok(stem)) return ESP_ERR_INVALID_ARG;
     install_req_t r;
     memset(&r, 0, sizeof r);
     snprintf(r.stem, sizeof r.stem, "%s", stem);
+    r.defer = defer;
+    /* a fresh attempt clears the last one's sentence, so a poll that lands before
+     * the worker starts never reads an earlier failure as this one's */
+    try_note(stem, NULL);
     return orb_jobs_post(install_job, &r, sizeof r);
 }
 

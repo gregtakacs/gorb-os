@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/gregtakacs/gorb-os/tools/orb-manager/internal/firmware"
 	"github.com/gregtakacs/gorb-os/tools/orb-manager/internal/orbbind"
 	"github.com/gregtakacs/gorb-os/tools/orb-manager/internal/orbnet"
 )
@@ -158,6 +159,15 @@ func (s *Server) handleThemeDelete(w http.ResponseWriter, r *http.Request) {
 	raw, err := s.device.ThemeDelete(t.IP, t.ID)
 	if err == nil {
 		s.dropThemeCache(t.IP) // the row is gone from the next honest read
+		// The door answers "reboot":"none" on firmware that rebooted anyway, so the page
+		// learns from the hub whether a worn theme's removal restarts the orb.
+		var m map[string]any
+		if json.Unmarshal(raw, &m) == nil && m["deactivated"] == true {
+			m["restarts"] = s.firmwareBefore(t.IP, removeNoRebootFW)
+			if b, merr := json.Marshal(m); merr == nil {
+				raw = b
+			}
+		}
 	}
 	s.themeReply(w, raw, err)
 }
@@ -995,7 +1005,7 @@ func (s *Server) streamThemeUpload(w http.ResponseWriter, r *http.Request, ip st
 		if flusher != nil {
 			flusher.Flush()
 		}
-	}, "\u201c"+c.Name+"\u201d")
+	}, "\u201c"+c.Name+"\u201d", !s.storeReboots(ip))
 	release, rerr := s.holdDevicePort(r.Context(), ip, otaTimeout)
 	if rerr != nil {
 		send(installStep{Step: c.ID, Action: "refused", Note: rerr.Error()})
@@ -1029,12 +1039,45 @@ func (s *Server) followStoreStaged(ctx context.Context, ip, id string, onStage s
 	if outcome != "stored" {
 		return outcome, note, false
 	}
+	if !s.storeReboots(ip) {
+		return outcome, note, true // chosen and worn, no restart: the orb never left
+	}
 	if rebooting != nil {
 		rebooting()
 	}
 	live, back := s.installWaitBack(ip, beats...)
 	s.dropThemeCache(live)
 	return outcome, note, back
+}
+
+// storeNoRebootFW is the first release whose theme store chooses the theme and does not
+// reboot (orb_theme.c's store_choose, 2026-11-09): the app wears it the next time it is on
+// the glass, now if it is. A hub that waited out a restart after it showed "Restarting the
+// orb to wear the theme" for the 20 s quiet grace while nothing restarted (owner, Gold).
+const storeNoRebootFW = "v1.6.0"
+
+// storeReboots answers whether a store on this orb ends in a reboot: true for firmware
+// before storeNoRebootFW, and for a status that will not answer or parse (the old wait is
+// the safe one: it hands back a board that never went quiet).
+func (s *Server) storeReboots(ip string) bool {
+	return s.firmwareBefore(ip, storeNoRebootFW)
+}
+
+// removeNoRebootFW is the first release whose removal of a worn theme lets it go and
+// leaves its app on its base face without a reboot (orb_theme.c's clear_job, owner
+// 2026-11-09: "this should not be needed at all").
+const removeNoRebootFW = "v1.6.4"
+
+// firmwareBefore answers whether the orb runs a release older than floor; a status that
+// will not answer or parse counts as older (the old waits are the safe ones).
+func (s *Server) firmwareBefore(ip, floor string) bool {
+	st, err := s.device.Status(ip)
+	if err != nil {
+		return true
+	}
+	v, ok := firmware.ParseVersion(st.FW)
+	min, _ := firmware.ParseVersion(floor)
+	return !ok || v.Compare(min) < 0
 }
 
 // themeStoreBudget is the wait for one queued store to report an outcome while

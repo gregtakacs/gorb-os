@@ -2,12 +2,17 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"io"
+	"io/fs"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path"
 	"path/filepath"
+	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -392,7 +397,7 @@ func TestAnInstallThatRodeTheRebootSaysSo(t *testing.T) {
 		s.device = orbnet.NewClient(deviceTimeout)
 		s.device.DevicePort = portOf(srv.URL)
 		said := false
-		err := s.installOneApp(context.Background(), "127.0.0.1", "sentinel", nil, false, func(st installStep) {
+		err := s.installOneApp(context.Background(), "127.0.0.1", "sentinel", nil, false, false, func(st installStep) {
 			if st.Action == "restarted" {
 				said = true
 			}
@@ -444,7 +449,7 @@ func TestAnInstallWaitsOutABusyWorker(t *testing.T) {
 		s.device = orbnet.NewClient(deviceTimeout)
 		s.device.DevicePort = portOf(srv.URL)
 		waited := 0
-		err := s.installOneApp(context.Background(), "127.0.0.1", "sentinel", nil, false, func(st installStep) {
+		err := s.installOneApp(context.Background(), "127.0.0.1", "sentinel", nil, false, false, func(st installStep) {
 			if st.Action == "waiting" {
 				waited++
 			}
@@ -500,7 +505,7 @@ func TestAnOlderFormatCardCopyIsReplaced(t *testing.T) {
 		s.device.DevicePort = portOf(srv.URL)
 		s.ota = orbnet.NewClient(otaTimeout)
 		s.ota.DevicePort = portOf(srv.URL)
-		err := s.installOneApp(context.Background(), "127.0.0.1", "sentinel", []byte("the library's bytes"), false, func(installStep) {})
+		err := s.installOneApp(context.Background(), "127.0.0.1", "sentinel", []byte("the library's bytes"), false, false, func(installStep) {})
 		srv.Close()
 		if strings.HasPrefix(why, "app format") {
 			if err != nil || !uploaded || !installed {
@@ -540,5 +545,185 @@ func TestStoreStagesGetTheirOwnRows(t *testing.T) {
 	}
 	if last := got[len(got)-1]; last.Action != "moving" || last.Note != "2048 of 2048 KB" {
 		t.Errorf("the move's last line is %+v; want its full count", last)
+	}
+}
+
+// TestABatchRestartsTheOrbOnce: Update everything restarted the orb after every app
+// (owner, 2026-11-09). On firmware that lists restart_owed, a run of several apps installs
+// each with ?defer=1, waits for its stem to be owed rather than for a row the old release
+// already stands in, and asks for one /api/v1/reboot at the end. Firmware without the key
+// installs one app per restart, as before, and is never asked to reboot by the hub.
+func TestABatchRestartsTheOrbOnce(t *testing.T) {
+	op, ow, og, oh := installPoll, installRebootWait, cycleQuietGrace, installHard
+	installPoll, installRebootWait, cycleQuietGrace, installHard = 10*time.Millisecond, 200*time.Millisecond, 50*time.Millisecond, 2*time.Second
+	defer func() { installPoll, installRebootWait, cycleQuietGrace, installHard = op, ow, og, oh }()
+	lib := t.TempDir()
+	for _, slug := range []string{"clock", "weather"} {
+		b, err := fs.ReadFile(shippedLib, path.Join(libAppsSubdir, slug+".orbapp"))
+		if err != nil {
+			t.Skipf("no shipped %s: %v", slug, err)
+		}
+		os.WriteFile(filepath.Join(lib, slug+".orbapp"), b, 0o644)
+	}
+	for _, defers := range []bool{true, false} {
+		var mu sync.Mutex
+		var installs []string
+		owed := []string{}
+		reboots := 0
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			mu.Lock()
+			defer mu.Unlock()
+			w.Header().Set("Content-Type", "application/json")
+			switch r.URL.Path {
+			case "/api/v1/status":
+				w.Write([]byte(`{"state":"connected","ip":"127.0.0.1","fw":"v1.6.1+aaaaaaa"}`))
+			case "/api/v1/sd/app":
+				io.Copy(io.Discard, r.Body)
+				w.Write([]byte(`{"state":"stored"}`))
+			case "/api/v1/apps/install":
+				id := r.URL.Query().Get("id")
+				installs = append(installs, id+map[bool]string{true: "+defer", false: ""}[r.URL.Query().Get("defer") == "1"])
+				if defers && r.URL.Query().Get("defer") == "1" {
+					owed = append(owed, id)
+				}
+				w.Write([]byte(`{"state":"installing"}`))
+			case "/api/v1/reboot":
+				reboots++
+				owed = []string{}
+				w.Write([]byte(`{"state":"rebooting"}`))
+			case "/api/v1/apps":
+				tail := ""
+				if defers {
+					b, _ := json.Marshal(owed)
+					tail = `,"restart_owed":` + string(b)
+				}
+				w.Write([]byte(`{"mounted":true,"apps":[{"stem":"clock","ok":true},{"stem":"weather","ok":true}],` +
+					`"installed":[{"slug":"clock","version":"v1.0.0"},{"slug":"weather","version":"v1.0.0"}]` + tail + `}`))
+			default:
+				w.Write([]byte(`{}`))
+			}
+		}))
+		s := newHub()
+		s.lib = &Library{AppsDir: lib}
+		s.device = orbnet.NewClient(deviceTimeout)
+		s.device.DevicePort = portOf(srv.URL)
+		s.ota = orbnet.NewClient(otaTimeout)
+		s.ota.DevicePort = portOf(srv.URL)
+		s.installRun(context.Background(), "127.0.0.1", "clock,weather", true, false, func(installStep) {})
+		srv.Close()
+		mu.Lock()
+		if defers {
+			if want := []string{"clock+defer", "weather+defer"}; !slices.Equal(installs, want) {
+				t.Errorf("deferring firmware: installs %v, want %v", installs, want)
+			}
+			if reboots != 1 {
+				t.Errorf("deferring firmware: the hub asked for %d reboots, want exactly one", reboots)
+			}
+		} else {
+			if want := []string{"clock", "weather"}; !slices.Equal(installs, want) {
+				t.Errorf("older firmware: installs %v, want %v (no defer it cannot read)", installs, want)
+			}
+			if reboots != 0 {
+				t.Errorf("older firmware: the hub asked for %d reboots; each install reboots on its own", reboots)
+			}
+		}
+		mu.Unlock()
+	}
+}
+
+// TestAStoreOnlyRebootsOlderFirmware: from v1.6.0 a theme store chooses and does not
+// reboot, and a hub that still waited for the restart showed "Restarting the orb" for the
+// whole quiet grace while nothing restarted (owner, Gold, 2026-11-09). Older firmware, and
+// a status that will not parse, keep the restart wait.
+func TestAStoreOnlyRebootsOlderFirmware(t *testing.T) {
+	for fw, want := range map[string]bool{"v1.6.0+e6dc820": false, "v1.6.1": false, "v1.2.38+adee2d7": true, "dev": true} {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			w.Write([]byte(`{"state":"connected","fw":"` + fw + `"}`))
+		}))
+		s := newHub()
+		s.device = orbnet.NewClient(deviceTimeout)
+		s.device.DevicePort = portOf(srv.URL)
+		if got := s.storeReboots("127.0.0.1"); got != want {
+			t.Errorf("firmware %s: storeReboots %v, want %v", fw, got, want)
+		}
+		srv.Close()
+	}
+}
+
+// TestARefusedCardWriteIsSentAgain: Gold refused radar.orbapp once with "the card refused
+// the write" under a live dial and took it on every later try (owner, 2026-11-09). The hub
+// sends a refused write again, at most cardWriteTries times, and says so on the step; any
+// other refusal fails at once.
+func TestARefusedCardWriteIsSentAgain(t *testing.T) {
+	op, oh, oz := installPoll, installHard, cardWriteRetryPause
+	installPoll, installHard, cardWriteRetryPause = 10*time.Millisecond, 2*time.Second, time.Millisecond
+	defer func() { installPoll, installHard, cardWriteRetryPause = op, oh, oz }()
+	blob := cloneFixture(t, t.TempDir(), "sentinel")
+	body, err := os.ReadFile(blob)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct {
+		refusals, wantUploads int
+		reply                 string
+		ok                    bool
+	}{
+		{1, 2, `{"error":"the card refused the write (I/O error)","dma_free":5120}`, true},
+		{9, cardWriteTries, `{"error":"the card refused the write (I/O error)"}`, false},
+		{9, 1, `{"error":"rejected","detail":"app format"}`, false},
+	} {
+		var mu sync.Mutex
+		uploads, installed := 0, false
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			mu.Lock()
+			defer mu.Unlock()
+			w.Header().Set("Content-Type", "application/json")
+			switch r.URL.Path {
+			case "/api/v1/sd/app":
+				io.Copy(io.Discard, r.Body)
+				uploads++
+				if uploads <= c.refusals {
+					w.WriteHeader(500)
+					w.Write([]byte(c.reply))
+					return
+				}
+				w.Write([]byte(`{"state":"stored"}`))
+			case "/api/v1/apps/install":
+				installed = true
+				w.Write([]byte(`{"ok":true,"queued":true}`))
+			case "/api/v1/apps":
+				if installed {
+					w.Write([]byte(`{"apps":[],"installed":[{"slug":"sentinel"}]}`))
+					return
+				}
+				w.Write([]byte(`{"apps":[],"installed":[]}`))
+			default:
+				w.Write([]byte(`{}`))
+			}
+		}))
+		s := newHub()
+		s.lib = &Library{AppsDir: filepath.Dir(blob)}
+		s.device = orbnet.NewClient(deviceTimeout)
+		s.device.DevicePort = portOf(srv.URL)
+		s.ota = orbnet.NewClient(otaTimeout)
+		s.ota.DevicePort = portOf(srv.URL)
+		var notes []string
+		err := s.installOneApp(context.Background(), "127.0.0.1", "sentinel", body, false, false, func(st installStep) {
+			if strings.Contains(st.Note, "sending it again") {
+				notes = append(notes, st.Note)
+			}
+		})
+		srv.Close()
+		if (err == nil) != c.ok {
+			t.Errorf("%d refusals of %q: err %v, want ok=%v", c.refusals, c.reply, err, c.ok)
+		}
+		if uploads != c.wantUploads {
+			t.Errorf("%d refusals of %q: %d uploads, want %d", c.refusals, c.reply, uploads, c.wantUploads)
+		}
+		if len(notes) != c.wantUploads-1 {
+			t.Errorf("%d refusals of %q: the steps said it was sent again %d times, want %d: %v",
+				c.refusals, c.reply, len(notes), c.wantUploads-1, notes)
+		}
 	}
 }

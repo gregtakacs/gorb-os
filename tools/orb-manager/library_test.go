@@ -725,7 +725,7 @@ func TestAppUploadRidesTheBulkClient(t *testing.T) {
 
 	var steps []installStep
 	send := func(st installStep) { steps = append(steps, st) }
-	if err := s.installOneApp(context.Background(), "127.0.0.1", "sentinel", body, false, send); err != nil {
+	if err := s.installOneApp(context.Background(), "127.0.0.1", "sentinel", body, false, false, send); err != nil {
 		t.Fatalf("the install run refused: %v", err)
 	}
 	if sawUploadOnLedger {
@@ -801,7 +801,7 @@ func TestInstallOneAppSkipsAnInstalledRow(t *testing.T) {
 
 	var steps []installStep
 	send := func(st installStep) { steps = append(steps, st) }
-	if err := s.installOneApp(context.Background(), "127.0.0.1", "sentinel", body, false, send); err != nil {
+	if err := s.installOneApp(context.Background(), "127.0.0.1", "sentinel", body, false, false, send); err != nil {
 		t.Fatalf("the skip run refused: %v", err)
 	}
 	if sawEnable {
@@ -1023,7 +1023,7 @@ func TestHollowRowSendsBytesInsteadOfSkipping(t *testing.T) {
 		s.device.DevicePort = portOf(srv.URL)
 		s.ota.DevicePort = portOf(srv.URL)
 		send := func(st installStep) { steps = append(steps, st) }
-		err = s.installOneApp(context.Background(), "127.0.0.1", "sentinel", blob, false, send)
+		err = s.installOneApp(context.Background(), "127.0.0.1", "sentinel", blob, false, false, send)
 		return
 	}
 

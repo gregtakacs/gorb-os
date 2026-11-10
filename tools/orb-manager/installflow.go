@@ -9,6 +9,7 @@ import (
 	"log"
 	"net/http"
 	"path"
+	"slices"
 	"strings"
 	"time"
 
@@ -187,6 +188,7 @@ type planStep struct {
 // check and the restart behind an install — by setting cur itself.
 type runPhases struct {
 	cur, theme string
+	chooses    bool // the orb's store chooses (themeSteps' two rows)
 }
 
 func (p *runPhases) stamp(send func(installStep)) func(installStep) {
@@ -202,7 +204,7 @@ func (p *runPhases) stamp(send func(installStep)) func(installStep) {
 func (p *runPhases) phaseOf(st installStep) string {
 	switch st.Step {
 	case "theme":
-		if ph := themePhase(st.Action); ph != "" {
+		if ph := themePhase(st.Action, p.chooses); ph != "" {
 			return ph + ":" + p.theme
 		}
 	case "install", "slate", "face", "verify":
@@ -223,7 +225,7 @@ func (p *runPhases) phaseOf(st installStep) string {
 // reach, in order. A stage the orb makes unnecessary (the card already holds the file, the
 // card already carries a theme) is still listed, and the panel marks it skipped, so the
 // count an owner reads at the start is the count they watch finish.
-func installPlan(lib *Library, slugs []string, card bool) []planStep {
+func installPlan(lib *Library, slugs []string, card, chooses bool) []planStep {
 	titles := map[string]string{}
 	p := &LibraryPayload{}
 	listAppLibrary(lib.AppsDir, p)
@@ -252,7 +254,7 @@ func installPlan(lib *Library, slugs []string, card bool) []planStep {
 		if slug != "clock" && !lib.hasAppTheme(slug) {
 			continue
 		}
-		for _, st := range themeSteps(title(slug)+"'s theme", restart) {
+		for _, st := range themeSteps(title(slug)+"'s theme", restart, chooses) {
 			st.ID += ":" + slug
 			plan = append(plan, st)
 		}
@@ -261,24 +263,44 @@ func installPlan(lib *Library, slugs []string, card bool) []planStep {
 }
 
 // themeSteps is a theme install's stages, the same five wherever a theme goes on: the
-// file crosses to the SD card, the orb checks it and parks the dial, the theme area packs
+// file crosses to the SD card (under a running dial since OS v1.6.4), the orb checks it, the theme area packs
 // the other apps' themes down when this one will not fit as it stands, the copy moves the
 // theme into flash, and the orb restarts to wear it (owner, 2026-11-06). Making room is
 // skipped on the rows when the orb never reports it. Older firmware reports no stage at
 // all, and its whole store then shows on the check row.
-func themeSteps(what string, restart int) []planStep {
+//
+// Firmware that chooses a theme rather than storing it into flash and rebooting
+// (storeNoRebootFW) has two: the copy to the card, then the check and the choice that put
+// it on the dial; the move into flash is the app's fill, behind its own face, after the run
+// (owner, 2026-11-09: "way too many steps that are no longer applicable").
+func themeSteps(what string, restart int, chooses bool) []planStep {
+	if chooses {
+		return []planStep{
+			{ID: "theme-send", Label: "Copying " + what + " to the orb's SD card", Kind: "bytes"},
+			{ID: "theme-check", Label: "Putting the theme on the dial", Kind: "wait", Budget: int(themeStoreBudget / time.Second)},
+		}
+	}
 	return []planStep{
 		{ID: "theme-send", Label: "Copying " + what + " to the orb's SD card", Kind: "bytes"},
 		{ID: "theme-check", Label: "Checking the theme file", Kind: "wait", Budget: int(themeStoreBudget / time.Second)},
 		{ID: "theme-room", Label: "Making room in the orb's flash", Kind: "bytes"},
 		{ID: "theme-store", Label: "Moving the theme into flash", Kind: "bytes"},
-		{ID: "theme-restart", Label: "Restarting the orb to wear the theme", Kind: "wait", Budget: restart},
+		{ID: "theme-restart", Label: "Putting the theme on the dial", Kind: "wait", Budget: restart},
 	}
 }
 
 // themePhase maps a theme line's action to its themeSteps row; "" leaves the line on the
 // row it is already on (a wait's beat).
-func themePhase(action string) string {
+func themePhase(action string, chooses bool) string {
+	if chooses {
+		switch action {
+		case "uploading", "uploaded-theme", "skipped", "unchecked":
+			return "theme-send"
+		case "storing", "checking-file", "making-room", "moving", "stored", "rebooting", "worn":
+			return "theme-check"
+		}
+		return ""
+	}
 	switch action {
 	case "uploading", "uploaded-theme", "skipped", "unchecked":
 		return "theme-send"
@@ -288,7 +310,7 @@ func themePhase(action string) string {
 		return "theme-room"
 	case "moving", "stored":
 		return "theme-store"
-	case "rebooting":
+	case "rebooting", "worn":
 		return "theme-restart"
 	}
 	return ""
@@ -556,7 +578,12 @@ func (s *Server) installRun(ctx context.Context, ip, only string, force, card bo
 	lib := s.library()
 	slugs := []string{}
 	if only != "" {
-		slugs = []string{only}
+		// a comma list is Update everything's batch: every app in one run, one restart
+		for _, s := range strings.Split(only, ",") {
+			if s = strings.TrimSpace(s); s != "" && !slices.Contains(slugs, s) {
+				slugs = append(slugs, s)
+			}
+		}
 	} else {
 		p := &LibraryPayload{}
 		listAppLibrary(lib.AppsDir, p)
@@ -567,11 +594,11 @@ func (s *Server) installRun(ctx context.Context, ip, only string, force, card bo
 			return fmt.Errorf("the library at %s holds no loadable app to install", lib.AppsDir)
 		}
 	}
-	if card && only == "" {
+	if card && len(slugs) != 1 {
 		return fmt.Errorf("a card-only install names exactly one slug")
 	}
-	phases := &runPhases{cur: "check"}
-	send(installStep{Step: "install", Action: "plan", Phase: "check", Plan: installPlan(lib, slugs, card)})
+	phases := &runPhases{cur: "check", chooses: !s.storeReboots(ip)}
+	send(installStep{Step: "install", Action: "plan", Phase: "check", Plan: installPlan(lib, slugs, card, phases.chooses)})
 	send = phases.stamp(send)
 	st, err := s.device.Status(ip)
 	if err != nil {
@@ -629,6 +656,23 @@ func (s *Server) installRun(ctx context.Context, ip, only string, force, card bo
 	fwv, _ := firmware.ParseVersion(st.FW)
 	rebooted := false
 	cycled := false // the last install's reboot was seen through to the board's return
+	// Several apps on firmware that takes ?defer=1 copy without a restart each, and the
+	// run restarts the orb once when the last has landed (owner, 2026-11-09: Update
+	// everything restarted the orb after every app). Older firmware restarts per app.
+	batch := len(slugs) > 1 && listing.Defers()
+	owed := 0 // deferred installs that landed and wait on the one restart
+	restartOwed := func() error {
+		if owed == 0 {
+			return nil
+		}
+		owed = 0
+		log.Printf("orb-manager: %s took its apps without a restart each; restarting it once", ip)
+		if _, err := s.device.Reboot(ip); err != nil {
+			return fmt.Errorf("the apps landed but the orb refused the restart that loads them: %w", err)
+		}
+		rebooted, cycled = true, false
+		return nil
+	}
 	for _, slug := range slugs {
 		var blob []byte
 		if !card {
@@ -673,10 +717,23 @@ func (s *Server) installRun(ctx context.Context, ip, only string, force, card bo
 			}
 			send(st)
 		}
-		if err := s.installOneApp(ctx, ip, slug, blob, force && only != "", sendOne); err != nil {
+		if err := s.installOneApp(ctx, ip, slug, blob, force && only != "", batch, sendOne); err != nil {
+			// what already landed still loads: a run that stops half way restarts onto it
+			if rerr := restartOwed(); rerr != nil {
+				log.Printf("orb-manager: %s: %v", ip, rerr)
+			}
 			return err
 		}
+		if batch {
+			if landed {
+				owed++
+			}
+			continue
+		}
 		rebooted = rebooted || landed
+	}
+	if err := restartOwed(); err != nil {
+		return err
 	}
 	// The theme rides the CLOCK, not the full-library run. The join-time install
 	// asks for exactly one slug (`only=clock`), and a clock with no theme on the
@@ -766,7 +823,7 @@ func installMinVersion() firmware.Version {
 // both asks: the shelf's bytes cross again even where a readable card file and a live
 // slot already stand, because the press was made precisely because those copies are
 // older than the shelf.
-func (s *Server) installOneApp(ctx context.Context, ip, slug string, blob []byte, force bool, send func(installStep)) error {
+func (s *Server) installOneApp(ctx context.Context, ip, slug string, blob []byte, force, deferred bool, send func(installStep)) error {
 	listing, err := s.device.AppsList(ip)
 	if err != nil {
 		return fmt.Errorf("the orb did not answer its app ledger: %w", err)
@@ -835,19 +892,33 @@ func (s *Server) installOneApp(ctx context.Context, ip, slug string, blob []byte
 		// turns the same stretch into the one fact the screen can honestly state: how many
 		// bytes the transport has written.
 		total := len(blob)
-		last, sentLast := 0, int64(0)
-		_, uerr := s.ota.AppUploadProgress(ip, blob, true, func(sent int64) {
-			sentLast = sent
-			// One line per ~10 percent: a line per chunk is the noise the watch loop's
-			// every-other-tick rule exists to prevent, and a percent is all a bar needs.
-			pct := int(sent * 100 / int64(total))
-			if pct-last < 10 && int(sent) != total {
-				return
+		var uerr error
+		sentLast := int64(0)
+		for try := 1; ; try++ {
+			last := 0
+			sentLast = 0
+			_, uerr = s.ota.AppUploadProgress(ip, blob, true, func(sent int64) {
+				sentLast = sent
+				// One line per ~10 percent: a line per chunk is the noise the watch loop's
+				// every-other-tick rule exists to prevent, and a percent is all a bar needs.
+				pct := int(sent * 100 / int64(total))
+				if pct-last < 10 && int(sent) != total {
+					return
+				}
+				last = pct
+				send(installStep{Step: slug, Action: "uploading",
+					Note: fmt.Sprintf("%d of %d KB", sent/1024, int64(total)/1024)})
+			})
+			// A refused card write is the driver's moment, not the file's: the orb deletes
+			// the part file and a second crossing usually lands (Gold 2026-11-08 went
+			// through on the third; 2026-11-09 radar once under a live dial, then 13 of 13).
+			if uerr == nil || try == cardWriteTries || !cardWriteRefused(uerr) {
+				break
 			}
-			last = pct
 			send(installStep{Step: slug, Action: "uploading",
-				Note: fmt.Sprintf("%d of %d KB", sent/1024, int64(total)/1024)})
-		})
+				Note: fmt.Sprintf("the card refused the write; sending it again (%d of %d)", try+1, cardWriteTries)})
+			time.Sleep(cardWriteRetryPause)
+		}
 		if uerr != nil {
 			// sentLast, not total: a refusal that claims the whole file crossed when it
 			// stalled at a fifth of it sends the operator to blame the wrong thing.
@@ -861,7 +932,12 @@ func (s *Server) installOneApp(ctx context.Context, ip, slug string, blob []byte
 	// out on the install's own hard leash, saying so, instead of failing the run.
 	busyUntil := time.Now().Add(installHard)
 	for told := false; ; {
-		_, err := s.device.AppInstallCard(ip, slug)
+		var err error
+		if deferred {
+			_, err = s.device.AppInstallCardDeferred(ip, slug)
+		} else {
+			_, err = s.device.AppInstallCard(ip, slug)
+		}
 		if err == nil {
 			break
 		}
@@ -898,7 +974,16 @@ func (s *Server) installOneApp(ctx context.Context, ip, slug string, blob []byte
 		if err != nil {
 			silent = true
 		}
-		if err == nil {
+		if err == nil && deferred {
+			// the old row stands until the restart, so only the owed list says it copied
+			if list.Owes(slug) {
+				send(installStep{Step: slug, Action: "installed", Note: "copied; the orb restarts once the rest are in"})
+				return nil
+			}
+			if list.TryStem == slug && list.TryWhy != "" {
+				return fmt.Errorf("the dial refused %s: %s", slug, list.TryWhy)
+			}
+		} else if err == nil {
 			for _, row := range list.Installed {
 				if row.Slug == slug {
 					send(installStep{Step: slug, Action: "installed"})
@@ -1214,6 +1299,11 @@ func (s *Server) installTheme(ctx context.Context, ip, slug string, send func(in
 		return fmt.Errorf("the store did not land: %s", note)
 	}
 	send(installStep{Step: "theme", Action: "stored"})
+	if !s.storeReboots(ip) {
+		send(installStep{Step: "theme", Action: "worn", Note: "the orb wears it without a restart"})
+		s.dropThemeCache(ip)
+		return nil
+	}
 	send(installStep{Step: "theme", Action: "rebooting"})
 	live, back := s.installWaitBack(ip, beatFor(send, "theme", "waiting for it to come back wearing the new face"))
 	if !back {
@@ -1270,7 +1360,7 @@ func (s *Server) h_libraryPush(w http.ResponseWriter, r *http.Request) {
 	// reboot the device's upload door sets off behind it. Each line names its stage by
 	// its action, the way an install run's do.
 	if kind == "theme" {
-		send = themeRunSend(send, name)
+		send = themeRunSend(send, name, !s.storeReboots(ip))
 	} else {
 		send(installStep{Step: kind, Action: "plan", Phase: "send",
 			Plan: []planStep{{ID: "send", Label: "Copying " + name + " to the orb's SD card", Kind: "bytes"}}})
@@ -1338,12 +1428,12 @@ func (s *Server) h_libraryPush(w http.ResponseWriter, r *http.Request) {
 // what is going on) and returns the send that stamps each later line with its row. The
 // Themes face's push and the theme editor's send both run through it, so the two show the
 // same five steps (owner, 2026-11-06).
-func themeRunSend(send func(installStep), what string) func(installStep) {
+func themeRunSend(send func(installStep), what string, chooses bool) func(installStep) {
 	restart := int((cycleQuietGrace + installRebootWait) / time.Second)
-	send(installStep{Step: "theme", Action: "plan", Phase: "theme-send", Plan: themeSteps(what, restart)})
+	send(installStep{Step: "theme", Action: "plan", Phase: "theme-send", Plan: themeSteps(what, restart, chooses)})
 	phase := "theme-send"
 	return func(st installStep) {
-		if ph := themePhase(st.Action); ph != "" {
+		if ph := themePhase(st.Action, chooses); ph != "" {
 			phase = ph
 		}
 		st.Phase = phase
@@ -1383,10 +1473,18 @@ func (s *Server) streamThemeStore(ctx context.Context, ip string, blob []byte, l
 	// it. It used to answer `done` here, and the page then read the theme list while
 	// the orb was mid-copy and mid-reboot, and timed out (owner report, 2026-11-03).
 	send(installStep{Step: c.ID, Action: "storing", Note: "the orb is copying it from the card to its flash"})
+	restarted := false
 	outcome, note, back := s.followStoreStaged(ctx, ip, c.ID, storeStages(send, c.ID), func() {
+		restarted = true
 		send(installStep{Step: c.ID, Action: "stored"})
 		send(installStep{Step: c.ID, Action: "rebooting", Note: "stored; the orb reboots onto it"})
 	}, beatFor(send, c.ID, "waiting for the orb to store the theme and come back"))
+	if outcome == "stored" && !restarted {
+		// firmware whose store chooses and does not reboot (storeNoRebootFW)
+		send(installStep{Step: c.ID, Action: "stored"})
+		send(installStep{Step: c.ID, Action: "done", Note: "stored; the orb wears it without a restart"})
+		return true
+	}
 	if outcome != "stored" {
 		send(installStep{Step: c.ID, Action: "refused", Note: "the store did not land: " + note})
 		return false
@@ -1585,6 +1683,20 @@ func deviceSentence(err error) error {
 //
 // sent is the byte count the transport had written when the wait ended; pass 0 where the
 // call carried no progress.
+// cardWriteTries is how many times an app crosses to the card when the orb refuses the
+// write; cardWriteRetryPause lets whatever held its DMA memory finish first.
+const cardWriteTries = 3
+
+var cardWriteRetryPause = 2 * time.Second
+
+// cardWriteRefused says whether an upload failed in the orb's card write itself (its 500
+// or 507 from h_app_upload), the one refusal a second crossing can cure.
+func cardWriteRefused(err error) bool {
+	s := err.Error()
+	return strings.Contains(s, "the card refused the write") ||
+		strings.Contains(s, "out of memory for the card write buffer")
+}
+
 func plainDeviceErr(err error, sent int) error {
 	s := err.Error()
 	switch {

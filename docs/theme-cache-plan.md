@@ -453,6 +453,48 @@ happens only when they are not. No first fit, no compaction, no MOVING state.
 - **Bronze, by the owner's eye:** the dial runs with hands after boot; Skeleton stored with
   the clock on the glass loaded behind its face and runs, no reboot.
 
+### The copy to the card under a running dial, shown as an edge arc (2026-11-09, owner's ruling, Gold, OS v1.6.4)
+
+- **The ruling:** "why is a theme copy now so disruptive? ... I'd still like to see a system
+  process overlay on top of the display for the copy status, maybe an arch around the edge
+  while copying not a full blown block." And from Gold the same day: the glass "said
+  rebooting after copy, and it did not reboot, it's just stuck on the display at 100%".
+- **The stuck 100%:** the theme door kept the dial parked from a successful upload to the
+  store, which used to reboot; since the store chooses and does not reboot nothing let it go.
+  Moot now: the door no longer parks.
+- **No park for the copy** (`h_theme_upload`, `h_app_upload`): the park was for a card write
+  competing with the panel for internal DMA RAM (Gold, 2026-11-08, "card write failed (I/O
+  error)" under the clock). The card has had its own arena since that day's later commit and
+  radar's parks write under a live sweep (radar-plan §7.7), so both doors copy under the
+  running dial. The OTA door still parks: it writes flash, which stalls the dial anyway.
+- **The edge arc** (`display/orb_edge_arc.c`): the theme rings' look (a bright arc clockwise
+  from twelve over a dim track), 7 px at the rim. Not a widget and never in the mirror:
+  display.c stamps it into each DMA tile as the tile leaves (the tiled flush and
+  `fx_frame`), so a themed dial keeps its direct path and its compare, and the arc stands
+  over any face. A change re-sends only the rows it touched, at most 10 Hz, riding a one-pixel
+  invalidation in the corner outside the glass so a still page carries it. No arc on the
+  untiled fallback.
+- **Gold:** Skeleton (3.49 MB) sent with the clock on the glass: 23.6 s to the card, the
+  store, the fill behind the face, landed on its old pages; the clock 5.7-6 fps before and
+  after, `sd.dma_falls` 0, internal DMA low water 6.9 KB. A 1.31 MB file crossed in 11.7 s.
+  The frame rate during the copy is not measured (the upload holds the httpd task and Gold
+  has no serial here), nor the arc on the glass: the owner's eyes.
+- **Still the face after the copy:** the store lets the old theme go and the fill runs behind
+  the 300 px preview (rulings 2 and 5); C0 measured a fill under a live app at half its frames.
+- **Removing a worn theme does not reboot** (owner, the same day: "this should not be needed
+  at all, we can just remove the theme and if it was the active one we just go to default
+  mode"). `clear_job` is the store's release with no new choice: the app's voices and voice
+  bank window go on the LVGL task, its stage rebinds bare, its three entries and its choice
+  leave the table. The release now resumes an app on the glass so it reads its bare stage
+  (without it the clock kept its labels hidden and drew nothing, 0 fps). A choice whose
+  display entry was evicted counts as worn. The reconcile carries on past a removal. Gold:
+  Skeleton deleted under the clock, 5.5 fps themed to the base face at 1 fps, no reboot.
+- **A store is heavy I/O to a guest** (`bundle_job`): its voice bank, preview and table writes
+  stalled flights on the glass past its budget (a trap in `orb_service`, Gold); two in a row
+  unload an app, its new theme never bound. Two stores under flights after: no trap.
+- **The hub's theme plan** on firmware that chooses: two rows, the copy to the card and
+  "Putting the theme on the dial"; the room, the move into flash and the restart are gone.
+
 ### A store chooses, and does not reboot (2026-11-09, Bronze)
 
 - **The store** (`store_choose`): the file is checked as before (identity, region, the

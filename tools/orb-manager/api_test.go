@@ -514,7 +514,7 @@ func TestThemePoolRegionsComeFromTheTable(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ThemePoolRegions on the bundle's own table: %v", err)
 	}
-	const assets, size = 0x720000, 0x800000 // partitions.csv
+	const assets, size = 0x5A0000, 0x980000 // partitions.csv (Layout D)
 	want := []esprom.EraseTarget{
 		{Offset: assets, Size: 0x1000},
 		{Offset: assets + size - 0x2000, Size: 0x2000},

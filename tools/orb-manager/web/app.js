@@ -1235,8 +1235,9 @@ async function updateEverything() {
     const plan = [];
     if (fw) plan.push({ id: "fw", label: "Sending firmware " + target + " to the orb", kind: "bytes" },
       { id: "fwboot", label: "Restarting on firmware " + target, kind: "wait", budget: 240 });
-    for (const e of apps)
-      plan.push({ id: "app:" + e.slug, label: "Updating " + (e.title || e.slug) + " to " + e.lib.version, kind: "wait" });
+    // every app in one run: the orb copies them all and restarts once (owner, 2026-11-09)
+    if (apps.length)
+      plan.push({ id: "apps", label: "Updating " + apps.map((e) => (e.title || e.slug) + " to " + e.lib.version).join(", "), kind: "wait" });
     if (!plan.length) { none = true; ok = true; return; }
     sl.set(plan);
     const car = await updAllRotation(ip);
@@ -1252,24 +1253,26 @@ async function updateEverything() {
       await loadOrb(true);
       try { await loadApps(); } catch (e) { log("the app ledger did not answer after the restart: " + e.message); }
     }
-    for (const e0 of apps) {
-      const id = "app:" + e0.slug;
-      const e = updAllApps().find((x) => x.slug === e0.slug);
-      if (!e) { sl.enter(id); sl.skip("already up to date"); continue; }
-      // The app's run plans its own stages under the same names every run uses (check,
-      // restart, ...): they are prefixed with the slug so two apps' stages stay apart, and
-      // its finish closes its own stages, not the whole plan.
-      const pre = e.slug + ":";
-      const inner = Object.create(sl);
-      inner.splice = (pid, steps) => sl.splice(pid, steps.map((p) => Object.assign({}, p, { id: pre + p.id })));
-      inner.enter = (pid) => sl.enter(pre + pid);
-      inner.finish = (good) => {
-        const st = sl.plan[sl.at];
-        if (st && st.state === "active") sl.mark(st, good ? "done" : "failed", "");
-      };
-      const frame = { list: inner, splice: id, log: ui.log, doing: ui.doing, bar: ui.bar, op: ui.op };
-      if (!await streamInstall(current.ip, e.slug, false, frame, true, false))
-        throw new Error((e.title || e.slug) + ": " + (gLastRefusal || "the update was refused"));
+    if (apps.length) {
+      // re-read after the firmware: what it lifted may already be level
+      const due = updAllApps().filter((e) => apps.some((a) => a.slug === e.slug));
+      if (!due.length) { sl.enter("apps"); sl.skip("already up to date"); }
+      else {
+        // The run plans its own stages (check, send and install per app, one restart,
+        // the themes): prefixed so they stay apart from this plan's, and its finish closes
+        // its own stages, not the whole plan.
+        const pre = "apps:";
+        const inner = Object.create(sl);
+        inner.splice = (pid, steps) => sl.splice(pid, steps.map((p) => Object.assign({}, p, { id: pre + p.id })));
+        inner.enter = (pid) => sl.enter(pre + pid);
+        inner.finish = (good) => {
+          const st = sl.plan[sl.at];
+          if (st && st.state === "active") sl.mark(st, good ? "done" : "failed", "");
+        };
+        const frame = { list: inner, splice: "apps", log: ui.log, doing: ui.doing, bar: ui.bar, op: ui.op };
+        if (!await streamInstall(current.ip, due.map((e) => e.slug).join(","), false, frame, true, false))
+          throw new Error(due.map((e) => e.title || e.slug).join(", ") + ": " + (gLastRefusal || "the update was refused"));
+      }
     }
     ok = true;
   } catch (e) {
@@ -3278,6 +3281,7 @@ function renderThemeTabs() {
     const b = document.createElement("button");
     b.type = "button";
     b.className = "tab sub" + (on ? " on" : "");
+    b.dataset.slug = slug;
     b.textContent = label;
     // the list keeps its height while the other app's rows load, so the page does not
     // shrink, scroll to the top and pull the pill out from under the pointer (owner, 2026-11-04)
@@ -3301,7 +3305,9 @@ function renderThemeTabs() {
     lab.textContent = themeAppTitle(apps[0].slug) + " themes"
       + (n ? " (" + n + ")" : " (none)");
     lab.title = "This orb's only theme-capable app. Compose new theme in the toolbar draws one.";
+    lab.dataset.slug = apps[0].slug;
     nav.appendChild(lab);
+    paintThemeSubBadges();
     return;
   }
   // H1 (owner, 2026-11-03): under Themes, each app has its own tab with its own themes and
@@ -3314,6 +3320,25 @@ function renderThemeTabs() {
     const n = a.count | 0;
     mk(a.slug, themeAppTitle(a.slug) + (n ? " (" + n + ")" : " (none)"), scope === a.slug);
   }
+  paintThemeSubBadges();
+}
+
+// themeUpsByApp is the Themes tab's count split by app ({slug: {ups, rebakes}}), so each
+// app's own tab carries its share (owner, 2026-11-09: the Themes tab showed a count and no
+// app tab said whose it was). themeBadgeFrom fills it; the tabs paint from it.
+let themeUpsByApp = {};
+function paintThemeSubBadges() {
+  const nav = $("#mn-themes-tabs");
+  if (!nav) return;
+  nav.querySelectorAll("[data-slug]").forEach((t) => {
+    const c = themeUpsByApp[t.dataset.slug] || { ups: 0, rebakes: 0 }, n = c.ups + c.rebakes;
+    let b = t.querySelector(".badge");
+    if (!n) { if (b) b.remove(); return; }
+    if (!b) { b = document.createElement("span"); b.className = "badge"; t.appendChild(b); }
+    b.textContent = String(n);
+    b.title = [c.ups ? c.ups + " theme update" + (c.ups === 1 ? "" : "s") : "",
+      c.rebakes ? c.rebakes + " theme" + (c.rebakes === 1 ? "" : "s") + " needing a rebake" : ""].filter(Boolean).join(", ");
+  });
 }
 
 // themeFaceScope answers the question every part of this face keeps having to ask: which
@@ -3633,6 +3658,9 @@ async function themeBadgeFrom(ip, rows) {
   }
   if (ip !== current.ip || typeof tabBadge !== "function") return;
   const { ups, rebakes } = themeUpdateCounts(rows, lib);
+  themeUpsByApp = {};
+  for (const a of Object.keys(lib)) themeUpsByApp[a] = themeUpdateCounts(rows.filter((t) => (t.app || "clock") === a), lib);
+  paintThemeSubBadges();
   tabBadge("themes", ups + rebakes, [ups ? ups + " theme update" + (ups === 1 ? "" : "s") : "", rebakes ? rebakes + " theme" + (rebakes === 1 ? "" : "s") + " needing a rebake" : ""].filter(Boolean).join(", ") + " for this orb");
 }
 
@@ -4222,8 +4250,8 @@ function themeRow(t, state, list) {
   del.className = "ghost";
   del.textContent = "Remove from card";
   // D38 gives the active row's press a second consequence: removing the theme
-  // the wall wears also empties the slot (orb_theme_delete's clear tail), and
-  // the dial reboots onto its base face. The ask says so BEFORE the press,
+  // its app wears lets it go (orb_theme_delete's clear tail), and the app draws
+  // its base face (a reboot before v1.6.4). The ask says so BEFORE the press,
   // the answer's deactivated word drives the wait after it, and the row the
   // re-read paints shows the truth either way.
   //
@@ -4237,8 +4265,8 @@ function themeRow(t, state, list) {
       body: "\u201c" + t.name + "\u201d (" + t.id + ") comes off " + (t.ip || themeIP || "this orb") + "'s card.",
       detail: "The firmware's delete is a plain unlink, so there is no undo from here."
         + (activeNow
-          ? " It is the theme on the wall: the dial clears the slot and reboots to its "
-            + "no-theme face, and stays there until a theme is stored again."
+          ? " It is the theme its app wears: the app goes back to its no-theme face "
+            + "and stays there until a theme is stored again."
           : ""),
       yes: "Remove from card",
     })) return;
@@ -4246,7 +4274,9 @@ function themeRow(t, state, list) {
     state.textContent = "removing " + t.name + "\u2026";
     try {
       const d = await themePost("/api/theme/delete", { ip: themeIP, id: t.id });
-      if (d && d.deactivated) {
+      // Firmware from v1.6.4 lets a worn theme go without a restart; the hub says
+      // which (restarts), and only an older orb is waited for.
+      if (d && d.deactivated && d.restarts !== false) {
         state.textContent = "removed " + t.name + " \u2014 the dial is rebooting onto its base face";
         await themeWaitBack(state, t.name);
       }

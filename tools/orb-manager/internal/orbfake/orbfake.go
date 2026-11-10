@@ -105,6 +105,12 @@ type Orb struct {
 	// build, and "the hub handles a refusal gracefully" is exactly the test a fleet of
 	// ordinary orbs would never exercise on its own.
 	NoAPFallback bool
+	// Owed mirrors the ledger's restart_owed: the stems an install took with ?defer=1,
+	// waiting on the one restart that loads them. /api/v1/reboot clears it.
+	Owed []string
+	// NoDefer stands in for firmware older than deferred installs: the ledger sends no
+	// restart_owed key, and the hub must install one app per restart.
+	NoDefer bool
 
 	// dev is the radio/config/screen state, defaulted on first use by deviceLocked.
 	dev *device

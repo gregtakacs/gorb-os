@@ -113,8 +113,15 @@ esp_err_t orb_app_install(const char *stem, char *why, size_t whysz);
 int orb_app_install_resolve_boot(void);
 
 /* Queue an install onto the worker. ESP_ERR_INVALID_STATE when one is
- * outstanding; ESP_ERR_NO_MEM when the queue refused. */
-esp_err_t orb_app_install_post(const char *stem);
+ * outstanding; ESP_ERR_NO_MEM when the queue refused. defer holds back the reboot a
+ * code install ends in: the stem joins the restart-owed list instead, so a hub
+ * updating several apps copies them all and restarts the orb once (owner,
+ * 2026-11-09). An install that does not defer reboots when anything is owed. */
+esp_err_t orb_app_install_post(const char *stem, bool defer);
+
+/* The stems installed with defer since this boot, waiting on a restart to load:
+ * up to `max` of them into `out`, and the count owed. A reboot clears the list. */
+int orb_app_install_owed(const char **out, int max);
 
 /* The last install attempted and the sentence it failed with, for the /apps
  * refresh to show the same words the dial would. */

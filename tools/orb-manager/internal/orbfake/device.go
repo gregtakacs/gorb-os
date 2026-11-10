@@ -900,6 +900,7 @@ func (o *Orb) serveReboot(w http.ResponseWriter) {
 	o.mu.Lock()
 	d := o.deviceLocked()
 	d.Rebooted++
+	o.Owed = nil // the boot loads every deferred install
 	// h_ota staged a slot and h_reboot is the request that activates it: the
 	// running stamp moves to what the caller declared, once. A double that moved
 	// FW on the upload would let a hub test pass on a client that never learns

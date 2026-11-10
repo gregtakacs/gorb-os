@@ -32,6 +32,8 @@ idf_component_register(
         # C2 (theme-delta plan §6.2): the boot/install overlay — the one painter
         # that runs with LVGL unarmed, on esp_lcd_panel_draw_bitmap alone.
         "display/orb_boot_overlay.c"
+        # The system edge arc: a copy's progress round the rim, stamped into the DMA tiles.
+        "display/orb_edge_arc.c"
         # The shell-transition bench (/api/v1/debug/fx): effects painted outside LVGL.
         "display/orb_fx.c"
         "display/orb_strip.c"

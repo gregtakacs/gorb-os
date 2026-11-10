@@ -125,6 +125,30 @@ type AppList struct {
 	Count     int               `json:"count"`
 	Apps      []AppCardRow      `json:"apps"`
 	Installed []AppInstalledRow `json:"installed"`
+	// RestartOwed lists the stems installed with defer that wait on a restart to load.
+	// Nil when the firmware predates deferred installs (it sends no key): such an orb
+	// reboots after every code install, and the hub installs one app per restart.
+	RestartOwed *[]string `json:"restart_owed"`
+	// TryStem and TryWhy name the last install that failed on the orb (empty after a
+	// success), so a deferred install that will never be owed is reported, not waited on.
+	TryStem string `json:"try_stem,omitempty"`
+	TryWhy  string `json:"try_why,omitempty"`
+}
+
+// Defers reports whether this orb takes ?defer=1 on an install.
+func (l *AppList) Defers() bool { return l != nil && l.RestartOwed != nil }
+
+// Owes reports whether stem was installed with defer and waits on the restart.
+func (l *AppList) Owes(stem string) bool {
+	if l == nil || l.RestartOwed == nil {
+		return false
+	}
+	for _, s := range *l.RestartOwed {
+		if s == stem {
+			return true
+		}
+	}
+	return false
 }
 
 // AppsList fetches GET /api/v1/apps.
@@ -216,6 +240,16 @@ func (c *Client) AppInstallCard(ip, stem string) (json.RawMessage, error) {
 		return nil, fmt.Errorf("orbnet: refusing an install with no stem")
 	}
 	return c.devicePost(ip, "/api/v1/apps/install?id="+url.QueryEscape(stem), nil, "")
+}
+
+// AppInstallCardDeferred is AppInstallCard holding the reboot back (?defer=1): the
+// stem joins the ledger's restart_owed when its copy lands, and a /api/v1/reboot (or
+// an install that does not defer) loads every owed app at once.
+func (c *Client) AppInstallCardDeferred(ip, stem string) (json.RawMessage, error) {
+	if stem == "" {
+		return nil, fmt.Errorf("orbnet: refusing an install with no stem")
+	}
+	return c.devicePost(ip, "/api/v1/apps/install?defer=1&id="+url.QueryEscape(stem), nil, "")
 }
 
 // AppFace parks the glass on one row (POST /api/v1/apps/face?id=). An install does

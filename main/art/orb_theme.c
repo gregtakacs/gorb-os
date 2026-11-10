@@ -1989,29 +1989,6 @@ static void store_progress(void *arg, uint32_t done, uint32_t total)
     orb_boot_overlay("storing", done, total, 0);
 }
 
-/* The pool's moves on the glass: a compaction carries megabytes (Bronze, 2026-11-04:
- * 2.8 MB in about 20 s), so a store making room and a boot repairing a cut say so with
- * the overlay's bar rather than standing on a word that has stopped meaning anything. */
-static void pool_progress(const char *stage, uint32_t done, uint32_t total)
-{
-    /* The overlay repaints at once on any new byte count, and a move reports every
-     * sector; a paint per sector cost a 2.8 MB move about ten seconds (Bronze,
-     * 2026-11-04: a store 42.8 s without the bar, 52.1 s with it). One paint per
-     * percent, and always the last. */
-    static uint32_t last_pct = 101;
-    const uint32_t pct = total ? (uint32_t)((uint64_t)done * 100u / total) : 100u;
-    if (pct == last_pct && done != total) return;
-    last_pct = done == total ? 101 : pct;
-    orb_boot_overlay(stage, done, total, 0);
-}
-
-static void room_progress(void *ctx, uint32_t done, uint32_t total)
-{
-    (void)ctx;
-    job_stage("making room", done, total);
-    pool_progress("making room", done, total);
-}
-
 bool orb_theme_store_torn(void)
 {
     return s_slot_torn;
@@ -3681,7 +3658,14 @@ static void bundle_job(void *arg)
     const install_req_t *r = arg;
     char why[72] = "";        /* as wide as the try witness: §5.3's page-count sentence must land whole */
     job_stage("checking", 0, 0);
-    if (orb_theme_install_bundle(r->id, why, sizeof why) != ESP_OK) {
+    /* The store writes flash (its voice bank, its preview, the table) beside a live app, as
+     * a fill does: a guest the flash stalls is forgiven, not trapped. Unforgiven, flights on
+     * the glass trapped in orb_service at a store's preview write (Gold, 2026-11-09), and a
+     * second trap before the fill landed would unload it with its new theme never bound. */
+    orb_io_heavy_begin();
+    const esp_err_t se = orb_theme_install_bundle(r->id, why, sizeof why);
+    orb_io_heavy_end();
+    if (se != ESP_OK) {
         try_note(r->id, why[0] ? why : "the install failed");
         /* A store torn past the unmap reboots on its own; either way no stage runs now. */
         job_stage("", 0, 0);
@@ -3783,62 +3767,51 @@ esp_err_t orb_theme_post_bundle(const char *id)
 
 /* ---- D38: removing the active theme takes it off the wall too ----------------
  *
- * The one slot is the theme: erasing its header sector is the whole of
- * deactivation, and the next boot draws the base face exactly as a torn store
- * does (adopt_default_bundle refuses a headerless slot and logs the base-face
- * reason). The ladder is the store's, stripped to its safety-critical spine:
- * park the dial (menu, overlay, tick parked), bring the art map down, erase the
- * header, ask for the reboot that comes back without a theme. Nothing about
- * the word order here can leave the dial half-dressed: pre-erase the theme is
- * on the wall whole; post-erase it is gone, and the reboot is the erase's own
- * tail, armed the same way a failed store arms itself. */
+ * Owner, 2026-11-09: "deleting a theme from the orb now reboots it. Again, this should not
+ * be needed at all, we can just remove the theme and if it was the active one we just go to
+ * default mode without a theme." The pool's pages never move (C7) and the store already lets
+ * an app's theme go live (store_choose), so a removal is that release with no new choice:
+ * on the LVGL task the app's voices stop, its voice bank's window comes down and its stage
+ * rebinds bare; then its display entry, voice bank and preview leave the table and the
+ * choice goes. The app runs on its base face; no park, no unmap of anyone else's, no reboot.
+ * Worker only (a job), so no fill or store runs beside it. */
 static void clear_job(void *arg)
 {
     const char *app = arg && ((const char *)arg)[0] ? (const char *)arg : orb_theme_live_slug();
-    const orb_app_t *was = input_router_current();
-    if (!store_park_dial(was, 0, "removing")) {
-        orb_boot_overlay_release();        /* the overlay's band goes back with the glass */
-        orb_sched_set_running(true);       /* the tick stands; the dial never stopped */
-        ESP_LOGW(TAG, "deactivate refused: the dial would not park");
-        return;
-    }
-    orb_sound_stop_all();                  /* theme-cache-plan §2.6: voices read the voice banks it moves */
-    art_bank_unmap();
-    s_slot_torn = true;                    /* from here the reboot is the only way back */
-    /* The pool lets this app's theme go and packs every other app's down over it
-     * (docs/theme-pool-plan.md §2.2); the map is down, so nothing reads what moves. */
     char gone[ORB_POOL_SLUG_MAX];
     strlcpy(gone, app, sizeof gone);
-    const esp_partition_t *p = art_bank_partition();
+    if (!gone[0]) return;
+    if (!s_choose_sem) s_choose_sem = xSemaphoreCreateBinary();
+    if (!s_choose_sem) { ESP_LOGE(TAG, "remove %s's theme: out of memory", gone); return; }
+    strlcpy(s_hide_slug, gone, sizeof s_hide_slug);    /* the theme module answers none for it */
+    (void)xSemaphoreTake(s_choose_sem, 0);
+    lv_async_call(choose_release, s_hide_slug);
+    if (xSemaphoreTake(s_choose_sem, pdMS_TO_TICKS(5000)) != pdTRUE) {
+        s_hide_slug[0] = '\0';
+        ESP_LOGE(TAG, "remove %s's theme: the dial would not let it go; it stays", gone);
+        return;
+    }
     int r = ORB_POOL_ERR_ARG;
+    const esp_partition_t *p = art_bank_partition();
+    orb_io_heavy_begin();                              /* table writes beside a live app */
     if (p && s_pool && pool_io(p)) {
-        s_pool_io.progress = room_progress;     /* the apps after it move down */
+        /* theme-cache-plan ruling 7: the file it wore is gone, so both of its copies go */
         r = orb_pool_remove(&s_pool_io, s_pool, &s_pool_which, gone);
-        /* theme-cache-plan ruling 7: the file it wore is gone, so both of its copies go,
-         * and the choice */
         if (!r) r = orb_pool_remove_kind(&s_pool_io, s_pool, &s_pool_which, gone, ORB_POOL_VOICE);
         if (!r) r = orb_pool_remove_kind(&s_pool_io, s_pool, &s_pool_which, gone, ORB_POOL_PREVIEW);
-        s_pool_io.progress = NULL;
-        if (!r) choice_set(gone, NULL, 0);
     }
+    orb_io_heavy_end();
+    choice_set(gone, NULL, 0);                         /* no choice: no fill brings it back */
+    s_hide_slug[0] = '\0';
+    if (!strcmp(gone, orb_theme_live_slug())) s_active_valid = false;
+    orb_strip_preview_changed(gone);
     if (r) {
-        orb_boot_overlay("could not clear the theme slot", 0, 0, 0);
-        ESP_LOGE(TAG, "deactivate: the pool would not let %s's theme go (%d) — "
-                      "the dial stands on the parked glass", gone, r);
-        return;                                /* s_slot_torn stands: reboot recovers */
+        ESP_LOGE(TAG, "%s's theme is let go, but the table would not drop its copies (%d): "
+                      "its pages stay held until the next store", gone, r);
+        return;
     }
-    if (!strcmp(gone, orb_theme_live_slug()))
-        s_active_valid = false;              /* nothing is on the wall now */
-    orb_boot_overlay("theme removed, rebooting", 0, 0, 0);
-    if (!strcmp(gone, orb_theme_live_slug()))
-        ESP_LOGI(TAG, "deactivated: the theme's card file was deleted and %s's entry left "
-                      "the pool — the base face draws on the next boot", gone);
-    else
-        ESP_LOGI(TAG, "%s's stored theme left the pool with its card file — %s draws its "
-                      "base face, and the dial keeps its own", gone, gone);
-    if (orb_jobs_reboot_soon("theme: the active theme was deleted") != ESP_OK)
-        ESP_LOGE(TAG, "deactivated but the reboot could not be armed — "
-                      "a manual reboot lands the base face");
+    ESP_LOGI(TAG, "%s's theme removed: its copies left the pool and it draws its base face, "
+                  "no reboot", gone);
 }
 
 /* ---- theme-cache-plan ruling 7: the flash copies follow the card file ------------------
@@ -3846,8 +3819,7 @@ static void clear_job(void *arg)
  * Once a card has mounted (at boot, or back after a swap or a USB session), each choice's
  * file is read against the CRC its copies were made from. A file that changed is stored
  * again — the store rebuilds both copies, without a reboot; a file that is gone takes both
- * copies and the choice with it (the removal's own ladder, which reboots, and the reboot
- * brings the rest). A card that did not
+ * copies and the choice with it (the removal's own ladder, clear_job, no reboot). A card that did not
  * answer, or a header that would not read, changes nothing. */
 static void reconcile_job(void *arg)
 {
@@ -3868,8 +3840,9 @@ static void reconcile_job(void *arg)
             ESP_LOGW(TAG, "reconcile: %s's theme file \"%s\" is gone from the card: %s", slug, stem,
                      held ? "its copies go with it" : "it had no copies; the choice goes");
             gone_set(slug, stem);        /* its page says so, after the reboot too */
-            if (held) { clear_job((void *)slug); return; }
-            choice_set(slug, NULL, 0);
+            if (held) clear_job((void *)slug);       /* the choice goes with its copies */
+            else choice_set(slug, NULL, 0);
+            c--;                                     /* the choices moved down over it */
             continue;
         }
         if (rc != 0) continue;
@@ -3989,9 +3962,8 @@ esp_err_t orb_theme_deactivate(void)
      * reboot for no visible change. The one caller today is the store door's
      * delete tail (orb_theme_delete), which already proved the slot worn. */
     if (!s_active_valid) return ESP_ERR_INVALID_STATE;
-    /* Queue-only, exactly like post_bundle: the caller's door must return before
-     * the job parks the dial and reboots the board, so the ack survives. The
-     * board answers again on the base face when it clears the slot. */
+    /* Queue-only, exactly like post_bundle: the job lets the theme go and the app
+     * draws its base face, no reboot (clear_job). */
     return orb_jobs_post(clear_job, NULL, 0);
 }
 
@@ -4003,11 +3975,11 @@ esp_err_t orb_theme_delete(const char *id, bool *deactivating)
      * A card file whose header name does not hash to its id is refused here exactly as
      * at install; unlinking never trusts a client string to reach a path builder.
      * D38 changed what deleting the ACTIVE theme means. It is no longer "the dial
-     * keeps drawing it": deleting the file the wall wears also empties the slot,
-     * and the reboot that draws the base face rides clear_job's own store ladder
-     * (park, unmap, erase, arm). The card file is unlinked first either way, so the
-     * owner's delete always lands; when the slot clear cannot be queued the face
-     * stands until the next store, and the answer says so. */
+     * keeps drawing it": deleting the file an app wears lets that theme go and the
+     * app draws its base face (clear_job, no reboot since 2026-11-09). The card file
+     * is unlinked first either way, so the owner's delete always lands; when the
+     * clear cannot be queued the face stands until the next store, and the answer
+     * says so. */
     const char *w = NULL;
     /* Ask for the card before the lock below, not after: this runs on a worker that
      * a boot can start before orb_sd_init() ever called, and FatFs calls against an
@@ -4036,7 +4008,10 @@ esp_err_t orb_theme_delete(const char *id, bool *deactivating)
     char dslug[ORB_BUNDLE_SLUG_MAX + 1], dhex[THEME_ID_HEX + 1];
     const int k = (s_pool && theme_stem_split(id, dslug, sizeof dslug, dhex, sizeof dhex))
                 ? orb_pool_find(s_pool, dslug) : -1;
-    const bool was_active = k >= 0 && strcmp(b3.name, s_pool->e[k].name) == 0;
+    bool chosen = false;                     /* a choice whose display entry was evicted */
+    for (uint32_t c = 0; c < s_cache.n_choice; c++)
+        if (!strcmp(s_cache.c[c].stem, id)) chosen = true;
+    const bool was_active = chosen || (k >= 0 && strcmp(b3.name, s_pool->e[k].name) == 0);
     ESP_LOGI(TAG, "deleted \"%s\" (%s) from the card%s%s", b3.name, id,
              was_active ? " — it was " : "",
              !was_active ? "" : !strcmp(dslug, orb_theme_live_slug())

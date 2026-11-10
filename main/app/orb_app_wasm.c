@@ -2188,6 +2188,10 @@ void orb_wasm_theme_release(orb_app_t *app)
     wasm_slot_t *s = slot_of_app(app);
     if (!s || !s->stage || !stage_bound(app)) return;
     if (stage_rebind(app) == ESP_OK && s->on_glass) stage_run(true);
+    /* The app reads its stage at an arrival (the clock hides its labels under a theme):
+     * on the glass it is told to read it again, or a theme removed with no fill to follow
+     * left the clock bare with its labels hidden and nothing drawn (Gold, 2026-11-09). */
+    if (s->rt && s->on_glass) (void)wasm_call(s, W_RESUME, NULL, 0);
 }
 
 void orb_wasm_theme_changed(orb_app_t *app)

@@ -369,9 +369,17 @@ func (o *Orb) serveApps(w http.ResponseWriter) {
 			jsonSafe(a.Version),
 			map[bool]string{true: "true", false: "false"}[a.Why == ""], jsonSafe(a.Why)))
 	}
+	owed := ""
+	if !o.NoDefer {
+		q := make([]string, 0, len(o.Owed))
+		for _, s := range o.Owed {
+			q = append(q, strconv.Quote(s))
+		}
+		owed = `,"restart_owed":[` + strings.Join(q, ",") + `],"try_stem":"","try_why":""`
+	}
 	writeJSON(w, 200, fmt.Sprintf(
-		`{"mounted":true,"card":%q,"count":%d,"apps":[%s],"installed":[%s]}`,
-		jsonSafe(o.Card), len(rows), strings.Join(rows, ","), installed))
+		`{"mounted":true,"card":%q,"count":%d,"apps":[%s],"installed":[%s]%s}`,
+		jsonSafe(o.Card), len(rows), strings.Join(rows, ","), installed, owed))
 }
 
 // installedJSONLocked formats the flash tier as h_apps's installed rows do. walkable is
@@ -508,6 +516,9 @@ func (o *Orb) serveAppInstall(w http.ResponseWriter, r *http.Request) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	row.Installed, row.Failed = true, row.Why != ""
+	if r.URL.Query().Get("defer") == "1" && !o.NoDefer && !row.Failed && !slices.Contains(o.Owed, stem) {
+		o.Owed = append(o.Owed, stem)
+	}
 }
 
 // serveAppFace mirrors h_app_face, the glass door. The gates run in the firmware's

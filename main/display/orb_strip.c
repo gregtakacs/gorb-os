@@ -460,7 +460,19 @@ static void thumbs_build(void)
         for (int k = 0; k < n && s_thumbs_want; k++) {
             int i = 0;
             while (i < s_pv_n && strcmp(s_pv[i].slug, list[k])) i++;
-            if (i == s_pv_n || s_pv[i].px) continue;
+            /* An app installed live after the boot (§63) is not among pv_load's names: it is
+             * added here, its name before the count that publishes it (every reader walks
+             * [0, s_pv_n) and the list only grows). Without it, its card stayed blank until a
+             * reboot (Gold, 2026-11-10: flights and weather installed live). */
+            if (i == s_pv_n) {
+                if (s_pv_n >= MAX_ITEMS) continue;
+                xSemaphoreTake(s_pv_mx, portMAX_DELAY);
+                strlcpy(s_pv[i].slug, list[k], sizeof s_pv[i].slug);
+                s_pv[i].px = NULL;
+                __atomic_store_n(&s_pv_n, i + 1, __ATOMIC_RELEASE);
+                xSemaphoreGive(s_pv_mx);
+            }
+            if (s_pv[i].px) continue;
             uint16_t *px = pv_thumb(s_pv[i].slug);
             xSemaphoreTake(s_pv_mx, portMAX_DELAY);
             bool still = false;

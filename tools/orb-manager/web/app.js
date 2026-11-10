@@ -4258,7 +4258,9 @@ function themeRow(t, state, list) {
   // The orb remembers the last install it refused and the copy boot could not load,
   // keyed by id. Without them on the row a press that did nothing looks like a press
   // that worked.
-  if (list && list.try_id === t.id && list.try_why) {
+  // A refusal the theme has since outlived (it is chosen: its app wears it) is history, not a
+  // fault: a first install's early seed was refused, then the theme landed (Gold, 2026-11-10).
+  if (list && list.try_id === t.id && list.try_why && !t.chosen) {
     const why = document.createElement("span");
     why.className = "tag err";
     why.textContent = "last try failed: " + list.try_why;

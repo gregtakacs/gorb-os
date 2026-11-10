@@ -462,15 +462,28 @@ static void thumbs_build(void)
             while (i < s_pv_n && strcmp(s_pv[i].slug, list[k])) i++;
             /* An app installed live after the boot (§63) is not among pv_load's names: it is
              * added here, its name before the count that publishes it (every reader walks
-             * [0, s_pv_n) and the list only grows). Without it, its card stayed blank until a
-             * reboot (Gold, 2026-11-10: flights and weather installed live). */
+             * [0, s_pv_n); full, a name out of the window gives its place). Without it, its
+             * card stayed blank until a reboot (Gold, 2026-11-10: flights and weather
+             * installed live). */
             if (i == s_pv_n) {
-                if (s_pv_n >= MAX_ITEMS) continue;
                 xSemaphoreTake(s_pv_mx, portMAX_DELAY);
-                strlcpy(s_pv[i].slug, list[k], sizeof s_pv[i].slug);
-                s_pv[i].px = NULL;
-                __atomic_store_n(&s_pv_n, i + 1, __ATOMIC_RELEASE);
+                if (s_pv_n < MAX_ITEMS) {
+                    strlcpy(s_pv[i].slug, list[k], sizeof s_pv[i].slug);
+                    s_pv[i].px = NULL;
+                    __atomic_store_n(&s_pv_n, i + 1, __ATOMIC_RELEASE);
+                } else {
+                    /* Full (apps installed and removed live): a name that holds no thumbnail
+                     * and is not in the window is only a name, so it gives its place. */
+                    for (i = 0; i < s_pv_n; i++) {
+                        if (s_pv[i].px) continue;
+                        bool in = false;
+                        for (int j = 0; j < n; j++) if (!strcmp(list[j], s_pv[i].slug)) in = true;
+                        if (!in) break;
+                    }
+                    if (i < s_pv_n) strlcpy(s_pv[i].slug, list[k], sizeof s_pv[i].slug);
+                }
                 xSemaphoreGive(s_pv_mx);
+                if (i == s_pv_n) continue;
             }
             if (s_pv[i].px) continue;
             uint16_t *px = pv_thumb(s_pv[i].slug);

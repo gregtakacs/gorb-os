@@ -3977,11 +3977,43 @@ function renderThemeEditRow(sub) {
   if (sub) slot.appendChild(themeEditButton(sub) || document.createTextNode(""));
 }
 
-// openThemeEditor shows one app's editor inside the Themes face (D37 §6.2). The
-// frame is same-origin by construction — the hub built the URL from an address the
-// hub learned — so the bridge needs no MessageChannel and no transferable port:
-// both documents are this hub's, and same-origin is already the strongest claim
-// the bridge could ask an unknown child to make.
+// editorFrameSrc asks the hub where this app's editor lives (its own origin, s2) and the
+// launch's token for it, and builds the frame's URL. pathAndQuery starts with /editor/.
+// Nothing is cached: a token belongs to this hub launch, and one small call per open is
+// what keeps a restart from leaving a stale credential in a bookmarked frame.
+async function editorFrameSrc(slug, pathAndQuery) {
+  const r = await hubFetch("/api/editor/origin?app=" + encodeURIComponent(slug));
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok || !j || j.ok !== true || !j.data || !j.data.origin || !j.data.token) {
+    throw new Error((j && j.error) || ("HTTP " + r.status));
+  }
+  const origin = j.data.origin;
+  return { origin: origin, src: origin + pathAndQuery + (pathAndQuery.includes("?") ? "&" : "?") + "et=" + encodeURIComponent(j.data.token) };
+}
+
+// editorOpenGen counts opens: each one (and each close) outranks the answer still on its
+// way from a previous press, so a late origin+token can never frame the wrong app.
+let editorOpenGen = 0;
+
+// editorOpenRefused is an open whose address never arrived. The veil cannot stand
+// forever over a frame that was never given a URL, so the pane says what failed in its
+// own line and leaves the Close button — and the door's own ending — reachable.
+function editorOpenRefused(gen, pane, state, e) {
+  if (gen !== editorOpenGen) return;
+  themeEditorBusy = false;
+  if (pane) pane.classList.remove("loading");
+  const why = "The editor could not be opened: " + ((e && e.message) || String(e));
+  const veil = $("#mn-theme-editor .edveil");
+  if (veil) veil.textContent = why;
+  if (state) state.textContent = why;
+}
+
+// openThemeEditor shows one app's editor inside the Themes face (D37 §6.2). Since S2 the
+// frame is NOT same-origin with this page: it lives on the app's own origin, and this
+// function asks the hub for that address and the launch's token for it (editorFrameSrc)
+// before pointing the frame anywhere. The bridge still needs no MessageChannel — the pair
+// of claims it checks, an origin this page itself opened and the window it opened there,
+// is the strongest one a child across the boundary can be asked to make.
 // D43 P7 (§8): Edit reopens a theme whose file carries its design. The app's editor opens
 // with ?theme=<card stem> (or the shelf file's stem and src=shelf) and fetches the design
 // through /api/theme/design itself; a theme without one offers no Edit at all.
@@ -3996,7 +4028,7 @@ function themeReopenButton(slug, theme) {
   btn.onclick = () => openThemeEditor(row, theme);
   return btn;
 }
-function openThemeEditor(row, theme) {
+async function openThemeEditor(row, theme) {
   const pane = $("#mn-theme-editor"), frame = $("#mn-theme-editor-frame");
   const title = $("#mn-theme-editor-title"), state = $("#mn-theme-editor-state");
   if (!pane || !frame || !row.editor_url) return;
@@ -4010,16 +4042,16 @@ function openThemeEditor(row, theme) {
   // The veil stands while the archive streams: the editor's source is read off the
   // card over Wi-Fi (measured 6 s cold, 8.7 s warm on a full clock bake), and a white
   // blank frame through all of it reads as a broken editor rather than a slow card.
-  // The frame's own load event lifts it — same-origin by construction, and both the
-  // archive and the hub's retry page are documents that load, so one listener covers
-  // every answer, including the refusal.
+  // The frame's own load event lifts it — the editor document and the hub's retry page
+  // are both documents that load on the app's editor origin (S2), so one listener
+  // covers every answer, including the refusal.
   pane.classList.add("loading");
   editorVeilSource(row.slug);
   const base = row.editor_url.replace(/\/$/, "") + "/";
   // D43 §4.2: the editor fills the window and names the orb in its own breadcrumb, so
   // it is handed the name the hub shows (label) beside the address it dials (orb).
   const orbName = current.name || (current.row && current.row.instance) || "";
-  frame.src = base + "?orb=" + encodeURIComponent(themeIP) + "&app=" + encodeURIComponent(row.slug) +
+  const path = base + "?orb=" + encodeURIComponent(themeIP) + "&app=" + encodeURIComponent(row.slug) +
     (orbName ? "&label=" + encodeURIComponent(orbName) : "") +
     (theme && theme.id ? "&theme=" + encodeURIComponent(theme.id) + (theme.src === "shelf" ? "&src=shelf" : "") : "") +
     (theme && theme.entry ? "&entry=" + encodeURIComponent(theme.entry) : "") + (theme && theme.rebake ? "&rebake=1" : "");
@@ -4029,14 +4061,22 @@ function openThemeEditor(row, theme) {
   themeEditorApp = row.slug;
   pane.hidden = false;
   document.body.classList.add("editing");
+  const gen = ++editorOpenGen;
+  let opened = null;
+  try { opened = await editorFrameSrc(row.slug, path); }
+  catch (e) { editorOpenRefused(gen, pane, state, e); return; }
+  if (gen !== editorOpenGen) return;   // a newer open, or a close, outranks this answer
+  themeEditorOrigin = opened.origin;
+  frame.src = opened.src;
 }
 // openLibraryEditor opens the same pane on Orb Manager's OWN copy of an app's editor
 // (design ruling 32): /editor/hub/<app>/ is served out of the hub's app library, so the
-// import needs no board in hand, no address, and no card to read an archive off. The
-// ticket is the one the hub answered the site's bundle with, and the editor bakes from it
-// and reports back through the same bridge — with nothing to send to, which is what the
-// hub half of themeBridge enforces.
-function openLibraryEditor(slug, ticket) {
+// import needs no board in hand, no address, and no card to read an archive off. Since S2
+// that door sits on the app's own origin, so the path is handed to editorFrameSrc like any
+// other editor URL. The ticket is the one the hub answered the site's bundle with, and the
+// editor bakes from it and reports back through the same bridge — with nothing to send to,
+// which is what the hub half of themeBridge enforces.
+async function openLibraryEditor(slug, ticket) {
   const pane = $("#mn-theme-editor"), frame = $("#mn-theme-editor-frame");
   const title = $("#mn-theme-editor-title"), state = $("#mn-theme-editor-state");
   if (!pane || !frame) return;
@@ -4047,7 +4087,7 @@ function openLibraryEditor(slug, ticket) {
   const veil = $("#mn-theme-editor .edveil");
   if (veil) veil.textContent = "Opening Orb Manager\u2019s " + app + " editor\u2026";
   pane.classList.add("loading");
-  frame.src = "/editor/hub/" + encodeURIComponent(slug) + "/?app=" + encodeURIComponent(slug) +
+  const path = "/editor/hub/" + encodeURIComponent(slug) + "/?app=" + encodeURIComponent(slug) +
     "&import=" + encodeURIComponent(ticket);
   title.textContent = app + " theme editor";
   state.textContent = "";
@@ -4055,6 +4095,20 @@ function openLibraryEditor(slug, ticket) {
   themeEditorApp = slug;
   pane.hidden = false;
   document.body.classList.add("editing");
+  const gen = ++editorOpenGen;
+  let opened = null;
+  try { opened = await editorFrameSrc(slug, path); }
+  catch (e) {
+    editorOpenRefused(gen, pane, state, e);
+    if (gen !== editorOpenGen) return;
+    // The import door owns a sentence of its own and a button to re-press: this is the
+    // ending for an editor that never answered, which is what siteImportClosed words.
+    siteImportClosed();
+    return;
+  }
+  if (gen !== editorOpenGen) return;   // a newer open, or a close, outranks this answer
+  themeEditorOrigin = opened.origin;
+  frame.src = opened.src;
 }
 // editorVeilSource says on the veil which editor is loading and why. The hub serves its own
 // copy for the orb's release and reads the orb's off the card otherwise (editor.go,
@@ -4083,18 +4137,21 @@ async function editorVeilSource(slug) {
 // The veil's one release. A load event means a document arrived — but which one:
 // closing sets src to about:blank, and that old document can fire its load AFTER a
 // fresh open already set a new src, so frame.src at load time names the NEW editor,
-// not the document that loaded. The loaded document answers for itself: the editor
-// and the hub's retry page are both same-origin documents with body content (the
-// frame is sandboxed to allow-same-origin by construction), while the stray is an
-// empty about:blank. An unanswered open leaves the veil standing, which is the truth.
+// not the document that loaded. The loaded document answers for itself, and since S2 it
+// answers across the boundary: the frame now sits on the app's own origin, so
+// contentDocument is null for it (a cross-origin read yields null, not a throw — a throw
+// is treated the same way). null means an editor document, or the hub's own editor error
+// page, arrived on the editor origin: lift. A document we CAN see with no body children
+// is the about:blank stray: ignore it. A visible document with content is any same-origin
+// page still working: lift. An unanswered open leaves the veil standing, which is the truth.
 (function edVeil() {
   const frame = $("#mn-theme-editor-frame");
   if (!frame) return;
   frame.addEventListener("load", () => {
     const pane = $("#mn-theme-editor"), state = $("#mn-theme-editor-state");
     let doc = null;
-    try { doc = frame.contentDocument; } catch (e) { return; }   // cross-origin: not ours
-    if (!doc || !doc.body || !doc.body.hasChildNodes()) return;  // about:blank stray
+    try { doc = frame.contentDocument; } catch (e) { doc = null; }   // a throw is the same answer as null
+    if (doc && (!doc.body || !doc.body.hasChildNodes())) return;     // the about:blank stray
     themeEditorBusy = false;   // a document that just loaded has no send under way
     if (pane) pane.classList.remove("loading");
     if (state && pane && !pane.hidden) state.textContent = "";
@@ -4104,6 +4161,10 @@ async function editorVeilSource(slug) {
 // themeEditorApp is which app the open frame belongs to, so a message from a frame
 // that has since been replaced cannot file a theme under the previous app.
 let themeEditorApp = "";
+// themeEditorOrigin is the origin THIS PAGE opened for the app in the frame — the app's
+// own origin since S2, never this page's. The bridge answers nothing from an origin it did
+// not name, so the empty string between opens means "no frame is trusted here".
+let themeEditorOrigin = "";
 // themeEditorFrom says whose editor the open frame is: "orb" for the board in hand's own
 // copy, "hub" for Orb Manager's copy opened from the home view's Theme library. The bridge
 // and the close both ask it, because a hub editor has no orb to send a bake to and no card
@@ -4135,6 +4196,10 @@ function closeThemeEditor() {
   if (state) state.textContent = "";
   if (frame) frame.src = "about:blank";
   themeEditorApp = "";
+  // Closing outranks any open still on its way to an answer (editorOpenGen) and untrusts
+  // the origin it had been handed, so a late token cannot frame an editor behind a closed pane.
+  themeEditorOrigin = "";
+  editorOpenGen++;
   // The editor writes the card behind this page's back (its sends dial the hub
   // directly), so the list under the pane is whatever it was before the editor opened.
   // Closing re-reads it, so a theme sent from the editor is on the list the owner returns
@@ -4150,16 +4215,19 @@ function closeThemeEditor() {
 // lines and it is the whole mechanism: a child asks to save, the hub dials the
 // upload door it already owns, the child is told the answer.
 //
-// The origin check is not decoration. A page on another origin can postMessage here
-// exactly as easily as an editor can, and this handler spends the hub's launch token
-// on whatever it is handed — so it answers only a frame this page opened, at the
-// origin this page is on, carrying the slug this page asked for.
+// The origin check is not decoration. Since S2 the frame is a document on the APP's own
+// origin, not on this page's, so "same origin as me" would now refuse the only child this
+// page trusts. The check is the same claim in the new shape: the origin this page opened
+// for this app (themeEditorOrigin, set from the hub's own answer) together with the window
+// this page opened there. A page on another origin can postMessage here exactly as easily
+// as an editor can, and this handler spends the hub's launch token on whatever it is
+// handed — so it answers nothing from an origin it did not name.
 async function themeBridge(ev) {
   const m = ev.data;
   if (!m || typeof m !== "object" || typeof m.type !== "string" || m.type.indexOf("theme.") !== 0) return;
   const frame = $("#mn-theme-editor-frame");
   if (!frame || ev.source !== frame.contentWindow) return;      // not our editor
-  if (ev.origin !== window.location.origin) return;             // not this hub
+  if (!themeEditorOrigin || ev.origin !== themeEditorOrigin) return;   // not this app's editor origin
   const state = $("#mn-theme-editor-state");
   // The corner note says what the hub is doing for the editor and then gets out of the
   // way: a line that is still the latest one after eight seconds is cleared.
@@ -4207,6 +4275,16 @@ async function themeBridge(ev) {
   if (m.type === "theme.update") {
     if (!themeEditorApp || m.app !== themeEditorApp || !themeIP) return;
     const pane = $("#mn-theme-editor");
+    // The frame is untrusted content on its own origin (S2), so the act that writes a board
+    // is asked of the person before it starts. The ask goes through the hub's own modal,
+    // which is the one voice this page may ask in (jscheck_test.go), and which falls back
+    // to a plain confirm when its markup is not on the page.
+    if (!await askConfirm({
+      title: "Update the " + m.app + " app?",
+      body: "Update the " + m.app + " app on " + (current.name || themeIP) + " now?",
+      detail: "The editor asked for it. Orb Manager installs its own copy of the app.",
+      yes: "Update", safe: true,
+    })) { say("update not started"); return; }
     say("updating " + m.app + " on " + themeIP + "\u2026");
     let ok = false;
     try {
@@ -4215,7 +4293,7 @@ async function themeBridge(ev) {
     if (!ok) { say("the update did not finish \u2014 the Apps page shows why"); return; }
     say("updated " + m.app + "; reopening the editor\u2026");
     if (pane) pane.classList.add("loading");
-    try { frame.contentWindow.location.reload(); } catch (e) { frame.src = frame.src; }
+    frame.src = frame.src;   // a cross-origin frame cannot be reloaded from here (S2)
     return;
   }
   if (m.type !== "theme.save") return;

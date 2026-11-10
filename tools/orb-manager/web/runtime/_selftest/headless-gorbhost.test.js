@@ -561,8 +561,8 @@ async function scenario(host, pathname, themeQuery, map) {
     ok(a.state.status === 'Imported “Skeleton by @greg” into the library', 'the line ends at the library', a.state.status);
     ok(a.ses.opened === null && a.ses.library().length === 1, 'no draft was saved and the session holds no design of its own', JSON.stringify([a.ses.opened, a.ses.library().length]));
     ok(posted.length === 1 && posted[0].m.type === 'theme.imported' && posted[0].m.name === SN && posted[0].m.app === 'tint' &&
-      posted[0].m.file === 'tint-Skeleton by @greg.orbtheme' && posted[0].origin === 'http://hub',
-      'the parent was told the name, the app and the file, at the hub’s own origin', JSON.stringify(posted[0] || null));
+      posted[0].m.file === 'tint-Skeleton by @greg.orbtheme' && posted[0].origin === '*',
+      'the parent was told the name, the app and the file, at any origin: the hub checks source and origin itself (S2)', JSON.stringify(posted[0] || null));
     ok(calls[calls.length - 1][1] === '/api/library/entries?app=tint', 'and the library was read again after the keep', calls[calls.length - 1][1]);
     ok(await a.ses.openTheme() && a.hub.keeps.length === 2 && posted.length === 2, 'the same page imported again from the ticket the hub still holds', JSON.stringify([a.hub.keeps.length, a.state.status]));
     // what the hub can refuse on the way in
@@ -692,8 +692,8 @@ async function scenario(host, pathname, themeQuery, map) {
       calls[calls.length - 1][1] === '/api/library/entries?app=tint',
       'the line ends at the hub’s library, read again after the keep, with nothing downloaded', imp.state.status + ' | ' + calls[calls.length - 1][1]);
     ok(posted.length === ipn + 1 && posted[posted.length - 1].m.type === 'theme.imported' && posted[posted.length - 1].m.app === 'tint' &&
-      posted[posted.length - 1].m.name === SN && posted[posted.length - 1].origin === 'http://hub',
-      'the parent was told the app, the name and the file, at the hub’s own origin', JSON.stringify(posted[posted.length - 1] || null));
+      posted[posted.length - 1].m.name === SN && posted[posted.length - 1].origin === '*',
+      'the parent was told the app, the name and the file, at any origin: the hub checks source and origin itself (S2)', JSON.stringify(posted[posted.length - 1] || null));
     // the hub refuses the orb-less page's /editor/source ask, and boot swallows it
     const bad = irun({ pathname: '/editor/hub/tint/' });
     const badIn = bad.hub.fetch;

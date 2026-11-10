@@ -93,7 +93,8 @@
 
     // the editor tells the hub it is busy, so the hub will not close the pane, and guards the window
     var busy = function (on) {
-      try { root.parent.postMessage({ type: 'theme.busy', on: !!on }, location.origin); } catch (e) { /* standalone */ }
+      // '*': the hub page is on another origin (S2); it checks source and origin itself
+      try { root.parent.postMessage({ type: 'theme.busy', on: !!on }, '*'); } catch (e) { /* standalone */ }
       if (typeof root.addEventListener !== 'function') return;
       if (on && !unload) {
         unload = function (e) { e.preventDefault(); e.returnValue = ''; };

@@ -32,16 +32,16 @@ func TestHostedEditorServesTheHubsPageWithTheAppsModule(t *testing.T) {
 	if !strings.Contains(body, `src="/runtime/maps@1/orbmap.js"`) {
 		t.Error("maps@1 is listed, so the page loads it")
 	}
-	if c := cookieNamed(rec, tokenCookie); c == nil || c.Value != s.token {
-		t.Error("the hosted page was served without the launch token, so it cannot upload")
-	}
+	editorAssertDocCredential(t, s, rec, "radar")
 	if ct := rec.Header().Get("Content-Type"); !strings.HasPrefix(ct, "text/html") {
 		t.Errorf("Content-Type = %q", ct)
 	}
 	// a module member is served as itself, without the token
 	js := editorGet(t, s, "/editor/"+ip+"/radar/radar-editor.js", true)
-	if js.Code != http.StatusOK || !strings.Contains(js.Body.String(), "OrbHost.register") || cookieNamed(js, tokenCookie) != nil {
-		t.Errorf("the module file: status %d, token %v", js.Code, cookieNamed(js, tokenCookie) != nil)
+	if js.Code != http.StatusOK || !strings.Contains(js.Body.String(), "OrbHost.register") ||
+		cookieNamed(js, tokenCookie) != nil || strings.Contains(js.Body.String(), s.editorToken("radar")) {
+		t.Errorf("the module file: status %d, cookie %v, token %v", js.Code,
+			cookieNamed(js, tokenCookie) != nil, strings.Contains(js.Body.String(), s.editorToken("radar")))
 	}
 	// an app that does not list maps@1 gets no map script
 	raw2 := zipWith(t, map[string]string{

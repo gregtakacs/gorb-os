@@ -181,16 +181,18 @@ func checkExtractedApp(t *testing.T, out string, row extractRow) {
 		if f.Name == editorManifestName {
 			served = entryDisk
 		}
-		if !bytes.Equal(rec.Body.Bytes(), served) {
+		got := editorBodyWithoutShim(t, s, row.Slug, rec)
+		if !bytes.Equal(got, served) {
 			t.Errorf("%s: GET %s served %d B, want the %d B of %s",
-				row.File, f.Name, rec.Body.Len(), len(served), f.Name)
+				row.File, f.Name, len(got), len(served), f.Name)
 		}
 	}
 	// A bare directory request answers the entry the report names.
 	rec := editorGet(t, s, "/editor/"+ip+"/"+row.Slug+"/", true)
-	if rec.Code != http.StatusOK || !bytes.Equal(rec.Body.Bytes(), entryDisk) {
+	gotDir := editorBodyWithoutShim(t, s, row.Slug, rec)
+	if rec.Code != http.StatusOK || !bytes.Equal(gotDir, entryDisk) {
 		t.Errorf("%s: the directory request answered with %d B, want the %d B entry %s",
-			row.File, rec.Body.Len(), len(entryDisk), row.Editor.Entry)
+			row.File, len(gotDir), len(entryDisk), row.Editor.Entry)
 	}
 	// Every member the archive holds arrived: nothing was quietly dropped.
 	zr, err := zip.NewReader(bytes.NewReader(region), int64(len(region)))
@@ -281,7 +283,11 @@ func TestExportRuntimeMatchesWhatTheHubServes(t *testing.T) {
 				t.Errorf("%s/%s: report says %d B / %s, disk holds %d B / %s",
 					r.ID, f.Name, f.Bytes, short(f.SHA256), len(disk), short(hexSha(disk)))
 			}
-			rec := editorGet(t, s, "/runtime/"+r.ID+"/"+editorURL(f.Name), true)
+			// The CONTROL listener answers this comparison, because that is the listener a
+			// site's static tree is a copy of: the editor port signs an HTML runtime file
+			// the way it signs any document (S2), and a file a site can serve from a disk
+			// cannot. Every other byte here is the same on both doors.
+			rec := controlGet(t, s, http.MethodGet, "/runtime/"+r.ID+"/"+editorURL(f.Name), true, nil)
 			if rec.Code != http.StatusOK {
 				t.Errorf("GET /runtime/%s/%s: status %d, want 200", r.ID, f.Name, rec.Code)
 				continue

@@ -90,8 +90,11 @@ func runtimeIDs() []string {
 }
 
 func (s *Server) routesRuntime(mux *http.ServeMux) {
-	// Guarded like /editor/: the documents that load these are the hub's own frames,
-	// which hold the launch token, and nothing else has a reason to ask.
+	// Guarded like the editor doors were: the documents that load these are the hub's own
+	// frames, which hold the launch token, and nothing else has a reason to ask. The
+	// same files are answered on the editor listener too (editororigin.go) for the pages
+	// that live there now; this registration stays because tabs.js still loads
+	// /runtime/maps@1/orbmap.js from the hub page's own origin.
 	mux.Handle("/runtime/", s.requireControl(http.HandlerFunc(s.serveRuntime)))
 }
 
@@ -131,6 +134,13 @@ func (s *Server) serveRuntime(w http.ResponseWriter, r *http.Request) {
 	}
 	if mt := mime.TypeByExtension(path.Ext(rel)); mt != "" {
 		w.Header().Set("Content-Type", mt)
+	}
+	// S2: on the editor listener, an HTML file is a document and gets the fetch shim like
+	// any other (ruling 33: every document an editor can load signs its own calls). On
+	// the control listener the same file is a plain asset of the hub's own page, which
+	// already holds the launch token and needs no script handed to it.
+	if strings.HasPrefix(w.Header().Get("Content-Type"), "text/html") && editorScopeOf(r) != "" {
+		data = s.editorDoc(editorScopeOf(r), data)
 	}
 	http.ServeContent(w, r, path.Base(rel), time.Unix(0, 0).UTC(), bytes.NewReader(data))
 }
@@ -207,9 +217,11 @@ func runtimeRefused(w http.ResponseWriter, r *http.Request, slug string, missing
 			`code{background:#161b22;border:1px solid #232c36;padding:.1em .3em;border-radius:3px}` +
 			`button{margin:1rem .5rem 0 0;padding:.55em 1.2em;background:#1f6feb;color:#fff;border:1px solid #1f6feb;border-radius:6px;font:inherit;cursor:pointer}` +
 			`button.back{background:none;color:#e6edf3;border-color:#232c36}button[disabled]{opacity:.6;cursor:default}.why{color:#8b98a5;font-size:13px;margin-top:1.5rem}</style>`
-		back := `<button class="back" onclick="try{parent.postMessage({type:'theme.close'},location.origin)}catch(e){}">Back to themes</button>`
+		// '*': the hub page is on another origin (S2); it checks source and origin itself
+		back := `<button class="back" onclick="try{parent.postMessage({type:'theme.close'},'*')}catch(e){}">Back to themes</button>`
 		if orbOlder {
 			esc := template.HTMLEscapeString
+			// '*': the hub page is on another origin (S2); it checks source and origin itself
 			_, _ = fmt.Fprintf(w, `<!doctype html><meta charset="utf-8"><title>Update the %[1]s app on this orb</title>%[4]s`+
 				`<h1>This orb's %[1]s app is older than the hub's</h1>`+
 				`<p>The orb runs <b>%[1]s %[2]s</b>; this hub has <b>%[1]s %[3]s</b>. The editor comes from the app, so update the app on the orb to open the current editor.</p>`+
@@ -217,7 +229,7 @@ func runtimeRefused(w http.ResponseWriter, r *http.Request, slug string, missing
 				`<p class="why">Why: <code>%[5]s</code>.</p>`+
 				`<script>document.getElementById('u').onclick=function(){this.disabled=true;`+
 				`document.getElementById('s').textContent='Asking the hub to update the app… its progress shows at the foot of this window.';`+
-				`try{parent.postMessage({type:'theme.update',app:%[6]q},location.origin);}catch(e){document.getElementById('s').textContent='The hub page did not answer: update it from the Apps page.';}};</script>`,
+				`try{parent.postMessage({type:'theme.update',app:%[6]q},'*');}catch(e){document.getElementById('s').textContent='The hub page did not answer: update it from the Apps page.';}};</script>`,
 				esc(slug), esc(v.orb), esc(v.hub), css, esc(sentence), slug, back)
 			return
 		}

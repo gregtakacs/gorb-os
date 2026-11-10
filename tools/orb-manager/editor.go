@@ -1,13 +1,15 @@
 package main
 
-// D37 §5.3: the hub serves an app's editor to the browser, same-origin.
+// D37 §5.3: the hub serves an app's editor to the browser.
 //
 // The chain is short and every link is in this file: dial GET
 // /api/v1/apps/editor?id=slug, read the region the device streamed, treat those
-// bytes as a ZIP, and serve a member from it under /editor/<ip>/<slug>/<file>. The
-// hub is the only origin that can both hold the launch token and reach the orb, so
-// a same-origin document is the only shape an editor can arrive in that keeps
-// /api/theme/upload working without adding a CORS header to a device that has none.
+// bytes as a ZIP, and serve a member from it under /editor/<ip>/<slug>/<file>. Since
+// S2 (ruling 33) these doors answer ONLY on the editor listener, on the app's own
+// <app>.localhost origin: the hub's control origin no longer serves editors at all,
+// because an editor runs third-party bytes and must never share an origin with the
+// flasher. What a document still needs is a same-origin path to the upload routes it
+// calls, which is what the editor API on that listener is (editororigin.go).
 //
 // What is NOT here matters as much. The heavy runtime — React, ReactDOM, Babel — is
 // served by the hub from its own vendor tree and never travels inside a container
@@ -73,15 +75,17 @@ const editorErrRetryTTL = 2 * time.Second
 const editorDialRetryPause = 400 * time.Millisecond
 
 func (s *Server) routesEditor(mux *http.ServeMux) {
-	// requireControl and not a read-guard: this hub has no read tier, and every
-	// theme-surface GET that dials a device is guarded the same way for the same
-	// reason — the token is what says the requester is a page this hub served.
-	mux.Handle("/editor/", s.requireControl(http.HandlerFunc(s.serveEditor)))
-	// The hub's own copy of an app's editor, read out of the .orbapp in its app library.
-	// Go's mux prefers the longer pattern, so /editor/hub/… never reaches serveEditor and
-	// this door never dials. Design H1b ruling 32: an import bakes with this one.
-	mux.Handle("/editor/hub/", s.requireControl(http.HandlerFunc(s.serveHubEditor)))
+	// S2: no editor door on the control mux any more. /editor/… is answered on the
+	// editor listener alone (editororigin.go), so a page on this origin — the hub's own,
+	// or anything that talked it into a fetch — cannot open an app's editor, and an
+	// app's editor cannot borrow this origin's cookie to reach /api/flash. A request
+	// here for an editor path is the `/` handler's 404.
+	//
+	// What is left is the two things the hub PAGE needs: where an editor lives and
+	// where its bytes come from. Both stay behind requireControl, and both are reads of
+	// the hub's own state.
 	mux.Handle("/api/editor/source", s.requireControl(http.HandlerFunc(s.handleEditorSource)))
+	mux.Handle("/api/editor/origin", s.requireControl(http.HandlerFunc(s.handleEditorOrigin)))
 }
 
 // editorKey is one board's one app. The ip is part of it because two orbs can carry
@@ -556,12 +560,12 @@ func (s *Server) serveEditorFile(w http.ResponseWriter, r *http.Request, ip, slu
 			}
 		}
 	}
-	// Only the entry document receives the launch token. It is the document that
-	// will make the upload; a sibling .js has no business holding a credential, and
-	// handing one to every member of an unreviewed archive would be a wider grant
-	// than the composer page has today.
+	// S2: the document gets NO cookie. It is served on its own origin now, where the
+	// control cookie is never sent and must never appear; what it gets instead is its
+	// own app's editor token, in a fetch shim that signs only same-origin calls. The
+	// sibling .js rule still holds — an asset is not the document and gets no script.
 	if isHTMLDoc(file) {
-		setLaunchToken(w, s.token)
+		data = s.editorDoc(slug, data)
 	}
 	w.Header().Set("Cache-Control", "no-store")
 	if mt := mime.TypeByExtension(path.Ext(file)); mt != "" {
@@ -752,8 +756,10 @@ func (s *Server) serveHostedEditor(w http.ResponseWriter, r *http.Request, ip, s
 		http.Error(w, "the editor page could not be written: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
-	setLaunchToken(w, s.token)
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	_, _ = w.Write(buf.Bytes())
+	// The page is the hub's bytes, so the token rides in the rendered document rather
+	// than in the template file: host@1/page.html ships to orbs and to the migration
+	// runner, which refuses a template action it does not know (S2, editororigin.go).
+	_, _ = w.Write(s.editorDoc(slug, buf.Bytes()))
 }

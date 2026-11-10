@@ -222,6 +222,26 @@ type Server struct {
 	// page it serves, and required on every request that changes something. See
 	// security.go for why the loopback bind is not the thing that makes this safe.
 	token string
+	// editorKey is this launch's editor-token secret: one HMAC key, from which every
+	// app's editor token is derived (editororigin.go). It is deliberately NOT the
+	// control token and shares no bits with it, so holding one app's editor credential
+	// says nothing about the hub's power to flash. Rotated with the process, like token.
+	editorKey []byte
+	// controlPort and editorPort are the two listeners' real bound ports, and the
+	// reason the editor's CSP can name the hub that frames it. main() overwrites both
+	// with the ports it actually got; newHub seeds the defaults -addr asks for so a
+	// test that never binds anything still has an origin worth asserting on.
+	controlPort int
+	editorPort  int
+	// allowRemote is -allow-remote as main read it. It is the hub's own answer to
+	// "may I be addressed by a name other than loopback's", and controlHostGuard reads
+	// it: a hub bound to a LAN address on purpose is asked for by name, and a hub bound
+	// to loopback is not. A Server assembled by a test leaves it false, which is the
+	// stricter default.
+	allowRemote bool
+	// editorSrv is the second listener's server, so s.quit can shut it down beside the
+	// control one. Nothing else reaches it: it exists to be closed.
+	editorSrv *http.Server
 	// grants are the orb addresses the proxy is willing to dial. Empty means the
 	// hub reaches nothing off the box.
 	grants *ipGrants
@@ -458,12 +478,14 @@ func main() {
 		os.Exit(code)
 	}
 
-	var addr, browser, repo, fwPath, orbPort, onlyOrb string
+	var addr, editorAddr, browser, repo, fwPath, orbPort, onlyOrb string
 	var libPath, libApps, libThemes string
 	var noAutoInstall, site bool
 	var noWindow, allowRemote, allowForeignFirmware, probeCablesOnLaunch, traceOrb bool
 
 	flag.StringVar(&addr, "addr", fmt.Sprintf("127.0.0.1:%d", listenPort), "host:port to bind")
+	flag.StringVar(&editorAddr, "editor-addr", "",
+		"host:port of the editor listener (default 127.0.0.1:<control port + 1>; an ephemeral port if that is taken), which serves app editors on <app>.localhost and nothing else; the same loopback rules as -addr apply")
 	flag.StringVar(&repo, "repo", "", "path to the gorb-os clone root, for the Theme Editor; empty detects it")
 	flag.StringVar(&libPath, "library", "", "the app/theme library root (apps/ and themes/ inside it); empty resolves it: beside the executable, then the user config dir, then the clone")
 	flag.StringVar(&libApps, "library-apps", "", "the app library directory, overriding -library and the resolution order")
@@ -540,6 +562,30 @@ func main() {
 	// the bottom of main, and connections queue in the listener until then.
 	ln, url := bindHub(addr)
 	hubClaim.announce(url)
+	// The second listener, bound in the same breath for the same reason: it holds an
+	// editor's whole world, and a hub that started without it would serve a hub page
+	// whose Open Editor button leads nowhere. Loopback is not optional here even under
+	// -allow-remote — an editor origin on a LAN address is a machine-wide credential
+	// for whoever shares the network (editororigin.go).
+	if editorAddr == "" {
+		// default: the control port + 1, so -addr 127.0.0.1:4000 brings its editors to 4001
+		editorAddr = fmt.Sprintf("127.0.0.1:%d", boundPort(ln)+1)
+	}
+	if !isLoopbackHost(editorAddr) {
+		log.Fatalf("orb-manager: refusing to bind the editor listener on %s: an editor port is loopback-only,"+
+			"\n  even under -allow-remote. Use 127.0.0.1, or pass -editor-addr with a loopback host.", editorAddr)
+	}
+	// A taken editor port must not stop the hub: unlike the control port, nothing else
+	// finds it by number (the page asks /api/editor/origin), so an ephemeral port serves
+	// this launch. Only the editors' browser storage, which is per origin, starts empty.
+	eln, err := net.Listen("tcp", editorAddr)
+	if err != nil {
+		log.Printf("orb-manager: editor port %s is taken (%v); editors use an ephemeral port this launch", editorAddr, err)
+		if eln, err = net.Listen("tcp", "127.0.0.1:0"); err != nil {
+			log.Fatalf("orb-manager: cannot listen for the editors on 127.0.0.1: %v", err)
+		}
+	}
+	editorURL := "http://" + eln.Addr().String()
 
 	repoDir := strings.TrimSpace(repo)
 	if repoDir == "" {
@@ -550,6 +596,12 @@ func main() {
 	// to Server cannot be wired in one and forgotten in the other — which is how the
 	// boot-verdict map nearly shipped nil in the real binary.
 	s := newHub()
+	// The ports the CSP and every editor origin are built from are the ones actually
+	// bound, not the ones the flags asked for: an -addr of 127.0.0.1:0 would otherwise
+	// name a port nothing listens on, and the hub would refuse to frame its own editors.
+	s.controlPort = boundPort(ln)
+	s.editorPort = boundPort(eln)
+	s.allowRemote = allowRemote
 	// The on-disk caches live beside state.json, so clearing the hub's state dir
 	// clears them too. Bounds: ~400 planes is ~43 MB; 16 editor regions ~11 MB.
 	if sp, err := statePath(); err == nil {
@@ -826,7 +878,20 @@ func main() {
 
 	log.Printf("orb-manager %s on %s (firmware: %s)", version, url, s.firmwareName())
 
-	srv := &http.Server{Handler: s.log(mux)}
+	srv := &http.Server{Handler: s.log(s.controlHostGuard(mux))}
+	// The editor listener rides along: same logging (its refusals are the interesting
+	// lines in a debug session), its own Server so quit can close both, and its own
+	// goroutine because the control Serve below is the call that blocks. A failure to
+	// serve it is fatal on purpose — a hub whose editors are unreachable is half a hub,
+	// and silently serving one listener is how that half goes unnoticed.
+	s.editorSrv = &http.Server{Handler: s.log(s.editorHandler())}
+	go func() {
+		if err := s.editorSrv.Serve(eln); err != nil && err != http.ErrServerClosed {
+			log.Printf("orb-manager: editor listener: %v", err)
+			s.quit(srv)
+		}
+	}()
+	log.Printf("orb-manager: editors on %s, per app (e.g. %s)", editorURL, s.editorOrigin("clock"))
 	browser = strings.TrimSpace(browser)
 	switch {
 	case noWindow:
@@ -925,6 +990,12 @@ func (s *Server) quit(srv *http.Server) {
 	ctx3, cancel3 := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel3()
 	_ = srv.Shutdown(ctx3)
+	// The editor listener closes on the same clock and for the same reason: a long-lived
+	// keep-alive is a page that can still send one request, and after this point its
+	// credential and its routes are on their way out anyway.
+	if s.editorSrv != nil {
+		_ = s.editorSrv.Shutdown(ctx3)
+	}
 	// One final save on the guarded path. Every mutation saves as it lands, but a
 	// quit is the last write that matters: the lonely mark set a second ago by an
 	// erase whose stream this very shutdown interrupted must be in the file before
@@ -1002,6 +1073,15 @@ func bindHub(addr string) (net.Listener, string) {
 			"two hubs must never run at once. If another program owns the port, pass -addr.", addr, err)
 	}
 	return ln, "http://" + ln.Addr().String()
+}
+
+// boundPort is the numeric port a bound listener actually got, which is what an origin
+// string and a CSP need (an ephemeral bind makes the flag's port a guess).
+func boundPort(ln net.Listener) int {
+	if t, ok := ln.Addr().(*net.TCPAddr); ok && t.Port > 0 {
+		return t.Port
+	}
+	return 0
 }
 
 // detectRepoDir locates the gorb-os clone root so the manager finds build/ and
@@ -1303,6 +1383,11 @@ func (s *Server) routes(mux *http.ServeMux) {
 const indexMarker = `"__ORB_TOKEN__"`
 
 func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
+	// S2: the hub page is the one page that may drive the control API, so it must not be
+	// framable by anything else. An editor's iframe is the page closest to hand that could
+	// try: an app that framed the hub could size a Flash button under its own click.
+	w.Header().Set("Content-Security-Policy", "frame-ancestors 'self'")
+	w.Header().Set("X-Frame-Options", "SAMEORIGIN")
 	if r.URL.Path != "/" {
 		http.NotFound(w, r)
 		return

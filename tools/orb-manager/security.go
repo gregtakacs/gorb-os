@@ -76,6 +76,16 @@ func setLaunchToken(w http.ResponseWriter, token string) {
 // the scripted-agent case, and it has to pass the header token.
 func (s *Server) requireControl(h http.HandlerFunc) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// S2 (ruling 33): the editor credential opens the editor API and nothing else. It
+		// would fail the token compare below anyway — the two secrets share no bits — but a
+		// refusal that arrives as "missing or wrong X-Orb-Token" describes the request
+		// wrongly, and an app that learned to write its editor token into the control
+		// header is exactly the bug worth having a log line for.
+		if r.Header.Get(editorTokenHeader) != "" || r.URL.Query().Get(editorTokenQuery) != "" {
+			reject(w, r, http.StatusForbidden,
+				"the editor token opens only the editor API, never Orb Manager's controls")
+			return
+		}
 		if !s.originOK(r) {
 			reject(w, r, http.StatusForbidden,
 				"cross-origin request refused: this hub acts only on requests from its own page")
@@ -109,12 +119,20 @@ func (s *Server) tokenOK(r *http.Request) bool {
 
 // originOK accepts same-origin browser traffic, and clients that send no origin
 // information at all (curl, an agent, a test), leaving the token to do that work.
+//
+// S2 removed "same-site" from the accepted set. Sec-Fetch-Site compares an origin's
+// REGISTERED SITE, and a site is host-minus-port: <app>.localhost and 127.0.0.1 count as
+// neighbours under browsers' port-blind rules, so an editor on its own S2 origin — a page
+// that runs third-party bytes — can present itself as same-site to this hub and used to be
+// waved through the origin check with nothing but a token-shaped header in front of it. The
+// hub page is the only page allowed to drive these routes, and to that page the hub IS
+// same-origin. Anything the browser files under a weaker relationship is refused.
 func (s *Server) originOK(r *http.Request) bool {
 	if site := strings.ToLower(r.Header.Get("Sec-Fetch-Site")); site != "" {
 		switch site {
-		case "same-origin", "same-site":
+		case "same-origin":
 			return true
-		default: // cross-site, cross-origin, or none: no mutating route is a navigation target in this UI
+		default: // cross-site, cross-origin, same-site or none: no mutating route is a navigation target in this UI
 			return false
 		}
 	}
@@ -147,6 +165,37 @@ func reject(w http.ResponseWriter, r *http.Request, code int, format string, arg
 		return
 	}
 	http.Error(w, msg, code)
+}
+
+// controlHostGuard answers only the names a loopback hub is actually reached on, unless it
+// was started with -allow-remote and meant to be reached from somewhere else.
+//
+// The bind already restricts which interface takes the connection; this restricts what a
+// connection may be ADDRESSED as, which is the DNS-rebinding case the bind cannot see: a
+// zone repointed at 127.0.0.1 arrives on loopback with a Host of evil.example and is, from
+// the socket's point of view, indistinguishable from the operator's own tab. Every S2
+// editor origin is the same shape — clock.localhost is a name that resolves here and is NOT
+// the hub — so the check is not a hardening nicety but the line between an app's page and
+// the hub's own. 421 Misdirected Request is the status that says "wrong name, right port".
+func (s *Server) controlHostGuard(h http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if s.allowRemote {
+			h.ServeHTTP(w, r)
+			return
+		}
+		host := strings.ToLower(r.Host)
+		if h2, _, err := net.SplitHostPort(host); err == nil {
+			host = h2
+		}
+		host = strings.TrimSuffix(strings.TrimPrefix(host, "["), "]")
+		switch host {
+		case "127.0.0.1", "localhost", "::1":
+			h.ServeHTTP(w, r)
+			return
+		}
+		reject(w, r, http.StatusMisdirectedRequest,
+			"this hub answers only http://127.0.0.1:%d or http://localhost:%d", s.controlPort, s.controlPort)
+	})
 }
 
 // --- where the hub will dial ----------------------------------------------------

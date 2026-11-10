@@ -249,10 +249,16 @@ func TestRuntimeRefusalOffersTheUpdateWhenTheOrbIsBehind(t *testing.T) {
 	req.Header.Set("Accept", "text/html")
 	runtimeRefused(rec, req, "clock", []string{"react", "baker"}, editorVersionPair{orb: "v1.1.43", hub: "v1.1.45"})
 	body := rec.Body.String()
-	for _, want := range []string{"v1.1.43", "v1.1.45", "Update clock on this orb", "type:'theme.update'", `app:"clock"`, "type:'theme.close'", "Back to themes"} {
+	for _, want := range []string{"v1.1.43", "v1.1.45", "Update clock on this orb", "type:'theme.update'", `app:"clock"`, "type:'theme.close'", "Back to themes",
+		`parent.postMessage({type:'theme.close'},'*')`, `parent.postMessage({type:'theme.update',app:"clock"},'*')`} {
 		if !strings.Contains(body, want) {
 			t.Errorf("the behind-the-shelf page lacks %q", want)
 		}
+	}
+	// S2: the hub page that reads these messages sits on another origin and the refusal page
+	// cannot know it, so the target is '*'; the hub checks source and origin on receipt.
+	if strings.Contains(body, "location.origin") {
+		t.Error("the refusal page still posts to its own origin, which since S2 is not the hub page's")
 	}
 	// a hub that cannot tell which is newer keeps the general sentence and no button
 	rec2 := httptest.NewRecorder()

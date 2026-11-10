@@ -1879,6 +1879,97 @@ func TestSiteImportDoorInTheLibrary(t *testing.T) {
 	}
 }
 
+// S2-3: an app's editor is a document on its own origin (editororigin.go), so the hub page
+// asks where it lives before it frames anything, and the bridge trusts the address it was
+// given rather than its own. These pins are the shape of that boundary: the ask, the two
+// doors that go through it, the word the person gets when the answer never comes, and the
+// one origin comparison the bridge is allowed to make.
+func TestEditorFrameCrossesItsOwnOrigin(t *testing.T) {
+	app := readAppJS(t)
+	// The hub's answer is the only source of an editor's address and token, and the page
+	// asks for it on every open: a token belongs to one launch, so a cache here is a
+	// credential outliving the hub that minted it.
+	srcDoor := blockOf(t, app, "async function editorFrameSrc")
+	for _, want := range []string{`hubFetch("/api/editor/origin?app="`, "data.origin", "et="} {
+		if !strings.Contains(srcDoor, want) {
+			t.Errorf("editorFrameSrc has no %s: the frame's URL is not built off the hub's answer", want)
+		}
+	}
+	if strings.Contains(srcDoor, "editorOriginCache") {
+		t.Error("editorFrameSrc caches an editor token: a token is per hub launch")
+	}
+	// Both doors reach their frame src through it, so neither can assemble an origin or a
+	// token by hand, and neither frames anything before the hub has answered.
+	for _, marker := range []string{"function openThemeEditor", "function openLibraryEditor"} {
+		door := blockOf(t, app, marker)
+		if !strings.Contains(door, "editorFrameSrc(") {
+			t.Errorf("%s sets a frame src without editorFrameSrc, so it frames an address the hub never named", marker)
+		}
+		if !strings.Contains(door, "themeEditorOrigin = ") {
+			t.Errorf("%s never records the origin it opened, so the bridge has nothing to check an answer against", marker)
+		}
+	}
+	// The bridge answers at the origin this page opened for this app — never at its own,
+	// which since S2 is the origin the editor is NOT on.
+	bridge := blockOf(t, app, "async function themeBridge(ev)")
+	if !strings.Contains(bridge, "ev.origin !== themeEditorOrigin") {
+		t.Error("themeBridge does not compare the message's origin with themeEditorOrigin")
+	}
+	if strings.Contains(bridge, "window.location.origin") {
+		t.Error("themeBridge still trusts its own origin, which is no longer the editor's (S2)")
+	}
+	// A frame across the boundary is untrusted content, so the act that writes a board is
+	// asked of the person before it is started.
+	at := strings.Index(bridge, `m.type === "theme.update"`)
+	if at < 0 {
+		t.Fatal("the bridge no longer answers theme.update")
+	}
+	askTo := strings.Index(bridge[at:], "streamInstall")
+	if askTo < 0 {
+		t.Fatal("theme.update no longer installs anything: the branch has nothing left to ask before")
+	}
+	ask := bridge[at : at+askTo]
+	if !strings.Contains(ask, "askConfirm(") {
+		t.Error("theme.update reaches streamInstall without asking the person first")
+	}
+	if !strings.Contains(ask, `"The editor asked for it.`) || !strings.Contains(ask, "m.app") {
+		t.Error("the update ask does not name the app, the orb and who asked")
+	}
+	if !strings.Contains(ask, `"update not started"`) {
+		t.Error("a refused update ask leaves the pane saying nothing")
+	}
+	// The veil's release survives the boundary: a cross-origin frame's contentDocument is
+	// null, and null is the answer that says an editor document arrived.
+	veil := blockOf(t, app, "function edVeil()")
+	if !strings.Contains(veil, "contentDocument") {
+		t.Error("edVeil no longer looks at the document that loaded")
+	}
+	if strings.Contains(veil, "if (!doc || !doc.body") {
+		t.Error("edVeil still treats a cross-origin frame (contentDocument null) as a stray load")
+	}
+	if !strings.Contains(veil, "if (doc && (!doc.body") {
+		t.Error("edVeil no longer ignores the about:blank stray by its content")
+	}
+	// Closing untrusts the origin and outranks the open still on its way.
+	closer := blockOf(t, app, "function closeThemeEditor()")
+	if !strings.Contains(closer, `themeEditorOrigin = ""`) {
+		t.Error("closeThemeEditor leaves the closed frame's origin trusted")
+	}
+	if !strings.Contains(closer, "editorOpenGen++") {
+		t.Error("closeThemeEditor does not outrank an open whose answer is still on its way")
+	}
+	// An open that never got an address says so in the pane rather than spinning forever,
+	// and an import that failed that way frees its own door.
+	hubDoor := blockOf(t, app, "function openLibraryEditor")
+	if !strings.Contains(hubDoor, "siteImportClosed()") {
+		t.Error("an import whose editor never opened leaves the door shut and the button disabled")
+	}
+	refused := blockOf(t, app, "function editorOpenRefused(")
+	if !strings.Contains(refused, `"The editor could not be opened: "`) || !strings.Contains(refused, `pane.classList.remove("loading")`) {
+		t.Error("a failed open leaves the veil standing or says nothing about why")
+	}
+}
+
 // regionOf returns the slice of a document from the first occurrence of open through the
 // first close tag after it, for the two questions a moved element raises: is this id
 // inside that container, and is it not inside the one it left. cardMarkup answers them for

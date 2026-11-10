@@ -472,9 +472,11 @@
 <!-- D37 §6.2: one app's editor opens in a pane over the page rather than in a new tab the
      operator has to find again; since D43 §4.2 it fills the whole window, over the
      page, with the editor's own bar as the only one (app.css #mn-theme-editor).
-     The frame is same-origin by construction — the hub built the URL from an ip
-     the hub learned — which is what lets the bridge below postMessage to it
-     without a channel id. Since H1b it lives outside both views rather than in the
+     Since S2 the frame is NOT same-origin with this page: it lives on the app's own
+     origin and carries this launch's editor token on its URL, which is what lets the
+     bridge below postMessage to it across the boundary without a channel id. The
+     sandbox stays as written — allow-same-origin is the editor's origin, not this one's.
+     Since H1b it lives outside both views rather than in the
      Themes card, because the home view's Theme library opens it too and a pane
      inside the hidden #orb view could not show there. -->
 <section id="mn-theme-editor" class="themee" hidden>

@@ -14,7 +14,7 @@ const ok = (c, n, x) => { checked++; if (!c || process.env.VERBOSE) console.log(
 // the window the service runs in: its parent, its unload guard, its address
 const posted = [], unloads = new Set();
 global.window = globalThis;
-global.parent = { postMessage: (m) => posted.push(m) };
+global.parent = { postMessage: (m, origin) => posted.push({ m: m, origin: origin }) };
 global.addEventListener = (t, fn) => { if (t === 'beforeunload') unloads.add(fn); };
 global.removeEventListener = (t, fn) => { if (t === 'beforeunload') unloads.delete(fn); };
 global.location = { origin: 'http://hub', protocol: 'http:', search: '' };
@@ -50,7 +50,8 @@ const mk = () => {
 // a container whose header names a 200-byte geometry region (word 5), so the head slice is 328 B
 const bake = (n) => { const b = new Uint8Array(n || 4096); new DataView(b.buffer).setUint32(20, 200, true); return b; };
 const meta = { name: 'Dial', stem: 'clock-dial-000000000000', summary: 'still · 3 KB' };
-const busy = () => posted.filter((m) => m.type === 'theme.busy').map((m) => m.on).join();
+const busy = () => posted.filter((p) => p.m.type === 'theme.busy').map((p) => p.m.on).join();
+const busyTargets = () => posted.filter((p) => p.m.type === 'theme.busy').map((p) => p.origin).join();
 
 (async () => {
   // ---- finding the orb
@@ -80,6 +81,7 @@ const busy = () => posted.filter((m) => m.type === 'theme.busy').map((m) => m.on
     await tick();
     ok(s.active && h.sending && h.sending.canCancel, 'the press opens the send, cancellable while the bytes are the page’s');
     ok(busy() === 'true' && unloads.size === 1, 'tells the hub it is busy and guards the window', busy());
+    ok(busyTargets() === '*', 'and says it to any origin: the hub page is on another one (S2) and checks source and origin itself', busyTargets());
     const pre = calls.find((c) => /precheck=1/.test(c[0]));
     ok(pre && pre[1].byteLength === 328, 'the precheck carries the header and the geometry region only', pre && pre[1].byteLength);
     ok(xhr && xhr.body === bytes && !/overwrite/.test(xhr.url), 'then the whole bake rides one XHR, without overwrite');

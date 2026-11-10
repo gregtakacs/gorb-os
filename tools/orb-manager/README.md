@@ -130,6 +130,31 @@ For an operator who wants an extra identity check before a headless flash,
 The web tool does not impose it; you act on the port you picked.
 
 
+## Editors run on their own origin
+
+An app's editor runs third-party bytes, so it does not run next to the flasher. The hub
+listens twice: controls on `-addr` (`127.0.0.1:3779`) and editors on `-editor-addr`, default
+control port + 1, both loopback binds, one origin per app — `http://<app>.localhost:3780`.
+Each app gets a per-launch token (`X-Orb-Editor`, or `?et=` for a document load) minted from a
+signing key the control token never sees and handed out by the control route
+`GET /api/editor/origin?app=<app>`, the only door through which an editor token leaves the hub.
+The editor port's whole route list: `/editor/`, `/editor/hub/`, `/runtime/`,
+`/api/library/{entries,design,keep,forget}`, `/api/design/save`, `/api/theme/{design,stem}`,
+`/api/editor/source`, the send door `/api/theme/{upload,commit,upload-status}` and
+`/api/orb/known`, an import's bake `/api/site/{bundle,keep}`, the map tool's two reads, and
+three allowlisted device reads (`/orb/…/api/v1/{home,places,units}`) through the proxy's own
+grant gate. Nothing else is mounted there: no flash, no erase, no device command, no library
+install. Every one of those calls is scoped to the app its Host and token named — a `?app=`, a
+body or a ticket naming another app is a 403 that says whose editor the request was signed in
+as — so clock's editor holds clock's library and nothing else (`editororigin.go`,
+`editor_gate_test.go`). The control side refuses the editor's credential outright, and stopped
+accepting `Sec-Fetch-Site: same-site` as its own origin: a site is a host minus port, and
+`clock.localhost` counts as a neighbour of `127.0.0.1`. It also answers only loopback Host
+names (`421` otherwise, off under `-allow-remote`) and serves its page with
+`frame-ancestors 'self'` and `X-Frame-Options: SAMEORIGIN`, so an app cannot frame the hub and
+size a Flash button under its own click. Editors need a browser that resolves `*.localhost`
+itself — Chromium, Edge, Firefox; the app window is Chromium.
+
 ## Run it
 
 ```
@@ -1194,7 +1219,9 @@ library.go           the app and theme library (S6): the directory ladder, GET /
 seed.go              the compiled-in shelf: seeds the user library on first run, with a
                      ledger so a deleted file never respawns and an edited one is never touched
 installflow.go       the library install: shelf apps and the default theme pushed onto a dial
-editor.go            an app's editor served same-origin out of its container (D37 §5.3)
+editor.go            an app's editor, out of its container or the hub's library copy (D37 §5.3)
+editororigin.go      the second listener: one <app>.localhost origin per app, its token, its
+                     route list, and the per-app scope every editor API call is weighed against
 seedverify.go        the end of a provisioning run: did the join land, did the seed install
 cleanslate.go        the first-flash clean slate (factory NVS)
 diskcache.go         bytes an orb already paid to send (previews), kept on disk

@@ -14,7 +14,9 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -64,17 +66,119 @@ func editorHub(t *testing.T, ip string, raw []byte, err error) (*Server, *[]stri
 	return s, dialed
 }
 
+// editorGet drives the EDITOR listener the way an app's own page drives it (S2): the
+// Host names the app, and the credential that path's class requires comes along when
+// token is true — ?et= for a document or one of its files, the X-Orb-Editor header for
+// an API call. A token in a URL is no longer an API credential at all, so the helper
+// has to know the classes it is asking about.
 func editorGet(t *testing.T, s *Server, path string, token bool) *httptest.ResponseRecorder {
+	t.Helper()
+	return editorListenerGet(t, s, path, token, nil)
+}
+
+// editorListenerGet is editorGet with the extra headers an origin test cares to name,
+// which is the only way a test can lie about Sec-Fetch-Site on purpose.
+func editorListenerGet(t *testing.T, s *Server, path string, token bool, hdr map[string]string) *httptest.ResponseRecorder {
+	t.Helper()
+	u, err := url.Parse(path)
+	if err != nil {
+		t.Fatalf("test path %q: %v", path, err)
+	}
+	slug := editorTestSlug(u)
+	req := httptest.NewRequest(http.MethodGet, path, nil)
+	req.Host = editorHostLabel(slug) + ".localhost:" + strconv.Itoa(s.editorPort)
+	if token {
+		if strings.HasPrefix(u.Path, "/editor/") || strings.HasPrefix(u.Path, "/runtime/") {
+			q := req.URL.Query()
+			q.Set(editorTokenQuery, s.editorToken(slug))
+			req.URL.RawQuery = q.Encode()
+		} else {
+			req.Header.Set(editorTokenHeader, s.editorToken(slug))
+		}
+	}
+	for k, v := range hdr {
+		req.Header.Set(k, v)
+	}
+	rec := httptest.NewRecorder()
+	s.editorHandler().ServeHTTP(rec, req)
+	return rec
+}
+
+// editorBodyWithoutShim is the bytes a hub document would have carried before S2, which
+// is what a byte-for-byte comparison against an extracted shelf can mean: the hub adds
+// the fetch shim to an HTML document and to nothing else, so stripping exactly the one
+// script it adds leaves the archive's own bytes. A body that carries no shim is returned
+// as served — an asset's claim must still be tested against the file, not against an
+// allowance.
+func editorBodyWithoutShim(t *testing.T, s *Server, slug string, rec *httptest.ResponseRecorder) []byte {
+	t.Helper()
+	shim := editorShim(s.editorToken(slug))
+	body := rec.Body.Bytes()
+	if !bytes.Contains(body, shim) {
+		return body
+	}
+	if n := bytes.Count(body, shim); n != 1 {
+		t.Fatalf("the document carried %d shims, want the one the hub adds", n)
+	}
+	if len(body) == len(shim) {
+		t.Fatal("a document was served as nothing but a shim")
+	}
+	return bytes.ReplaceAll(body, shim, nil)
+}
+
+// editorTestSlug is the scope a test path is addressed to: the app its query names, the app
+// its path names, and otherwise the slug the runtime files are served for, since a
+// /runtime/… request carries no app and is scoped by the Host alone. The query comes first
+// because S2-2 refuses an editor API call whose subject is not the app it is signed in as:
+// a test asking about sentinel has to knock on sentinel's door, and a helper that signed
+// every /api/ call as clock would test the scope rule instead of the route.
+func editorTestSlug(u *url.URL) string {
+	q := u.Query()
+	for _, k := range []string{"app", "slug"} {
+		if v := q.Get(k); v != "" && orbnet.AppStemOK(v) {
+			return v
+		}
+	}
+	if slug := editorPathSlug(u.Path); slug != "" && orbnet.AppStemOK(slug) {
+		return slug
+	}
+	return "clock"
+}
+
+// controlGet drives the CONTROL mux, which after S2 answers no editor path at all. It
+// is the shape the pre-S2 editorGet had, and it is what a test uses to prove exactly
+// that: a token-bearing request to the hub for an editor route is now a 404.
+func controlGet(t *testing.T, s *Server, method, path string, token bool, body []byte) *httptest.ResponseRecorder {
 	t.Helper()
 	mux := http.NewServeMux()
 	s.routes(mux)
-	req := httptest.NewRequest(http.MethodGet, path, nil)
+	req := httptest.NewRequest(method, path, bytes.NewReader(body))
 	if token {
 		req.Header.Set(tokenHeader, s.token)
 	}
+	// The hub page's own origin, on both sides of the comparison originOK makes, so a
+	// control call reads as same-origin browser traffic and not as a forged header.
+	req.Host = "127.0.0.1:" + strconv.Itoa(s.controlPort)
+	req.Header.Set("Origin", "http://"+req.Host)
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, req)
 	return rec
+}
+
+// editorAssertDocCredential is the S2 replacement for the launch-token cookie an editor
+// document used to carry: no cookie anywhere on the response, and the document's own
+// token inside the fetch shim, which is how it signs the calls it makes.
+func editorAssertDocCredential(t *testing.T, s *Server, rec *httptest.ResponseRecorder, slug string) {
+	t.Helper()
+	if c := cookieNamed(rec, tokenCookie); c != nil {
+		t.Errorf("an editor document set the %s cookie; the editor port must never carry the control credential", tokenCookie)
+	}
+	if len(rec.Result().Cookies()) > 0 {
+		t.Errorf("an editor document set %d cookie(s); it sets none", len(rec.Result().Cookies()))
+	}
+	if tok := s.editorToken(slug); !strings.Contains(rec.Body.String(), tok) {
+		t.Errorf("the document carries no fetch shim for %s:\n%.300s", slug, rec.Body)
+	}
 }
 
 func cookieNamed(rec *httptest.ResponseRecorder, name string) *http.Cookie {
@@ -86,8 +190,26 @@ func cookieNamed(rec *httptest.ResponseRecorder, name string) *http.Cookie {
 	return nil
 }
 
+// the shim's second wrapper: the send flow uploads the bake over XHR (it is the only
+// browser request that reports bytes-onto-the-wire, and the commit point needs it), so
+// the page's own-origin XHRs must carry the header the fetch shim gives its fetches —
+// or the upload door the hub opened with one hand, it slams in the other.
+func TestEditorShimSignsXHRToo(t *testing.T) {
+	body := string(editorShim("clock.0123456789abcdef"))
+	for _, want := range []string{
+		"X.prototype.open=function", "X.prototype.send=function",
+		"setRequestHeader('" + editorTokenHeader + "',T)",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("the shim does not wrap XHR as the send flow needs: %.60s missing from\n%s", want, body)
+		}
+	}
+}
+
 // A directory request opens the document the app's own manifest names, and that
-// document carries the launch token — the whole reason the editor is same-origin.
+// document carries its own app's editor token in the fetch shim — the S2 shape of the
+// same fact the launch-token cookie used to express: the page the hub opened can call
+// the hub back, and nothing else on the machine can.
 func TestEditorServesManifestEntryWithToken(t *testing.T) {
 	const ip = "203.0.113.7"
 	raw := zipWith(t, map[string]string{
@@ -102,15 +224,13 @@ func TestEditorServesManifestEntryWithToken(t *testing.T) {
 	if !strings.Contains(rec.Body.String(), "Thermo") {
 		t.Errorf("body = %s, want the manifest's entry document", rec.Body)
 	}
-	if c := cookieNamed(rec, tokenCookie); c == nil || c.Value != s.token {
-		t.Error("the entry document was served without the launch token, so it cannot upload")
-	}
+	editorAssertDocCredential(t, s, rec, "thermo")
 	if len(*dialed) != 1 || (*dialed)[0] != ip+"/thermo" {
 		t.Errorf("hub dialed %v, want one region read for this app", *dialed)
 	}
 }
 
-// The token goes on the document and NOT on a sibling script. An editor is untrusted
+// The credential goes on the document and NOT on a sibling script. An editor is untrusted
 // app content; handing its credential to every member of the archive would be a
 // wider grant than the composer page carries today.
 func TestEditorKeepsTokenOffSiblingAssets(t *testing.T) {
@@ -121,12 +241,15 @@ func TestEditorKeepsTokenOffSiblingAssets(t *testing.T) {
 		"assets/b.js": `var x`,
 	})
 	s, _ := editorHub(t, ip, raw, nil)
-	if cookieNamed(editorGet(t, s, "/editor/"+ip+"/thermo/index.html", true), tokenCookie) == nil {
-		t.Error("the entry document lost its token")
+	if !strings.Contains(editorGet(t, s, "/editor/"+ip+"/thermo/index.html", true).Body.String(), s.editorToken("thermo")) {
+		t.Error("the entry document lost its editor token")
 	}
 	js := editorGet(t, s, "/editor/"+ip+"/thermo/assets/b.js", true)
 	if c := cookieNamed(js, tokenCookie); c != nil {
-		t.Error("a sibling .js was served the launch token; only the document may hold it")
+		t.Error("a sibling .js was served a cookie; the editor port sets none")
+	}
+	if strings.Contains(js.Body.String(), s.editorToken("thermo")) {
+		t.Error("a sibling .js carried the editor token; only the document may hold it")
 	}
 }
 
@@ -289,13 +412,12 @@ func TestEditorNoEditorIsNeverRetried(t *testing.T) {
 func TestEditorFailurePageIsRetryableHTMLForNavigations(t *testing.T) {
 	const ip = "203.0.113.9"
 	s, _ := editorHub(t, ip, nil, errors.New("context deadline exceeded"))
-	mux := http.NewServeMux()
-	s.routes(mux)
 	req := httptest.NewRequest(http.MethodGet, "/editor/"+ip+"/clock/", nil)
-	req.Header.Set(tokenHeader, s.token)
+	req.Host = "clock.localhost:" + strconv.Itoa(s.editorPort)
+	req.URL.RawQuery = editorTokenQuery + "=" + s.editorToken("clock")
 	req.Header.Set("Accept", "text/html,application/xhtml+xml")
 	rec := httptest.NewRecorder()
-	mux.ServeHTTP(rec, req)
+	s.editorHandler().ServeHTTP(rec, req)
 	if rec.Code != http.StatusBadGateway {
 		t.Fatalf("status = %d, want 502", rec.Code)
 	}

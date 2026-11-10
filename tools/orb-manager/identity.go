@@ -106,6 +106,11 @@ func newHub() *Server {
 	s := &Server{identities: newIdentityCache(), ops: newOpRegistry(),
 		probeOrb: esprom.ProbeOrb,
 		token:    newLaunchToken(), grants: newIPGrants(ipGrantTTL),
+		// The editor listener's own credential and ports (editororigin.go). A hub built
+		// for a test has an editor origin exactly as the default flags would give it, so
+		// an assertion about http://clock.localhost:3780 is an assertion about the real
+		// shape and not about a fixture main() would overwrite anyway.
+		editorKey: newEditorKey(), controlPort: listenPort, editorPort: listenPort + 1,
 		cables: newCableCache(), prover: newCableProof(), live: newLiveCache(),
 		lonely:    newLonelyMark(),
 		slate:     newCleanSlate(),

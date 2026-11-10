@@ -739,7 +739,8 @@
       say('Imported “' + want + '” into the library');
       await api.libraryRefresh();
       // the page that opened this editor (the Themes tab's import door) takes the name it filed
-      try { if (root.parent && root.parent !== root) root.parent.postMessage({ type: 'theme.imported', app: api.slug(), name: want, file: data && data.file }, root.location.origin); } catch (e) { /* nothing asked to be told */ }
+      // '*': the hub page is on another origin (S2); it checks source and origin itself
+      try { if (root.parent && root.parent !== root) root.parent.postMessage({ type: 'theme.imported', app: api.slug(), name: want, file: data && data.file }, '*'); } catch (e) { /* nothing asked to be told */ }
       return true;
     };
     var openTheme = async function () {

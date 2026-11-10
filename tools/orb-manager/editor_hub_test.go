@@ -89,16 +89,11 @@ func hubEditorSlot(slug string) *editorSlot {
 	return regions.slots[k]
 }
 
+// editorAcceptGet is editorGet for the cases where the Accept header decides the shape
+// of a refusal: same editor listener, same Host, plus the header a browser would send.
 func editorAcceptGet(t *testing.T, s *Server, path, accept string) *httptest.ResponseRecorder {
 	t.Helper()
-	mux := http.NewServeMux()
-	s.routes(mux)
-	req := httptest.NewRequest(http.MethodGet, path, nil)
-	req.Header.Set(tokenHeader, s.token)
-	req.Header.Set("Accept", accept)
-	rec := httptest.NewRecorder()
-	mux.ServeHTTP(rec, req)
-	return rec
+	return editorListenerGet(t, s, path, true, map[string]string{"Accept": accept})
 }
 
 // regionMember opens one file of an app container's editor region, the way the door does.
@@ -132,9 +127,7 @@ func TestHubEditorServesTheLibrarysEditorWithNoOrb(t *testing.T) {
 	if ct := rec.Header().Get("Content-Type"); !strings.HasPrefix(ct, "text/html") {
 		t.Errorf("Content-Type = %q, want the hosted page as HTML", ct)
 	}
-	if c := cookieNamed(rec, tokenCookie); c == nil || c.Value != s.token {
-		t.Error("the document came without the launch token, so it could not upload")
-	}
+	editorAssertDocCredential(t, s, rec, "weather")
 	if cc := rec.Header().Get("Cache-Control"); cc != "no-store" {
 		t.Errorf("Cache-Control = %q, want no-store", cc)
 	}
@@ -160,8 +153,11 @@ func TestHubEditorServesTheLibrarysEditorWithNoOrb(t *testing.T) {
 	if doc.Code != http.StatusOK {
 		t.Fatalf("sentinel: status %d body %s", doc.Code, doc.Body)
 	}
-	if !bytes.Equal(doc.Body.Bytes(), want) {
-		t.Errorf("sentinel entry = %q, want the region's index.html %q", doc.Body.Bytes(), want)
+	// The region's bytes are what came out of the shelf, plus the one thing the hub adds
+	// to an HTML document on its way out the editor port (S2).
+	got := bytes.ReplaceAll(doc.Body.Bytes(), editorShim(s.editorToken("sentinel")), nil)
+	if !bytes.Equal(got, want) {
+		t.Errorf("sentinel entry = %q, want the region's index.html %q", got, want)
 	}
 	// A runtime refusal names the two releases it is comparing, and for this door there is
 	// no orb release to name: an ip that is no board must not read a ledger.

@@ -18,7 +18,7 @@
 PYTHON ?= python3
 NODE   ?= $(shell command -v node 2>/dev/null || ls $$HOME/.local/share/nodeenv-gorb/bin/node 2>/dev/null)
 
-.PHONY: check check-host check-apps check-hub check-editor check-web check-runner check-migrations rebake firmware apps hub sdk dist web
+.PHONY: check check-host check-apps check-hub check-editor check-web check-runner check-editor-origin check-migrations rebake firmware apps hub sdk dist web
 
 check: check-host check-apps check-hub check-editor
 	@echo 'check: host suites, apps, hub and editor all green'
@@ -80,6 +80,17 @@ check-web: web
 check-runner:
 	@test -n "$(NODE)" || { echo 'no node on PATH (see BUILDING.md: the editor suites need node 20+)'; exit 1; }
 	$(NODE) tools/orb-manager/web/runtime/_selftest/runner-check.js
+
+## check-editor-origin: the S2 live gate, end to end. A real headless Chromium drives a real
+## hub (built here from this tree) against cmd/orbfake and a stand-in orb-os.net, and the
+## eight claims of the editor-origin story are checked in the browser: edit on the app's own
+## origin, Rebake all, Send to orb, import by link, no cookie on the editor port, no CSP
+## violation in any flow, and a hostile third-party app refused into a wall that moves
+## nothing. Deliberately NOT part of `check`, like check-web: it needs Go, Chromium and
+## minutes. --json, --keep, --only and --timeout pass through under ARGS=…
+check-editor-origin:
+	@test -n "$(NODE)" || { echo 'no node on PATH (see BUILDING.md: the live gate needs node 20+)'; exit 1; }
+	$(NODE) tools/orb-manager/web/runtime/_selftest/editor-origin-live.js $(ARGS)
 
 ## check-migrations: every app's schema fixtures (editor/_fixtures/), opened in that app's
 ## packed editor by the migration runner (design §6.5 point 4). Deliberately NOT part of

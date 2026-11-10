@@ -565,7 +565,7 @@ async function main() {
     const hub = spawnLogged(path.join(dirs.bin, 'orb-manager'), [
       '-no-window', '-addr', '127.0.0.1:' + ctlPort, '-editor-addr', '127.0.0.1:' + edPort,
       '-orb-port', String(fakePort), '-library-apps', dirs.apps, '-library-themes', dirs.themes,
-      '-no-autoinstall', '-probe-cables=false',
+      '-no-autoinstall', '-probe-cables=false', '-site', // the import scenario walks the site door, shut by default
     ], {
       log: path.join(dirs.logs, 'hub.log'),
       env: Object.assign({}, process.env, { HOME: dirs.home, XDG_CONFIG_HOME: path.join(dirs.home, '.config') }),

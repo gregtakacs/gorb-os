@@ -2465,7 +2465,12 @@ esp_err_t stage_init(orb_app_t *self)
     clock_layers_build(self);
 
     /* The carriage's frame bank: descriptors for its widget's swap. Reset the frame
-     * state so the first tick (re)draws it whole. */
+     * state so the first tick (re)draws it whole. The ink chords were the last theme's
+     * frames (another height reads past them): they go, and rebuild on first use. */
+    for (int i = 0; i < CLK_TOURB_MAX; i++) {
+        heap_caps_free(s_tourb_cx0[i]); s_tourb_cx0[i] = NULL;
+        heap_caps_free(s_tourb_cx1[i]); s_tourb_cx1[i] = NULL;
+    }
     for (int i = 0; i < (int)clk_theme.tourbillon_n && i < CLK_TOURB_MAX; i++)
         if (gfx_sprite_drawable(&clk_theme.tourbillon[i]))
             gfx_fill_sprite_dsc(&s_tourb_dsc[i], &clk_theme.tourbillon[i], blob());
@@ -3084,8 +3089,7 @@ esp_err_t stage_live_merge(bool on)
         orb_glass_free(s_live[l]);
         s_live[l] = orb_glass_alloc(live_bytes(l));
         if (!s_live[l]) {                                 /* nothing to merge into: as it was */
-            for (int k = 0; k < STAGE_LIVE_N; k++) { orb_glass_free(s_live[k]); s_live[k] = NULL; }
-            s_live_merged = false;
+            live_drop_all();                              /* their images too: none draws freed bytes */
             ESP_LOGE(TAG, "live layers: no room to merge them; the app reopens them");
             if (s_lay_app && (orb_svc_layers_live(s_lay_app) > 0 || stage_running())) {
                 clock_layers_build(s_lay_app);

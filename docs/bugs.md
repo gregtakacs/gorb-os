@@ -22,3 +22,15 @@ fixed, set its status to `fixed`, add the commit or release, and leave the entry
 - **Repro:** not written down yet. Add one: which app's editor, which file and size, and
   whether it fails in the editor, on Download/bake, on send to an orb, or on the orb itself.
 - **Notes:** —
+
+## B3. TestThePassParksForADemandAndResumesItsOwnQueue is flaky
+
+- **Status:** open
+- **Reported:** 2026-11-10, found while checking G3
+- **Area:** Orb Manager's Go tests (`make check-hub`)
+- **Symptom:** the test fails now and then with no code change. It failed 2 of 10 runs
+  (`go test -count=10 -run '^TestThePassParksForADemandAndResumesItsOwnQueue$' .`) on `main` at
+  ea04c30, inside `delegate-worker:gorb2`, and once in a full `check-hub` run on the G3 branch. It looks
+  like timing-dependent queue parking rather than a real fault.
+- **Repro:** the `-count=10` command above, from `tools/orb-manager`.
+- **Notes:** CI can fail on it at random, so a red `check-hub` should be re-run before it's believed.

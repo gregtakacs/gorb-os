@@ -6,6 +6,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
@@ -829,5 +830,64 @@ func TestSiteDoorShutWithoutTheFlag(t *testing.T) {
 	}
 	if !strings.Contains(app, `const site = data.site === true;`) {
 		t.Error("loadLibThemes no longer reads the library's site word before showing the door")
+	}
+}
+
+// The resolve client is the half of §7.4 that G3 owns, and H3 owns the door it dials, so
+// it is tested against a fake rather than a site that does not exist yet: the answer it
+// reads, the two status codes that mean "no longer shared" rather than "failed", and the
+// one that must not be smoothed over.
+func TestResolveOriginReadsTheAnswerAndTheGone(t *testing.T) {
+	ctx := context.Background()
+	s := newHub()
+	orig := &ThemeOrigin{Site: "", DesignID: siteDesignID, Version: 3}
+
+	srv, _ := siteServer(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/hub/resolve" {
+			http.NotFound(w, r)
+			return
+		}
+		q := r.URL.Query()
+		if q.Get("designId") != siteDesignID || q.Get("version") != "3" || q.Get("site") == "" {
+			t.Errorf("the resolve query was %q, want the origin's site, design and version", r.URL.RawQuery)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"designId":"` + siteDesignID + `","app":"clock","version":9,"sharedName":"Night dial by @greg","handle":"greg"}`))
+	})
+	orig.Site = strings.ToLower(srv.URL)
+	got, err := s.resolveOrigin(ctx, orig)
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if !got.Resolved || got.Gone || got.Version != 9 || got.App != "clock" ||
+		got.SharedName != "Night dial by @greg" || got.DesignID != siteDesignID {
+		t.Errorf("resolve = %+v, want the design's current version and current shared name", got)
+	}
+
+	for _, code := range []int{http.StatusNotFound, http.StatusGone} {
+		gone, _ := siteServer(t, func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(code) })
+		orig.Site = strings.ToLower(gone.URL)
+		ans, err := s.resolveOrigin(ctx, orig)
+		if err != nil {
+			t.Errorf("a %d is not a transport failure: %v", code, err)
+		}
+		if ans == nil || !ans.Gone || ans.Resolved {
+			t.Errorf("a %d read as %+v, want Gone and not Resolved", code, ans)
+		}
+	}
+
+	bad, _ := siteServer(t, func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusInternalServerError) })
+	orig.Site = strings.ToLower(bad.URL)
+	if ans, err := s.resolveOrigin(ctx, orig); err == nil {
+		t.Errorf("an HTTP 500 read as %+v and no error; a theme that could not be checked must never read as current", ans)
+	}
+
+	// No answer at all — an origin with nothing to dial — is a refusal rather than a
+	// panic, because the list builds a row out of whatever the resolver said.
+	if _, err := s.resolveOrigin(ctx, &ThemeOrigin{DesignID: siteDesignID, Version: 3}); err == nil {
+		t.Error("an origin with no site resolved")
+	}
+	if _, err := s.resolveOrigin(ctx, nil); err == nil {
+		t.Error("no origin resolved")
 	}
 }

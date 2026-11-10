@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -48,6 +49,7 @@ func TestStateFileHoldsNoSecrets(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "state.json")
 	s := newHub()
 	s.statePath = path
+	s.installID = mintInstallID()
 	s.grants.learn("10.1.2.3")
 	s.saveState()
 	b, err := os.ReadFile(path)
@@ -66,6 +68,16 @@ func TestStateFileHoldsNoSecrets(t *testing.T) {
 	}
 	if st.Version != stateVersion {
 		t.Errorf("version = %d, want %d", st.Version, stateVersion)
+	}
+	// The install id is the one thing in here that is not an address, and it is an id
+	// and not a credential (§7.2): it names this installation to nobody but the site it
+	// is eventually sent to, and it grants nothing. So it belongs in this file, and this
+	// assertion is what stops a future edit from treating it as one of the secrets above.
+	if st.InstallID != s.installID || st.InstallID == "" {
+		t.Errorf("installId = %q, want the minted %q to be on disk", st.InstallID, s.installID)
+	}
+	if st.InstallID == s.token {
+		t.Error("the install id and the control token are the same value")
 	}
 }
 
@@ -149,4 +161,112 @@ func TestMissingStateFileIsQuiet(t *testing.T) {
 	if s.stateErr != nil {
 		t.Errorf("a first run reported a state error: %v", s.stateErr)
 	}
+}
+
+// The install id (§7.2, ruling 25): one per installation, minted once, read back ever
+// after, and sent nowhere. The behaviour that matters is the one a hub cannot repair
+// later — an id that changed between launches would be a different Orb Manager on the
+// site's Connected list every morning, so the file, not the memory, is the authority.
+
+func TestInstallIDIsMintedOnceAndSurvives(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the config-dir behaviour under test is the Unix one")
+	}
+	cfg := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", cfg)
+	t.Setenv("HOME", cfg)
+	path := filepath.Join(cfg, "orb-manager", "state.json")
+
+	first := newHub()
+	first.armState()
+	id := first.installID
+	if len(id) != 32 {
+		t.Fatalf("the first run minted %q, want 32 hex characters", id)
+	}
+	if strings.ToLower(id) != id || strings.ContainsAny(id, "ghijklmnopqrstuvwxyz") {
+		t.Errorf("the install id is not lower-case hex: %q", id)
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("armState minted an id and wrote no state file: %v", err)
+	}
+	if st := readHubState(t, path); st.InstallID != id {
+		t.Errorf("the file carries %q and the hub holds %q", st.InstallID, id)
+	}
+
+	// A save for some other reason mid-session rewrites the id, never a fresh one.
+	first.grants.learn("10.3.2.1")
+	first.saveState()
+	if st := readHubState(t, path); st.InstallID != id {
+		t.Errorf("a later save changed the install id from %q to %q", id, st.InstallID)
+	}
+
+	// A restart reads the same id back rather than minting a new installation.
+	cold := newHub()
+	cold.armState()
+	if cold.installID != id {
+		t.Errorf("a restart minted a second install id: %q, want %q", cold.installID, id)
+	}
+	if !cold.grants.allowed("10.3.2.1") {
+		t.Error("the id came back and the remembered address did not")
+	}
+}
+
+// An upgrade from a pre-G3 state file (no installId key at all) mints once and persists,
+// and a file that already carries an id is left exactly as it was written.
+func TestInstallIDSurvivesAnUpgradeAndAHold(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the config-dir behaviour under test is the Unix one")
+	}
+
+	// A v3 file from before the install id existed, with one address in it.
+	cfg := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", cfg)
+	t.Setenv("HOME", cfg)
+	path := filepath.Join(cfg, "orb-manager", "state.json")
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	old := `{"version":3,"grants":{"192.168.7.7":1730000000},"macs":{"192.168.7.7":"aabbccddeeff"}}`
+	if err := os.WriteFile(path, []byte(old), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	up := newHub()
+	up.armState()
+	if up.installID == "" {
+		t.Fatal("a state file with no installId came through G3 without one")
+	}
+	if !up.grants.allowed("192.168.7.7") {
+		t.Error("the upgrade lost the address the old file knew")
+	}
+	minted := readHubState(t, path).InstallID
+	if minted != up.installID {
+		t.Errorf("the file carries %q and the hub holds %q", minted, up.installID)
+	}
+
+	// A file that already names an id: armState neither replaces it nor clears it, and
+	// the next save writes the same word.
+	held := newHub()
+	held.statePath = path
+	held.installID = "0123456789abcdef0123456789abcdef"
+	held.saveState()
+	again := newHub()
+	again.armState()
+	if again.installID != "0123456789abcdef0123456789abcdef" {
+		t.Errorf("armState overwrote a held install id with %q", again.installID)
+	}
+}
+
+// readHubState is the file as the next launch will see it.
+func readHubState(t *testing.T, path string) hubState {
+	t.Helper()
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var st hubState
+	if err := json.Unmarshal(b, &st); err != nil {
+		t.Fatalf("state file is not the documented shape: %v\n%s", err, b)
+	}
+	return st
 }

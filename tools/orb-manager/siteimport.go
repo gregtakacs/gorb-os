@@ -18,6 +18,7 @@ package main
 // request to somewhere the owner never named.
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
@@ -32,6 +33,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -502,6 +504,73 @@ func removeThemeOrigin(themePath string) error {
 		return err
 	}
 	return nil
+}
+
+// --- the resolve client -------------------------------------------------------------
+
+// resolveAnswer is what the site says about one design an imported theme came from. The
+// fields are the minimum G3 needs to draw a row, and slice H3 owns the whole response:
+// §7.4's point-3 name-based lookup and any handle history live in the site's own handler,
+// so this client sends the record it holds and reads back at most these four keys.
+type resolveAnswer struct {
+	Resolved   bool
+	DesignID   string
+	App        string
+	SharedName string
+	Version    int
+	Gone       bool
+}
+
+// resolveOrigin asks the site a theme came from for that design's CURRENT version and
+// CURRENT shared name (§7.4). A 404 or a 410 is not a transport failure and is not
+// reported as one: it is the design "no longer shared", which the list answers with a
+// row of its own. Anything else — unreachable, sign-in page, HTTP 500 — is an error, and
+// the row that could not be checked says so rather than claiming up to date.
+func (s *Server) resolveOrigin(ctx context.Context, o *ThemeOrigin) (*resolveAnswer, error) {
+	if o == nil || o.Site == "" || o.DesignID == "" {
+		return nil, errors.New("this theme has no origin to resolve")
+	}
+	u := o.Site + "/api/hub/resolve?site=" + url.QueryEscape(o.Site) +
+		"&designId=" + url.QueryEscape(o.DesignID) +
+		"&version=" + strconv.Itoa(o.Version)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	if err != nil {
+		return nil, fmt.Errorf("could not reach %s: %v", siteHost(o.Site), err)
+	}
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("User-Agent", "orb-manager/"+version)
+	resp, err := s.siteHTTP().Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("could not reach %s: %v", siteHost(o.Site), err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusGone {
+		return &resolveAnswer{Gone: true}, nil
+	}
+	if resp.StatusCode >= 300 && resp.StatusCode < 400 {
+		return nil, fmt.Errorf("%s sent a sign-in page instead of an answer: the site isn’t open to Orb Manager yet", siteHost(o.Site))
+	}
+	if resp.StatusCode < 200 || resp.StatusCode > 299 {
+		return nil, fmt.Errorf("%s answered HTTP %d", siteHost(o.Site), resp.StatusCode)
+	}
+	var body struct {
+		DesignID   string `json:"designId"`
+		App        string `json:"app"`
+		Version    int    `json:"version"`
+		SharedName string `json:"sharedName"`
+	}
+	b, err := io.ReadAll(io.LimitReader(resp.Body, 8192))
+	if err != nil {
+		return nil, fmt.Errorf("could not read %s's answer: %v", siteHost(o.Site), err)
+	}
+	if err := json.Unmarshal(b, &body); err != nil {
+		return nil, fmt.Errorf("%s answered with something that is not a design", siteHost(o.Site))
+	}
+	if body.DesignID == "" || body.Version < 1 {
+		return nil, fmt.Errorf("%s answered without a design id or a version", siteHost(o.Site))
+	}
+	return &resolveAnswer{Resolved: true, DesignID: body.DesignID, App: body.App,
+		SharedName: body.SharedName, Version: body.Version}, nil
 }
 
 // --- the doors ----------------------------------------------------------------------

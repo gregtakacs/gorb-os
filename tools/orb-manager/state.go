@@ -1,6 +1,8 @@
 package main
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"net"
 	"os"
@@ -65,6 +67,46 @@ type hubState struct {
 	// MapTiles is the map tool's TileJSON (maps.go), absent for OpenFreeMap's default. A
 	// hub that never set one writes nothing, and an older hub drops it harmlessly.
 	MapTiles string `json:"mapTiles,omitempty"`
+	// InstallID is this installation's id (§7.2, ruling 25): minted once on the first
+	// G3 run and never regenerated. It is an id and not a credential — it names the
+	// install without authenticating anything — and this step sends it nowhere: it
+	// reaches the network only when H2 links this Orb Manager to an account.
+	InstallID string `json:"installId,omitempty"`
+	// UpdateChoices is what the operator refused on the Updates list (§7.6, ruling 26):
+	// one entry per item, keyed Kind + ":" + Key. A skipped version is a memory of one
+	// answer to one version — the next newer one is offered again — and a keep is a
+	// memory of an intent whose bytes (the theme's `.origin.json`) are already gone from
+	// the shelf, so the entry is the only trace left that the theme was ever tracked.
+	// Nothing here is a credential and nothing here grants anything.
+	UpdateChoices map[string]UpdateChoice `json:"updateChoices,omitempty"`
+}
+
+// UpdateChoice is one refusal on the Updates list. Kind names the row's kind ("theme",
+// "app", "firmware", "manager") and Key the row's own key: a theme's origin design id, an
+// app's slug, "hub" for firmware. SkippedVersion is the version the operator passed on
+// this time; Keep marks a theme retired from tracking for good.
+type UpdateChoice struct {
+	Kind           string `json:"kind"`
+	Key            string `json:"key"`
+	SkippedVersion int    `json:"skippedVersion,omitempty"`
+	Keep           bool   `json:"keep,omitempty"`
+}
+
+// choiceKey is how a refusal is filed. It is a function so the write side and the read
+// side can never disagree about the shape of the map's keys.
+func choiceKey(kind, key string) string { return kind + ":" + key }
+
+// mintInstallID is the one install id this hub will ever mint: 16 bytes of
+// crypto/rand, lower-case hex, 32 characters. A rand failure is answered with the
+// empty string rather than a panic or a clock-derived fallback, because a hub with no
+// id still serves everything it always served and H2's link retries; an id guessed
+// from a timestamp would be an id two installs could share.
+func mintInstallID() string {
+	var b [16]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return ""
+	}
+	return hex.EncodeToString(b[:])
 }
 
 // statePath is where the remembered addresses live. It follows the same convention as
@@ -106,6 +148,8 @@ func (s *Server) saveState() {
 	}
 	st.LastIP = s.currentOrbIP()
 	st.MapTiles = s.maps.stored()
+	st.InstallID = s.installID
+	st.UpdateChoices = s.choicesLocked()
 	b, err := json.MarshalIndent(st, "", "  ")
 	if err != nil {
 		return
@@ -146,6 +190,21 @@ func (s *Server) loadState() int {
 		s.stateErr = err
 		return 0
 	}
+	// The install id comes back exactly as it was written (state.go's mintInstallID
+	// is the only thing that ever mints one, and armState is the only thing that
+	// calls it), so a restart recognises its own installation.
+	s.installID = st.InstallID
+	// Refusals come back as they were filed, and a file that named none leaves the hub
+	// with none: the reading of a missing key is always "no choice", never a guessed one.
+	s.updateChoices = map[string]UpdateChoice{}
+	for k, c := range st.UpdateChoices {
+		if c.Kind == "" || c.Key == "" || choiceKey(c.Kind, c.Key) != k {
+			// A hand-edited entry filed under a key that disagrees with its own body is
+			// dropped rather than honoured: the key is what the list looks up.
+			continue
+		}
+		s.updateChoices[k] = c
+	}
 	s.holdOthers(&st)
 	n := 0
 	for ip := range st.Grants {
@@ -173,6 +232,47 @@ func (s *Server) loadState() int {
 	return n
 }
 
+// choicesLocked is the snapshot saveState writes. Called with pmu already held, so it
+// copies: the marshal that follows is outside any lock the caller still holds, and a map
+// written by a refusal landing during that marshal would be a race the file's bytes
+// would show as a torn answer.
+func (s *Server) choicesLocked() map[string]UpdateChoice {
+	if len(s.updateChoices) == 0 {
+		return nil
+	}
+	out := make(map[string]UpdateChoice, len(s.updateChoices))
+	for k, c := range s.updateChoices {
+		out[k] = c
+	}
+	return out
+}
+
+// choiceFor reads one refusal. No entry is the same answer as a hub that was never told
+// anything: "no choice".
+func (s *Server) choiceFor(kind, key string) (UpdateChoice, bool) {
+	s.pmu.Lock()
+	defer s.pmu.Unlock()
+	c, ok := s.updateChoices[choiceKey(kind, key)]
+	return c, ok
+}
+
+// mutateChoice records one refusal under pmu and reports the merged entry. It does not
+// save: the caller saves after any side effect it owes (the keep's sidecar removal), so
+// a state.json never claims a keep for a theme whose origin is still on the shelf.
+func (s *Server) mutateChoice(kind, key string, merge func(*UpdateChoice)) UpdateChoice {
+	s.pmu.Lock()
+	if s.updateChoices == nil {
+		s.updateChoices = map[string]UpdateChoice{}
+	}
+	k := choiceKey(kind, key)
+	c := s.updateChoices[k]
+	c.Kind, c.Key = kind, key
+	merge(&c)
+	s.updateChoices[k] = c
+	s.pmu.Unlock()
+	return c
+}
+
 func isV4Literal(s string) bool {
 	if s == "" || strings.Contains(s, ":") {
 		return false
@@ -187,6 +287,12 @@ func isV4Literal(s string) bool {
 // armState points the hub at its state file and loads what is in it. Called once from
 // main, after the hub is built and before anything is served, so the first /api/ports
 // answer can already carry the orb from last time.
+//
+// It is also where the install id is born (§7.2, ruling 25): a file that named none —
+// a first run, or any state.json from before G3, or a damaged one whose reading already
+// reported itself in stateErr — gets one minted and written here, before anything is
+// served, so the id on disk is never younger than the first answer that could have been
+// asked about it. A file that carries one leaves it untouched.
 func (s *Server) armState() int {
 	p, err := statePath()
 	if err != nil {
@@ -194,11 +300,17 @@ func (s *Server) armState() int {
 		return 0
 	}
 	s.statePath = p
-	return s.loadState()
+	n := s.loadState()
+	if s.installID == "" {
+		s.installID = mintInstallID()
+		if s.installID != "" {
+			s.saveState()
+		}
+	}
+	return n
 }
 
-// currentOrbIP is the last address the hub learned or was handed, for the Manage
-// card's pre-fill. It is a convenience mirror only: the proxy and the theme calls
+// currentOrbIP is the last address the hub learned or was handed, for the Manage// card's pre-fill. It is a convenience mirror only: the proxy and the theme calls
 // check grants, never this.
 func (s *Server) currentOrbIP() string {
 	s.imu.Lock()

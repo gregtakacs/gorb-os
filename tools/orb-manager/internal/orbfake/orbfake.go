@@ -642,6 +642,11 @@ func (o *Orb) serveUpload(w http.ResponseWriter, r *http.Request) {
 	// for the minimal header a test seeds without an index.
 	id := themeID(containerSlug(body, "clock"), name)
 	overwrite := r.URL.Query().Get("overwrite") == "1"
+	// ?keep=1 (OS v1.6.4) files the copy and stores it only when the upload's app already
+	// wears that id; the answer is then "filed", with the face untouched. A double that
+	// stored-and-chose on every upload would let a hub pass a test for a device behaviour it
+	// never implemented, which is the reason this branch exists.
+	keep := r.URL.Query().Get("keep") == "1"
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	for _, t := range o.themes {
@@ -675,26 +680,38 @@ func (o *Orb) serveUpload(w http.ResponseWriter, r *http.Request) {
 		o.active = t.Name
 		o.stagedID, o.stagedWhy = "", ""
 	}
+	// file answers what this upload does to the row: unkept, and kept-onto-an-app-that-already
+	// wears it, both land the queued store; kept-onto-an-app-wearing-something-else files the
+	// bytes and leaves every Active flag and the slot's name witness alone. worn is asked per
+	// row rather than per request because that distinction IS the row.
+	file := func(t *Theme) string {
+		if !keep || t.Active {
+			land(t)
+			return "stored"
+		}
+		t.Stored = true
+		return "filed"
+	}
 	for _, t := range o.themes {
 		if t.ID == id {
 			t.Bytes = len(body)
 			t.Serial++
 			t.OK, t.Why = true, ""
-			land(t)
-			writeJSON(w, 200, fmt.Sprintf(`{"state":"stored","id":%q,"bytes":%d,"reboot":"none"}`, id, len(body)))
+			writeJSON(w, 200, fmt.Sprintf(`{"state":%q,"id":%q,"bytes":%d,"reboot":"none"}`, file(t), id, len(body)))
 			return
 		}
 	}
-	o.themes = append(o.themes, &Theme{Name: name, App: containerSlug(body, "clock"), ID: id, Bytes: len(body), Serial: 1, OK: true, Stored: !o.TearStore, Active: !o.TearStore})
-	if o.TearStore {
-		land(o.themes[len(o.themes)-1])
-	} else {
+	fresh := &Theme{Name: name, App: containerSlug(body, "clock"), ID: id, Bytes: len(body), Serial: 1,
+		OK: true, Stored: !o.TearStore && !keep, Active: !o.TearStore && !keep}
+	o.themes = append(o.themes, fresh)
+	state := file(fresh)
+	if state == "stored" && !o.TearStore {
 		// A fresh filing stores in the same request (upload queues the store and
 		// the double lands it here), so the slot’s name witness moves with it,
 		// exactly as h_sd would read active off the slot header after the reboot.
 		o.active = name
 	}
-	writeJSON(w, 200, fmt.Sprintf(`{"state":"stored","id":%q,"bytes":%d,"reboot":"none"}`, id, len(body)))
+	writeJSON(w, 200, fmt.Sprintf(`{"state":%q,"id":%q,"bytes":%d,"reboot":"none"}`, state, id, len(body)))
 }
 
 // serveCommit is orb_theme_upload_recommit: the empty POST that spends a refusal's

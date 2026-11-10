@@ -1895,3 +1895,158 @@ func regionOf(t *testing.T, src, open, close string) string {
 	}
 	return src[i : i+j+len(close)]
 }
+
+// The one Updates list (orb-os-net design §7.6, ruling 26) is a home-view section, and it
+// is read on the way into that view rather than cached: a keep pressed on one row changes
+// what both this section and the Theme library beside it draw.
+func TestUpdatesListOnHome(t *testing.T) {
+	page := readWebFile(t, "index.html")
+	app := readAppJS(t)
+	home := regionOf(t, page, `<main id="manage"`, "</main>")
+	// It sits after the Theme library and inside the home view, which is where a list whose
+	// release row needs no orb belongs.
+	i, j := strings.Index(home, `id="mn-libthemes"`), strings.Index(home, `id="mn-updates"`)
+	if i < 0 || j < 0 {
+		t.Fatal(`the home view has no #mn-libthemes or no #mn-updates to order`)
+	}
+	if j < i {
+		t.Error("#mn-updates is before #mn-libthemes: the shelf the updates come from is read first")
+	}
+	section := regionOf(t, home, `<section id="mn-updates"`, "</section>")
+	for _, id := range []string{"mn-updates-count", "mn-updates-list", "mn-updates-state"} {
+		if !strings.Contains(section, `id="`+id+`"`) {
+			t.Errorf("#%s is not inside #mn-updates", id)
+		}
+	}
+	if !strings.Contains(section, `class="count"`) {
+		t.Error("the count is not in the heading's span.count, so the header carries no number")
+	}
+	if !strings.Contains(section, "<h3>Updates") {
+		t.Error("#mn-updates has no Updates heading of its own")
+	}
+	// The read, and the two refusals beside it. Every one of them goes through hubFetch,
+	// because a keep rewrites the state file and a skip rewrites what the page shows.
+	read := blockOf(t, app, "async function loadUpdates()")
+	for _, want := range []string{`hubFetch("/api/updates")`, "Nothing to update.", "#mn-updates-list", "#mn-updates-state", "the update list could not be read: "} {
+		if !strings.Contains(read, want) {
+			t.Errorf("loadUpdates does not contain %q", want)
+		}
+	}
+	posted := blockOf(t, app, "async function skipUpdate(") + blockOf(t, app, "async function keepUpdate(") + blockOf(t, app, "async function postUpdate(")
+	for _, want := range []string{`"/api/updates/skip"`, `"/api/updates/keep"`} {
+		if !strings.Contains(posted, want) {
+			t.Errorf("the refusals never post to %s", want)
+		}
+	}
+	if strings.Contains(posted, "innerHTML") {
+		t.Error("the update rows are built by interpolating markup")
+	}
+	// The view that shows the section re-reads it, beside the shelf it sits under.
+	show := blockOf(t, app, "function show(view)")
+	if !strings.Contains(show, "loadLibThemes()") || !strings.Contains(show, "loadUpdates()") {
+		t.Error("show's manage branch does not read both the shelf and the update list")
+	}
+	// g3-3 lights the button g3-2 pinned disabled: the same kind and key the row was labelled
+	// with, now pressed against the apply door. TestUpdateButtonIsLive is the pin.
+	actions := blockOf(t, app, "function updateRowActions(")
+	if !strings.Contains(actions, `c === "update"`) {
+		t.Error("the update choice draws no button, so the row hides what it is offering")
+	}
+	if strings.Contains(actions, "disabled = true") {
+		t.Error("the Update button is disabled again: an apply door exists, and a dead button on it lies")
+	}
+	if !strings.Contains(actions, `dataset.kind`) || !strings.Contains(actions, `dataset.key`) {
+		t.Error("the Update button names no kind or key for g3-3 to wire")
+	}
+	// Keep my version is stated in the button's own title rather than in a dialog, and it
+	// says what it costs: the theme stays, the tracking stops, for good.
+	keep := blockOfLine(t, actions, "Keep this copy exactly as it is")
+	if !strings.Contains(keep, "title") || !strings.Contains(keep, "for good") {
+		t.Errorf("Keep my version is not confirmed by its own title: %s", keep)
+	}
+	// §7.4's sentence is the page's, not a bare tag: a retired design is explained.
+	line := blockOf(t, app, "function updateRowLine(")
+	if !strings.Contains(line, "is no longer shared on orb-os.net; the theme stays, and Orb Manager will stop checking it.") {
+		t.Error("the gone row does not say §7.4's sentence")
+	}
+	// A row with no choices at all draws no buttons, and the empty list says so plainly.
+	if !strings.Contains(read, `className = "hint"`) {
+		t.Error("the empty list is not drawn as a hint row")
+	}
+}
+
+// TestUpdateButtonIsLive is g3-3's half of an Updates row. g3-2 pinned the Update button
+// disabled because no apply door existed; the door exists now, so the pin is inverted here
+// rather than left standing: a dead button over a live endpoint is a list that lies about
+// what the hub can do. What the row must still never do is interpolate a shared name into
+// markup, which the pin in TestUpdatesListOnHome keeps covering.
+func TestUpdateButtonIsLive(t *testing.T) {
+	app := readAppJS(t)
+	goSrc, err := os.ReadFile("updates.go")
+	if err != nil {
+		t.Fatalf("updates.go could not be read: %v", err)
+	}
+	hub := string(goSrc)
+
+	actions := blockOf(t, app, "function updateRowActions(")
+	if !strings.Contains(actions, `c === "update"`) {
+		t.Error("the update choice draws no button")
+	}
+	if strings.Contains(actions, "disabled = true") {
+		t.Error("the Update button is disabled where it is drawn, so the row is dead before it is pressed")
+	}
+	if !strings.Contains(actions, "applyUpdate(it, u") {
+		t.Error("the Update button has no press behind it")
+	}
+	if !strings.Contains(actions, "renames to") {
+		t.Error("a renaming update is offered without saying the theme's name changes")
+	}
+
+	// The press itself: the apply door, posted, with the answer's three shapes all handled —
+	// an outcome, a bake held for the editor, and a refusal that hands the button back.
+	press := blockOf(t, app, "async function applyUpdate(")
+	for _, want := range []string{`hubFetch("/api/updates/apply"`, `method: "POST"`, "body.baked", "data.needBake",
+		"applyStart(it, data)", "updateApplied(data, state)", "u.disabled = true", "u.disabled = false"} {
+		if !strings.Contains(press, want) {
+			t.Errorf("the Update press does not contain %q", want)
+		}
+	}
+	if strings.Contains(press, "innerHTML") {
+		t.Error("the apply answer is painted as markup, and a shared name is bytes off a site")
+	}
+
+	// A hub whose baker is a browser answers with a held design. The hand-off is the editor
+	// door the import already uses — including the import's own two refusals — and the resume
+	// is the frame's imported word pressing the same door with the name the bake kept.
+	start := blockOf(t, app, "function applyStart(")
+	for _, want := range []string{"openLibraryEditor(data.app, data.ticket)", "has_editor", "applyRefused("} {
+		if !strings.Contains(start, want) {
+			t.Errorf("the bake hand-off does not contain %q", want)
+		}
+	}
+	resume := blockOf(t, app, "function applyLanded(")
+	if !strings.Contains(resume, "applyUpdate(") || !strings.Contains(resume, "p.key") {
+		t.Error("a kept bake does not re-press the apply door for the design it was held under")
+	}
+	bridge := blockOf(t, app, `if (m.type === "theme.imported")`)
+	if !strings.Contains(bridge, "applyLanded(kept)") {
+		t.Error("the editor's imported word never reaches an Update press waiting on it")
+	}
+	closed := blockOf(t, app, "function closeThemeEditor()")
+	if !strings.Contains(closed, "applyClosed()") {
+		t.Error("an editor closed mid-update leaves the press standing, so the next bake finishes an update nobody asked for")
+	}
+
+	// The two sides of the door agree on its shape, which is the failure this suite exists for.
+	for _, want := range []string{`json:"oldName"`, `json:"newName"`, `json:"renamed"`, `json:"installedOn"`,
+		`json:"needBake`, `json:"ticket`, `json:"app`, `json:"note`, `json:"kind"`, `json:"key"`, `json:"baked"`} {
+		if !strings.Contains(hub, want) {
+			t.Errorf("POST /api/updates/apply does not carry %s", want)
+		}
+	}
+	for _, want := range []string{"data.oldName", "data.newName", "data.renamed", "data.installedOn", "data.note", "kind: it.kind"} {
+		if !strings.Contains(app, want) {
+			t.Errorf("app.js never reads %s off the apply answer", want)
+		}
+	}
+}

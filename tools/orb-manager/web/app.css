@@ -177,6 +177,22 @@ button:disabled:hover{border-color:var(--line)}
    wall of cards tells the eye the whole thing is one door. */
 .fleet{margin-top:14px}
 .fleet > h3{margin:0 0 6px;font-size:15px}
+/* The Updates heading carries the count the endpoint answered with, and it is a count and
+   not a headline: smaller, muted, sitting on the heading's baseline rather than next to it
+   as a second sentence. Zero is drawn, not hidden — "0" is the answer "nothing is due",
+   and an empty badge reads as a list that never loaded. */
+.fleet > h3 .count{font-size:12px;font-weight:400;color:var(--mut);margin-left:2px}
+.fleet > h3 .count::before{content:"("}
+.fleet > h3 .count::after{content:")"}
+.fleet > h3 .count:empty{display:none}
+/* One row of the Updates list: the kind and the name on the left, the from → to beside it,
+   and its choices at the row's end. .themelist already draws the box, the gap and the flex
+   line; these are only what a row of buttons needs that a row of themes does not. */
+#mn-updates-list li{flex-wrap:wrap}
+#mn-updates-list .upfrom{color:var(--mut);font-size:13px}
+#mn-updates-list .upnote{color:var(--mut);font-size:12px;flex:1 1 100%}
+#mn-updates-list .acts{display:flex;gap:6px;margin-left:auto}
+#mn-updates-list .acts button{font-size:12px;padding:5px 10px}
 
 /* The fleet grid: one tile per orb, the only thing the page leads with, and the tile is
    the door. The tile takes the hover and the press; the title button inside it exists for

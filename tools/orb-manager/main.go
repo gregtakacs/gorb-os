@@ -146,6 +146,18 @@ type Server struct {
 	// siteTickets holds the bundles that door fetched and no bake has kept yet — the
 	// one-time imports /api/site/bundle and /api/site/keep work from. See siteimport.go.
 	siteTickets siteTicketStore
+	// themeBake is g3-3's seam onto H1b's own-editor bake: it turns a site's design bundle
+	// into the .orbtheme the update keeps under the design's current name. nil — which is
+	// every hub main() builds — means this hub has no baker of its own, and the apply door
+	// then holds the bundle as an import ticket and asks the operator's open editor to bake
+	// it, the same half-door the Import button drives. A test sets it to stand the editor in
+	// for the browser, the way fetchEditor stands a board in for the network. See updates.go.
+	themeBake siteBakeFn
+	// applyMu guards applyBusy, the single update in flight: a rename bakes, installs and
+	// then removes, and two of those interleaving on one shelf would be one rename half
+	// applied twice. See updates.go.
+	applyMu   sync.Mutex
+	applyBusy bool
 	// noAutoInstall turns the join-time install off and leaves every press intact (-no-autoseed),
 	// for a bench run that must not touch a board it is about to instrument.
 	noAutoInstall bool
@@ -294,7 +306,20 @@ type Server struct {
 	// that cannot persist says so once in the log instead of silently forgetting.
 	statePath string
 	stateErr  error
-	pmu       sync.Mutex
+	// installID is this installation's id (state.go, §7.2): minted once by armState,
+	// read back from the state file ever after, and sent nowhere in this step.
+	installID string
+	// updateChoices is what the operator refused on the Updates list (§7.6, ruling 26),
+	// the in-memory half of hubState.UpdateChoices (state.go) and guarded by pmu like
+	// every other piece of the state file's shape: a refusal is written under pmu, and
+	// pmu is then released before saveState, which takes it itself.
+	updateChoices map[string]UpdateChoice
+	pmu           sync.Mutex
+
+	// rel is the cached answer of the site release check (release.go), guarded by
+	// relMu: written by the check's own loop, read by GET /api/release/latest.
+	relMu sync.Mutex
+	rel   releaseInfo
 
 	// browse is the _orb._tcp discovery cache, started by main and not by newHub:
 	// the suite builds servers by the dozen, and one of them holding UDP 5353 makes
@@ -687,6 +712,17 @@ func main() {
 	listenCtx, stopListen := context.WithCancel(context.Background())
 	defer stopListen()
 	s.startListening(listenCtx)
+
+	// The site release check (release.go, §7.6): once after a boot delay and then daily,
+	// over HTTPS, with no sign-in and no install id in the request. Its verdict is a cached
+	// fact the Updates list reads; G3 applies nothing from it. It rides the discovery
+	// context's shutdown because it is the same shape of background work — one loop, no
+	// operation registry, pointless the moment the hub is closing.
+	// The release check asks the site, so it waits behind the same door as Import and Upload:
+	// with -site off (every release until the site opens) the hub contacts no orb-os.net host.
+	if !s.siteHidden {
+		go s.releaseCheckLoop(listenCtx)
+	}
 
 	// The cable half of the one list (roster.go). Enabled here rather than in newHub so
 	// the suite never pays for a sysfs read, and watched on the same shutdown as
@@ -1249,6 +1285,10 @@ func (s *Server) routes(mux *http.ServeMux) {
 	// editor's bake. The app side of this lives in the Themes tab, not here.
 	if !s.siteHidden {
 		s.routesSiteImport(mux)
+		// §7.6 G3: the site release check's cached verdict, read-only, for the Updates list.
+		mux.Handle("/api/release/latest", s.requireControl(http.HandlerFunc(s.serveReleaseLatest)))
+		// §7.6 G3-2: the one Updates list and its two refusals.
+		s.routesUpdates(mux)
 	}
 	// radar-plan §2.4: the map tool's tile forwarder and its source.
 	s.routesMaps(mux)

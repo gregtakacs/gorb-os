@@ -1,0 +1,23 @@
+{
+  "name": "g3",
+  "repo": "../..",
+  "base": "main",
+  "retries": 2,
+  "steps": [
+    {
+      "name": "g3-1-install-id-and-release-check",
+      "spec": "docs/specs/g3-1-install-id-and-release-check.md",
+      "verify": "export PATH=/usr/local/go/bin:$PATH GOFLAGS=-buildvcs=false && cd tools/orb-manager && go vet ./... && go test -run 'InstallID|ReleaseCheck|ServeReleaseLatest|StateFileHoldsNoSecrets|RememberedAddresses|MissingStateFile' -v . | tail -40 && go test -run 'InstallID|ReleaseCheck|ServeReleaseLatest' . && go test ./... && cd ../.. && test -z \"$(git diff --name-only main -- tools/orb-manager/web tools/orb-manager/contract apps)\" && ! grep -rnI InstallID tools/orb-manager/release.go tools/orb-manager/siteimport.go tools/orb-manager/installflow.go tools/orb-manager/adopt.go tools/orb-manager/api.go"
+    },
+    {
+      "name": "g3-2-updates-list-skip-keep",
+      "spec": "docs/specs/g3-2-updates-list-skip-keep.md",
+      "verify": "export PATH=/usr/local/go/bin:$PATH GOFLAGS=-buildvcs=false && R=$PWD && cd tools/orb-manager && node --check web/app.js && node --check web/tabs.js && go vet ./... && go test -run 'Updates|UpdateChoices|ResolveOrigin|KeepMyVersion|SkipThisVersion|UpdatesListOnHome' -v . | tail -40 && go test -run 'Updates|UpdateChoices|ResolveOrigin|KeepMyVersion|SkipThisVersion' . && go test ./... && cd web/runtime/_selftest && PY=python3 node headless-test.js && cd $R && make check-web && test -z \"$(git diff --name-only main -- tools/orb-manager/contract apps)\""
+    },
+    {
+      "name": "g3-3-rename-updates",
+      "spec": "docs/specs/g3-3-rename-updates.md",
+      "verify": "export PATH=/usr/local/go/bin:$PATH GOFLAGS=-buildvcs=false && R=$PWD && cd tools/orb-manager && node --check web/app.js && node --check web/tabs.js && go vet ./... && go test -run 'RenameUpdate|ApplyUpdate|OrdinaryUpdate|UpdateButtonIsLive' -v . | tail -40 && go test -run 'RenameUpdate|ApplyUpdate|OrdinaryUpdate' . && go test ./... && cd web/runtime/_selftest && node headless-gorbhost.test.js | tail -3 | grep -q 'all green' && PY=python3 node headless-test.js && cd $R && make check-web && make check-runner && test -z \"$(git diff --name-only main -- tools/orb-manager/contract apps tools/orb-manager/web/runtime/theme@1 tools/orb-manager/web/runtime/host@1)\""
+    }
+  ]
+}

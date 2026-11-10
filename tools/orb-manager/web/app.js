@@ -84,8 +84,10 @@ function show(view) {
   if (view) location.hash = view;
   // The home view's Theme library is the hub's own directory, and an import, an orb's
   // Install or a keep from a Themes tab can all have changed the shelf since the last
-  // look, so the view that shows it re-reads it on the way in.
-  if (view === "manage") loadLibThemes();
+  // look, so the view that shows it re-reads it on the way in. The Updates list is read
+  // beside it for the same reason and because Keep my version changes what this very
+  // section draws: the two are one look at the hub's own shelf and the site above it.
+  if (view === "manage") { loadLibThemes(); loadUpdates(); }
   return true;
 }
 
@@ -3251,6 +3253,11 @@ let themeAppsErr = "";
 // (theme.imported) or the pane closes without one. It is what keeps a second press
 // out, and what closeThemeEditor reads to decide whether it owes a sentence.
 let siteImportPending = false;
+// applyPending is an Update press waiting on the other half of its bake: the hub held the
+// design (needBake), the editor is open on it, and this is the {key, app, name} needed to
+// press the apply door again once the bake is kept. It stands for exactly as long as that
+// editor pane does: theme.imported spends it, closeThemeEditor drops it.
+let applyPending = null;
 function themeFaceReset() {
   themeSub = ""; themeRowsAll = []; themeAppsRows = []; themeAppsErr = "";
   // A different board means a different card and a different set of containers, so
@@ -4136,6 +4143,7 @@ function closeThemeEditor() {
   if (wasOpen && themeEditorFrom === "hub") loadLibThemes();
   else if (wasOpen && themeIP) loadThemes(themeIP);
   if (wasImport) siteImportClosed();
+  applyClosed();
 }
 
 // themeBridge is the hub page's half of the editor contract (§7.1). It is eight
@@ -4184,8 +4192,12 @@ async function themeBridge(ev) {
   // did not open is not this frame's news, so it is dropped like any other stranger.
   if (m.type === "theme.imported") {
     if (!themeEditorApp || m.app !== themeEditorApp) return;
-    siteImportLanded(typeof m.name === "string" ? m.name : "");
-    say("imported " + (typeof m.name === "string" && m.name ? m.name : "the theme"));
+    const kept = typeof m.name === "string" ? m.name : "";
+    // An Update press holding this frame's bake finishes through that press rather than as a
+    // plain import: the orbs and the removals are the hub's remaining steps, not this page's.
+    if (applyPending) applyLanded(kept);
+    else siteImportLanded(kept);
+    say("imported " + (kept || "the theme"));
     return;
   }
   // D43: the editor's refusal page found the orb running an older release of this app
@@ -5063,6 +5075,302 @@ async function loadLibThemes() {
     const n = themes.length;
     state.textContent = `${n} theme${n === 1 ? "" : "s"}`;
   }
+}
+
+// ---- Updates ------------------------------------------------------------------
+//
+// The one Updates list (orb-os-net design §7.6, ruling 26). It gathers every kind of
+// update on the home view because the hub knows about them whether or not a board is in
+// hand: the Orb Manager row comes from g3-1's cached release verdict and needs no orb, the
+// firmware and app rows restate the reads the tabs already make, and the theme rows are the
+// site's own answer about each imported design. It is a catalog — the amber buttons on a
+// board's own tabs still do the acting.
+//
+// The rows go in through the DOM and never as markup: a shared name is bytes off a site,
+// and a list that interpolated them would let a design's name write this page.
+async function loadUpdates() {
+  const list = $("#mn-updates-list"), state = $("#mn-updates-state"), count = $("#mn-updates-count");
+  let data = null;
+  try {
+    const r = await hubFetch("/api/updates");
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok || !j || j.ok !== true) throw new Error((j && j.error) || ("HTTP " + r.status));
+    data = j.data || {};
+  } catch (e) {
+    // A failed read leaves the rows standing and says so beside them: they were the truth
+    // a moment ago, and an empty list would be a claim the hub never made.
+    if (state) state.textContent = "the update list could not be read: " + e.message;
+    return;
+  }
+  const items = Array.isArray(data.items) ? data.items : [];
+  if (state) state.textContent = "";
+  if (count) count.textContent = String(items.length);
+  if (!list) return;
+  list.textContent = "";
+  if (!items.length) {
+    const li = document.createElement("li");
+    li.className = "hint";
+    li.textContent = "Nothing to update.";
+    list.appendChild(li);
+    return;
+  }
+  for (const it of items) list.appendChild(updateRow(it, data));
+}
+
+// The four kinds the §7.6 table names, in the words an operator reads rather than the
+// token the endpoint carries. An unknown kind is drawn with its own token: a hub that
+// grows a fifth row should show it rather than drop it.
+const UPDATE_KIND_WORDS = { manager: "Orb Manager", firmware: "Firmware", app: "App", theme: "Theme" };
+
+// updateRow is one offer: what it is, from what to what, and its choices at the row's end.
+// The builder is the Theme library's own shape, for the reason the spec gives: same page,
+// same list, same box around a row.
+function updateRow(it, data) {
+  const li = document.createElement("li");
+  li.className = "trow";
+  li.dataset.kind = String(it.kind || "");
+  li.dataset.key = String(it.key || "");
+  const info = document.createElement("div");
+  info.className = "tinfo";
+  const name = document.createElement("b");
+  name.textContent = it.title || String(it.key || "");
+  const tags = document.createElement("div");
+  tags.className = "ttags";
+  const kind = document.createElement("span");
+  kind.className = "tag mut";
+  kind.textContent = UPDATE_KIND_WORDS[it.kind] || String(it.kind || "update");
+  tags.appendChild(kind);
+  info.append(name, tags);
+  li.appendChild(info);
+  const acts = document.createElement("div");
+  acts.className = "acts";
+  li.appendChild(acts);
+  updateRowLine(it, tags);
+  updateRowActions(it, data, acts);
+  return li;
+}
+
+// updateRowLine writes what a row states about itself besides its name: the version it is
+// offered at, the rename it carries, or why it has no button at all.
+function updateRowLine(it, tags) {
+  const say = (text, cls, tip) => {
+    const el = document.createElement("span");
+    el.className = "tag" + (cls ? " " + cls : "");
+    el.textContent = text;
+    if (tip) el.title = tip;
+    tags.appendChild(el);
+  };
+  if (it.gone === true) {
+    // §7.4's sentence, with the theme's own name in it: the site has nothing to say about
+    // the design any more, and the theme is not therefore a problem. One OK retires the
+    // origin, which is the keep the operator would have pressed anyway.
+    const n = document.createElement("span");
+    n.className = "upnote";
+    n.textContent = (it.title || "This theme") + " is no longer shared on orb-os.net; the theme stays, and Orb Manager will stop checking it.";
+    tags.appendChild(n);
+    return;
+  }
+  if (it.renamed === true) say("renamed", "warn", "The design was renamed since this theme was imported.");
+  if (it.from && it.to) {
+    const both = document.createElement("span");
+    both.className = "upfrom";
+    both.textContent = it.from + " \u2192 " + it.to;
+    tags.appendChild(both);
+  }
+  if (it.note) {
+    const n = document.createElement("span");
+    n.className = "upnote";
+    n.textContent = it.note;
+    tags.appendChild(n);
+  }
+}
+
+// updateRowActions draws the buttons the endpoint offered. A choice the hub did not name
+// gets no button, and an empty actions cell is the row saying "nothing to press here",
+// which is a true answer rather than a broken one.
+function updateRowActions(it, data, acts) {
+  const choices = Array.isArray(it.choices) ? it.choices : [];
+  const btn = (label, cls) => {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = cls || "ghost";
+    b.textContent = label;
+    acts.appendChild(b);
+    return b;
+  };
+  for (const c of choices) {
+    if (c === "download") {
+      const b = btn("Download");
+      b.title = "Opens the site\u2019s download page in a new tab. Orb Manager never replaces its own running binary.";
+      b.onclick = () => {
+        const url = data && data.downloadUrl;
+        if (url) window.open(url, "_blank", "noopener");
+      };
+    } else if (c === "skip") {
+      const b = btn("Skip this version");
+      b.title = "Hide this one version. The next newer one is offered again.";
+      b.onclick = () => skipUpdate(it, b);
+    } else if (c === "keep") {
+      const b = btn("Keep my version");
+      b.title = "Keep this copy exactly as it is, name included, and stop checking it for updates for good.";
+      b.onclick = () => keepUpdate(it, b);
+    } else if (c === "update") {
+      // g3-3 wired this: the press bakes the newer version, installs it where the old one
+      // was worn, and removes the old one last. A rename says so ON the button, because the
+      // word that changes on an orb's face is the one thing no operator should learn from a
+      // note read afterwards.
+      const to = String(it.to || ""), from = String(it.title || "");
+      const renamed = Boolean(to) && (it.renamed === true || to !== from);
+      const u = btn(renamed ? "Update (renames to \u201c" + to + "\u201d)" : "Update", "primary");
+      u.id = "upd-" + String(it.kind || "") + "-" + String(it.key || "");
+      u.dataset.kind = String(it.kind || "");
+      u.dataset.key = String(it.key || "");
+      u.title = renamed
+        ? "Bake the newer version as \u201c" + to + "\u201d, put it on every orb wearing \u201c" + from + "\u201d, and remove \u201c" + from + "\u201d only once they all have it."
+        : "Bake the newer version and put it on every orb already wearing this one.";
+      u.onclick = () => applyUpdate(it, u, "");
+    }
+  }
+  if (it.gone === true) {
+    const b = btn("OK");
+    b.title = "Understood. Orb Manager stops checking this theme.";
+    b.onclick = () => keepUpdate(it, b);
+  }
+}
+
+async function skipUpdate(it, b) {
+  await postUpdate("/api/updates/skip", { kind: it.kind, key: it.key, version: it.version || 0 }, b);
+}
+
+// keepUpdate also re-reads the shelf: the theme loses its "from <site>" tag the moment its
+// origin is gone, and a library row still wearing it would be a lie the page kept.
+async function keepUpdate(it, b) {
+  await postUpdate("/api/updates/keep", { kind: it.kind, key: it.key }, b);
+  loadLibThemes();
+}
+
+// postUpdate presses one refusal and repaints on the way back. The press is disabled while
+// it is in flight, because a list that repainted twice under an operator who pressed once
+// looks like a hub that did not listen.
+async function postUpdate(url, body, b) {
+  const state = $("#mn-updates-state");
+  if (b) b.disabled = true;
+  try {
+    const r = await hubFetch(url, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+    });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok || !j || j.ok !== true) throw new Error((j && j.error) || ("HTTP " + r.status));
+    if (state) state.textContent = "";
+  } catch (e) {
+    if (state) state.textContent = "that answer was not recorded: " + e.message;
+    if (b) b.disabled = false;
+    return;
+  }
+  await loadUpdates();
+}
+
+// applyUpdate presses one Update (§7.4, §7.6). The hub does the three steps in its own order
+// and answers either their result or the bake it still needs: a hub whose baker is a browser
+// answers needBake, and the editor door this page already uses for a pasted link does that
+// half — this file remembers what was pressed, and the frame's own "imported" word finishes it.
+// The button is disabled for the length of the press, which is the only moment the press owns
+// it: a refusal hands it back, and a row that no longer offers the update is gone on the repaint.
+async function applyUpdate(it, u, baked) {
+  const state = $("#mn-updates-state");
+  if (u) u.disabled = true;
+  if (state) state.textContent = "applying \u201c" + (it.title || "this theme") + "\u201d\u2026";
+  const body = { kind: it.kind, key: it.key };
+  if (baked) body.baked = baked;
+  let data = null, refusal = "";
+  try {
+    const r = await hubFetch("/api/updates/apply", {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+    });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok || !j || j.ok !== true) refusal = (j && j.error) || ("HTTP " + r.status);
+    else data = j.data;
+  } catch (e) {
+    refusal = "the hub did not answer: " + orbWaitWords(e);
+  }
+  if (refusal) {
+    if (state) state.textContent = "\u2717 " + refusal;
+    if (u) u.disabled = false;
+    return;
+  }
+  if (data && data.needBake) {
+    applyStart(it, data);
+    return;
+  }
+  await loadUpdates();
+  loadLibThemes();
+  updateApplied(data, state);
+}
+
+// applyStart hands the held design to Orb Manager's own editor, in the words the import door
+// uses for the same two refusals: an app this hub does not carry, or carries without an
+// editor, cannot bake anything, and the update is still on the row to be pressed another way.
+function applyStart(it, data) {
+  const state = $("#mn-updates-state");
+  const shared = data.newName || "the theme";
+  if (!libApps.length) loadLibThemes();
+  const app = libApps.find((a) => a.slug === data.app);
+  if (!app) {
+    applyRefused("\u201c" + shared + "\u201d is a theme for the " + libAppTitle(data.app) +
+      " app, which Orb Manager doesn\u2019t carry");
+    return;
+  }
+  if (!app.has_editor) {
+    applyRefused("\u201c" + shared + "\u201d needs the " + libAppTitle(data.app) +
+      " editor, and Orb Manager\u2019s copy of " + libAppTitle(data.app) + " has none");
+    return;
+  }
+  applyPending = { key: String(it.key || ""), app: data.app, name: shared };
+  if (state) state.textContent = "baking \u201c" + shared + "\u201d in Orb Manager\u2019s " +
+    libAppTitle(data.app) + " editor\u2026";
+  openLibraryEditor(data.app, data.ticket);
+}
+
+// applyRefused says why an update that was offered could not be applied here, and repaints so
+// the row is not left holding a press that will not land.
+function applyRefused(why) {
+  applyPending = null;
+  const state = $("#mn-updates-state");
+  if (state) state.textContent = "\u2717 " + why;
+  loadUpdates();
+}
+
+// updateApplied words the outcome the hub actually reported, including the half-landed case:
+// the note is the old copy still standing somewhere, and it is read rather than smoothed over.
+function updateApplied(data, state) {
+  applyPending = null;
+  if (!state || !data) return;
+  const n = Array.isArray(data.installedOn) ? data.installedOn.length : 0;
+  let line = data.renamed
+    ? "\u2713 \u201c" + data.oldName + "\u201d is now \u201c" + data.newName + "\u201d"
+    : "\u2713 \u201c" + (data.newName || "the theme") + "\u201d is updated";
+  line += n ? " on " + n + (n === 1 ? " orb" : " orbs") : " in the theme library";
+  if (data.note) line += " \u2014 " + data.note;
+  state.textContent = line;
+}
+
+// applyLanded is the second half of a needBake apply: the editor kept the newer bake, so this
+// presses the apply door again with its name and lets the hub finish the orbs and the removals.
+function applyLanded(name) {
+  const p = applyPending;
+  if (!p) return;
+  applyPending = null;
+  applyUpdate({ kind: "theme", key: p.key, title: p.name }, null, name || p.name);
+}
+
+// applyClosed ends an apply whose editor went away without keeping a bake. The row is re-read
+// rather than left mid-sentence: the update is still offered, and the next press starts over.
+function applyClosed() {
+  if (!applyPending) return;
+  applyPending = null;
+  const state = $("#mn-updates-state");
+  if (state) state.textContent = "the editor closed without baking the update: press Update again";
+  loadUpdates();
 }
 
 // ---- Import from orb-os.net ------------------------------------------------------

@@ -64,6 +64,22 @@
     <ul id="mn-lib-list" class="themelist"></ul>
     <p class="hint">The themes Orb Manager keeps. Open an orb and its Themes tab to put one on it.</p>
   </section>
+
+  <!-- One Updates list (design §7.6, ruling 26): every update this hub knows about in one
+       place, with a count, whether or not a board is in hand — the Orb Manager row needs
+       no orb at all. It is a catalog, not a second way to act: the per-tab amber buttons
+       stay. Skip this version and Keep my version are the two refusals wired here, and
+       both are remembered in the hub's own state file. Applying a theme update from the
+       site is the next release, so its button is shown disabled rather than missing. -->
+  <section id="mn-updates" class="fleet">
+    <h3>Updates <span id="mn-updates-count" class="count"></span></h3>
+    <ul id="mn-updates-list" class="themelist"></ul>
+    <span id="mn-updates-state" class="hint"></span>
+    <p class="hint">What this hub could put on an orb, and what the site has newer than what
+    you imported. Skipping hides one version and offers the next one; keeping a theme from
+    orb-os.net stops Orb Manager ever checking it again, and leaves the theme itself exactly
+    as it is, name included.</p>
+  </section>
 </main>
 
 <!-- The New Orb dialog: the one decision a blank chip gets, taken without

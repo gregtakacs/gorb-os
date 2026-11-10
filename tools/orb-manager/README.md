@@ -826,7 +826,35 @@ so a deliberate downgrade stays possible.
     dropped at load, so a hostname cannot make the hub resolve something and a cable-only
     board never resurfaces as a phantom row; a version 1 or 2 file still loads (its name
     re-enters as the cache, its rooms, sockets and cable claims are read and dropped, its
-    grants come back unbound, and the next save rewrites the smaller shape).
+    grants come back unbound, and the next save rewrites the smaller shape). Since G3 it
+    carries one more word, `installId`: this installation's id, minted once on the first
+    run and never regenerated. It is an id and not a credential — it authenticates nothing
+    — and G3 sends it nowhere. It reaches the network only when H2 links this Orb Manager
+    to an account.
+
+### Newer than this hub
+
+Orb Manager asks the site whether a newer gorb-os release exists: once twenty seconds
+after start, and every day after that, over `GET <site>/api/hub/releases/latest` — the
+public endpoint the site ships, with no sign-in, no account and no install id in the
+request. The answer is compared against this binary's own `version` by the same
+`firmware.Compare` that colours the firmware dots, so an untagged `go build` (`dev`, or a
+`git describe`) parses as nothing and claims nothing: the check fails closed rather than
+promising an update it cannot order.
+
+What comes back is a cached fact — `{checkedAt, current, latest, notes, downloadUrl,
+verdict, fetched}` — that the web reads from `GET /api/release/latest` (launch token
+required), which never dials the site itself. A hub with no network therefore keeps
+showing the last answer it had, marked `fetched:false`, and reloading the page cannot
+turn into a hammer on the site's door.
+
+The one thing an upgrade offer leads to is **Download**, which opens the site's
+`/download`. G3 adds no self-update: the running binary is never swapped, and
+*"Updating itself in place may come later"* is the design's word, not a promise this hub
+keeps. The site origin is `GORB_SITE` — a whole `https://` origin — defaulting to
+`https://orb.takacsfamily.com`; anything set that is not an `https://` origin is ignored
+in favour of the default, so a typo cannot route the one public call this hub makes over
+plaintext.
 
 ### Import from orb-os.net
 
@@ -845,6 +873,33 @@ door it always was. **Upload to orb-os.net** is shown disabled beside the door, 
 pushing a theme to an account needs this Orb Manager connected to one. Only `https://`
 links are accepted, with plain `http` allowed for `127.0.0.1`/`localhost` so a site under
 development can be imported from the bench.
+
+### Updates
+
+**Updates** is one list on the home view, under the Theme library: what the hub could do
+better than it does right now. An Orb Manager row comes from the release check above and
+needs no orb, the firmware and app rows restate the reads those tabs already make, and a
+theme row is the site's own answer about a design this hub imported — `GET
+<site>/api/hub/resolve`, read a moment after the row is asked about and never on a timer.
+Each row carries the buttons that apply to it: **Download** for Orb Manager itself (the site's
+page; the running binary is never swapped), **Skip this version**, **Keep my version**, and
+**Update** for a theme the site has moved. Skip hides one version and offers the next; Keep
+retires the origin record and stops checking for good, which is the only way a name stops
+tracking its design.
+
+A theme's **Update** applies in the order that keeps the theme: the hub fetches the design at
+the version the site names and bakes it into the library the same way an import does (its own
+editor for the app, `.orbtheme` plus a fresh sidecar at the new version), and only then installs
+it on every orb that holds the old copy — storing and selecting where the old one was the worn
+face, filing it unchosen where it was not, so no update decides what an orb draws. Only when
+every one of those installs landed does the old copy go, card first and then the shelf file with
+its sidecar. A bake or install that fails therefore leaves the old theme exactly where it was,
+worn and on the shelf, and the row can be pressed again; a removal that fails leaves the NEW
+theme installed and the old one still lying about, which is the row saying so and asking for a
+manual remove. When the site renamed the design, the button says so — **Update (renames to
+"…")** — and the update lands the new name on the orb and the shelf while the theme stays the
+same theme, still tracked, still selected. A design the site has retired is not an update: the
+row says the theme stays and Orb Manager will stop checking it, and **OK** retires the record.
 
 ## Headless flasher
 
@@ -939,6 +994,7 @@ host. It needs a browser, so it is not part of `make check`.
 | `POST /api/theme/rescan` | `{"ip"}` — re-read the card without rebooting |
 | `POST /api/theme/upload` | `?ip[&overwrite=1]`, body = the raw `.orbtheme` — push a theme; never written to the hub's disk. No name: the orb files it under the name inside the container, and `overwrite` is the answer to the 409 it raises when a different theme already holds that name |
 | `POST /api/console` | `{"port","secs"}` — NDJSON of what the running app prints; read-only, and a port operation |
+| `GET  /api/release/latest` | the cached answer of the site release check: `{checkedAt, current, latest, notes, downloadUrl, verdict, fetched}`. It dials nothing itself — the check runs on start and daily; token-guarded like every door that reads more than the LAN |
 
 Every route above that CHANGES something (`/api/flash`, `/api/flash/cancel`,
 `/api/provision`, `/api/watch`, `/api/ports/probe`, `/api/firmware`,

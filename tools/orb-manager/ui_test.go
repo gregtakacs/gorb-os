@@ -2141,3 +2141,15 @@ func TestUpdateButtonIsLive(t *testing.T) {
 		}
 	}
 }
+
+// TestSafariIsWarnedAboutEditors: S2 puts editors on <app>.localhost, which Safari doesn't
+// open; the page says so once, up front (ruling 33), and only to Safari.
+func TestSafariIsWarnedAboutEditors(t *testing.T) {
+	app := readAppJS(t)
+	for _, want := range []string{"function isSafariBrowser()", "Theme editors don't open in Safari", `Chrome|Chromium|CriOS|Edg|OPR|Firefox|FxiOS`} {
+		if !strings.Contains(app, want) {
+			t.Errorf("app.js never contains %q, so a Safari user is not told editors won't open", want)
+		}
+	}
+}
+

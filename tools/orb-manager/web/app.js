@@ -3977,6 +3977,24 @@ function renderThemeEditRow(sub) {
   if (sub) slot.appendChild(themeEditButton(sub) || document.createTextNode(""));
 }
 
+// Safari: app editors run on <app>.localhost (S2), which Safari doesn't open, so a Safari
+// user is told once, up front, rather than meeting an editor pane that never loads (ruling 33).
+function isSafariBrowser() {
+  const ua = navigator.userAgent || "";
+  return /Safari\//.test(ua) && !/(Chrome|Chromium|CriOS|Edg|OPR|Firefox|FxiOS)\//.test(ua);
+}
+function showSafariNotice() {
+  if (!isSafariBrowser() || document.getElementById("mn-safari-note")) return;
+  const n = document.createElement("div");
+  n.id = "mn-safari-note";
+  n.setAttribute("role", "status");
+  n.style.cssText = "position:sticky;top:0;z-index:50;padding:8px 14px;background:#5c4a12;color:#fff3c4;font:14px system-ui,sans-serif";
+  n.textContent = "Theme editors don't open in Safari. Use Chrome, Edge or Firefox to edit, import or rebake themes; everything else works here.";
+  document.body.prepend(n);
+}
+document.addEventListener("DOMContentLoaded", showSafariNotice);
+if (document.readyState !== "loading") showSafariNotice();
+
 // editorFrameSrc asks the hub where this app's editor lives (its own origin, s2) and the
 // launch's token for it, and builds the frame's URL. pathAndQuery starts with /editor/.
 // Nothing is cached: a token belongs to this hub launch, and one small call per open is

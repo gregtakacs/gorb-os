@@ -13,7 +13,8 @@
  *     before a send, and a note when a design opened was made by an older editor;
  *   - the design document's envelope (format, schema, app, app version, made), the
  *     migration walk (composer-stack-plan ruling 12), and its refusals: another app's
- *     design, a schema with no step, a design from a newer release of the app;
+ *     design, a newer schema, or an older one with no step (ruling 21: only the schema says
+ *     what an editor can read, so a design from a newer release of the app opens);
  *   - opening a design from a file (an .orbtheme's design region, or a design file), a
  *     library entry (?entry=) or a card theme (?theme=), and the theme download;
  *   - on a site that asks for it (GorbHost's assets and designIds flags): art by hash, so the
@@ -34,7 +35,9 @@
  *     say(text),                   // the status line
  *     restore(snap, text),         // put a snapshot back (undo/redo); the app keeps its selection rules
  *     burstMs(), undoMax(),        // optional: the burst window (600 ms) and the depth (100)
- *     schema(), migrate(),         // the design schema this editor reads, and its steps {n: fn}
+ *     schema(), migrate(),         // the design schema this editor reads — the build stamps
+ *                                  // editor.json's in __ORB_APP.schema and the session
+ *                                  // refuses to start if the two differ — and its steps {n: fn}
  *     content(withArt),            // async: the design's own fields, merged into the envelope
  *     apply(doc, from),            // put a checked design into the editor: null, or why not
  *     download(blob, name),        // optional: the page's download (default OrbTheme.download)
@@ -66,6 +69,8 @@
   // a hub path, its leading api segment removed, at this host's base
   OrbTheme.hostUrl = OrbTheme.hostUrl || function (p) { return OrbTheme.hostInfo().api + p; };
   // ---- end GorbHost
+  // the host's words: an editor passes the hub's sentence and the site's, and never reads kind
+  OrbTheme.hostText = OrbTheme.hostText || function (hub, web) { return OrbTheme.hostInfo().kind === 'web' ? web : hub; };
 
   // a file the browser saves: the one download every editor's export goes through
   OrbTheme.download = function (blob, name) {
@@ -124,6 +129,14 @@
       else if (q.get('entry')) api.opening = 'Opening “' + q.get('entry') + '” from the library…';
     })();
 
+    /* design §6.5 point 1: the schema this editor reads and the one its editor.json names are
+     * one fact stated twice, so the build stamps the latter beside the release and a session
+     * that disagrees with itself never starts. No stamp (an unpackaged editor, an app built
+     * before the SDK wrote one, a node suite) and a stamp with no schema both skip it. */
+    var stamp = root && typeof root.__ORB_APP === 'object' ? root.__ORB_APP : null;
+    if (stamp && stamp.schema !== undefined && stamp.schema !== host.schema())
+      throw new Error('this editor reads design schema ' + host.schema() + ', but its editor.json says ' + stamp.schema + ': the two must agree — set editor.json’s schema to the editor’s and rebuild the app');
+
     api.slug = function () {
       var q = null; try { q = new URLSearchParams(location.search); } catch (e) { q = null; }
       var a = q && q.get('app');
@@ -145,7 +158,7 @@
     var hubJson = async function (path, opts) {
       var r = await fetch(path, opts), j = null;
       try { j = await r.json(); } catch (e) { j = null; }
-      if (!r.ok || !j || j.ok === false) throw new Error((j && j.error) || ('the hub answered ' + r.status));
+      if (!r.ok || !j || j.ok === false) throw new Error((j && j.error) || OrbTheme.hostText('the hub answered ' + r.status, 'the server answered ' + r.status));
       return j.data;
     };
 
@@ -275,7 +288,8 @@
      *    theme: {stem, made_with, can_reopen, stale}|null, ...draft.extra}
      * Off the hub there is no library, and the theme download is the way to take one along. */
     var app = function () { return '?app=' + encodeURIComponent(api.slug()); };
-    var offHub = 'the library is kept on the hub: open this editor from the hub, or download the .orbtheme';
+    var offHub = OrbTheme.hostText('the library is kept on the hub: open this editor from the hub, or download the .orbtheme',
+      'the library is kept by the site: open this editor from one of your designs, or download the .orbtheme');
     var err = function (e) { return e && e.message ? e.message : String(e); };
     var extrasOf = function (x) { var o = {}; Object.keys(x).forEach(function (k) { if (k !== 'name' && k !== 'doc' && k !== 'at') o[k] = x[k]; }); return o; };
     var saveDraft = async function (name, doc, extra, asNew) {
@@ -298,7 +312,7 @@
       try {
         var l = await hubJson(OrbTheme.hostUrl('/library/entries') + app());
         lib = (Array.isArray(l) ? l : []).map(function (e) { return Object.assign({}, (e.draft && e.draft.extra) || {}, e); });
-      } catch (e) { say('The library could not be read from the hub: ' + err(e)); return false; }
+      } catch (e) { say(OrbTheme.hostText('The library could not be read from the hub: ', 'The library could not be read: ') + err(e)); return false; }
       host.set({});
       return true;
     };
@@ -314,7 +328,9 @@
       await api.libraryRefresh();
       if (quiet) return true;
       var e = api.libraryEntry(entry.name);
-      say('Saved “' + entry.name + '” to the library' + (e && e.state === 'changed' ? ' as unsent changes to its theme — Send to orb bakes them in' : ' as a draft'));
+      say('Saved “' + entry.name + '” to the library' + (e && e.state === 'changed'
+        ? OrbTheme.hostText(' as unsent changes to its theme — Send to orb bakes them in', ' as unsent changes to its theme — Download .orbtheme bakes them in')
+        : ' as a draft'));
       return true;
     };
     api.saveDraft = function (entry, quiet) { return saveEntry(entry, quiet, false); };
@@ -324,7 +340,7 @@
       var u = OrbTheme.hostUrl('/library/design') + app() + '&name=' + encodeURIComponent(nm) + (from ? '&from=' + from : '') + (OrbTheme.hostInfo().assets ? '&refs=1' : '');
       var r = await fetch(u);
       var o = null; try { o = await r.json(); } catch (e) { o = null; }
-      if (!r.ok || !o || o.format !== 'wc-design') throw new Error((o && o.error) || 'the hub has no design for “' + nm + '”');
+      if (!r.ok || !o || o.format !== 'wc-design') throw new Error((o && o.error) || OrbTheme.hostText('the hub has no design for “' + nm + '”', 'the server has no design for “' + nm + '”'));
       if (OrbTheme.hostInfo().assets) o = await inflate(o, null);
       return o;
     };
@@ -447,17 +463,13 @@
     };
     // the envelope's checks, in the order they are refused: {doc} ready for host.apply, or {why}
     api.check = function (o) {
-      var me = api.slug(), schema = host.schema();
+      var me = api.slug(), schema = host.schema(), n = Number(o && o.schema);
       if (!o || o.format !== 'wc-design') return { why: 'that design is not one this editor wrote' };
       if (o.app && o.app !== me) return { why: 'that design is the ' + o.app + ' app’s, not ' + me + '’s' };
-      if (o.schema >= 1 && o.schema < schema) { var m = api.migrate(o); if (!m.doc) return { why: m.why }; o = m.doc; }
-      if (!(o.schema >= 1) || o.schema > schema) return { why: 'that design was made by ' + (o.app || me) + ' ' + (o.appVersion || '?') + ' (design schema ' + o.schema + '); this editor (' + api.version() + ') reads schema ' + schema + ' — update the app on this orb' };
-      // a newer release may have added fields this editor would silently drop on the next
-      // save: refuse, naming the release. The +build (content hash) never orders.
-      var ver = function (v) { var g = /^v(\d+)\.(\d+)\.(\d+)(?:\+[0-9A-Za-z.-]+)?$/.exec(String(v || '')); return g ? [+g[1], +g[2], +g[3]] : null; };
-      var theirs = ver(o.appVersion), mine2 = ver(api.version());
-      if (theirs && mine2 && (theirs[0] - mine2[0] || theirs[1] - mine2[1] || theirs[2] - mine2[2]) > 0)
-        return { why: 'that design was made by ' + (o.app || me) + ' ' + o.appVersion + ', newer than this editor (' + api.version() + ') — update the app on this orb, then open it' };
+      if (Number.isInteger(n) && n >= 1 && n < schema) { var m = api.migrate(o); if (!m.doc) return { why: m.why }; o = m.doc; }
+      if (!(Number.isInteger(n) && n >= 1) || n > schema) return { why: 'that design was made by ' + (o.app || me) + ' ' + (o.appVersion || '?') + ' (design schema ' + o.schema + '); this editor (' + api.version() + ') reads schema ' + schema + ' — ' + OrbTheme.hostText('update the app on this orb', 'update the app on your orb to read it') };
+      // the schema alone decides (ruling 21): any change to what a design holds raises it, so
+      // a newer release under this schema holds nothing this editor would drop on the next save
       return { doc: o };
     };
     // a design back into the editor: the envelope's refusals, then the app's own. A design an
@@ -638,6 +650,11 @@
         return true;
       } catch (e) { say('Could not reopen that theme: ' + (e && e.message ? e.message : String(e))); return false; }
     };
+
+    // the migration runner (_runner/migrate.js) hands itself the session and its host here,
+    // so it can open designs through the same check and apply a person's Open takes; a page
+    // that sets no window.GorbRunner never reaches this
+    if (typeof root.GorbRunner === 'function') root.GorbRunner(api, host);
 
     return api;
   };

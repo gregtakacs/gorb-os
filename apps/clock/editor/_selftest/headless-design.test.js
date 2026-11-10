@@ -67,12 +67,12 @@ const mk = () => {
   ok(/no step from schema 2 to 3/.test(m3.applyDesignDoc(back) || ''), 'and a missing step is refused by name, never guessed');
   ok(Object.keys(mk().DESIGN_MIGRATE).length === 0, 'schema 1 needs no step');
   const later = mk().applyDesignDoc(Object.assign({}, back, { appVersion: 'v1.10.0' }));
-  ok(/clock v1\.10\.0, newer than this editor \(v1\.2\.2\)/.test(later || ''), 'a design from a newer clock is refused by version, so no field it added is dropped on save', later);
+  ok(later === null, 'a same-schema design from a newer clock opens: only the schema says what this editor reads (ruling 21)', later);
   ok(mk().applyDesignDoc(Object.assign({}, back, { appVersion: 'v1.2.1' })) === null, 'while one from an older clock opens');
   window.__ORB_APP = { slug: 'clock', version: 'v1.2.2+6a5c661' };
   const hashed = mk().applyDesignDoc(Object.assign({}, back, { appVersion: 'v1.3.0+3f9a1c2' }));
-  ok(/clock v1\.3\.0\+3f9a1c2, newer than this editor/.test(hashed || '') && mk().applyDesignDoc(Object.assign({}, back, { appVersion: 'v1.2.2+0000000' })) === null,
-    'stamps carrying a build hash still order by release: newer refused, another build of this one opens', hashed);
+  ok(hashed === null && mk().applyDesignDoc(Object.assign({}, back, { appVersion: 'v1.2.2+0000000' })) === null,
+    'a stamp carrying a build hash opens the same way: a newer release of this schema is nothing to drop', hashed);
   window.__ORB_APP = { slug: 'clock', version: 'v1.2.2' };
   window.__ORB_APP = { slug: 'clock', version: 'dev' };
   ok(mk().applyDesignDoc(Object.assign({}, back, { appVersion: 'v9.0.0' })) === null, 'an unpackaged (dev) editor opens anything');

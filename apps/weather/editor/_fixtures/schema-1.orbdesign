@@ -1,0 +1,48 @@
+{
+ "format": "wc-design",
+ "schema": 1,
+ "app": "weather",
+ "appVersion": "v1.5.1",
+ "made": "2026-11-09T04:04:11.912Z",
+ "design": {
+  "name": "Scope",
+  "match": "Flights · Modern",
+  "plate": {
+   "style": "scope",
+   "c0": "#12361F",
+   "c1": "#0E2A1A",
+   "c2": "#08170E",
+   "detail": "#2A6A44",
+   "tick": "#3DBB6E"
+  },
+  "words": {
+   "num": "IBM Plex Mono",
+   "text": "IBM Plex Sans",
+   "label": "IBM Plex Mono",
+   "caps": true,
+   "track": 2,
+   "ink": "#E6F0EA",
+   "quiet": "#8A9A90"
+  },
+  "temps": {
+   "ramp": [
+    "#2E9C88",
+    "#3DFF8E",
+    "#FFB23C"
+   ],
+   "rain": "#59D8C8",
+   "track": "#1C4A2E",
+   "cap": "round"
+  },
+  "icons": {
+   "pack": "phosphor",
+   "c": {
+    "stroke": "#3DFF8E",
+    "warn": "#FFB23C"
+   },
+   "shade": "3d",
+   "shadow": "strong"
+  },
+  "base": "scope"
+ }
+}

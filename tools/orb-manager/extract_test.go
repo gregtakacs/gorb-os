@@ -215,6 +215,7 @@ func checkExtractedApp(t *testing.T, out string, row extractRow) {
 		var m struct {
 			Entry   string   `json:"entry"`
 			Runtime []string `json:"runtime"`
+			Schema  int      `json:"schema"`
 		}
 		if err := json.Unmarshal(raw, &m); err != nil {
 			t.Fatalf("%s: the shipped editor.json does not parse: %v", row.File, err)
@@ -224,6 +225,9 @@ func checkExtractedApp(t *testing.T, out string, row extractRow) {
 		}
 		if strings.Join(row.Editor.Runtime, ",") != strings.Join(orEmpty(m.Runtime), ",") {
 			t.Errorf("%s: report runtime %v, manifest lists %v", row.File, row.Editor.Runtime, m.Runtime)
+		}
+		if m.Schema != row.Editor.Schema {
+			t.Errorf("%s: report schema %d, manifest names %d", row.File, row.Editor.Schema, m.Schema)
 		}
 	}
 }

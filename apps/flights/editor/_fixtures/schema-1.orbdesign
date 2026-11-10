@@ -1,0 +1,66 @@
+{
+ "format": "wc-design",
+ "schema": 1,
+ "app": "flights",
+ "appVersion": "v1.2.4",
+ "made": "2026-11-09T04:04:29.775Z",
+ "design": {
+  "name": "Flights Modern",
+  "scope": {
+   "bg": "scope",
+   "colour": "#06160D",
+   "image": null,
+   "rings": 2,
+   "ringColour": "#2A6A44",
+   "ringOpacity": 0.8,
+   "home": "#FFFFFF"
+  },
+  "arm": {
+   "kind": "wedge",
+   "trail": 30,
+   "colour": "#3DFF8E",
+   "lead": "#D8FFE8"
+  },
+  "planes": {
+   "family": "modern",
+   "form": "types",
+   "size": 38,
+   "shapes": [
+    "light",
+    "turboprop",
+    "bizjet",
+    "airliner",
+    "heavy",
+    "helicopter",
+    "generic"
+   ],
+   "colour": true,
+   "bands": [
+    "#888888",
+    "#C0C0C0",
+    "#FF5A3C",
+    "#FFB23C",
+    "#C8FF3C",
+    "#39FF14",
+    "#3CE0FF"
+   ],
+   "ground": 0.45,
+   "sel": "#FFFFFF",
+   "em": "#FF2020"
+  },
+  "words": {
+   "face": "IBM Plex Sans",
+   "body": "#E6F0EA",
+   "accent": "#39FF14",
+   "accent2": null,
+   "quiet": "#8A9A90",
+   "warning": "#FFB23C",
+   "card": {
+    "fill": "#101820",
+    "opacity": 0.82,
+    "edge": "#2A6A44"
+   },
+   "plaques": false
+  }
+ }
+}

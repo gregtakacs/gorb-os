@@ -97,10 +97,11 @@ type extractRow struct {
 // bare /editor/<ip>/<slug>/ opens, the runtime ids the manifest lists, and every file, in
 // the order the archive held them.
 type extractEditor struct {
-	Dir     string        `json:"dir"`     // the slug: files are at <out>/<dir>/<name>
-	Entry   string        `json:"entry"`   // the document the hub opens for /editor/<ip>/<slug>/
-	Runtime []string      `json:"runtime"` // editor.json's runtime ids, as listed ([] when none)
-	Files   []extractFile `json:"files"`   // every member written, in archive order
+	Dir     string        `json:"dir"`              // the slug: files are at <out>/<dir>/<name>
+	Entry   string        `json:"entry"`            // the document the hub opens for /editor/<ip>/<slug>/
+	Runtime []string      `json:"runtime"`          // editor.json's runtime ids, as listed ([] when none)
+	Files   []extractFile `json:"files"`            // every member written, in archive order
+	Schema  int           `json:"schema,omitempty"` // editor.json's design schema, 0 when it names none
 }
 
 // extractFile is one unpacked member, with what a site needs to name and verify it.
@@ -427,7 +428,8 @@ func extractEditorRegion(root *os.Root, slug string, region []byte) (regionOutco
 			return skipped(runtimeMissingSentence(slug, missing)), nil
 		}
 	}
-	return writeRegion(root, slug, entry, manifestIDs(bodies[editorManifestName], manifest), files, bodies)
+	return writeRegion(root, slug, entry, manifestIDs(bodies[editorManifestName], manifest),
+		manifestSchema(bodies[editorManifestName], manifest), files, bodies)
 }
 
 // plainRelPath reports whether a member name is a plain relative path: no root, no parent
@@ -467,11 +469,32 @@ func manifestIDs(manifest []byte, present bool) []string {
 	return out
 }
 
+// manifestSchema is editor.json's design schema for the report: the whole number the app
+// named, or 0 for anything else — no manifest, no key, a value that is not a whole number.
+// The hub does not judge schemas (the editor and the SDK do that); it only repeats the one
+// it was told, so a site can read an editor's schema without running it.
+func manifestSchema(manifest []byte, present bool) int {
+	if !present {
+		return 0
+	}
+	var m struct {
+		Schema interface{} `json:"schema"`
+	}
+	if json.Unmarshal(manifest, &m) != nil {
+		return 0
+	}
+	n, ok := m.Schema.(float64)
+	if !ok || n != float64(int(n)) || int(n) < 1 {
+		return 0
+	}
+	return int(n)
+}
+
 // writeRegion puts one app's members down under `.<slug>.partial` and renames the folder to
 // <slug> only once the last file is closed, so the directory named for the app either
 // holds the whole editor or does not exist. A failed write returns the error, and the
 // partial folder with it: the command exits 1 and an operator sees what was attempted.
-func writeRegion(root *os.Root, slug, entry string, ids []string, files []extractFile, bodies map[string][]byte) (regionOutcome, error) {
+func writeRegion(root *os.Root, slug, entry string, ids []string, schema int, files []extractFile, bodies map[string][]byte) (regionOutcome, error) {
 	partial := "." + slug + ".partial"
 	if err := root.RemoveAll(partial); err != nil {
 		return regionOutcome{}, err
@@ -487,7 +510,7 @@ func writeRegion(root *os.Root, slug, entry string, ids []string, files []extrac
 	if err := root.Rename(partial, slug); err != nil {
 		return regionOutcome{}, err
 	}
-	return regionOutcome{editor: &extractEditor{Dir: slug, Entry: entry, Runtime: ids, Files: files}}, nil
+	return regionOutcome{editor: &extractEditor{Dir: slug, Entry: entry, Runtime: ids, Files: files, Schema: schema}}, nil
 }
 
 // writeRootFile creates one file, and the folders above it, inside a root: folders 0o755,

@@ -1,1 +1,1 @@
-{"baker": 3, "editor": 1, "host": 1, "module": ["flights-art.js", "flights-map.js", "flights-bake.js", "flights-editor.js"], "runtime": ["baker@1", "fonts@1", "host@1", "maps@1", "react@18.3.1", "studio@1", "theme@1", "ui@1"]}
+{"baker": 3, "editor": 1, "host": 1, "module": ["flights-art.js", "flights-map.js", "flights-bake.js", "flights-editor.js"], "runtime": ["baker@1", "fonts@1", "host@1", "maps@1", "react@18.3.1", "studio@1", "theme@1", "ui@1"], "schema": 2}

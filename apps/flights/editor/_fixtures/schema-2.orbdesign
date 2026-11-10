@@ -1,0 +1,146 @@
+{
+ "format": "wc-design",
+ "schema": 2,
+ "app": "flights",
+ "appVersion": "v1.4.2",
+ "made": "2026-11-09T04:04:11.581Z",
+ "design": {
+  "name": "Modern",
+  "base": "modern",
+  "scope": {
+   "ground": "scope",
+   "face": "#0E2A1A",
+   "detail": "#1C4A2E",
+   "grid": true,
+   "cross": {
+    "on": true,
+    "style": "hatched",
+    "colour": "#2E7A4C",
+    "opacity": 0.6
+   },
+   "ticks": {
+    "on": true,
+    "colour": "#3DBB6E",
+    "r": 197,
+    "len": 10,
+    "width": 1.6,
+    "minor": 5,
+    "major": 30,
+    "style": "line",
+    "edge": false
+   },
+   "labels": {
+    "kind": "degrees",
+    "every": 30,
+    "face": "IBM Plex Mono",
+    "size": 15,
+    "colour": "#3DBB6E",
+    "turn": "upright",
+    "skip": true,
+    "r": 213
+   },
+   "lubber": {
+    "on": false,
+    "colour": "#3DBB6E"
+   },
+   "rings": {
+    "n": 2,
+    "colour": "#2A6A44",
+    "opacity": 0.8,
+    "width": 1.5,
+    "dash": "solid"
+   },
+   "home": {
+    "colour": "#FFFFFF",
+    "size": 3
+   },
+   "gridWidth": 0.8
+  },
+  "arm": {
+   "kind": "wedge",
+   "period": 8,
+   "length": 1,
+   "colour": "#3DFF8E",
+   "tailColour": "#3DFF8E",
+   "lead": "#D8FFE8",
+   "tail": 30,
+   "halo": 3,
+   "shadow": {
+    "on": false,
+    "opacity": 0.6,
+    "blur": 2.5
+   },
+   "layer": "under"
+  },
+  "planes": {
+   "family": "modern",
+   "form": "types",
+   "size": 38,
+   "colour": true,
+   "bands": [
+    "#888888",
+    "#C0C0C0",
+    "#FF5A3C",
+    "#FFB23C",
+    "#C8FF3C",
+    "#39FF14",
+    "#3CE0FF"
+   ],
+   "ground": 0.6,
+   "groundGrey": false,
+   "heading": {
+    "style": "none",
+    "length": 1,
+    "colour": "#E8E4FF"
+   },
+   "sel": "#FFFFFF",
+   "em": "#FF2020",
+   "custom": {
+    "image": null
+   },
+   "selStyle": "ring",
+   "selWidth": 2,
+   "emStyle": "ring",
+   "emWidth": 2.5,
+   "shadow": {
+    "on": false,
+    "opacity": 0.6,
+    "blur": 2.5
+   },
+   "dots": {
+    "show": "bands",
+    "colour": "#D0D0D0",
+    "size": 6
+   }
+  },
+  "words": {
+   "face": "IBM Plex Sans",
+   "size": 16,
+   "body": "#E6F0EA",
+   "accent": "#39FF14",
+   "accent2": null,
+   "quiet": "#8A9A90",
+   "warning": "#FFB23C"
+  },
+  "frames": {
+   "style": "rounded",
+   "edge": 1.5,
+   "pad": 8,
+   "fill": "#101820",
+   "opacity": 0.82,
+   "line": "#2A6A44",
+   "image": null,
+   "corner": 10,
+   "card": {
+    "width": 240,
+    "place": "auto"
+   },
+   "shadow": {
+    "on": true,
+    "blur": 4,
+    "opacity": 0.55,
+    "drop": 3
+   }
+  }
+ }
+}

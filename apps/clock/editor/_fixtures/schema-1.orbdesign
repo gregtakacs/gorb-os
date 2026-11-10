@@ -1,0 +1,137 @@
+{
+ "format": "wc-design",
+ "schema": 1,
+ "app": "clock",
+ "appVersion": "v1.2.29",
+ "made": "2026-11-09T04:04:12.199Z",
+ "dial": "skeleton",
+ "design": {
+  "comps": [
+   {
+    "id": "c1",
+    "type": "opening",
+    "host": "dial",
+    "angle": 0,
+    "dist": 0,
+    "rot": 0,
+    "size": 160,
+    "style": "lip",
+    "show": "free",
+    "hour": 12
+   },
+   {
+    "id": "c2",
+    "type": "subdial",
+    "host": "dial",
+    "angle": 135,
+    "dist": 80.6,
+    "rot": 0,
+    "size": 78.5,
+    "style": "enamel",
+    "open": 0
+   },
+   {
+    "id": "h1",
+    "type": "hand",
+    "host": "c2",
+    "shows": "second",
+    "length": 68.355,
+    "width": 2.041,
+    "cap": 2.6,
+    "scale": {
+     "style": "classic",
+     "gap": 10.145
+    }
+   },
+   {
+    "id": "h2",
+    "type": "hand",
+    "host": "dial",
+    "shows": "hour",
+    "length": 135.3,
+    "width": 10.25,
+    "cap": 6.97,
+    "scale": {
+     "style": "roman",
+     "gap": 80.7
+    }
+   },
+   {
+    "id": "h3",
+    "type": "hand",
+    "host": "dial",
+    "shows": "minute",
+    "length": 196.8,
+    "width": 7.79,
+    "cap": 6.97
+   }
+  ]
+ },
+ "cfg": {
+  "tick": "sweep",
+  "favour": "sweep",
+  "plan": "",
+  "shSmooth": 0,
+  "balance": "1",
+  "plate": "train",
+  "spokes": "train",
+  "etching": "none",
+  "pinion": "on",
+  "center": "jewel",
+  "finish": "train",
+  "glow": 1,
+  "temp": 2200,
+  "innerAngle": 90,
+  "outerLight": 1,
+  "outerAngle": 315,
+  "outerTemp": 2200,
+  "trainAngle": 0,
+  "plateAngle": 0,
+  "plateScale": 1,
+  "hue": 30,
+  "hueSat": 0,
+  "outerHue": 210,
+  "outerSat": 0,
+  "wb": 6500,
+  "orbD": 128,
+  "orbTip": 194,
+  "cageD": 107,
+  "rearFinish": "train",
+  "shAngle": -1,
+  "shDist": 1,
+  "shBlur": 1,
+  "shOp": 1,
+  "shMove": 1,
+  "shRelief": 1
+ },
+ "seeds": {
+  "spokes": 1,
+  "pinion": 1,
+  "center": 1,
+  "finish": 1,
+  "etching": 1
+ },
+ "hands": "auto",
+ "handFinish": "auto",
+ "caseStyle": "polished",
+ "caseMetal": "auto",
+ "glassStyle": "domed",
+ "train": "classic",
+ "caseOpen": 221.5,
+ "themeName": "",
+ "sounds": {
+  "tick": "classic",
+  "pattern": "count",
+  "slots": {
+   "chime_q1": "westminster_q1",
+   "chime_half": "westminster_q2",
+   "chime_q3": "westminster_q3",
+   "chime_hour": "westminster_q4",
+   "strike_hour": "bell_hour"
+  },
+  "up": {},
+  "seed": 1
+ },
+ "art": true,
+ "assets": []
+}

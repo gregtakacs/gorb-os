@@ -17,7 +17,7 @@
     {
       "name": "g4-2-hub-refuse-fixtures",
       "spec": "docs/specs/g4-2-hub-refuse-fixtures.md",
-      "verify": "export GOFLAGS=-buildvcs=false PATH=/usr/local/go/bin:$PATH && cd tools/orb-manager && go vet ./... && go test -run 'Editor' -v . > /tmp/g4-2.txt 2>&1; tail -3 /tmp/g4-2.txt; ! grep -q -- '--- FAIL' /tmp/g4-2.txt && grep -q -- '--- PASS: TestEditorDoorRefusesFixtures' /tmp/g4-2.txt && grep -q -- '--- PASS: TestExtractEditorsUnpacksFixtures' /tmp/g4-2.txt && cd ../.. && make check-editor && make check-editor-origin && sh docs/specs/g4-gotest.sh && test -z \"$(git diff --name-only g4 -- tools/orb-manager/extract.go apps/sdk/orbsdk.py)\""
+      "verify": "export GOFLAGS=-buildvcs=false PATH=/usr/local/go/bin:$PATH && cd tools/orb-manager && go vet ./... && go test -run 'Editor' -v . > /tmp/g4-2.txt 2>&1; tail -3 /tmp/g4-2.txt; ! grep -q -- '--- FAIL' /tmp/g4-2.txt && grep -q -- '--- PASS: TestEditorDoorRefusesFixtures' /tmp/g4-2.txt && grep -q -- '--- PASS: TestExtractEditorsUnpacksFixtures' /tmp/g4-2.txt && cd ../.. && make check-editor && make check-editor-origin && sh docs/specs/g4-gotest.sh && test -z \"$(git diff --name-only delegate/g4-1-pack-fixtures -- tools/orb-manager/extract.go apps/sdk/orbsdk.py)\""
     }
   ]
 }

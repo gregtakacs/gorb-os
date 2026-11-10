@@ -375,17 +375,26 @@ function openChrome(url) {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'orb-runner-'));
     const args = ['--headless=new', '--no-sandbox', '--disable-gpu', '--no-first-run',
       '--user-data-dir=' + dir, '--virtual-time-budget=3600000', '--dump-dom', url];
-    const child = spawn(CHROME, args, { stdio: ['ignore', 'pipe', 'pipe'] });
+    // its own process group, so a kill takes the renderers and helpers too: killed alone, the
+    // browser left them writing into the profile (and running) after it was gone
+    const group = process.platform !== 'win32';
+    const child = spawn(CHROME, args, { stdio: ['ignore', 'pipe', 'pipe'], detached: group });
     let dom = '', err = '';
     child.stdout.on('data', (d) => { dom += d; });
     child.stderr.on('data', (d) => { err += d; });
-    state.kill = () => { try { child.kill('SIGKILL'); } catch (e) { /* gone */ } };
+    const killAll = () => {
+      try { if (group) process.kill(-child.pid, 'SIGKILL'); else child.kill('SIGKILL'); } catch (e) { /* gone */ }
+    };
+    state.kill = killAll;
     const timer = setTimeout(() => { state.killed = 'timeout'; state.kill(); }, TIMEOUT * 1000);
     child.on('exit', (code) => {
       clearTimeout(timer);
       state.kill = null;
       try { child.stdout.destroy(); child.stderr.destroy(); } catch (e) { /* already gone */ }
-      fs.rmSync(dir, { recursive: true, force: true });
+      killAll();                                  // whatever of its group outlived it
+      // a helper still closing its files can leave the profile briefly non-empty: retry, and
+      // never let a scratch folder that would not go fail a design
+      try { fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }); } catch (e) { /* tmp */ }
       // Chromium's complaints about a box with no dbus and no GPU are not the editor's
       const bad = err.split('\n').filter((l) => l && !/ERROR:(dbus|gpu|vaapi|bluez|field_trial|viz_main|angle|media)/
         .test(l)).join(' ').slice(0, 300);

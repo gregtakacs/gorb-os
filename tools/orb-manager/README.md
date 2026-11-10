@@ -825,6 +825,20 @@ so a deliberate downgrade stays possible.
     re-enters as the cache, its rooms, sockets and cable claims are read and dropped, its
     grants come back unbound, and the next save rewrites the smaller shape).
 
+### Import from orb-os.net
+
+**Import from orb-os.net** sits in the Themes tab's toolbar beside **Import a theme** and
+opens a link field: paste a theme's page on the site, press Import. The hub fetches the
+design itself — `GET <site>/api/hub/theme/<id>`, no sign-in and no account, and the site
+never sees the orb — holds the bundle it gets back under a one-time ticket, and opens
+**this orb's** editor for the app that design names on it. The editor is what bakes: the
+design comes out as a `.orbtheme` under the shared name the site gave it, `<name> by
+@<handle>`, and the hub keeps that bake in its library with a `<theme file>.origin.json`
+sidecar `{site, designId, version, importedAt}` — which is what the row's `from <site>` tag
+reads. Nothing is written to the orb by an import: the new row's `Install` is the same door
+it always was. Only `https://` links are accepted, with plain `http` allowed for
+`127.0.0.1`/`localhost` so a site under development can be imported from the bench.
+
 ## Headless flasher
 
 `orbflash` drives the identical `esprom.Session` without the web UI, for scripted

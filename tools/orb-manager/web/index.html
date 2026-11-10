@@ -381,7 +381,14 @@
       <span id="mn-theme-editrow"></span>
       <input type="file" id="mn-fw-file" accept=".orbtheme" hidden>
       <button id="mn-up-btn" class="ghost" title="Choose a .orbtheme and put it on this orb's card, with the hub keeping a copy on its shelf. The theme's name is baked inside the file by the Theme Editor; the orb files it under that name and no other.">Import a theme</button>
+      <button id="mn-site-btn" class="ghost" type="button"
+              title="Paste the link of a theme on orb-os.net. The hub fetches its design, this orb's editor for that app bakes it under its shared name (“name by @creator”), and it lands in the hub library. No sign-in is needed.">Import from orb-os.net</button>
       <span id="mn-up-state" class="hint"></span>
+    </div>
+    <div class="row" id="mn-site-row" hidden>
+      <input type="url" id="mn-site-link" placeholder="https://orb-os.net/t/…" spellcheck="false" autocomplete="off" size="44">
+      <button id="mn-site-go" type="button">Import</button>
+      <span id="mn-site-state" class="hint"></span>
     </div>
     <!-- D37 §6.2: one app's editor opens from this card rather than in a new tab the
          operator has to find again; since D43 §4.2 it fills the whole window, over the

@@ -491,6 +491,185 @@ async function scenario(host, pathname, themeQuery, map) {
     delete global.GorbBake; delete global.GorbHost;
   }
 
+  // ---- 11. the hub import (?import=<ticket>)
+  {
+    const TICKET = '0123456789abcdef0123456789abcdef';
+    const SN = 'Skeleton by @greg';
+    const b7 = imgBytes(600, 41), h7 = await sha256(b7), u7 = dataUrl(b7);
+    const THEME7 = new Uint8Array([0x54, 0x52, 0x4f, 0x47, 3, 0, 0, 2]);
+    const idoc = (sharedName, extra) => Object.assign({ format: 'wc-design', schema: 1, app: 'tint', appVersion: 'v1.3.0', color: 'teal', size: 5, name: 'Skeleton',
+      shared: sharedName === null ? undefined : { name: sharedName }, art: ['orb-asset:' + h7], orbAssets: [{ sha256: h7, prefix: 'data:image/png;base64', size: 600 }] }, extra || {});
+    const ibundle = (design, sharedName, assets) => ({ format: 'orb-design-bundle', bundle: 1, id: 'abcdefghijklmnopqrstuv', version: 3, app: 'tint', name: 'Skeleton', handle: 'greg',
+      sharedName: sharedName === undefined ? SN : sharedName, design: design, assets: assets === undefined ? Object.fromEntries([[h7, u7.split(',')[1]]]) : assets });
+    // the hub's doors: the two site ones, and just enough library for a boot. Its entries name a
+    // stale theme called One, so a boot that wrongly opened or rebaked it would show in the calls.
+    const staleOne = { name: 'One', state: 'theme', at: 2, theme: { stem: 'one', made_with: 'v1.0.0', can_reopen: true, stale: 'v1.0.0', bytes: 128 } };
+    const oneDoc = { format: 'wc-design', schema: 1, app: 'tint', appVersion: 'v1.3.0', color: 'plum', size: 5, name: 'One' };
+    const ihub = (cfg) => {
+      const st = { keeps: [] };
+      st.fetch = async (url, o) => {
+        const u = new URL(String(url), 'http://hub'), p = u.pathname.replace(/^\/studio-api/, '/api');
+        if (p === '/api/editor/source') return resp(200, { ok: true, data: { relation: 'same' } });
+        if (p === '/api/library/entries') return resp(200, { ok: true, data: (cfg.entries || [staleOne]).slice() });
+        if (p === '/api/library/design') return u.searchParams.get('name') === 'One' ? resp(200, oneDoc) : resp(400, { ok: false, error: 'no design for that name' });
+        if (p === '/api/site/bundle') {
+          if (cfg.bundleThrow) throw new TypeError('Failed to fetch');
+          if (cfg.bundleStatus) return resp(cfg.bundleStatus, { ok: false, error: cfg.bundleError });
+          const raw = new TextEncoder().encode(cfg.bundleRaw !== undefined ? cfg.bundleRaw : JSON.stringify(cfg.bundle === undefined ? ibundle(idoc(SN)) : cfg.bundle));
+          return { ok: true, status: 200, json: async () => JSON.parse(new TextDecoder().decode(raw)), arrayBuffer: async () => raw.buffer };
+        }
+        if (p === '/api/site/keep') {
+          if (cfg.keepThrow) throw new TypeError('Failed to fetch');
+          st.keeps.push({ url: String(url), method: (o && o.method) || 'GET', type: o && o.headers && o.headers['Content-Type'], bytes: new Uint8Array(o.body) });
+          if (cfg.keepStatus) return resp(cfg.keepStatus, { ok: false, error: cfg.keepError });
+          return resp(200, { ok: true, data: { name: SN, file: 'tint-Skeleton by @greg.orbtheme', origin: { site: 'https://orb-os.net', designId: 'abcdefghijklmnopqrstuv', version: 3 } } });
+        }
+        return resp(404, { ok: false, error: 'no route ' + p });
+      };
+      return st;
+    };
+    const posted = [];
+    const lastParent = global.parent;
+    global.parent = { postMessage: (m, origin) => posted.push({ m: m, origin: origin }) };
+    const irun = (o) => {
+      if (o.host === null) delete global.GorbHost; else global.GorbHost = o.host === undefined ? { kind: 'hub' } : o.host;
+      location.pathname = o.pathname || '/editor/192.0.2.7/tint/';
+      location.search = o.search !== undefined ? o.search : '?import=' + (o.ticket === undefined ? TICKET : o.ticket);
+      const hub = ihub(o.hub || {});
+      calls = []; fetchHandler = (url, opt) => hub.fetch(url, opt);
+      const seq = o.names || [SN];
+      global.GorbBake = { verifyBundle3: () => ({ header: { name: seq[Math.min(o.i = (o.i || 0) + 1, seq.length) - 1] }, sections: [] }) };
+      const a = mkArt(o.noBake ? {} : { bake: async () => { a.baked.push(a.ses.bakeName('Skeleton')); if (o.says) a.set({ status: o.says }); return o.bytes === null ? null : THEME7; } });
+      a.hub = hub;
+      return a;
+    };
+    // the happy path: the bundle in, one bake under the shared name, the bake posted back
+    const a = irun({});
+    ok(a.ses.opening === 'Opening the imported theme…', 'an import page is covered while its bundle is on its way in', String(a.ses.opening));
+    await a.ses.boot();
+    ok(calls.some((c) => /library\/entries/.test(c[1])) && !calls.some((c) => /\/site\//.test(c[1])),
+      'the boot reads the library as it always did and asks the import doors for nothing', calls.map((c) => c[1]).join(' '));
+    ok(await a.ses.openTheme(), 'the import ran');
+    ok(calls.filter((c) => /site\/bundle/.test(c[1])).length === 1 && calls.filter((c) => /site\/keep/.test(c[1])).length === 1 &&
+      calls.find((c) => /site\/keep/.test(c[1]))[1] === '/api/site/keep?ticket=' + TICKET,
+      'one bundle read and one keep, both at the hub’s base and the ticket on the keep', calls.map((c) => c[1]).join(' '));
+    ok(a.applied[0] === 'the imported theme' && a.baked[0] === SN, 'the design opened, and the bake was asked for under the shared name', JSON.stringify([a.applied, a.baked]));
+    ok(a.state.art[0] === u7 && !('orbAssets' in a.docs[0]), 'the bundle’s art came out inline, not as refs', String(a.state.art[0]).slice(0, 22));
+    ok(a.hub.keeps.length === 1 && a.hub.keeps[0].method === 'POST' && a.hub.keeps[0].type === 'application/octet-stream' &&
+      a.hub.keeps[0].bytes.join() === THEME7.join(), 'and the keep posted exactly the bake’s bytes', String(a.hub.keeps[0] && a.hub.keeps[0].bytes.join()));
+    ok(a.downloads.length === 0, 'nothing was downloaded', JSON.stringify(a.downloads.map((d) => d.name)));
+    ok(a.state.status === 'Imported “Skeleton by @greg” into the library', 'the line ends at the library', a.state.status);
+    ok(a.ses.opened === null && a.ses.library().length === 1, 'no draft was saved and the session holds no design of its own', JSON.stringify([a.ses.opened, a.ses.library().length]));
+    ok(posted.length === 1 && posted[0].m.type === 'theme.imported' && posted[0].m.name === SN && posted[0].m.app === 'tint' &&
+      posted[0].m.file === 'tint-Skeleton by @greg.orbtheme' && posted[0].origin === 'http://hub',
+      'the parent was told the name, the app and the file, at the hub’s own origin', JSON.stringify(posted[0] || null));
+    ok(calls[calls.length - 1][1] === '/api/library/entries?app=tint', 'and the library was read again after the keep', calls[calls.length - 1][1]);
+    ok(await a.ses.openTheme() && a.hub.keeps.length === 2 && posted.length === 2, 'the same page imported again from the ticket the hub still holds', JSON.stringify([a.hub.keeps.length, a.state.status]));
+    // what the hub can refuse on the way in
+    const gone = irun({ hub: { bundleStatus: 400, bundleError: 'that import has expired: paste the link again' } });
+    await gone.ses.boot();
+    ok(!(await gone.ses.openTheme()) && !gone.applied.length && !gone.baked.length && !gone.hub.keeps.length &&
+      gone.state.status === 'Could not open that theme: that import has expired: paste the link again',
+      'an expired ticket is refused in the hub’s own sentence, and nothing bakes', gone.state.status);
+    const unr = irun({ hub: { bundleStatus: 500 } });
+    await unr.ses.boot();
+    ok(!(await unr.ses.openTheme()) && unr.state.status === 'Could not open that theme: the hub answered 500', 'a hub with no sentence on it says its status', unr.state.status);
+    const unreachable = irun({ hub: { bundleThrow: true } });
+    await unreachable.ses.boot();
+    ok(!(await unreachable.ses.openTheme()) && unreachable.state.status === 'Could not open that theme: Failed to fetch', 'a hub that cannot be reached is said in its own words', unreachable.state.status);
+    const notjson = irun({ hub: { bundleRaw: '<html><body>nope</body></html>' } });
+    await notjson.ses.boot();
+    ok(!(await notjson.ses.openTheme()) && notjson.state.status === 'Could not open that theme: that is not a design bundle', 'a body that is not JSON is not a design bundle', notjson.state.status);
+    const notb = irun({ hub: { bundle: Object.assign(ibundle(idoc(SN)), { format: 'orb-json' }) } });
+    await notb.ses.boot();
+    ok(!(await notb.ses.openTheme()) && !notb.applied.length && !notb.baked.length && notb.state.status === 'Could not open that theme: that is not a design bundle',
+      'a bundle of another format is refused before anything is applied', notb.state.status);
+    const newer = irun({ hub: { bundle: ibundle(idoc(SN, { schema: 9 })) } });
+    await newer.ses.boot();
+    ok(!(await newer.ses.openTheme()) && !newer.baked.length &&
+      newer.state.status === 'Could not open that theme: that design was made by tint v1.3.0 (design schema 9); this editor (v1.3.0) reads schema 1 — update the app on this orb',
+      'a design on a newer schema is refused with the sentence the Themes tab will show', newer.state.status);
+    const others = irun({ hub: { bundle: ibundle(idoc(SN, { app: 'weather' })) } });
+    await others.ses.boot();
+    ok(!(await others.ses.openTheme()) && others.state.status === 'Could not open that theme: that design is the weather app’s, not tint’s',
+      'a bundle for another app is refused the way every open refuses it', others.state.status);
+    const missing = irun({ hub: { bundle: ibundle(idoc(SN), undefined, {}) } });
+    await missing.ses.boot();
+    ok(!(await missing.ses.openTheme()) && !missing.baked.length && missing.state.status === 'Could not open that theme: the bundle is missing an image',
+      'a bundle without an image it names is refused', missing.state.status);
+    // the bake leg, and what the keep can cost
+    const nobake = irun({ noBake: true });
+    await nobake.ses.boot(); await nobake.ses.openTheme();
+    ok(nobake.applied.length === 1 && !nobake.baked.length && !nobake.hub.keeps.length && nobake.state.status === 'Not imported: this editor cannot bake here',
+      'an editor with no bake says so and still opens the design', nobake.state.status);
+    const nullbake = irun({ bytes: null });
+    await nullbake.ses.boot(); await nullbake.ses.openTheme();
+    ok(nullbake.state.status === 'Not imported: the bake did not finish' && !nullbake.hub.keeps.length, 'a bake that returns nothing says the fallback', nullbake.state.status);
+    const whybake = irun({ bytes: null, says: 'Not baked: the movement has not settled' });
+    await whybake.ses.boot(); await whybake.ses.openTheme();
+    ok(whybake.state.status === 'Not imported: Not baked: the movement has not settled', 'or the editor’s own line, never one of the session’s', whybake.state.status);
+    const retry = irun({ names: ['Skeleton', 'Skeleton', SN] });
+    await retry.ses.boot(); await retry.ses.openTheme();
+    ok(retry.baked.length === 3 && retry.hub.keeps.length === 1 && retry.state.status === 'Imported “Skeleton by @greg” into the library',
+      'a bake that still named the old design is given three tries', JSON.stringify([retry.baked.length, retry.state.status]));
+    const wrong = irun({ names: ['Skeleton'] });
+    await wrong.ses.boot(); await wrong.ses.openTheme();
+    ok(wrong.baked.length === 3 && !wrong.hub.keeps.length && wrong.state.status === 'Not imported: the bake came out named “Skeleton”',
+      'a bake that came out under the owner’s name is not kept, and it reports the name it got', wrong.state.status);
+    const pd = posted.length;
+    const deny = irun({ hub: { keepStatus: 400, keepError: 'the bake is named “Skeleton”, not “Skeleton by @greg”' } });
+    await deny.ses.boot();
+    ok(await deny.ses.openTheme() && deny.hub.keeps.length === 1 && !deny.downloads.length && posted.length === pd &&
+      deny.state.status === 'Not imported: the bake is named “Skeleton”, not “Skeleton by @greg”',
+      'a keep the hub refuses says the hub’s own sentence and imported nothing', deny.state.status);
+    const keepoffline = irun({ hub: { keepThrow: true } });
+    await keepoffline.ses.boot();
+    ok(await keepoffline.ses.openTheme() && keepoffline.state.status === 'Not imported: Failed to fetch', 'a keep the hub cannot be reached for is said in its own words', keepoffline.state.status);
+    const pn = posted.length;
+    const nosn = irun({ hub: { bundle: ibundle(idoc(null)) } });
+    await nosn.ses.boot();
+    ok(await nosn.ses.openTheme() && nosn.applied.length === 1 && !nosn.baked.length && !nosn.hub.keeps.length && posted.length === pn &&
+      nosn.state.status === 'Not imported: the design does not carry its shared name “Skeleton by @greg”',
+      'a design carrying no shared name of its own is neither baked nor kept, and the editor still opened', nosn.state.status);
+    // what is not an import, and what an import page must not do at boot
+    const nohex = irun({ ticket: 'NOTHEX' });
+    ok(nohex.ses.opening === null, 'a ticket that is not 32 lower-case hex gets no cover', String(nohex.ses.opening));
+    await nohex.ses.boot();
+    ok(!(await nohex.ses.openTheme()) && !nohex.baked.length && !calls.some((c) => /\/site\//.test(c[1])), 'and the page asked the hub for no bundle at all', calls.map((c) => c[1]).join(' '));
+    const onweb = irun({ host: { kind: 'web', api: '/studio-api', assets: true, designIds: true }, pathname: '/v1.4.2/' });
+    ok(onweb.ses.opening === null, 'under a web host the same ticket gets no cover', String(onweb.ses.opening));
+    await onweb.ses.boot();
+    ok(!(await onweb.ses.openTheme()) && !onweb.baked.length && !calls.some((c) => /\/site\//.test(c[1])), 'and a site page fetches nothing from /site/', calls.map((c) => c[1]).join(' '));
+    const race = irun({ search: '?import=' + TICKET + '&entry=One&rebake=1' });
+    await race.ses.boot();
+    ok(race.applied.length === 0 && !calls.some((c) => /library\/(design|keep)/.test(c[1])) && !/Rebaking/.test(race.state.status),
+      'an import page’s boot opens no entry and starts no Rebake all, so nothing races it', JSON.stringify([race.applied, race.state.status]));
+    ok(await race.ses.openTheme() && race.hub.keeps.length === 1, 'and the import it did come for still lands', race.state.status);
+    const both = irun({ search: '?import=' + TICKET + '&shared=abcdefghijklmnopqrstuv&theme=D7' });
+    await both.ses.boot();
+    ok(await both.ses.openTheme() && both.hub.keeps.length === 1 && !calls.some((c) => /shared\/bundle|theme\/design/.test(c[1])),
+      'and ?import= wins over ?shared= and ?theme= on the same hub link', calls.map((c) => c[1]).join(' '));
+    const nohost = irun({ host: null });
+    ok((await nohost.ses.boot()) === true && await nohost.ses.openTheme() && nohost.hub.keeps.length === 1 &&
+      nohost.state.status === 'Imported “Skeleton by @greg” into the library',
+      'a page with no GorbHost at all is the hub, and the import runs there too', nohost.state.status);
+    // the parent that is not there, and the parent that will not listen
+    const noparent = irun({});
+    await noparent.ses.boot();
+    global.parent = globalThis;
+    ok(await noparent.ses.openTheme() && noparent.hub.keeps.length === 1 && noparent.state.status === 'Imported “Skeleton by @greg” into the library',
+      'a page opened at the top, whose parent is itself, tells no one and still imports', noparent.state.status);
+    global.parent = { postMessage: () => { throw new Error('the parent is gone'); } };
+    const badparent = irun({});
+    await badparent.ses.boot();
+    ok(await badparent.ses.openTheme() && badparent.hub.keeps.length === 1 && badparent.state.status === 'Imported “Skeleton by @greg” into the library',
+      'and a parent that throws on the message costs the import nothing', badparent.state.status);
+    global.parent = { postMessage: (m, origin) => posted.push({ m: m, origin: origin }) };
+    location.search = ''; location.pathname = '/';
+    global.parent = lastParent;
+    delete global.GorbBake; delete global.GorbHost;
+  }
+
   delete global.GorbHost;
 
   console.log(fails ? 'RESULT: FAIL — ' + fails + ' of ' + checked + ' checks' : 'all green (' + checked + ' checks)');

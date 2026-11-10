@@ -139,6 +139,13 @@ type Server struct {
 	// nil means no library was resolved, which the pane reports as an empty library
 	// rather than as an error — the hub still serves everything else it can.
 	lib *Library
+	// siteClient is the client "Import from orb-os.net" dials a design site with
+	// (siteimport.go). Nil is the hub's own default: a minute of patience for a bundle's
+	// tens of megabytes, and no redirect followed. A test hands itself one.
+	siteClient *http.Client
+	// siteTickets holds the bundles that door fetched and no bake has kept yet — the
+	// one-time imports /api/site/bundle and /api/site/keep work from. See siteimport.go.
+	siteTickets siteTicketStore
 	// noAutoInstall turns the join-time install off and leaves every press intact (-no-autoseed),
 	// for a bench run that must not touch a board it is about to instrument.
 	noAutoInstall bool
@@ -263,13 +270,19 @@ type Server struct {
 	// sighting and the board would read as an orb again seconds after its
 	// lonely flash. Evidence of orb life — an orb flash, an announcement, a
 	// serial ack — clears the mark. See lonelyset.go.
-	// pageAskedAt is the last inbound request from a browser, in unix nanos, and
-	// 0 until one arrives. pageQuiet reads it and window.go's belt acts on it: a
-	// hub blind to its window has only the page's own traffic to tell a closed
-	// window from a browser DevTools cannot see. Atomic rather than mutexed
-	// because it is written on the request path, where the 10 s heartbeat and a
-	// page paint must not contend with anything for a lock.
-	pageAskedAt atomic.Int64
+	// pageAskedAt is the last inbound request from a browser, and nil until one
+	// arrives. pageQuiet reads it and window.go's belt acts on it: a hub blind to
+	// its window has only the page's own traffic to tell a closed window from a
+	// browser DevTools cannot see. Atomic rather than mutexed because it is
+	// written on the request path, where the 10 s heartbeat and a page paint must
+	// not contend with anything for a lock.
+	//
+	// It is a *time.Time, not unix nanos, because the time must carry the
+	// monotonic reading: a witness in unix nanos is wall-clock, which steps with
+	// NTP and ticks as coarsely as the kernel's clocksource lets it, so a request
+	// and the glance at this field right after it can read the same wall second
+	// and the belt mistakes a live page for an unwitnessed one.
+	pageAskedAt atomic.Pointer[time.Time]
 	lonely      *lonelyMark
 	orbIP       string
 	// statePath is where learned orb addresses are remembered across launches
@@ -1016,7 +1029,8 @@ func (s *Server) log(h http.Handler) http.Handler {
 		// counts as the live page it is. Only inbound HTTP arrives here: the orb
 		// never calls back, so nothing but a browser with this hub open can move
 		// this clock. See watchPageGone in window.go.
-		s.pageAskedAt.Store(time.Now().UnixNano())
+		asked := time.Now()
+		s.pageAskedAt.Store(&asked)
 		start := time.Now()
 		h.ServeHTTP(w, r)
 		if !strings.HasPrefix(r.URL.Path, "/web/") {
@@ -1029,12 +1043,20 @@ func (s *Server) log(h http.Handler) http.Handler {
 // when nothing has ever arrived. Zero is deliberately not "forever": silence
 // whose start was never witnessed is not evidence a window closed, and the belt
 // stays out until it can watch the silence begin.
+//
+// The subtraction runs on the stored time's monotonic reading, and a witnessed
+// request that the monotonic clock has not yet aged (same tick) reports a nanosecond
+// rather than zero: zero means "never asked", and that stop is not true one line
+// after a request arrived.
 func (s *Server) pageQuiet() time.Duration {
-	n := s.pageAskedAt.Load()
-	if n == 0 {
+	t := s.pageAskedAt.Load()
+	if t == nil {
 		return 0
 	}
-	return time.Since(time.Unix(0, n))
+	if q := time.Since(*t); q > 0 {
+		return q
+	}
+	return time.Nanosecond
 }
 
 // noStoreCache marks every embedded asset with Cache-Control: no-cache: always
@@ -1217,6 +1239,9 @@ func (s *Server) routes(mux *http.ServeMux) {
 	s.routesEditor(mux)
 	s.routesDesigns(mux)
 	s.routesLibraryEntries(mux)
+	// orb-os-net §7.1 H1: paste a design's link, and the hub holds its bundle for the
+	// editor's bake. The app side of this lives in the Themes tab, not here.
+	s.routesSiteImport(mux)
 	// radar-plan §2.4: the map tool's tile forwarder and its source.
 	s.routesMaps(mux)
 }

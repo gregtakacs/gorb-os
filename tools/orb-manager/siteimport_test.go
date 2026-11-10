@@ -1,0 +1,806 @@
+package main
+
+// orb-os-net §7.1 H1: the hub's half of "Import from orb-os.net" — the link, the fetch,
+// the checks, the ticket, the keep with its origin record — run through the same
+// s.routes(mux) the binary serves, against a site that is an httptest handler.
+
+import (
+	"bytes"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/hex"
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
+	"os"
+	"path/filepath"
+	"slices"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/gregtakacs/gorb-os/tools/orb-manager/internal/orbfake"
+	"github.com/gregtakacs/gorb-os/tools/orb-manager/internal/orbnet"
+)
+
+// siteDesignID is a design's 22 characters, the example link's own id.
+const siteDesignID = "AbCdEfGhIjKlMnOpQrStUv"
+
+// siteAsk is one request the hub made to a site: what it asked for, and how it asked.
+type siteAsk struct {
+	path string
+	head http.Header
+}
+
+// siteServer stands a design site: h answers every request, and every request is remembered.
+func siteServer(t *testing.T, h func(w http.ResponseWriter, r *http.Request)) (*httptest.Server, *[]siteAsk) {
+	t.Helper()
+	var asks []siteAsk
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		asks = append(asks, siteAsk{path: r.URL.Path, head: r.Header.Clone()})
+		h(w, r)
+	}))
+	t.Cleanup(srv.Close)
+	return srv, &asks
+}
+
+// siteLink is the link the owner pastes: the test site's address plus the design's path.
+func siteLink(srv *httptest.Server, id string) string {
+	return srv.URL + "/t/" + id
+}
+
+func bundleOf(t *testing.T, doc map[string]any) []byte {
+	t.Helper()
+	b, err := json.Marshal(doc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b
+}
+
+// goodBundle is §8.4's shape as a site that works serves it: the design the link named,
+// for app, under sharedName, carrying each art body under its own hash.
+func goodBundle(t *testing.T, id string, version int, app, sharedName string, art ...[]byte) []byte {
+	t.Helper()
+	assets := map[string]string{}
+	var orbAssets []any
+	for _, body := range art {
+		sum := sha256.Sum256(body)
+		sha := hex.EncodeToString(sum[:])
+		assets[sha] = base64.StdEncoding.EncodeToString(body)
+		orbAssets = append(orbAssets, map[string]any{"sha256": sha, "mimetype": "image/png"})
+	}
+	design := map[string]any{"format": "wc-design", "schema": 1, "app": app, "themeName": sharedName}
+	if orbAssets != nil {
+		design["orbAssets"] = orbAssets
+	}
+	return bundleOf(t, map[string]any{
+		"format": "orb-design-bundle", "bundle": 1, "id": id, "version": version, "app": app,
+		"sharedName": sharedName, "name": sharedName, "handle": "greg",
+		"design": design, "assets": assets,
+	})
+}
+
+// siteImport posts a paste and answers the hub's envelope.
+func siteImport(t *testing.T, s *Server, link string) map[string]any {
+	t.Helper()
+	body, err := json.Marshal(map[string]string{"link": link})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return designCall(t, s, http.MethodPost, "/api/site/import", body)
+}
+
+func importErr(t *testing.T, s *Server, link string) string {
+	t.Helper()
+	env := siteImport(t, s, link)
+	if env["ok"] == true {
+		t.Fatalf("import of %q was accepted: %v", link, env)
+	}
+	msg, _ := env["error"].(string)
+	return msg
+}
+
+func ticketOf(t *testing.T, env map[string]any) string {
+	t.Helper()
+	if env["ok"] != true {
+		t.Fatalf("import refused: %v", env)
+	}
+	tk, _ := env["data"].(map[string]any)["ticket"].(string)
+	if tk == "" {
+		t.Fatalf("no ticket in %v", env)
+	}
+	return tk
+}
+
+// bundleHeld is the bundle door's own question: is this import still on the hub?
+func bundleHeld(t *testing.T, s *Server, tk string) bool {
+	t.Helper()
+	return rawCall(t, s, http.MethodGet, "/api/site/bundle?ticket="+tk, nil).Code == 200
+}
+
+// untokenedCall rides the same mux with no launch token: what a page that never loaded
+// from this hub sends.
+func untokenedCall(t *testing.T, s *Server, method, path string, body []byte) *httptest.ResponseRecorder {
+	t.Helper()
+	mux := http.NewServeMux()
+	s.routes(mux)
+	req := httptest.NewRequest(method, path, bytes.NewReader(body))
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	return rec
+}
+
+// The link is the one thing this flow cannot guess at, so the reading of it is picky and
+// says one sentence when the text is not a design's link.
+func TestSiteLinkNamesOneDesignOnOneSite(t *testing.T) {
+	ok := []struct{ paste, site, id string }{
+		{"https://orb-os.net/t/" + siteDesignID, "https://orb-os.net", siteDesignID},
+		{"  https://orb-os.net/t/" + siteDesignID + "/  ", "https://orb-os.net", siteDesignID},
+		{"https://orb-os.net/t/" + siteDesignID + "?utm=share#copy", "https://orb-os.net", siteDesignID},
+		{"orb.takacsfamily.com/t/" + siteDesignID, "https://orb.takacsfamily.com", siteDesignID},
+		{"HTTPS://ORB-OS.NET/t/" + siteDesignID, "https://orb-os.net", siteDesignID},
+		{"http://127.0.0.1:8080/t/" + siteDesignID, "http://127.0.0.1:8080", siteDesignID},
+		{"http://localhost/t/" + siteDesignID, "http://localhost", siteDesignID},
+		{"http://[::1]:8080/t/" + siteDesignID, "http://[::1]:8080", siteDesignID},
+	}
+	for _, c := range ok {
+		site, id, err := parseSiteLink(c.paste)
+		if err != nil {
+			t.Errorf("parseSiteLink(%q): %v", c.paste, err)
+			continue
+		}
+		if site != c.site || id != c.id {
+			t.Errorf("parseSiteLink(%q) = %q %q, want %q %q", c.paste, site, id, c.site, c.id)
+		}
+	}
+	bad := []string{
+		"", "   ", "hello", "orb-os.net", "https://orb-os.net/", "https://orb-os.net/t/",
+		"https://orb-os.net/t/AbCdEfGhIjKlMnOpQrStu",  // 21 characters
+		"https://orb-os.net/t/" + siteDesignID + "/x", // a path that goes on
+		"https://greg@orb-os.net/t/" + siteDesignID,   // userinfo
+		"ftp://orb-os.net/t/" + siteDesignID,          // not a web scheme
+		"https://orb-os.net/" + siteDesignID,          // no /t/ to say what the id is
+	}
+	for _, p := range bad {
+		if _, _, err := parseSiteLink(p); err == nil || err.Error() != siteLinkRefused {
+			t.Errorf("parseSiteLink(%q) = %v, want the one link sentence", p, err)
+		}
+	}
+	// A remote http:// link is not a malformed paste: the owner has a link, and the one
+	// thing they can do about it is get the https one.
+	if _, _, err := parseSiteLink("http://orb-os.net/t/" + siteDesignID); err == nil ||
+		err.Error() != "the link must start with https://" {
+		t.Errorf("a remote http link = %v, want the https sentence", err)
+	}
+}
+
+// siteHostOf is the host, port and all, the refusal sentences name.
+func siteHostOf(srv *httptest.Server) string { return strings.TrimPrefix(srv.URL, "http://") }
+
+// What the site answered is what the owner hears, in the one sentence that fits it. The
+// hub asks once and never follows a pointer: a site that answers 302 is offering a sign-in
+// page, and dialing where it points would hand our request to a place nobody named.
+func TestSiteImportDoorAnswersWhatTheSiteSaid(t *testing.T) {
+	s, _, _ := libHub(t)
+	cases := []struct {
+		what string
+		h    func(w http.ResponseWriter, r *http.Request)
+		want func(host string) string // nil is the case that succeeds
+	}{
+		{"the design as served", func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write(goodBundle(t, siteDesignID, 3, "clock", "Skeleton by @greg", []byte("a png pretending to be one")))
+		}, nil},
+		{"a sign-in redirect", func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path == "/signin" {
+				_, _ = w.Write([]byte("<html>sign in</html>"))
+				return
+			}
+			http.Redirect(w, r, "/signin", http.StatusFound)
+		}, func(host string) string {
+			return host + " sent a sign-in page instead of the theme: the site isn’t open to Orb Manager yet"
+		}},
+		{"a private design", func(w http.ResponseWriter, r *http.Request) {
+			http.Error(w, "not yours", http.StatusNotFound)
+		}, func(host string) string { return "that theme is private, or " + host + " has no such theme" }},
+		{"a deleted design", func(w http.ResponseWriter, r *http.Request) {
+			http.Error(w, "gone", http.StatusGone)
+		}, func(string) string { return "that theme was deleted by its owner" }},
+		{"a site that will not share", func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusConflict)
+			_, _ = w.Write([]byte(`{"message":"the owner paused sharing"}`))
+		}, func(host string) string {
+			return host + " can’t share that theme right now: the owner paused sharing"
+		}},
+		{"a 409 naming its reason in the other field", func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusConflict)
+			_, _ = w.Write([]byte(`{"error":"quota"}`))
+		}, func(host string) string { return host + " can’t share that theme right now: quota" }},
+		{"a 409 that says nothing", func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusConflict)
+		}, func(host string) string { return host + " can’t share that theme right now: HTTP 409" }},
+		{"a site that broke", func(w http.ResponseWriter, r *http.Request) {
+			http.Error(w, "boom", http.StatusInternalServerError)
+		}, func(host string) string { return host + " answered HTTP 500" }},
+	}
+	for _, c := range cases {
+		srv, asks := siteServer(t, c.h)
+		host := siteHostOf(srv)
+		held := len(s.tickets().live)
+		if c.want == nil {
+			env := siteImport(t, s, siteLink(srv, siteDesignID))
+			if env["ok"] != true {
+				t.Errorf("%s: import refused: %v", c.what, env)
+				continue
+			}
+			d, _ := env["data"].(map[string]any)
+			if d["version"] != float64(3) || d["app"] != "clock" || d["sharedName"] != "Skeleton by @greg" ||
+				d["handle"] != "greg" || d["site"] != strings.ToLower(srv.URL) {
+				t.Errorf("%s: data = %v", c.what, d)
+			}
+			if len(*asks) != 1 || (*asks)[0].path != "/api/hub/theme/"+siteDesignID {
+				t.Errorf("%s: the site saw %v, want one bundle ask", c.what, *asks)
+			} else if got := (*asks)[0].head; got.Get("Accept") != "application/json" ||
+				!strings.HasPrefix(got.Get("User-Agent"), "orb-manager/") {
+				t.Errorf("%s: the site saw headers %v, wanting the hub's Accept and User-Agent", c.what, got)
+			}
+			continue
+		}
+		if got := importErr(t, s, siteLink(srv, siteDesignID)); got != c.want(host) {
+			t.Errorf("%s: error = %q, want %q", c.what, got, c.want(host))
+		}
+		if n := len(s.tickets().live); n != held {
+			t.Errorf("%s: a refused import is held anyway: %d tickets live", c.what, n)
+		}
+		for _, a := range *asks {
+			if a.path != "/api/hub/theme/"+siteDesignID {
+				t.Errorf("%s: the hub dialed %s, wanting only the bundle route", c.what, a.path)
+			}
+		}
+	}
+}
+
+// A bundle can arrive whole and still be wrong: the wrong design, no version, art that is
+// not the art its hash names. Those refusals blame the theme, and say which.
+func TestSiteImportRefusesADamagedDesign(t *testing.T) {
+	s, _, _ := libHub(t)
+	art := []byte("a png pretending to be one")
+	shaOf := func(b []byte) string { sum := sha256.Sum256(b); return hex.EncodeToString(sum[:]) }
+	artSha := shaOf(art)
+	damaged := func(why string, doc map[string]any) {
+		srv, _ := siteServer(t, func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write(bundleOf(t, doc)) })
+		if got := importErr(t, s, siteLink(srv, siteDesignID)); got != "the theme from "+siteHostOf(srv)+" is damaged: "+why {
+			t.Errorf("damaged bundle: error = %q, want %q", got, why)
+		}
+	}
+	notTheme := func(body string) {
+		srv, _ := siteServer(t, func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "text/html")
+			_, _ = w.Write([]byte(body))
+		})
+		if got := importErr(t, s, siteLink(srv, siteDesignID)); got != siteHostOf(srv)+" did not answer with a theme" {
+			t.Errorf("not a theme %q: error = %q", body, got)
+		}
+	}
+	assets := func(m map[string]string) map[string]string { return m }
+	damaged("it names another design", map[string]any{
+		"format": "orb-design-bundle", "bundle": 1, "id": "ZzYyXxWwVvUuTtSsRrQqPp", "version": 1,
+		"app": "clock", "sharedName": "Skeleton by @greg", "design": map[string]any{}, "assets": assets(nil),
+	})
+	damaged("it has no version", map[string]any{
+		"format": "orb-design-bundle", "bundle": 1, "id": siteDesignID,
+		"app": "clock", "sharedName": "Skeleton by @greg", "design": map[string]any{}, "assets": assets(nil),
+	})
+	damaged("it has no version", map[string]any{
+		"format": "orb-design-bundle", "bundle": 1, "id": siteDesignID, "version": 0,
+		"app": "clock", "sharedName": "Skeleton by @greg", "design": map[string]any{}, "assets": assets(nil),
+	})
+	damaged("it names no app", map[string]any{
+		"format": "orb-design-bundle", "bundle": 1, "id": siteDesignID, "version": 2,
+		"app": "Clock!", "sharedName": "Skeleton by @greg", "design": map[string]any{}, "assets": assets(nil),
+	})
+	damaged("it has no shared name", map[string]any{
+		"format": "orb-design-bundle", "bundle": 1, "id": siteDesignID, "version": 2,
+		"app": "clock", "design": map[string]any{}, "assets": assets(nil),
+	})
+	damaged(fmt.Sprintf("its shared name is over %d bytes", orbnet.ThemeNameMax), map[string]any{
+		"format": "orb-design-bundle", "bundle": 1, "id": siteDesignID, "version": 2, "app": "clock",
+		"sharedName": strings.Repeat("n", orbnet.ThemeNameMax+1), "design": map[string]any{}, "assets": assets(nil),
+	})
+	damaged("it carries no design", map[string]any{
+		"format": "orb-design-bundle", "bundle": 1, "id": siteDesignID, "version": 2, "app": "clock",
+		"sharedName": "Skeleton by @greg", "assets": assets(nil),
+	})
+	damaged("its art is not readable", map[string]any{
+		"format": "orb-design-bundle", "bundle": 1, "id": siteDesignID, "version": 2, "app": "clock",
+		"sharedName": "Skeleton by @greg", "design": map[string]any{}, "assets": []string{"not an object"},
+	})
+	damaged("an image is missing ("+artSha[:12]+")", map[string]any{
+		"format": "orb-design-bundle", "bundle": 1, "id": siteDesignID, "version": 2, "app": "clock",
+		"sharedName": "Skeleton by @greg", "design": map[string]any{
+			"orbAssets": []any{map[string]any{"sha256": artSha}}}, "assets": assets(nil),
+	})
+	damaged("an image is missing (zzzz)", map[string]any{
+		"format": "orb-design-bundle", "bundle": 1, "id": siteDesignID, "version": 2, "app": "clock",
+		"sharedName": "Skeleton by @greg", "design": map[string]any{
+			"orbAssets": []any{map[string]any{"sha256": "zzzz"}}}, "assets": assets(nil),
+	})
+	damaged("its art is not readable", map[string]any{
+		"format": "orb-design-bundle", "bundle": 1, "id": siteDesignID, "version": 2, "app": "clock",
+		"sharedName": "Skeleton by @greg", "design": map[string]any{
+			"orbAssets": []any{map[string]any{"sha256": artSha}}},
+		"assets": assets(map[string]string{artSha: "this is not base64!!"}),
+	})
+	damaged("an image came back changed ("+artSha[:12]+")", map[string]any{
+		"format": "orb-design-bundle", "bundle": 1, "id": siteDesignID, "version": 2, "app": "clock",
+		"sharedName": "Skeleton by @greg", "design": map[string]any{
+			"orbAssets": []any{map[string]any{"sha256": artSha}}},
+		"assets": assets(map[string]string{artSha: base64.StdEncoding.EncodeToString([]byte("changed"))}),
+	})
+	notTheme("<!doctype html><html><body>a design, they said</body></html>")
+	notTheme(`[1,2,3]`)
+	notTheme(`"orb-design-bundle"`)
+	notTheme(`{"format":"orb-design-bundle","bundle":2,"id":"` + siteDesignID + `"}`)
+	notTheme(`{"bundle":1,"id":"` + siteDesignID + `"}`)
+}
+
+// A design the size of a card game is not a theme anyone wears: the hub reads a little past
+// the ceiling, stops, and says the theme is too big rather than holding the megabytes.
+func TestSiteImportRefusesABundleTooBigToHold(t *testing.T) {
+	s, _, _ := libHub(t)
+	block := bytes.Repeat([]byte("x"), 1<<20)
+	srv, _ := siteServer(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		for i := 0; i < siteBundleMax/(1<<20)+2; i++ {
+			_, _ = w.Write(block)
+		}
+	})
+	if got := importErr(t, s, siteLink(srv, siteDesignID)); got != "that theme is too big to import (over 32 MB)" {
+		t.Errorf("oversized bundle: error = %q", got)
+	}
+}
+
+// The paste door takes one method and one field, and a paste that is not a link is refused
+// in the same sentence whether it arrived empty, huge or as somebody's shopping list.
+func TestSiteImportDoorRefusesWhatIsNotALink(t *testing.T) {
+	s, _, _ := libHub(t)
+	rec := rawCall(t, s, http.MethodGet, "/api/site/import", nil)
+	if rec.Code != http.StatusMethodNotAllowed || !strings.Contains(rec.Body.String(), "POST only") {
+		t.Errorf("GET /api/site/import = %d %s, want 405 POST only", rec.Code, rec.Body)
+	}
+	for _, body := range []string{`{}`, `{"link":""}`, `{"link":"   "}`, `not json`, `[1,2]`, `{"link":7}`} {
+		env := designCall(t, s, http.MethodPost, "/api/site/import", []byte(body))
+		if env["ok"] != false || env["error"] != siteLinkRefused {
+			t.Errorf("import of %s = %v, want the link sentence", body, env)
+		}
+	}
+	env := designCall(t, s, http.MethodPost, "/api/site/import",
+		[]byte(`{"link":"https://orb-os.net/t/`+siteDesignID+`?pad=`+strings.Repeat("p", siteLinkMax)+`"}`))
+	if env["ok"] != false || env["error"] != siteLinkRefused {
+		t.Errorf("an oversized paste = %v, want the link sentence", env)
+	}
+}
+
+// The editor reads the bundle back from the hub, byte for byte: the hub is a courier for
+// the site's own bytes, and a reload has to find the same ones.
+func TestSiteBundleDoorHandsTheServedBytesBack(t *testing.T) {
+	s, _, _ := libHub(t)
+	served := []byte("{\n  \"format\": \"orb-design-bundle\", \"bundle\": 1, \"id\": \"" + siteDesignID +
+		"\", \"version\": 7, \"app\": \"clock\", \"sharedName\": \"Skeleton by @greg\",\n   \"design\": " +
+		"{\"dial\":\"skeleton\"}, \"assets\": {}, \"siteFieldTheHubNeverHeardOf\": true\n}\n")
+	srv, _ := siteServer(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(served)
+	})
+	tk := ticketOf(t, siteImport(t, s, siteLink(srv, siteDesignID)))
+	rec := rawCall(t, s, http.MethodGet, "/api/site/bundle?ticket="+tk, nil)
+	if rec.Code != 200 || !bytes.Equal(rec.Body.Bytes(), served) {
+		t.Fatalf("bundle = %d %.80s, want the site's bytes untouched", rec.Code, rec.Body)
+	}
+	if ct, cc := rec.Header().Get("Content-Type"), rec.Header().Get("Cache-Control"); ct != "application/json" || cc != "no-store" {
+		t.Errorf("bundle headers = %q %q, want application/json and no-store", ct, cc)
+	}
+	if rec2 := rawCall(t, s, http.MethodGet, "/api/site/bundle?ticket="+tk, nil); !bytes.Equal(rec2.Body.Bytes(), served) {
+		t.Error("a second read of the same ticket got something else; an editor reload must work")
+	}
+	var env map[string]any
+	rec3 := rawCall(t, s, http.MethodGet, "/api/site/bundle?ticket=00000000000000000000000000000000", nil)
+	if json.Unmarshal(rec3.Body.Bytes(), &env) != nil || env["error"] != siteTicketGone {
+		t.Errorf("an unknown ticket = %.120s, want the expired sentence", rec3.Body)
+	}
+	if env := designCall(t, s, http.MethodGet, "/api/site/bundle", nil); env["ok"] != false || env["error"] != siteTicketGone {
+		t.Errorf("no ticket at all = %v, want the expired sentence", env)
+	}
+	if rec := rawCall(t, s, http.MethodPost, "/api/site/bundle?ticket="+tk, nil); rec.Code != http.StatusMethodNotAllowed {
+		t.Errorf("POST /api/site/bundle = %d, want 405", rec.Code)
+	}
+}
+
+// libEntryView is one /api/library/entries row, seen here only for the fields the import
+// flow is supposed to move: the theme's file, and where it came from.
+type libEntryView struct {
+	Name  string `json:"name"`
+	State string `json:"state"`
+	Theme *struct {
+		File   string       `json:"file"`
+		Stem   string       `json:"stem"`
+		Origin *ThemeOrigin `json:"origin"`
+	} `json:"theme"`
+}
+
+func entriesView(t *testing.T, s *Server, app string) map[string]libEntryView {
+	t.Helper()
+	rec := rawCall(t, s, http.MethodGet, "/api/library/entries?app="+app, nil)
+	var env struct {
+		OK   bool           `json:"ok"`
+		Data []libEntryView `json:"data"`
+	}
+	if json.Unmarshal(rec.Body.Bytes(), &env) != nil || !env.OK {
+		t.Fatalf("entries: %d %.200s", rec.Code, rec.Body)
+	}
+	out := map[string]libEntryView{}
+	for _, e := range env.Data {
+		out[e.Name] = e
+	}
+	return out
+}
+
+// shelfNames lists what the themes directory holds, so a refusal can be proved to have left
+// nothing behind rather than merely answered no.
+func shelfNames(t *testing.T, dir string) []string {
+	t.Helper()
+	files, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out []string
+	for _, f := range files {
+		out = append(out, f.Name())
+	}
+	return out
+}
+
+// The keep door is the only thing that files an import: it takes the editor's bake, files
+// it the way every other keep does, and writes the record of the design beside it.
+func TestSiteKeepFilesTheThemeAndRecordsWhereItCameFrom(t *testing.T) {
+	s, _, root := libHub(t)
+	srv, _ := siteServer(t, func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write(goodBundle(t, siteDesignID, 4, "clock", "Skeleton by @greg", []byte("art")))
+	})
+	tk := ticketOf(t, siteImport(t, s, siteLink(srv, siteDesignID)))
+	bake := withDesign(orbfake.Container("Skeleton by @greg"), string(designDoc("Skeleton by @greg", "v1.2.30", 1)))
+	env := designCall(t, s, http.MethodPost, "/api/site/keep?ticket="+tk, bake)
+	if env["ok"] != true {
+		t.Fatalf("keep: %v", env)
+	}
+	d, _ := env["data"].(map[string]any)
+	file, _ := d["file"].(string)
+	if d["name"] != "Skeleton by @greg" || !strings.HasSuffix(file, ".orbtheme") {
+		t.Fatalf("keep data = %v, want the baked name and its shelf file", d)
+	}
+	shelf := filepath.Join(root, "themes", file)
+	body, err := os.ReadFile(shelf)
+	if err != nil {
+		t.Fatalf("shelf = %v: %v", shelfNames(t, filepath.Join(root, "themes")), err)
+	}
+	if !bytes.Equal(body, bake) {
+		t.Error("the shelf holds something other than the bytes the editor baked")
+	}
+	o := d["origin"].(map[string]any)
+	if o["site"] != strings.ToLower(srv.URL) || o["designId"] != siteDesignID || o["version"] != float64(4) {
+		t.Errorf("origin = %v, want this site, this design, version 4", o)
+	}
+	side, err := os.ReadFile(themeOriginPath(shelf))
+	if err != nil {
+		t.Fatalf("no sidecar beside the theme: %v", err)
+	}
+	var rec ThemeOrigin
+	if json.Unmarshal(side, &rec) != nil {
+		t.Fatalf("sidecar is not JSON: %.80s", side)
+	}
+	if rec.Site != strings.ToLower(srv.URL) || rec.DesignID != siteDesignID || rec.Version != 4 || rec.ImportedAt <= 0 {
+		t.Errorf("sidecar = %+v", rec)
+	}
+	if !bytes.Contains(side, []byte("\n  ")) {
+		t.Errorf("sidecar is not indented JSON: %s", side)
+	}
+	e := entriesView(t, s, "clock")["Skeleton by @greg"]
+	if e.Theme == nil || e.Theme.Origin == nil {
+		t.Fatalf("entries = %+v, want the theme with its origin", e)
+	}
+	if e.Theme.Origin.Site != rec.Site || e.Theme.Origin.DesignID != siteDesignID || e.Theme.Origin.Version != 4 {
+		t.Errorf("entries origin = %+v, want the sidecar's", e.Theme.Origin)
+	}
+	// The ticket is spent: the same bake cannot be kept twice from one import.
+	if got := designCall(t, s, http.MethodPost, "/api/site/keep?ticket="+tk, bake)["error"]; got != siteTicketGone {
+		t.Errorf("a second keep = %v, want the expired sentence", got)
+	}
+	if got := designCall(t, s, http.MethodGet, "/api/site/bundle?ticket="+tk, nil)["error"]; got != siteTicketGone {
+		t.Errorf("the bundle after the keep = %v, want the expired sentence", got)
+	}
+	// Forgetting the entry takes the record with the theme, so an orphan sidecar cannot
+	// come back to claim a later theme of the same name.
+	name := url.QueryEscape("Skeleton by @greg")
+	if env := designCall(t, s, http.MethodPost, "/api/library/forget?app=clock&name="+name+"&what=all", nil); env["ok"] != true {
+		t.Fatalf("forget: %v", env)
+	}
+	if left := shelfNames(t, filepath.Join(root, "themes")); len(left) != 0 {
+		t.Errorf("forgetting the entry left %v on the shelf", left)
+	}
+}
+
+// A bake is only this import's theme if it is the design's: the app and the name the bundle
+// named have to be the app and the name the container carries, because the origin record
+// written beside the file claims both. A refusal leaves the shelf as it was.
+func TestSiteKeepRefusesABakeThatIsNotTheImport(t *testing.T) {
+	s, _, root := libHub(t)
+	shelf := filepath.Join(root, "themes")
+	cases := []struct {
+		what  string
+		app   string
+		body  []byte
+		where string // the sentence's own words
+	}{
+		{"another design's name", "clock", orbfake.Container("Trendy by @greg"),
+			"the bake is named “Trendy by @greg”, not “Skeleton by @greg”"},
+		{"another app's bake", "flights", orbfake.Container("Skeleton by @greg"),
+			"that theme is not one of the flights app’s"},
+		{"not a theme at all", "clock", []byte("the editor sent its own HTML"), ""},
+		{"too big for an orb", "clock", bytes.Repeat([]byte("x"), orbnet.MaxThemeUpload+1),
+			"that theme is over what an orb will accept"},
+	}
+	for _, c := range cases {
+		srv, _ := siteServer(t, func(w http.ResponseWriter, r *http.Request) {
+			_, _ = w.Write(goodBundle(t, siteDesignID, 2, c.app, "Skeleton by @greg"))
+		})
+		tk := ticketOf(t, siteImport(t, s, siteLink(srv, siteDesignID)))
+		got, _ := designCall(t, s, http.MethodPost, "/api/site/keep?ticket="+tk, c.body)["error"].(string)
+		if got == "" {
+			t.Errorf("%s: the keep was accepted", c.what)
+		} else if c.where != "" && !strings.Contains(got, c.where) {
+			t.Errorf("%s: keep = %q, want a refusal saying %q", c.what, got, c.where)
+		} else if strings.HasPrefix(got, "orbnet: ") {
+			t.Errorf("%s: keep = %q, want the hub's own sentence, not the library package's", c.what, got)
+		}
+		if left := shelfNames(t, shelf); len(left) != 0 {
+			t.Errorf("%s: a refused bake left %v on the shelf", c.what, left)
+		}
+		// the ticket survives a refusal: the owner fixes the bake and sends it again
+		if !bundleHeld(t, s, tk) {
+			t.Errorf("%s: a refused bake spent its import's ticket", c.what)
+		}
+	}
+	if env := designCall(t, s, http.MethodPost, "/api/site/keep?ticket=deadbeefdeadbeefdeadbeefdeadbeef",
+		orbfake.Container("Skeleton by @greg")); env["error"] != siteTicketGone {
+		t.Errorf("an unknown ticket = %v, want the expired sentence", env)
+	}
+	if rec := rawCall(t, s, http.MethodGet, "/api/site/keep?ticket="+siteDesignID, nil); rec.Code != http.StatusMethodNotAllowed {
+		t.Errorf("GET /api/site/keep = %d, want 405", rec.Code)
+	}
+}
+
+// An import whose record cannot be written says so, keeps the theme it was told to keep,
+// and leaves the ticket live so the next try can complete the pair.
+func TestSiteKeepReportsARecordItCouldNotWrite(t *testing.T) {
+	s, _, root := libHub(t)
+	shelf := filepath.Join(root, "themes")
+	srv, _ := siteServer(t, func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write(goodBundle(t, siteDesignID, 2, "clock", "Skeleton by @greg"))
+	})
+	bake := orbfake.Container("Skeleton by @greg")
+	env := designCall(t, s, http.MethodPost, "/api/site/keep?ticket="+
+		ticketOf(t, siteImport(t, s, siteLink(srv, siteDesignID))), bake)
+	if env["ok"] != true {
+		t.Fatalf("the first keep: %v", env)
+	}
+	dest := filepath.Join(shelf, env["data"].(map[string]any)["file"].(string))
+	// A directory standing where the sidecar goes is the cheapest write failure a test can
+	// arrange, and it is the same failure a read-only tree or a full disk would be.
+	blocker := themeOriginPath(dest)
+	if err := os.Remove(blocker); err != nil {
+		t.Fatal(err) // the first keep wrote the record; the block needs the empty space
+	}
+	if err := os.Mkdir(blocker, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	tk := ticketOf(t, siteImport(t, s, siteLink(srv, siteDesignID)))
+	if got, _ := designCall(t, s, http.MethodPost, "/api/site/keep?ticket="+tk, bake)["error"].(string); !strings.HasPrefix(got,
+		"the theme was kept, but where it came from could not be recorded: ") {
+		t.Fatalf("keep with the record blocked = %q, want the half-kept sentence", got)
+	}
+	if b, err := os.ReadFile(dest); err != nil || !bytes.Equal(b, bake) {
+		t.Errorf("the theme was not left on the shelf beside its blocked record: %v", err)
+	}
+	if !bundleHeld(t, s, tk) {
+		t.Error("the ticket of a half-kept import is gone: the retry cannot complete the pair")
+	}
+	if err := os.Remove(blocker); err != nil {
+		t.Fatal(err)
+	}
+	if env := designCall(t, s, http.MethodPost, "/api/site/keep?ticket="+tk, bake); env["ok"] != true {
+		t.Fatalf("the retry = %v, want the record written", env)
+	}
+	if o := readThemeOrigin(dest); o == nil || o.Version != 2 {
+		t.Errorf("origin after the retry = %+v, want the retry to complete it", o)
+	}
+}
+
+// Importing the same design twice holds two tickets, and the keep that lands last is the
+// one the shelf and the record describe: a newer version over the older bake, one file.
+func TestSiteKeepNewerVersionRewritesTheRecord(t *testing.T) {
+	s, _, root := libHub(t)
+	shelf := filepath.Join(root, "themes")
+	version := 4
+	srv, _ := siteServer(t, func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write(goodBundle(t, siteDesignID, version, "clock", "Skeleton by @greg"))
+	})
+	link := siteLink(srv, siteDesignID)
+	bake := orbfake.Container("Skeleton by @greg")
+	first := ticketOf(t, siteImport(t, s, link))
+	second := ticketOf(t, siteImport(t, s, link))
+	if first == second {
+		t.Error("importing a design twice handed out one ticket twice")
+	}
+	keep := func(tk string) string {
+		env := designCall(t, s, http.MethodPost, "/api/site/keep?ticket="+tk, bake)
+		if env["ok"] != true {
+			t.Fatalf("keep %s: %v", tk, env)
+		}
+		return env["data"].(map[string]any)["file"].(string)
+	}
+	file := keep(first)
+	version = 5
+	file = keep(ticketOf(t, siteImport(t, s, link)))
+	if !bundleHeld(t, s, second) {
+		t.Error("keeping one import's bake spent the other import's ticket")
+	}
+	if left := shelfNames(t, shelf); len(left) != 2 || !slices.Contains(left, file) ||
+		!slices.Contains(left, file+".origin.json") {
+		t.Fatalf("shelf = %v, want the theme and its record under one name", left)
+	}
+	if o := readThemeOrigin(filepath.Join(shelf, file)); o == nil || o.Version != 5 {
+		t.Errorf("origin = %+v, want the version baked last", o)
+	}
+}
+
+// A held import is megabytes the hub is carrying for nobody, so it ages out, and a hub
+// whose owner pastes and never bakes carries only so many at once.
+func TestSiteImportTicketsExpireAndTheStoreCaps(t *testing.T) {
+	var st siteTicketStore
+	fake := time.Unix(1700000000, 0)
+	st.now = func() time.Time { return fake }
+	add := func() string {
+		tk, err := st.add(&siteTicket{site: "https://orb-os.net", id: siteDesignID, sharedName: "x"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return tk
+	}
+	one := add()
+	if _, ok := st.get(one); !ok {
+		t.Fatal("a fresh ticket is not live")
+	}
+	fake = fake.Add(siteTicketTTL + time.Minute)
+	if _, ok := st.get(one); ok {
+		t.Error("a fifteen-minute-old ticket is still live")
+	}
+	fake = fake.Add(-time.Hour)
+	hold := []string{}
+	for i := 0; i < siteTicketMax; i++ {
+		hold = append(hold, add())
+	}
+	fake = fake.Add(time.Minute) // so the ninth is not also the first one's expiry
+	ninth := add()
+	for _, tk := range hold[1:] {
+		if _, ok := st.get(tk); !ok {
+			t.Errorf("ticket %s of eight was dropped before its time", tk)
+		}
+	}
+	if _, ok := st.get(hold[0]); ok {
+		t.Error("the ninth import did not drop the oldest ticket")
+	}
+	if _, ok := st.get(ninth); !ok {
+		t.Error("the ninth import is not itself held")
+	}
+	st.consume(ninth)
+	if _, ok := st.get(ninth); ok {
+		t.Error("a consumed ticket still reads as live")
+	}
+	if len(st.order) != siteTicketMax-1 {
+		t.Errorf("the store holds %d in order, want %d", len(st.order), siteTicketMax-1)
+	}
+}
+
+// Every one of the three doors changes something on this machine or fetches from another,
+// so every one of them is a control door: no launch token, no work.
+func TestSiteImportDoorsRefuseAnUntokenedRequest(t *testing.T) {
+	s, _, _ := libHub(t)
+	for _, c := range []struct{ method, path string }{
+		{http.MethodPost, "/api/site/import"},
+		{http.MethodGet, "/api/site/bundle?ticket=" + siteDesignID},
+		{http.MethodPost, "/api/site/keep?ticket=" + siteDesignID},
+	} {
+		rec := untokenedCall(t, s, c.method, c.path, []byte(`{"link":"https://orb-os.net/t/`+siteDesignID+`"}`))
+		if rec.Code != http.StatusForbidden {
+			t.Errorf("%s %s with no token = %d, want 403 from requireControl", c.method, c.path, rec.Code)
+		}
+	}
+}
+
+// A shelf theme baked here has no origin, and says so by saying nothing: the entries
+// answer for it must be the bytes it always was. A sidecar that is not a record — no site,
+// no design, a version below the first one — is the same nothing, and a sidecar is never a
+// theme of its own.
+func TestThemeOriginIsOnlyThereWhenTheRecordSaysSo(t *testing.T) {
+	s, _, root := libHub(t)
+	shelf := filepath.Join(root, "themes")
+	put := func(file string, body []byte) {
+		if err := os.WriteFile(filepath.Join(shelf, file), body, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	put("tourbillon.orbtheme", orbfake.Container("Tourbillon"))
+	for _, junk := range []string{`{"site":"","designId":"` + siteDesignID + `","version":9}`,
+		`{"site":"https://orb-os.net","designId":"","version":9}`,
+		`{"site":"https://orb-os.net","designId":"` + siteDesignID + `","version":0}`,
+		`{"site":"https://orb-os.net","designId":"` + siteDesignID + `"}`,
+		`not json at all`} {
+		put("tourbillon.orbtheme.origin.json", []byte(junk))
+		if o := readThemeOrigin(filepath.Join(shelf, "tourbillon.orbtheme")); o != nil {
+			t.Errorf("readThemeOrigin of %s = %+v, want nothing", junk, o)
+		}
+	}
+	os.Remove(themeOriginPath(filepath.Join(shelf, "tourbillon.orbtheme")))
+	rec := rawCall(t, s, http.MethodGet, "/api/library/entries?app=clock", nil)
+	if bytes.Contains(rec.Body.Bytes(), []byte(`"origin"`)) {
+		t.Errorf("entries = %.200s, want no origin key for a theme the hub never imported", rec.Body)
+	}
+	put("skeleton.orbtheme.origin.json", []byte(`{"site":"https://orb-os.net","designId":"`+siteDesignID+`","version":2}`))
+	if es := entriesOf(t, s, "clock"); len(es) != 1 {
+		t.Errorf("entries = %v, want Tourbillon alone: a record is not a theme", es)
+	}
+}
+
+// The other ways a theme reaches the shelf — the editor's Send, Rebake all, a file import —
+// keep the theme and its record as a pair: a rebake of an imported theme still came from
+// that design. When an edited copy stops tracking it is G3's question, not this door's.
+func TestThemeOriginSurvivesTheOtherKeepPaths(t *testing.T) {
+	s, _, root := libHub(t)
+	shelf := filepath.Join(root, "themes")
+	srv, _ := siteServer(t, func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write(goodBundle(t, siteDesignID, 3, "clock", "Skeleton by @greg"))
+	})
+	env := designCall(t, s, http.MethodPost, "/api/site/keep?ticket="+ticketOf(t,
+		siteImport(t, s, siteLink(srv, siteDesignID))), orbfake.Container("Skeleton by @greg"))
+	if env["ok"] != true {
+		t.Fatalf("keep: %v", env)
+	}
+	dest := filepath.Join(shelf, env["data"].(map[string]any)["file"].(string))
+	rebaked := withDesign(orbfake.Container("Skeleton by @greg"), string(designDoc("Skeleton by @greg", "v1.2.31", 1)))
+	if env := designCall(t, s, http.MethodPost, "/api/library/keep?app=clock&fold=0", rebaked); env["ok"] != true {
+		t.Fatalf("the rebake's keep: %v", env)
+	}
+	if b, err := os.ReadFile(dest); err != nil || !bytes.Equal(b, rebaked) {
+		t.Errorf("the rebake did not replace the shelf's copy: %v", err)
+	}
+	o := readThemeOrigin(dest)
+	if o == nil || o.Version != 3 || o.DesignID != siteDesignID {
+		t.Errorf("origin after a rebake = %+v, want the import's own record left alone", o)
+	}
+	if e := entriesView(t, s, "clock")["Skeleton by @greg"]; e.Theme == nil || e.Theme.Origin == nil {
+		t.Errorf("entries after a rebake = %+v, want the theme still wearing its origin", e)
+	}
+}
+
+// A site that cannot be reached is described as unreachable, with the hub's own error
+// words after it: the owner's next question is whether the address is right.
+func TestSiteImportRefusesASiteItCannotReach(t *testing.T) {
+	s, _, _ := libHub(t)
+	got := importErr(t, s, "http://127.0.0.1:1/t/"+siteDesignID)
+	if !strings.HasPrefix(got, "could not reach 127.0.0.1:1: ") || len(got) < 40 {
+		t.Errorf("an unreachable site = %q, want the reach sentence naming the host and the error", got)
+	}
+}

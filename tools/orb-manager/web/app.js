@@ -3242,6 +3242,11 @@ let themeSub = "";
 let themeRowsAll = [];
 let themeAppsRows = [];
 let themeAppsErr = "";
+// siteImportPending is this face's word that an orb-os.net import owns the door: it
+// stands from the moment Import fetches the bundle until the editor reports the bake
+// (theme.imported) or the pane closes without one. It is what keeps a second press
+// out, and what closeThemeEditor reads to decide whether it owes a sentence.
+let siteImportPending = false;
 function themeFaceReset() {
   themeSub = ""; themeRowsAll = []; themeAppsRows = []; themeAppsErr = "";
   // A different board means a different card and a different set of containers, so
@@ -3345,12 +3350,7 @@ function renderThemeTabs() {
     b.textContent = label;
     // the list keeps its height while the other app's rows load, so the page does not
     // shrink, scroll to the top and pull the pill out from under the pointer (owner, 2026-11-04)
-    b.onclick = () => {
-      const L = $("#mn-themes");
-      if (L) L.style.minHeight = L.offsetHeight + "px";
-      themeSub = slug;
-      Promise.resolve(loadThemes(themeIP)).finally(() => { if (L) L.style.minHeight = ""; });
-    };
+    b.onclick = () => themeChooseApp(slug);
     nav.appendChild(b);
   };
   // One themeable app: the pane needs its name and not a press. This branch drew a
@@ -3415,6 +3415,17 @@ function themeFaceScope() {
   // an orb whose app enumeration failed, where the rows are all there is
   const first = themeAppsRows.slice().sort((x, y) => (x.slug < y.slug ? -1 : 1))[0];
   return first ? first.slug : "";
+}
+
+// themeChooseApp is the app switch's own act, lifted out of the tab's click so that
+// anything which has to move the face to another app — a pressed tab, an imported
+// theme whose design names a different one — moves it the same way and pays the same
+// card read.
+function themeChooseApp(slug) {
+  const L = $("#mn-themes");
+  if (L) L.style.minHeight = L.offsetHeight + "px";
+  themeSub = slug;
+  Promise.resolve(loadThemes(themeIP)).finally(() => { if (L) L.style.minHeight = ""; });
 }
 
 
@@ -4000,7 +4011,8 @@ function openThemeEditor(row, theme) {
   frame.src = base + "?orb=" + encodeURIComponent(themeIP) + "&app=" + encodeURIComponent(row.slug) +
     (orbName ? "&label=" + encodeURIComponent(orbName) : "") +
     (theme && theme.id ? "&theme=" + encodeURIComponent(theme.id) + (theme.src === "shelf" ? "&src=shelf" : "") : "") +
-    (theme && theme.entry ? "&entry=" + encodeURIComponent(theme.entry) : "") + (theme && theme.rebake ? "&rebake=1" : "");
+    (theme && theme.entry ? "&entry=" + encodeURIComponent(theme.entry) : "") + (theme && theme.rebake ? "&rebake=1" : "") +
+    (theme && theme.import ? "&import=" + encodeURIComponent(theme.import) : "");
   title.textContent = themeAppTitle(row.slug) + " theme editor";
   state.textContent = "";
   themeEditorApp = row.slug;
@@ -4072,6 +4084,8 @@ function closeThemeEditor() {
   if (!pane) return;
   if (themeEditorBusy) return;
   const wasOpen = !pane.hidden;
+  const wasImport = siteImportPending;
+  siteImportPending = false;
   pane.hidden = true;
   pane.classList.remove("loading");
   document.body.classList.remove("editing");
@@ -4084,6 +4098,7 @@ function closeThemeEditor() {
   // Closing re-reads it, so a theme sent from the editor is on the list the owner returns
   // to (owner report, 2026-11-03).
   if (wasOpen && themeIP) loadThemes(themeIP);
+  if (wasImport) siteImportClosed();
 }
 
 // themeBridge is the hub page's half of the editor contract (§7.1). It is eight
@@ -4115,6 +4130,16 @@ async function themeBridge(ev) {
   if (m.type === "theme.ready") { back({ state: "ok" }); return; }
   if (m.type === "theme.close") { closeThemeEditor(); return; }
   if (m.type === "theme.busy") { themeEditorBusy = !!m.on; return; }
+  // H1-3: an orb-os.net import's own word that the bake landed in the hub's library.
+  // The message is the editor's half of the door; the Themes tab's link field is the
+  // other, and this is the only place the two meet. An import for an app this frame
+  // did not open is not this frame's news, so it is dropped like any other stranger.
+  if (m.type === "theme.imported") {
+    if (!themeEditorApp || m.app !== themeEditorApp) return;
+    siteImportLanded(typeof m.name === "string" ? m.name : "");
+    say("imported " + (typeof m.name === "string" && m.name ? m.name : "the theme"));
+    return;
+  }
   // D43: the editor's refusal page found the orb running an older release of this app
   // than the hub's shelf carries and offers the fix. It is the Apps face's own Update
   // (the same streamed, forced install), run for the one app this pane opened, with its
@@ -4502,6 +4527,14 @@ function themeLibraryRows(app, deviceRows, state, entries) {
     else if (th.stale) tag("needs a rebake", "warn", "An orb on the current firmware would refuse this bake: " + th.stale);
     else tag(e.state === "changed" ? "theme \u00b7 unsent changes" : "theme", e.state === "changed" ? "warn" : "",
       e.state === "changed" ? "Changes saved in the editor that have not been baked: Edit opens them, Send to orb there bakes them in" : "Baked, in the hub library");
+    // H1-3: a theme the hub fetched off a site wears where it came from, beside what
+    // it is. The tag names the host; the tooltip carries the design's own address and
+    // the version that was baked, which is the pair an owner asks for next.
+    if (th && th.origin) {
+      tag("from " + siteHostOf(th.origin.site), "mut",
+        "Imported from " + th.origin.site + "/t/" + th.origin.designId +
+        " (version " + th.origin.version + ")");
+    }
     if (th && th.made_with) tag("made with " + th.made_with, "mut", "The editor release that made this design; opening it in a newer editor updates it when saved or sent");
     const card = onCard[e.name.toLowerCase()], cardSerial = card ? card.serial : 0;
     const orbLabel = current.name || themeIP || "this orb";
@@ -4887,6 +4920,121 @@ $("#mn-up-btn").onclick = () => {
   }
   $("#mn-fw-file").click();
 };
+
+// ---- Import from orb-os.net ------------------------------------------------------
+//
+// The Themes tab's door onto the site (orb-os-net design §7.1, slice H1). The hub
+// does the fetching (h1-1's POST /api/site/import): it dials GET <site>/api/hub/theme/
+// <id>, checks the bundle, and holds it under a one-time ticket. This page never
+// speaks to the site — it hands the ticket to the orb's own editor for the app the
+// design names, and the editor bakes it under the shared name and keeps it in the
+// hub's library (h1-2). What is left here is the part only the page can do: say
+// which app the design turned out to be for, and say what came of it.
+function siteOrbName() {
+  return current.name || themeIP || "this orb";
+}
+
+// siteHostOf names the site a library row came from off its origin record. An
+// unparsable site is still a site: the row says where it came from in kind, and the
+// tooltip carries the raw string for whoever wants the exact bytes.
+function siteHostOf(site) {
+  try {
+    return new URL(String(site || "")).host || "a site";
+  } catch (e) {
+    return "a site";
+  }
+}
+
+$("#mn-site-btn").onclick = () => {
+  const row = $("#mn-site-row"), link = $("#mn-site-link");
+  if (!row) return;
+  row.hidden = !row.hidden;
+  if (!row.hidden && link) link.focus();
+};
+$("#mn-site-go").onclick = () => { siteImportPress(); };
+$("#mn-site-link").onkeydown = (e) => { if (e.key === "Enter") siteImportPress(); };
+
+async function siteImportPress() {
+  const link = $("#mn-site-link"), go = $("#mn-site-go"), st = $("#mn-site-state");
+  if (!link || !go || !st) return;
+  if (siteImportPending) return;
+  if (!themeIP) { st.textContent = "load an orb first"; return; }
+  const text = String(link.value || "").trim();
+  if (!text) { st.textContent = "paste a theme\u2019s link from orb-os.net first"; return; }
+  siteImportPending = true;
+  go.disabled = true;
+  st.textContent = "fetching the theme\u2026";
+  let data = null, refusal = "";
+  try {
+    const r = await hubFetch("/api/site/import", {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ link: text }),
+    });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok || j.ok === false) refusal = j.error || ("HTTP " + r.status);
+    else data = j.data;
+  } catch (e) {
+    refusal = "the hub did not answer: " + orbWaitWords(e);
+  }
+  if (refusal) {
+    st.textContent = "\u2717 " + refusal;
+    siteImportEnded();
+    return;
+  }
+  const shared = (data && data.sharedName) || "the theme";
+  const title = themeAppTitle(data.app);
+  const row = themeAppsRows.find((a) => a.slug === data.app);
+  if (!row) {
+    st.textContent = "\u2717 \u201c" + shared + "\u201d is a theme for the " + title + " app, which " +
+      siteOrbName() + " doesn\u2019t run";
+    siteImportEnded();
+    return;
+  }
+  if (!row.has_editor || !row.editor_url) {
+    st.textContent = "\u2717 \u201c" + shared + "\u201d needs the " + title + " editor, and " +
+      siteOrbName() + "\u2019s " + title + " app has none here";
+    siteImportEnded();
+    return;
+  }
+  // The face shows one app at a time, and the pane the operator returns to when the
+  // editor closes is the one holding the row. So the face moves to the app the design
+  // names before the editor opens on it, by the same act a pressed tab performs.
+  if (themeFaceScope() !== data.app) themeChooseApp(data.app);
+  st.textContent = "baking \u201c" + shared + "\u201d in the " + title + " editor\u2026";
+  openThemeEditor(row, { import: data.ticket });
+}
+
+// siteImportEnded frees the door after a fetch that never reached an editor. The
+// link keeps what was typed: the operator is about to read why it failed, and a
+// field they can fix is worth more than a clean one.
+function siteImportEnded() {
+  siteImportPending = false;
+  const go = $("#mn-site-go");
+  if (go) go.disabled = false;
+}
+
+// siteImportLanded is the import's own success line, posted by the editor through
+// themeBridge once the hub has kept the bake. The row is in the library and NOT on
+// this orb yet, which is what the sentence says: Install is still its own press.
+function siteImportLanded(name) {
+  siteImportPending = false;
+  const st = $("#mn-site-state"), link = $("#mn-site-link"), go = $("#mn-site-go");
+  if (st) st.textContent = "\u2713 \u201c" + (name || "?") + "\u201d is in the hub library. Install puts it on " +
+    siteOrbName() + "; Close the editor to see it in the list.";
+  if (link) link.value = "";
+  if (go) go.disabled = false;
+}
+
+// siteImportClosed words the ending the page cannot explain. The editor refused, or
+// the operator closed it mid-bake, and the only account of why is the line the
+// editor itself was painting when it went away — so this says whose sentence to read
+// rather than inventing one. A ✓ already standing is the import's own answer and
+// stays up.
+function siteImportClosed() {
+  const st = $("#mn-site-state");
+  siteImportEnded();
+  if (!st || String(st.textContent).indexOf("\u2713") === 0) return;
+  st.textContent = "the editor closed without importing: its status line said why";
+}
 function watchSendState(ip, st, f) {
   stopSendWatch();
   const words = {

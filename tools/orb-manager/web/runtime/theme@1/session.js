@@ -22,6 +22,8 @@
  *     overwrites the design this page opened and a renamed Save makes a new one;
  *   - a site's shared link (?shared=<id>&download=1): a design bundle in, baked here under the
  *     shared name <name> by @<handle> and downloaded, with nothing of it saved.
+ *   - on the hub, an import (?import=<ticket>): a site's design bundle the hub fetched, baked here
+ *     under its shared name and kept in the hub's library with where it came from (orb-os-net §7.1).
  *
  * Everything is per app (?app=, else the host's slug), so two apps' editors never read
  * each other's designs. Plain JS, no React. The app keeps what only it knows:
@@ -115,6 +117,12 @@
       var s = (q && q.get('shared')) || '';
       return OrbTheme.hostInfo().kind === 'web' && /^[A-Za-z0-9_-]{22}$/.test(s) ? s : null;
     };
+    // ?import=<ticket> (the hub's Import from orb-os.net): the ticket, when this page was opened
+    // on the hub for one; a site page ignores it entirely
+    var importOf = function (q) {
+      var t = (q && q.get('import')) || '';
+      return OrbTheme.hostInfo().kind === 'hub' && /^[0-9a-f]{32}$/.test(t) ? t : null;
+    };
     /* An open is a fetch and a decode, megabytes off an orb's card for a converted theme, and
      * until it lands the start sheet's presets sit under the pointer: a click there picks a dial
      * the open then overwrites. The editor covers itself while api.opening holds a line. Every
@@ -125,6 +133,7 @@
       var q = null; try { q = new URLSearchParams(root.location.search); } catch (e) { q = null; }
       if (!q) return;
       if (sharedOf(q)) api.opening = 'Opening the shared design…';
+      else if (importOf(q)) api.opening = 'Opening the imported theme…';
       else if (/^[A-Za-z0-9_.-]{1,64}$/.test(q.get('theme') || '')) api.opening = OrbTheme.hostInfo().kind === 'web' ? 'Opening the design…' : 'Opening the theme’s design from the ' + (q.get('src') === 'shelf' ? 'hub’s shelf' : 'card') + '…';
       else if (q.get('entry')) api.opening = 'Opening “' + q.get('entry') + '” from the library…';
     })();
@@ -438,9 +447,12 @@
       } catch (e) { api.orbNote = ''; }
       if (api.orbNote) say('Heads up: ' + api.orbNote);
       var q = null; try { q = new URLSearchParams(root.location.search); } catch (e) { q = null; }
-      var entry = q && q.get('entry');
-      if (entry) await api.openEntry(entry);
-      else if (q && q.get('rebake') === '1') await api.rebakeAll();
+      // an import page reads its library but opens and rebakes nothing: the import is what it came for
+      if (!importOf(q)) {
+        var entry = q && q.get('entry');
+        if (entry) await api.openEntry(entry);
+        else if (q && q.get('rebake') === '1') await api.rebakeAll();
+      }
       return true;
     };
 
@@ -558,6 +570,36 @@
     api.openTheme = async function () {
       try { return await openTheme(); } finally { opening(null); }
     };
+    /* the bake an open hands over: `want` the name it must come out under, `mine` the status-line
+     * prefixes that are this session's own (so they are never quoted back as the editor's reason),
+     * and `line` the line said before the first bake. Answers {bytes} the bake made, or {why}: the
+     * reason it did not, with no prefix on it, for the caller to say in its own sentence. */
+    var bakeUnder = async function (want, mine, line) {
+      if (!host.bake) return { why: 'this editor cannot bake here' };
+      var ownLine = function (s) {
+        for (var i = 0; i < mine.length; i++) if (s.slice(0, mine[i].length) === mine[i]) return '';
+        return s;
+      };
+      var was = ''; try { was = ownLine(String((host.state && host.state().status) || '')); } catch (e) { was = ''; }
+      say(line);
+      // a React editor applies a design on its next render, so the first bake can still name the
+      // watch before it: check the header and bake again, three bakes at most
+      var vfy = root.GorbBake && typeof root.GorbBake.verifyBundle3 === 'function' ? root.GorbBake.verifyBundle3 : null;
+      var bytes = null, got = want;
+      for (var attempt = 0; attempt < 3; attempt++) {
+        bytes = await host.bake();
+        if (bytes === null || bytes === undefined) break;
+        got = vfy ? (function (v) { v = v || {}; return String(v.name || (v.header && v.header.name) || ''); })(vfy(bytes)) : want;   // verifyBundle3 answers {header, sections}
+        if (got === want || attempt === 2) break;
+        await new Promise(function (r) { setTimeout(r, 1000); });
+      }
+      if (bytes === null || bytes === undefined) {
+        var st = ''; try { st = ownLine(String((host.state && host.state().status) || '')); } catch (e) { st = ''; }
+        return { why: st || was || 'the bake did not finish' };
+      }
+      if (got !== want) return { why: 'the bake came out named “' + got + '”' };
+      return { bytes: bytes };
+    };
     /* ?shared=<design id>&download=1 (a site's share link, no sign-in): the design bundle
      * stands for the design and its art, the editor bakes it under the shared name
      * `<name> by @<handle>` and the file is what other people get. Nothing of it is saved:
@@ -579,41 +621,57 @@
       api.sayOpened('the shared design');
       if (q.get('download') !== '1') return true;
       var want = api.bakeName(String((sd && (sd.themeName || sd.name || (sd.design && sd.design.name))) || 'design'));
-      if (!host.bake) { say('Not downloaded: this editor cannot bake here'); return true; }
-      // an editor that could not bake says why in its own status line; the session's own lines
-      // (the opening, the baking) are not that line, so they are not quoted back
-      var ownLine = function (s) {
-        var mine = ['Opening the shared', 'Baking', 'Downloaded', 'Not downloaded', 'Could not open'];
-        for (var i = 0; i < mine.length; i++) if (s.slice(0, mine[i].length) === mine[i]) return '';
-        return s;
-      };
-      var was = ''; try { was = ownLine(String((host.state && host.state().status) || '')); } catch (e) { was = ''; }
-      var line = 'Baking “' + want + '” for download…';
-      say(line);
-      // a React editor applies a design on its next render, so the first bake can still name the
-      // watch before it: check the header and bake again, three bakes at most
-      var vfy = root.GorbBake && typeof root.GorbBake.verifyBundle3 === 'function' ? root.GorbBake.verifyBundle3 : null;
-      var bytes = null, got = want;
-      for (var attempt = 0; attempt < 3; attempt++) {
-        bytes = await host.bake();
-        if (bytes === null || bytes === undefined) break;
-        got = vfy ? (function (v) { v = v || {}; return String(v.name || (v.header && v.header.name) || ''); })(vfy(bytes)) : want;   // verifyBundle3 answers {header, sections}
-        if (got === want || attempt === 2) break;
-        await new Promise(function (r) { setTimeout(r, 1000); });
-      }
-      if (bytes === null || bytes === undefined) {
-        var st = ''; try { st = ownLine(String((host.state && host.state().status) || '')); } catch (e) { st = ''; }
-        say('Not downloaded: ' + (st || was || 'the bake did not finish'));
-        return true;
-      }
-      if (got !== want) { say('Not downloaded: the bake came out named “' + got + '”'); return true; }
-      download(new Blob([bytes], { type: 'application/octet-stream' }), String(want).replace(/[\\/:*?"<>|\x00-\x1f\x7f]/g, '_') + '.orbtheme');
+      var mine = ['Opening the shared', 'Baking', 'Downloaded', 'Not downloaded', 'Could not open'];
+      var made = await bakeUnder(want, mine, 'Baking “' + want + '” for download…');
+      if (made.why) { say('Not downloaded: ' + made.why); return true; }
+      download(new Blob([made.bytes], { type: 'application/octet-stream' }), String(want).replace(/[\\/:*?"<>|\x00-\x1f\x7f]/g, '_') + '.orbtheme');
       say('Downloaded “' + want + '”');
+      return true;
+    };
+    /* ?import=<ticket> (the hub's Import from orb-os.net, orb-os-net design §7.1): a site's design
+     * bundle the hub fetched and holds for one import. It opens here, bakes under the shared name
+     * the bundle carries, and the bake is what the hub files in its library beside where it came
+     * from. Nothing is saved as a draft, and the editor stays on the design: it can be looked at,
+     * closed, or sent with the editor's own Send. */
+    var openImport = async function (q) {
+      var ticket = importOf(q);
+      api.opened = null;
+      say('Opening the imported theme…');
+      var bundle = null, sd = null;
+      try {
+        var rb = await fetch(OrbTheme.hostUrl('/site/bundle?ticket=' + ticket));
+        if (!rb.ok) { var se = ''; try { se = (await rb.json()).error || ''; } catch (e) { se = ''; } say('Could not open that theme: ' + (se || 'the hub answered ' + rb.status)); return false; }
+        try { bundle = JSON.parse(new TextDecoder().decode(new Uint8Array(await rb.arrayBuffer()))); } catch (e) { bundle = null; }
+        if (!bundle || bundle.format !== 'orb-design-bundle' || bundle.bundle !== 1) { say('Could not open that theme: that is not a design bundle'); return false; }
+        sd = await inflate(bundle.design, bundle);
+        var why = api.apply(sd, 'the imported theme');
+        if (why) { say('Could not open that theme: ' + why); return false; }
+      } catch (e) { say('Could not open that theme: ' + (e && e.message ? e.message : String(e))); return false; }
+      api.restart();
+      api.sayOpened('the imported theme');
+      var sn = typeof bundle.sharedName === 'string' ? bundle.sharedName : '';
+      var want = api.bakeName(String((sd && (sd.themeName || sd.name || (sd.design && sd.design.name))) || 'design'));
+      if (want !== sn) { say('Not imported: the design does not carry its shared name “' + sn + '”'); return true; }
+      var mine = ['Opening the imported', 'Baking', 'Imported', 'Not imported', 'Could not open'];
+      var made = await bakeUnder(want, mine, 'Baking “' + want + '” for the library…');
+      if (made.why) { say('Not imported: ' + made.why); return true; }
+      var data = null;
+      try {
+        var rk = await fetch(OrbTheme.hostUrl('/site/keep?ticket=' + ticket), { method: 'POST', headers: { 'Content-Type': 'application/octet-stream' }, body: made.bytes });
+        var env = null; try { env = await rk.json(); } catch (e) { env = null; }
+        if (!rk.ok || !env || env.ok === false) { say('Not imported: ' + ((env && env.error) || 'the hub answered ' + rk.status)); return true; }
+        data = env.data || null;
+      } catch (e) { say('Not imported: ' + (e && e.message ? e.message : String(e))); return true; }
+      say('Imported “' + want + '” into the library');
+      await api.libraryRefresh();
+      // the page that opened this editor (the Themes tab's import door) takes the name it filed
+      try { if (root.parent && root.parent !== root) root.parent.postMessage({ type: 'theme.imported', app: api.slug(), name: want, file: data && data.file }, root.location.origin); } catch (e) { /* nothing asked to be told */ }
       return true;
     };
     var openTheme = async function () {
       var q = null; try { q = new URLSearchParams(location.search); } catch (e) { q = null; }
       if (sharedOf(q)) return await openShared(q);   // a site's share link: sharedOf is web-only
+      if (importOf(q)) return await openImport(q);    // the hub's import: importOf is hub-only
       var id = q && q.get('theme'); if (!id || !/^[A-Za-z0-9_.-]{1,64}$/.test(id)) return false;
       if (OrbTheme.hostInfo().kind === 'web') {
         // under a web host the id is a site design, not a card theme: orb and src are ignored

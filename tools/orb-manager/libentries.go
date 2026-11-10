@@ -35,6 +35,10 @@ type LibTheme struct {
 	MadeWith  string `json:"made_with,omitempty"` // the design's appVersion
 	CanReopen bool   `json:"can_reopen"`          // it carries a design the editor can read
 	Stale     string `json:"stale,omitempty"`     // why an orb would refuse it: it needs a rebake
+	// Origin is where an imported theme came from, read from the sidecar the import keep
+	// wrote beside it (siteimport.go). nil = the shelf holds no record of this theme being
+	// anyone's design, which is what every theme baked here has until H1 says otherwise.
+	Origin *ThemeOrigin `json:"origin,omitempty"`
 }
 
 // LibEntry is one name in an app's library.
@@ -120,6 +124,7 @@ func (l *Library) entries(app string) ([]LibEntry, error) {
 			if t.Design != nil {
 				th.MadeWith = madeWith(t.Design)
 			}
+			th.Origin = readThemeOrigin(p)
 			e.Theme, e.path = th, p
 		})
 	}

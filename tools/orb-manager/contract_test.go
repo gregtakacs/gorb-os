@@ -497,6 +497,12 @@ var hostUrlCall = regexp.MustCompile(`OrbTheme\.hostUrl\('(/[^'?]+)`)
 // design's bundle), which the hub never serves and its editors never ask.
 var siteOnly = map[string]bool{"/asset": true, "/shared/bundle": true}
 
+// hubOnly is the mirror case (H1 step h1-2): the hub's own import doors, which only the
+// hub serves and only an import page asks. A scenario cannot record them — the ticket one
+// of them answers for exists only after the hub has fetched a live site's bundle — so the
+// fixture stays what h1-1 said it must be, byte-for-byte, and this test names the two.
+var hubOnly = map[string]bool{"/site/bundle": true, "/site/keep": true}
+
 func TestEditorAPIContractCoversTheRuntime(t *testing.T) {
 	src, err := os.ReadFile(filepath.Join("web", "runtime", "theme@1", "session.js"))
 	if err != nil {
@@ -516,7 +522,7 @@ func TestEditorAPIContractCoversTheRuntime(t *testing.T) {
 	}
 	missing := []string{}
 	for path := range calls {
-		if path == "/editor/source" || siteOnly[path] {
+		if path == "/editor/source" || siteOnly[path] || hubOnly[path] {
 			continue
 		}
 		if !recorded["/api"+path] {

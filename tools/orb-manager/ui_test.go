@@ -1724,3 +1724,88 @@ func TestInstallStepsWordALiveLanding(t *testing.T) {
 		}
 	}
 }
+
+// H1-3 (design §7.1): the Themes tab's door onto orb-os.net. The hub's half (h1-1)
+// and the editor's half (h1-2) are tested where they live; what is at stake here is
+// the seam between them — the markup the press needs, the fetch the press makes, the
+// ticket the editor door is opened on, and the one message that says a bake landed.
+// Every pin below is the difference between a button that imports a theme and a
+// button that fetches a bundle and then says nothing at all.
+func TestSiteImportDoorInThemesTab(t *testing.T) {
+	page := readWebFile(t, "index.html")
+	app := readAppJS(t)
+	for _, id := range []string{"mn-site-btn", "mn-site-row", "mn-site-link", "mn-site-go", "mn-site-state"} {
+		if !strings.Contains(page, `id="`+id+`"`) {
+			t.Errorf("index.html is missing #%s", id)
+		}
+	}
+	// The link row starts folded: a door that stands open over the toolbar every
+	// time the pane loads is a field the operator has to dismiss, not a door.
+	row := blockOfLine(t, page, `id="mn-site-row"`)
+	if !strings.Contains(row, "hidden") {
+		t.Error(`#mn-site-row is not hidden in the markup, so the link field is open before it is asked for`)
+	}
+	// The paste, the press and the Enter in the field all reach the same act.
+	press := blockOf(t, app, "async function siteImportPress()")
+	if !strings.Contains(press, `"/api/site/import"`) {
+		t.Error("the import does not post to /api/site/import: the hub's door is the only thing that dials the site")
+	}
+	if !strings.Contains(press, `body: JSON.stringify({ link: text })`) {
+		t.Error("the import does not send the pasted text as {link} — the field's value never reaches the hub")
+	}
+	if !strings.Contains(press, `.trim()`) {
+		t.Error("the import fetches what was typed without trimming it: a trailing space is a refused link")
+	}
+	if !strings.Contains(press, "go.disabled = true") {
+		t.Error("a press does not disable its own button, so the second one fetches a second ticket for the same link")
+	}
+	// The empty field is refused in the state line and not by the hub: an empty POST
+	// buys an error sentence from the far end for nothing.
+	if !strings.Contains(press, `"paste a theme\u2019s link from orb-os.net first"`) {
+		t.Error("an empty field is not refused in the tab's own words")
+	}
+	if !strings.Contains(press, `"the hub did not answer: "`) {
+		t.Error("a hub that never answers is reported as a hub that never answers, not as its own error")
+	}
+	for _, want := range []string{"siteImportEnded()", "siteImportLanded(", "siteImportClosed()"} {
+		if !strings.Contains(app, want) {
+			t.Errorf("app.js has no %s: the door is missing one of its three endings", want)
+		}
+	}
+	// The ticket reaches the frame the editor reads it from, beside the rebake and
+	// entry flags it rides with.
+	door := blockOf(t, app, "function openThemeEditor")
+	if !strings.Contains(door, `"&import="`) {
+		t.Error("openThemeEditor never appends &import=, so the fetched bundle is never shown to an editor")
+	}
+	// The one message that says it worked, and the guard that makes it the RIGHT
+	// frame's message: an editor for another app must not colour this import's line.
+	bridge := blockOf(t, app, "async function themeBridge(ev)")
+	if !strings.Contains(bridge, `m.type === "theme.imported"`) {
+		t.Error("the bridge ignores theme.imported, so a landed bake leaves the tab saying \"+baking\" forever")
+	}
+	imp := bridge[strings.Index(bridge, `m.type === "theme.imported"`) :]
+	if !strings.Contains(imp[:200], "m.app !== themeEditorApp") {
+		t.Error("theme.imported is accepted from any app, so a replaced frame can report an import it never made")
+	}
+	if !strings.Contains(imp[:200], "themeEditorApp") {
+		t.Error("theme.imported is not gated on the open editor's app at all")
+	}
+	// Closing without the message is its own answer, and a ✓ already standing is not
+	// overwritten by it.
+	closed := blockOf(t, app, "function siteImportClosed()")
+	for _, want := range []string{`"the editor closed without importing: its status line said why"`, "\"\\u2713\"", "siteImportEnded()"} {
+		if !strings.Contains(closed, want) {
+			t.Errorf("siteImportClosed has no %s", want)
+		}
+	}
+	if !strings.Contains(app, "if (wasImport) siteImportClosed();") {
+		t.Error("closing the editor never tells the import it ended, so the button stays disabled forever")
+	}
+	// The library row says where it came from, built the way every other tag on the
+	// row is built: through the DOM, from bytes the hub wrote.
+	rows := blockOf(t, app, "function themeLibraryRows")
+	if !strings.Contains(rows, "th.origin") || !strings.Contains(rows, `tag("from "`) {
+		t.Error("an imported theme's library row carries no origin tag")
+	}
+}

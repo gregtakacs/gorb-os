@@ -605,6 +605,15 @@ func (l *Library) Drop(kind, name string) (string, error) {
 		}
 		return "", fmt.Errorf("%s could not be deleted: %w", dest, err)
 	}
+	// A theme's origin record belongs to the theme and to nothing else, so it goes when
+	// the theme goes — including when /api/library/forget takes the whole entry. A theme
+	// with no record is the ordinary case, so a missing sidecar is not a failure, and a
+	// sidecar that would not leave is reported rather than swallowed.
+	if kind == "theme" {
+		if err := removeThemeOrigin(dest); err != nil {
+			return "", fmt.Errorf("%s could not be deleted along with its theme: %w", themeOriginPath(dest), err)
+		}
+	}
 	log.Printf("orb-manager: library dropped %s", dest)
 	return dest, nil
 }

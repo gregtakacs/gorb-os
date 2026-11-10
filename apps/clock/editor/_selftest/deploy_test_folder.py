@@ -49,6 +49,19 @@ def sha(path):
     return h.hexdigest()[:12]
 
 
+# the OS tools folder, so the rebake can reuse the shared browser helper without a caller's help
+TOOLS = os.path.abspath(os.path.join(ED, "..", "..", "..", "tools"))
+
+
+def drive_url(stage, chrome):
+    """The bank3-drive.html URL the rebake runs after staging into `stage`, formed for the
+    browser at `chrome` by the shared tools/orbchrome.py. The page sits at
+    <stage>/_selftest/bank3-drive.html (the folder depth is part of the contract above)."""
+    sys.path.insert(0, TOOLS)
+    import orbchrome
+    return orbchrome.file_url(os.path.join(stage, SELFTEST_DIR, "bank3-drive.html"), chrome)
+
+
 def main():
     target = sys.argv[1] if len(sys.argv) > 1 else DEFAULT_TARGET
     if not os.path.isdir(os.path.dirname(target)):

@@ -131,7 +131,13 @@ stale bundle cannot slip past `make check` on a machine that has built the firmw
 
 The theme every new orb receives is `tools/orb-manager/themes/skeleton.orbtheme`, baked
 by the editor's own export path, with the preset's sounds (the classic tick, Westminster
-quarters and the hour bell). To change it, bake with
+quarters and the hour bell). The whole bake is one command: `make rebake` re-bakes every
+shelf default whose app's version has moved past the release its design names (it needs a
+headless Chrome or Chromium and a few minutes, so it is not part of `make check`; `make
+check-apps` only `--check`s the shelf). It finds the browser on Linux, macOS, native Windows
+and WSL — the Windows Chrome under WSL when it is there, otherwise any Chrome/Chromium on the
+default search path — and `ORB_CHROME` points it at one that is not. To change the default by
+hand instead, bake with
 `apps/clock/editor/_selftest/bank3-drive.html?dial=skeleton&name=Skeleton&appv=<clock version>`
 in Chrome, save the result as `skeleton.orbtheme`, then install it with
 `python3 tools/make_default_theme.py <file>`. `--check` re-verifies the committed copy, and

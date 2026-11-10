@@ -18,7 +18,7 @@
 PYTHON ?= python3
 NODE   ?= $(shell command -v node 2>/dev/null || ls $$HOME/.local/share/nodeenv-gorb/bin/node 2>/dev/null)
 
-.PHONY: check check-host check-apps check-hub check-editor check-web check-runner check-migrations firmware apps hub sdk dist web
+.PHONY: check check-host check-apps check-hub check-editor check-web check-runner check-migrations rebake firmware apps hub sdk dist web
 
 check: check-host check-apps check-hub check-editor
 	@echo 'check: host suites, apps, hub and editor all green'
@@ -87,6 +87,13 @@ check-runner:
 ## with no design schema, say so and pass.
 check-migrations:
 	$(PYTHON) apps/sdk/orbsdk.py check-migrations $(sort $(dir $(wildcard apps/*/app.json)))
+
+## rebake: re-bake every stale shelf default with its app's own editor, in a headless
+## Chrome/Chromium (Linux, macOS, Windows or WSL; set ORB_CHROME to pick one). Deliberately
+## NOT part of `check`: it needs a browser and a few minutes, and `check-apps` only --checks
+## the shelf (make_default_theme.py's / rebake_shelf.py's gates), never re-runs the bakes.
+rebake:
+	$(PYTHON) tools/rebake_shelf.py
 
 firmware:
 	idf.py build

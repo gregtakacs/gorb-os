@@ -11,18 +11,15 @@ A default that cannot picture itself reads as a broken product, not a smaller th
 `python3 tools/rebake_shelf.py` does all of the below in one step, and re-bakes the
 default whenever the clock's version.txt moves past the release its design names.
 
-So the default ships as a Composer bake named `Skeleton`. The bake runs in real Chrome,
-because the plane is composed pixels and `bake_clock.py` refuses class 9 by design ("the
-compiled pair has no field for a thumbnail"). `--check` never re-runs it, so the sentinel
-stays runnable on a box with no browser; the committed container is the artifact, exactly
-as the firmware bundle under `internal/firmware/bundle/` is.
+So the default ships as a Composer bake named `Skeleton`. The bake runs in a real Chrome or
+Chromium (any platform: set `ORB_CHROME` to the browser to use one that is not on the default
+search path), because the plane is composed pixels and `bake_clock.py` refuses class 9 by
+design ("the compiled pair has no field for a thumbnail"). `--check` never re-runs it, so the
+sentinel stays runnable on a box with no browser; the committed container is the artifact,
+exactly as the firmware bundle under `internal/firmware/bundle/` is.
 
-    python3 apps/clock/editor/_selftest/deploy_test_folder.py
-    '/mnt/c/Program Files/Google/Chrome/Application/chrome.exe' \\
-      --headless=new --disable-gpu --no-sandbox --user-data-dir='C:\\Temp\\wc' \\
-      --virtual-time-budget=600000 --dump-dom \\
-      'file:///C:/Users/greg/Downloads/test/_selftest/bank3-drive.html?dial=skeleton&name=Skeleton&appv=v1.2.17' \\
-      >/tmp/bake.out 2>&1 &
+    make rebake                                  # the whole bake + install, on any platform
+    # by hand: stage the editor, run its bank3-drive.html in "$ORB_CHROME" --headless=new,
     # lift the B64: line out of the dumped <pre id="out"> into one file, then:
     python3 tools/make_default_theme.py /tmp/skeleton.orbtheme   # verify, then install (the file's
                                                                  # stem must be the theme's name)

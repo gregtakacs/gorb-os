@@ -7,7 +7,7 @@ that release's editor (owner, 2026-11-05), so the shelf never offers a theme "ma
 older editor than the app it themes. A stale shelf copy is how Modern read "made with v1.2.4"
 beside flights v1.2.6 and offered an Update that changed nothing.
 
-    python3 tools/rebake_shelf.py            # re-bake every stale default (Windows Chrome)
+    python3 tools/rebake_shelf.py            # re-bake every stale default (any Chrome/Chromium)
     python3 tools/rebake_shelf.py clock      # re-bake one app's default, stale or not
     python3 tools/rebake_shelf.py --check    # no browser: each default's design names the
                                              # release in its app's version.txt
@@ -30,11 +30,11 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.abspath(os.path.join(HERE, os.pardir))
 sys.path.insert(0, HERE)
 import orbbundle as ob          # noqa: E402
+import orbchrome as oc          # noqa: E402
 
 SHELF = os.path.join(ROOT, "tools", "orb-manager", "themes")
-CHROME = "/mnt/c/Program Files/Google/Chrome/Application/chrome.exe"
 BAKE_TIMEOUT_S = 180
-CLOCK_STAGE, CLOCK_STAGE_WIN = "/mnt/c/Temp/rebake-shelf-clock", "C:/Temp/rebake-shelf-clock"
+CLOCK_STAGE_NAME, CLOCK_PROFILE_NAME = "rebake-shelf-clock", "rebake-shelf-profile"
 
 # app slug -> the shelf file of its default theme
 DEFAULTS = {"clock": "skeleton.orbtheme", "flights": "flights-scope.orbtheme", "weather": "weather-scope.orbtheme",
@@ -73,23 +73,21 @@ def bake_clock(v):
     editor's own clock-logic.js, so the stage is the editor as it stands), then installed by
     make_default_theme.py, whose gate it must pass."""
     ed = os.path.join(ROOT, "apps", "clock", "editor")
-    if os.path.isdir(CLOCK_STAGE):
-        shutil.rmtree(CLOCK_STAGE)
-    subprocess.run([sys.executable, os.path.join(ed, "_selftest", "deploy_test_folder.py"), CLOCK_STAGE], check=True, capture_output=True)
-    # The bake takes seconds. A page that never goes idle (a Save dialog nobody answers, E7
+    sys.path.insert(0, os.path.join(ed, "_selftest"))
+    import deploy_test_folder as dep          # noqa: E402
+    chrome = oc.find_chrome()
+    stage = oc.stage_dir(CLOCK_STAGE_NAME, chrome)
+    subprocess.run([sys.executable, os.path.join(ed, "_selftest", "deploy_test_folder.py"), stage], check=True, capture_output=True)
+    # The bake takes seconds. A page that never goes idle (a Save dialog nobody answered, E7
     # Stage 1) holds headless Chrome's virtual clock still, so the budget never runs out and
-    # only the wall clock ends it: three minutes, then the Windows Chrome is stopped too
-    # (killing the WSL side leaves it holding the profile, and the next bake exits 21).
+    # only the wall clock ends it: three minutes, then orbchrome stops the browser it started
+    # and everything it spawned (a leftover one holds the profile, and the next bake exits 21).
+    url = dep.drive_url(stage, chrome) + "?dial=skeleton&name=Skeleton&appv=" + v
+    profile = oc.profile_dir(CLOCK_PROFILE_NAME, chrome)
     try:
-        r = subprocess.run([CHROME, "--headless=new", "--disable-gpu", "--no-sandbox", "--user-data-dir=C:\\Temp\\rebake-shelf-profile",
-                            "--allow-file-access-from-files", "--autoplay-policy=no-user-gesture-required",
-                            "--virtual-time-budget=600000", "--dump-dom",
-                            "file:///" + CLOCK_STAGE_WIN + "/_selftest/bank3-drive.html?dial=skeleton&name=Skeleton&appv=" + v],
-                           capture_output=True, text=True, timeout=BAKE_TIMEOUT_S)
+        r = oc.run_headless(chrome, url, profile, BAKE_TIMEOUT_S,
+                            extra=["--autoplay-policy=no-user-gesture-required", "--virtual-time-budget=600000"])
     except subprocess.TimeoutExpired:
-        subprocess.run(["powershell.exe", "-NoProfile", "-Command",
-                        "Get-CimInstance Win32_Process -Filter \"Name='chrome.exe'\" | Where-Object { $_.CommandLine -match 'rebake-shelf-profile' } | "
-                        "ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }"], capture_output=True)
         print("  the bake failed: bank3-drive.html did not finish in %d s (the page never went idle: a dialog, a hung promise)" % BAKE_TIMEOUT_S)
         return False
     m = re.search(r'<pre id="out">(.*?)</pre>', r.stdout, re.S)
@@ -177,8 +175,8 @@ def main():
     if unknown:
         sys.stderr.write("usage: rebake_shelf.py [--check | %s ...]\n" % " | ".join(DEFAULTS))
         return 2
-    if not os.path.exists(CHROME):
-        sys.stderr.write("no Chrome at %s: the bakes run in it\n" % CHROME)
+    if oc.find_chrome() is None:
+        sys.stderr.write(oc.missing() + ": the bakes run in a browser\n")
         return 1
     todo = args or [s for s in DEFAULTS if stale(s)]
     if not todo:

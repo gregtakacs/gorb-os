@@ -16,7 +16,6 @@ import base64
 import os
 import re
 import shutil
-import subprocess
 import sys
 import tempfile
 
@@ -26,34 +25,26 @@ sys.path.insert(0, os.path.join(ROOT, "tools"))
 import orbbundle as ob          # noqa: E402
 import theme_schema as ts       # noqa: E402
 import host_clock3_test as H3   # noqa: E402
+import orbchrome as oc          # noqa: E402
 
-CHROME = "/mnt/c/Program Files/Google/Chrome/Application/chrome.exe"
-STAGE_WIN = r"C:\Temp\flights-bake-check"
-STAGE = "/mnt/c/Temp/flights-bake-check"
+STAGE_NAME, PROFILE_NAME = "flights-bake-check", "flights-bake-profile"
 RUNTIME = os.path.join(ROOT, "tools", "orb-manager", "web", "runtime")
 EDITOR = os.path.dirname(HERE)
 APPV = open(os.path.join(EDITOR, "..", "version.txt")).read().strip()
 
 
-def stage():
-    if os.path.isdir(STAGE):
-        shutil.rmtree(STAGE)
-    os.makedirs(STAGE)
+def stage(stage_dir):
     for src in (os.path.join(HERE, "bake.html"), os.path.join(EDITOR, "flights-art.js"),
                 os.path.join(EDITOR, "flights-bake.js"), os.path.join(EDITOR, "flights-map.js"),
                 os.path.join(RUNTIME, "maps@1", "orbmap.js"), os.path.join(RUNTIME, "baker@1", "orbtheme-baker.js"),
                 os.path.join(RUNTIME, "vendor", "fonts.css")):
-        shutil.copy(src, STAGE)
-    shutil.copytree(os.path.join(RUNTIME, "vendor", "fonts"), os.path.join(STAGE, "fonts"))
+        shutil.copy(src, stage_dir)
+    shutil.copytree(os.path.join(RUNTIME, "vendor", "fonts"), os.path.join(stage_dir, "fonts"))
 
 
-def run_chrome():
-    r = subprocess.run([CHROME, "--headless=new", "--disable-gpu", "--no-sandbox",
-                        "--user-data-dir=C:\\Temp\\flights-bake-profile", "--allow-file-access-from-files",
-                        "--virtual-time-budget=300000", "--dump-dom",
-                        "file:///" + STAGE_WIN.replace("\\", "/") + "/bake.html?appv=" + APPV],
-                       capture_output=True, text=True, timeout=600)
-    return r.stdout
+def run_chrome(chrome, stage_dir, profile):
+    url = oc.file_url(os.path.join(stage_dir, "bake.html"), chrome) + "?appv=" + APPV
+    return oc.run_headless(chrome, url, profile, 600, extra=["--virtual-time-budget=300000"]).stdout
 
 
 VALUES_B = 120                                  # main.c fl_values_t, layout 1
@@ -124,11 +115,14 @@ def check(name, raw, exe, card, period, mapped):
 
 
 def main():
-    if not os.path.exists(CHROME):
-        print("no Chrome at %s: this check runs where one is" % CHROME)
+    chrome = oc.find_chrome()
+    if chrome is None:
+        print(oc.missing() + ": this check runs where a browser is")
         return 1
-    stage()
-    dom = run_chrome()
+    stage_dir = oc.stage_dir(STAGE_NAME, chrome)
+    stage(stage_dir)
+    profile = oc.profile_dir(PROFILE_NAME, chrome)
+    dom = run_chrome(chrome, stage_dir, profile)
     exe = H3.build()
     fails, seen = 0, 0
     keep = os.environ.get("FLIGHTS_BAKE_KEEP")    # a folder to keep the themes in, to look at

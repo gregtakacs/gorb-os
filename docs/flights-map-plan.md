@@ -166,3 +166,25 @@ Blueprint, Station, Celestial, Silver, Sectional** (radar-plan §6.26).
 - The shelf files are the app and the look: `flights-scope.orbtheme`, `weather-scope.orbtheme`,
   `radar-scope.orbtheme` (three apps have a Scope and the shelf is one directory; the hub's
   library test holds a file to its own name, the app first allowed).
+
+## 7. Range and scale (owner, 2026-11-10)
+
+1. **The range steps are radar's zoom ladder, its four closest**: Close, City, Area, Local,
+   each twice as far as the one before (the glass's edge at map zoom z11 to z8, radar.c
+   `rd_radius_m`), so the map draws at its own scale and matches the radar at the same name.
+   Built in flights v1.6.3 (`main.c` `RANGE_NAME`, `range_km_at`).
+2. **A press-and-turn chooses the range as radar's zoom does**: the choice is shown large on
+   the theme's pill (slot 38) while it changes and lands on the let-go; the `range` setting is
+   where the app opens, and a turn never writes it (flights v1.6.3).
+3. **Every distance the glass shows is a round number**, as on the radar: the scale's round
+   length (radar.c `rd_scale`: 1, 2, 5, 10, 20, 50, 100 … in the orb's unit, the longest that
+   fits), never the odd radius of the outer ring. The pill says the step's name and that round
+   length ("Area  20 mi").
+4. **The scale is the theme's, as on the radar** (radar-plan's `layout.scale`): **Ring**, a
+   ring drawn at the round length and labelled on it, up and to the right; or **Bar**, a bar at
+   the foot with its length under it. With its look as the radar's: bar ink, edge, thickness,
+   end ticks, longest bar, and the label's face, size and colour. The scope's own baked rings
+   stay as the plate's decoration and carry no figure.
+5. **The pill wears the theme, not grey**: its words in the theme's accent tone (the scope's
+   green), on a backing in the card's frame look (its fill and line). (Claude's call on the
+   owner's "grey looking even though everything is green"; the owner may change it.)

@@ -3269,12 +3269,35 @@ class Component extends DCLogic {
       // plate is the art at zero and the dial alone applies the drive
       const fz = r.freeze ? (this.face().hands || []).find((h) => String(h.id) === String(r.id)) : null;
       if (fz) fz.freeze = 0;
+      /* A hand that turns is lifted from the engine's own sprite, the plane the centre hands
+       * ship (handRows3): its true coverage, its arbour cap baked in (capIntoSprite), drawn at
+       * zero with its standing turn on the row's zero. The diff of two dial renders below made
+       * every texel the hand touched opaque and froze the face's colour into its soft edge,
+       * so the dial turned a hard, face-fringed plate and smoothing had nothing to blend
+       * (owner 2026-11-10: a sub-dial hand that should be smooth was not). The diff stays for
+       * a slide and for a hand the engine drew no sprite for. */
+      const hdS = r.type === 'hand' ? ((this.face() || {}).hands || []).find((h) => String(h.id) === String(r.id)) : null;
+      const slideS = r.motion === 'slide-x' || r.motion === 'slide-y';
+      let bx, by, w, h, gx, gy, o, zeroS = 0;
+      if (hdS && hdS.sp && hdS.sp.c && !slideS) {
+        const K = (this.face().inset || 1) * (this.face().dynK || 1), lens = (v) => 233 + (v - 233) * K;
+        w = Math.max(1, Math.round(hdS.sp.c.width * K)); h = Math.max(1, Math.round(hdS.sp.c.height * K));
+        const px = Math.round(hdS.sp.px * K), py = Math.round(hdS.sp.py * K);
+        const c = document.createElement('canvas'); c.width = w; c.height = h;
+        const cx = c.getContext('2d');
+        if (K === 1) cx.drawImage(hdS.sp.c, 0, 0); else { cx.imageSmoothingQuality = 'high'; cx.drawImage(hdS.sp.c, 0, 0, w, h); }
+        o = this.wbPix(new Uint8Array(cx.getImageData(0, 0, w, h).data.slice().buffer));
+        const pv = r.pivot ? r.pivot : { x: hdS.x, y: hdS.y };
+        gx = Math.round(lens(pv.x)); gy = Math.round(lens(pv.y));
+        bx = gx - px; by = gy - py;
+        zeroS = Math.round(window.WatchEngine.handZeroDeg(hdS) * 10);
+      } else {
       let hand, bare;
       try {
         hand = pixOf(this.frameCanvas(0, { glass: 1, outer: 1 }, pose, [String(r.id)], null, 1));   // no cast shadow: the twin carries it
         bare = pixOf(this.frameCanvas(0, { hands: 1, glass: 1, outer: 1 }, pose, [String(r.id)]));
       } finally { if (fz) delete fz.freeze; }
-      let bx = W, by = W, bx2 = -1, by2 = -1;
+      bx = W; by = W; let bx2 = -1, by2 = -1;
       for (let p = 0, i = 0; p < PANEL; p++, i += 4) {
         if (hand[i] !== bare[i] || hand[i + 1] !== bare[i + 1] || hand[i + 2] !== bare[i + 2]) {
           const x = p % W, y = (p / W) | 0;
@@ -3298,16 +3321,16 @@ class Component extends DCLogic {
        * selection ring already maps by inset*dynK; the bake now maps by it too,
        * so the studio's dashed ring and the shipped pivot row cannot disagree. */
       const kP = (this.face().inset || 1) * (this.face().dynK || 1);
-      const gx = Math.round(233 + (g.x - 233) * kP), gy = Math.round(233 + (g.y - 233) * kP);
+      gx = Math.round(233 + (g.x - 233) * kP); gy = Math.round(233 + (g.y - 233) * kP);
       const slides = r.motion === 'slide-x' || r.motion === 'slide-y';   // a slide has no pivot to keep in its box
       if (!slides) {
         if (gx < bx) bx = gx; if (gx > bx2) bx2 = gx;
         if (gy < by) by = gy; if (gy > by2) by2 = gy;
       }
-      const w = bx2 - bx + 1, h = by2 - by + 1;
+      w = bx2 - bx + 1; h = by2 - by + 1;
       // Diff-alpha, the comp pass's own rule: a texel the hand does not change enters
       // transparent, so the pointer paints over the dial it rides and not as a card of it.
-      const o = new Uint8Array(w * h * 4);
+      o = new Uint8Array(w * h * 4);
       for (let y = 0; y < h; y++) {
         let so = (((by + y) * W) + bx) * 4, ro = y * w * 4;
         for (let x = 0; x < w; x++, so += 4, ro += 4) {
@@ -3319,9 +3342,10 @@ class Component extends DCLogic {
       // D43 P5e: no aperture punch on the pointer plane. A pointer rides above its face and
       // everything the face hosts, and a punch struck at the rest pose would turn with the
       // hand and gouge the dial it sweeps over.
+      }
       const rgba = o;
       auxB += w * h * 3;
-      const row = { slot: ri, id: String(r.id), src: r.src, motion: r.motion, angle: r.angle, span: r.span, zero: r.zero, vmin: r.vmin, vmax: r.vmax,
+      const row = { slot: ri, id: String(r.id), src: r.src, motion: r.motion, angle: r.angle, span: r.span, zero: (r.zero | 0) + zeroS, vmin: r.vmin, vmax: r.vmax,
                     cadence: r.cadence | 0, cad_arg: r.cad_arg | 0, ease: r.ease | 0,
                     x: bx, y: by, w, h, pivot_x: gx - bx, pivot_y: gy - by, plane: { rgba: rgba, w: w, h: h } };
       /* The pointer's own cast shadow, down the §25.2 twin the centred hands take:

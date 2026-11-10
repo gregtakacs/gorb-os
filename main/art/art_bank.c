@@ -546,6 +546,30 @@ esp_err_t art_bank_reserve_span(size_t span_bytes)
     return orb_art_reserve(art_round_pages(span_bytes));
 }
 
+esp_err_t art_bank_check_bind(size_t span_bytes, size_t *free_out)
+{
+    if (span_bytes == 0) return ESP_ERR_INVALID_ARG;
+    /* A theme binds as the primary, and a bind releases the primary first
+     * (art_bank_map_pages), so the outgoing theme's pages are not a cost of the
+     * incoming one. Nothing is booked: the old install booking was consumed only
+     * by a map of the same size, so a theme stored and not worn (a second file,
+     * a keep, an app off the glass) held its pages until reboot, and three such
+     * stores refused the fourth (Gold, 2026-11-10: 261 of 234 with 3 themes). */
+    const size_t prim = s_map ? art_bank_pages_for(s_bytes) : 0;
+    const size_t others = art_pages_accounted() - prim;
+    const size_t need = art_bank_pages_for(art_round_pages(span_bytes));
+    if (free_out) *free_out = others < ORB_ART_PAGE_BUDGET ? ORB_ART_PAGE_BUDGET - others : 0;
+    if (others + need > ORB_ART_PAGE_BUDGET) {
+        s_reserve_refusals++;
+        ESP_LOGE(TAG, "bind %u B refused: would cost %u pages beside %u held by the other "
+                      "banks, %u budgeted. Install fewer themes, or shrink this one.",
+                 (unsigned)span_bytes, (unsigned)need, (unsigned)others,
+                 (unsigned)ORB_ART_PAGE_BUDGET);
+        return ESP_ERR_NO_MEM;
+    }
+    return ESP_OK;
+}
+
 unsigned orb_art_refusals(void)
 {
     /* How often a requested residency — a booking or a map — was refused for

@@ -396,6 +396,15 @@ esp_err_t orb_art_reserve(size_t bytes);
  */
 esp_err_t art_bank_reserve_span(size_t span_bytes);
 
+/**
+ * The theme installer's question: would a theme of this raw span fit the page
+ * window once it binds? A bind replaces the primary, so the primary's own pages
+ * are not counted; every other bank and booking is. Books NOTHING (a stored theme
+ * that is not worn costs no pages). ESP_ERR_NO_MEM (counted in orb_art_refusals)
+ * when it would not fit; *free_out, when given, is the pages the bind may use.
+ */
+esp_err_t art_bank_check_bind(size_t span_bytes, size_t *free_out);
+
 /** How many banks are resident or reserved — primary, secondaries, and the
  *  reservations not yet converted into a mapping — and the bytes outstanding
  *  in reservations right now (consumed bookings are not counted). */

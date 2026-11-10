@@ -77,6 +77,10 @@ def lint_shipped_source():
         "art_consume_reservation(art_round_pages(need_bytes));",
         "if (s_res_bytes[i] == bytes) {",
         "return (art_bank_ready() ? 1u : 0u) + art_bank_extra_count() + art_reservation_count();",
+        # the installer's bind check (2026-11-10): no booking, the primary it replaces not counted
+        "const size_t prim = s_map ? art_bank_pages_for(s_bytes) : 0;",
+        "const size_t others = art_pages_accounted() - prim;",
+        "if (others + need > ORB_ART_PAGE_BUDGET) {",
         # ---- mechanism B (docs/app-platform-plan.md §3.3/§6 M3): the arena rules.
         # Same contract as above — if any of these stops matching the shipping
         # source, the mirror below describes dead code and must be re-read.
@@ -125,8 +129,11 @@ def lint_shipped_source():
     # (free-PSRAM margin and the arena malloc itself) and the SAME two gates on
     # D30's primary refill bump it; the secondary-slot-full map reject does NOT.
     # Pin the exact count so a wrong placement fails the lint, not the mirror.
-    ok(src.count("s_reserve_refusals++;") == 7,
-       "lint: exactly 7 s_reserve_refusals++ sites; got %d" % src.count("s_reserve_refusals++;"))
+    ok(src.count("s_reserve_refusals++;") == 8,
+       "lint: exactly 8 s_reserve_refusals++ sites (7 + the bind check); got %d" % src.count("s_reserve_refusals++;"))
+    th = open(os.path.join(ROOT, "main", "art", "orb_theme.c")).read()
+    ok("art_bank_check_bind(art_span, &free_pages)" in th and "art_bank_reserve_span(" not in th,
+       "lint: the theme installer checks the bind and books nothing")
     ok("all %u reservation slots are booked" in src and "all %u secondary slots hold banks" in src,
        "lint: both exhaustion reasons present (reservation-full counts, secondary-full does not)")
     # The arena margin moved behind a Kconfig option so §20.5(4) can FORCE the refusal
@@ -281,6 +288,20 @@ class ArtResidency:
         self._consume(art_round_pages(need_bytes))
         return ESP_OK
 
+    def check_bind(self, span_bytes):
+        # art_bank_check_bind(): the installer's question. A bind replaces the primary,
+        # so its pages are not counted; nothing is booked (2026-11-10's leak).
+        if span_bytes == 0:
+            return (ERR_INVALID_ARG, 0)
+        prim = art_bank_pages_for(self.primary) if self.primary and self.primary_kind == "map" else 0
+        others = self.pages_accounted() - prim
+        need = art_bank_pages_for(art_round_pages(span_bytes))
+        free = PAGE_BUDGET - others if others < PAGE_BUDGET else 0
+        if others + need > PAGE_BUDGET:
+            self.refusals += 1
+            return (ERR_NO_MEM, free)
+        return (ESP_OK, free)
+
     def primary_map(self, offset, need_bytes):
         # art_bank_map(): the form the card-less default and Arm A always take.
         if need_bytes == 0:
@@ -320,6 +341,30 @@ def new_model(mutations=(), **kw):
 def run_checks(mutations=()):
     E_OK, E_ISZ, E_NF, E_NM = 0, 1, 2, 3
     E_ARG, E_CRC = 4, 5
+
+    # 0. the installer's bind check (2026-11-10): it books nothing, so stores that are not
+    # worn never pile up, and it does not count the primary a bind would replace.
+    m = new_model(mutations)
+    m.primary_map(0, 39 * PAGE_SIZE)                      # Triple calendar worn: 39 pages
+    m.extra[0] = (18 * PAGE_SIZE, 0, False); m.extra[1] = (22 * PAGE_SIZE, 0, False)
+    before = m.pages_accounted()
+    rs = [m.check_bind(39 * PAGE_SIZE - 5)[0] for _ in range(6)]
+    ok(all(r == E_OK for r in rs) and m.pages_accounted() == before and m.reserved_bytes() == 0,
+       "bind check: six stores of a 39-page theme that is not worn book nothing and all fit")
+    m2 = new_model(mutations)
+    m2.primary_map(0, 120 * PAGE_SIZE)
+    m2.extra[0] = (100 * PAGE_SIZE, 0, False)
+    ok(m2.check_bind(120 * PAGE_SIZE)[0] == E_OK,
+       "bind check: the primary it replaces is not counted (100 + 120 fits, 220 + 120 would not)")
+    r3, free3 = m2.check_bind(135 * PAGE_SIZE)
+    ok(r3 == E_NM and free3 == PAGE_BUDGET - 100 and m2.refusals == 1,
+       "bind check: a theme the other banks leave no room for is refused, counted, and told the free pages")
+    m3 = new_model(mutations)
+    m3.res[0] = 50 * PAGE_SIZE
+    m3.extra[0] = (150 * PAGE_SIZE, 0, False)
+    ok(m3.check_bind(40 * PAGE_SIZE)[0] == E_NM,
+       "bind check: another bank's outstanding booking still counts")
+    ok(new_model(mutations).check_bind(0)[0] == E_ARG, "bind check: a zero span is refused as an argument")
 
     # 1. page rounding matches the real bank sizes the firmware reports as art_pages.
     p = model(mutations)["art_bank_pages_for"]
@@ -519,6 +564,10 @@ def run_checks(mutations=()):
 
 
 MUTATIONS = [
+    ("others = self.pages_accounted() - prim", "others = self.pages_accounted()"),   # counts the primary it replaces
+    ("        if others + need > PAGE_BUDGET:\n            self.refusals += 1\n            return (ERR_NO_MEM, free)",
+     "        if False:\n            return (ERR_NO_MEM, free)"),                     # never refuses
+    ("        return (ESP_OK, free)\n", "        self.res[0] = art_round_pages(span_bytes)\n        return (ESP_OK, free)\n"),  # books again: the leak
     ("def art_bank_pages_for(b):\n    return (b + PAGE_SIZE - 1) // PAGE_SIZE",
      "def art_bank_pages_for(b):\n    return b // PAGE_SIZE"),              # truncates rounding
     ("pages += art_bank_pages_for(r)", "pages += 0"),                       # reservations unaccounted

@@ -2709,12 +2709,13 @@ esp_err_t orb_theme_install_bundle(const char *id, char *why, size_t whysz)
         }
     }
 
-    /* C3, §5.3 rule 2: pages are billed at install, and the billing leads the
-     * erase. The span to book is the span boot will map: the art region rounded
+    /* C3, §5.3 rule 2: the page window is checked at install, and the check leads
+     * the erase. The span to check is the span boot will map: the art region rounded
      * to sectors, exactly what copy_bundle3 erases and adopt maps. Refusing here
-     * costs the card read and leaves the slot whole — the budget this check
-     * guards is shared with every app bank that reserved before it, and a store
-     * that ignored it would spend pages another app was promised. The sentence
+     * costs the card read and leaves the slot whole. Nothing is booked: a bind
+     * replaces the primary, so the check counts every other bank but not the theme
+     * this one would replace, and a theme stored and not worn costs no pages (the
+     * old booking was released only by a map, and leaked until reboot). The sentence
      * names both figures, because "install failed" without a count is the same
      * dead button §24.8 buried at the identity door. */
     uint32_t art_span = 0;
@@ -2726,8 +2727,8 @@ esp_err_t orb_theme_install_bundle(const char *id, char *why, size_t whysz)
         }
         art_span = (art_end - SLOT_ART_OFF + THEME_SECTOR - 1) & ~(THEME_SECTOR - 1);
         const size_t need = art_bank_pages_for(art_span);
-        const size_t free_pages = art_bank_pages_free();
-        const esp_err_t re = art_bank_reserve_span(art_span);
+        size_t free_pages = 0;
+        const esp_err_t re = art_bank_check_bind(art_span, &free_pages);
         if (re != ESP_OK) {
             char sent[72];
             snprintf(sent, sizeof sent,

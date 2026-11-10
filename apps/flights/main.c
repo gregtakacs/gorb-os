@@ -54,14 +54,14 @@ static int64_t now_ms(void) { return orb_uptime_us() / 1000; }
 /* ---- settings (declared in the container; app.json) ------------------------------ */
 
 typedef struct {
-    double  latd, lond;          /* the OS home (cap location), not a setting */
-    bool    home_ok;
-    char    place[40];
+    double  latd, lond;          /* the centre: the selected place, home till a press says otherwise */
+    bool    home_ok;             /* there is a centre to ask around (home, or one of the places) */
+    char    place[40];           /* home's name, or why there is none: the footer's text */
     int32_t range, source, bg, boost, ground;
 } settings_t;
 
 static settings_t s_set = { .range = 2, .source = 1, .bg = 2, .boost = 0, .ground = 1 };
-static uint32_t   s_cfg_gen, s_home_gen = 0xFFFFFFFFu, s_units_gen;
+static uint32_t   s_cfg_gen, s_home_gen = 0xFFFFFFFFu, s_units_gen, s_places_gen = 0xFFFFFFFFu;
 static orb_units_t s_units;          /* the orb's units (OS v1.2.10): distance only here */
 
 static int dist_unit(void) { return s_units.dist <= ORB_UNIT_NM ? s_units.dist : ORB_UNIT_KM; }
@@ -69,23 +69,33 @@ static float range_km(void) { return (float)(RANGES[dist_unit()][s_set.range] * 
 /* The feeds take a whole number of nautical miles: the step, rounded up so the scope's
  * edge is always inside what was asked for. */
 static unsigned range_req_nm(void) { return (unsigned)ceil(range_km() / 1.852 - 1e-9); }
-static void range_text(char *b, size_t n)
+static void range_text_at(int step, char *b, size_t n)
 {
-    snprintf(b, n, "%u %s", (unsigned)RANGES[dist_unit()][s_set.range], orb_dist_label(&s_units));
+    snprintf(b, n, "%u %s", (unsigned)RANGES[dist_unit()][step], orb_dist_label(&s_units));
 }
+static void range_text(char *b, size_t n) { range_text_at(s_set.range, b, n); }
 static bool       s_visible;
 
 /* The knob is one dial centred on the plain scope (app-platform-plan.md §51, flight-
  * tracker-design "Knob"): clockwise the aircraft nearest first, anticlockwise farthest
- * first, each with its card; a press steps the range; a hold leaves. The dial's position
- * is re-read from the selected aircraft before every turn, because the order re-sorts
- * by distance on every poll and the card follows its aircraft, not a slot. */
+ * first, each with its card; a press-and-turn steps the range; a press the next place; a hold
+ * leaves. The dial's position is re-read from the selected aircraft before every turn, because
+ * the order re-sorts by distance on every poll and the card follows its aircraft, not a slot. */
 static orb_dial_t s_dial = { .idle_ms = ORB_DIAL_IDLE_MS };
 static int8_t     s_side = 1;            /* which way the selection was reached */
-static int64_t    s_rng_until;           /* the header names the range until then */
+static int64_t    s_rng_until;           /* the header names the range, or a place, until then */
+/* Choosing a range (as radar's zoom, radar-plan §2.10): from a press-and-turn's first click
+ * until the knob is let go (orb_push(0)) only the header moves: nothing is polled, no map
+ * opens, the choice lands on the let-go. RANGE_LOST_MS is the safety for an end that never
+ * comes (an OS before v1.2.27 tells none). */
+#define RANGE_LOST_MS 60000
+static int     s_rng_want = -1;          /* the range being chosen, -1 none */
+static int64_t s_rng_click_ms;           /* 0 = its end came */
+static void range_step(void);
 
 /* Home is the OS's: one owner setting, read through the location cap. A revoked cap
  * reads as no home, and the footer says why. */
+static int32_t s_home_e6[2];         /* the raw home, for the place list: no double in the way */
 static void load_home(void)
 {
     orb_home_t h;
@@ -93,10 +103,65 @@ static void load_home(void)
     const int32_t e = orb_home(&h);
     s_home_gen = orb_home_gen();
     s_set.home_ok = e == ORB_OK;
+    s_home_e6[0] = h.lat_e6; s_home_e6[1] = h.lon_e6;
     s_set.latd = h.lat_e6 / 1e6;
     s_set.lond = h.lon_e6 / 1e6;
     snprintf(s_set.place, sizeof s_set.place, "%s", e == ORB_OK ? h.place :
              e == ORB_ERR_NOT_FOUND ? "" : "location not allowed");
+}
+
+/* ---- the places: home, then the OS's three (as radar's §2.1) ------------------------- *
+ * The knob's press walks this list, so the tracker can sit around any place the owner set
+ * on the hub, not only home. The chosen one is RAM only: not a setting, and not reset by a
+ * visit to the app. No home and no places is today's no-home state, footer and all. */
+
+typedef struct { int os;  int32_t lat_e6, lon_e6; char name[40]; } where_t;
+static where_t  s_where[4];
+static int      s_nwhere, s_where_sel;      /* the place: not the contact hex in s_sel */
+static uint32_t s_place_seq;                /* place changes, so a poll knows its centre */
+static uint32_t s_poll_seq;                 /* the centre the request in hand was asked at */
+static bool     s_say_place;                /* the header's note names a place, not a range */
+
+static const where_t *here(void) { return s_nwhere ? &s_where[s_where_sel] : NULL; }
+
+/* The centre the feed asks around and the map the theme draws. */
+static void place_centre(void)
+{
+    const where_t *w = here();
+    s_set.home_ok = w != NULL;
+    if (!w) return;
+    s_set.latd = w->lat_e6 / 1e6;
+    s_set.lond = w->lon_e6 / 1e6;
+}
+
+static void load_places(void)
+{
+    const int keep = s_nwhere ? s_where[s_where_sel].os : 0;
+    const bool at_home = s_set.home_ok;          /* load_home's answer: refused is not a place */
+    s_nwhere = 0;
+    if (at_home) {
+        where_t *w = &s_where[s_nwhere++];
+        w->os = 0; w->lat_e6 = s_home_e6[0]; w->lon_e6 = s_home_e6[1];
+        snprintf(w->name, sizeof w->name, "%s", s_set.place);
+    }
+    for (uint32_t i = 0; i < 3; i++) {
+        orb_place_t p;
+        if (orb_place(i, &p) != ORB_OK) continue;
+        where_t *w = &s_where[s_nwhere++];
+        w->os = (int)i + 1; w->lat_e6 = p.lat_e6; w->lon_e6 = p.lon_e6;
+        snprintf(w->name, sizeof w->name, "%s", p.place);
+    }
+    s_where_sel = 0;
+    for (int i = 0; i < s_nwhere; i++) if (s_where[i].os == keep) s_where_sel = i;
+    s_places_gen = orb_places_gen();
+    place_centre();
+}
+
+/* The name the header says while a place is being named: the OS's, or Home with none. */
+static const char *place_said(void)
+{
+    const where_t *w = here();
+    return !w || !w->name[0] ? "Home" : w->name;
 }
 
 static void load_settings(void)
@@ -108,6 +173,7 @@ static void load_settings(void)
     if (orb_cfg_get("boost", &v) == ORB_OK)  s_set.boost = v;
     if (orb_cfg_get("ground", &v) == ORB_OK) s_set.ground = v;
     load_home();
+    load_places();
     orb_units(&s_units);
     s_units_gen = orb_units_gen();
     if (s_set.range < 0 || s_set.range >= N_RANGES) s_set.range = 2;
@@ -326,6 +392,7 @@ static bool start_poll(void)
     if (src == SRC_LOL) F.lol_next = now_ms() + LOL_GAP_MS;
     s_req = REQ_POLL;
     s_req_src = src;
+    s_poll_seq = s_place_seq;        /* the centre this answer belongs to (finish_poll) */
     s_parsing = false;
     memset(&s_pc, 0, sizeof s_pc);
     s_pc.lat0 = s_set.latd;
@@ -341,7 +408,14 @@ static void finish_poll(const orb_net_info_t *ni, bool good)
 {
     F.last_src = s_req_src;
     if (ni->status >= 400 && ni->status < 500) rest(s_req_src, ni->status, ni->retry_after_s);
-    if (good) {
+    /* The centre moved while this was in flight: those aircraft are around the old place,
+     * so nothing is kept and the new centre is asked again soon (the press's own kick, and
+     * the providers' rests, still pace it). */
+    const bool stale = s_poll_seq != s_place_seq;
+    if (stale) {
+        F.work_n = 0;
+        orb_logf("FLT dropped: the place moved while the answer was in flight");
+    } else if (good) {
         F.rest_ms[s_req_src] = 0;            /* forgiven: the next refusal starts at a minute */
         F.ok++;
         memcpy(F.pub, F.work, sizeof F.pub);
@@ -360,7 +434,8 @@ static void finish_poll(const orb_net_info_t *ni, bool good)
              (unsigned)s_pc.p.objects, F.work_n);
     orb_net_free();
     s_req = REQ_NONE;
-    schedule_next();
+    if (stale) F.next_poll = now_ms() + 1000;
+    else schedule_next();
 }
 
 static bool start_route(void)
@@ -424,6 +499,7 @@ static void feed_step(void)
     switch (s_req) {
     case REQ_NONE:
         if (!feed_enabled()) { F.next_poll = 0; return; }
+        if (s_rng_want >= 0) return;                /* a range being chosen: nothing asked */
         if (F.kick || (F.next_poll != INT64_MAX && now_ms() >= F.next_poll)) {
             F.kick = false;
             if (start_poll()) return;
@@ -462,6 +538,21 @@ static void feed_step(void)
 static fm_t     s_m;
 static uint32_t s_seq_seen;
 static char     s_sel[8];          /* the selected contact's hex, "" = none */
+
+/* The centre moved under a press: every kept contact is an offset from the old place, so
+ * they all go, the dial is home, and the next poll asks around the new one. The press adds
+ * no poll: the kick rides the usual spacing (the provider rests and adsb.lol's gap hold). */
+static void place_changed(void)
+{
+    s_place_seq++;
+    place_centre();                                  /* the feed and the map follow the press */
+    s_m.n = s_m.norder = 0;
+    s_sel[0] = 0;
+    orb_dial_home(&s_dial);
+    F.kick = true;
+    s_say_place = true;
+    s_rng_until = now_ms() + 2000;                 /* the header names the place for a moment */
+}
 
 static void merge(void)
 {
@@ -751,11 +842,17 @@ static void draw_text(void)
         s_sel[0] = 0;
         orb_dial_home(&s_dial);
     }
-    /* The header says what the knob last did: the range a press chose, for a moment, or
-     * which aircraft the card is, so a turn is never a guess. */
-    const bool rng_note = now_ms() < s_rng_until, accent = rng_note || s_sel[0];
-    if (rng_note)
-        { char r[12]; range_text(r, sizeof r); snprintf(b, sizeof b, "range  %s", r); }
+    /* The header says what the knob last did: the range a press-and-turn chose or is still
+     * choosing, the place a press went to, or which aircraft the card is, so a turn is never
+     * a guess. */
+    const bool choosing = s_rng_want >= 0;
+    const bool note = choosing || now_ms() < s_rng_until, accent = note || s_sel[0];
+    if (choosing || (note && !s_say_place)) {
+        char r[12]; range_text_at(choosing ? s_rng_want : s_set.range, r, sizeof r);
+        snprintf(b, sizeof b, "range  %s", r);
+    }
+    else if (note)
+        snprintf(b, sizeof b, "%s", place_said());
     else if (s_sel[0])
         snprintf(b, sizeof b, "%d of %d", fm_find(&s_m, s_sel) + 1, drawn_n());
     else {
@@ -894,10 +991,14 @@ static void names_draw(void)
     for (; n < N_NAMES; n++) if (s_name[n] >= 0) orb_stage_pose(s_name[n], ORB_STAGE_HIDDEN, 0, 0);
 }
 
-/* What a view is drawn for: the range step, home and the maps' generations. */
+/* What a view is drawn for: the range step, the place and its own generation (a moved home
+ * or a moved place reopens the map), and the maps' generation. */
 static int32_t map_key(void)
 {
-    return (int32_t)((s_set.range & 3) | (s_home_gen & 0xFFF) << 2 | (orb_maps_gen() & 0xFFF) << 14 | (uint32_t)dist_unit() << 26);
+    const where_t *w = here();
+    const uint32_t gen = w && w->os ? s_places_gen : s_home_gen;
+    return (int32_t)((s_set.range & 3) | (uint32_t)(w ? w->os : 0) << 2 | (gen & 0xFFF) << 4 |
+                     (orb_maps_gen() & 0xFFF) << 16 | (uint32_t)dist_unit() << 28);
 }
 
 static void map_clear(void)
@@ -919,9 +1020,10 @@ static void map_open(void)
     memcpy(v.width, V.width, sizeof v.width);
     memcpy(v.dash, V.dash, sizeof v.dash);
     if (s_view_next > 0) orb_map_close(s_view_next);
-    s_view_next = orb_map_open(0, &v);
+    s_view_next = orb_map_open((uint32_t)here()->os, &v);        /* the selected place's map */
     s_next_key = map_key();
-    orb_logf("flights: map view %d for range %d, %d m", (int)s_view_next, (int)s_set.range, (int)v.radius_m);
+    orb_logf("flights: map view %d for range %d place %d, %d m", (int)s_view_next,
+             (int)s_set.range, (int)here()->os, (int)v.radius_m);
     if (s_view_next < 0) {
         const bool absent = s_view_next == ORB_MAP_ABSENT || s_view_next == ORB_MAP_NOCARD;
         orb_logf("flights: the map did not open (%d), again in %d s", (int)s_view_next, absent ? 20 : 3);
@@ -933,6 +1035,7 @@ static void map_open(void)
 static void map_step(void)
 {
     if (!s_map || !s_set.home_ok || !s_visible) return;
+    if (s_rng_want >= 0) return;                     /* a range being chosen: no view opens */
     if (!s_layer) {                          /* refused before the stage binds: the next frame asks */
         s_layer = orb_stage_live(0, V.map_order, 0) == ORB_OK;
         s_map_drawn = false;
@@ -1077,8 +1180,8 @@ ORB_EXPORT("orb_init") int32_t orb_init(void)
     F.next_poll = 0;                 /* background polling starts at the first pass */
     char rng[12];
     range_text(rng, sizeof rng);
-    orb_logf("flight tracker ready: home %s, range %s, background %s",
-             s_set.home_ok ? "set" : "not set", rng, BG_TXT[s_set.bg]);
+    orb_logf("flight tracker ready: %s, %d places, range %s, background %s",
+             s_set.home_ok ? place_said() : "no place set", s_nwhere, rng, BG_TXT[s_set.bg]);
     return ORB_OK;
 }
 
@@ -1108,6 +1211,9 @@ static void set_visible(bool v)
 {
     if (s_visible == v) return;
     s_visible = v;
+    /* Off the glass a range still being chosen lands: the owner turned to it, and a choice
+     * left pending would hold the background feed with nobody on the glass. */
+    if (!v && s_rng_want >= 0) { s_rng_click_ms = 0; range_step(); }
     orb_set_beat(v && !s_themed ? TICK_MS : 0);   /* a theme's stage ticks it every frame */
     /* On the glass: a fresh picture now, unless the one in hand (or the one being
      * fetched) is already fresh — a background poll that just ran is not repeated. */
@@ -1132,21 +1238,29 @@ ORB_EXPORT("orb_tick") void orb_tick(uint32_t now)
     (void)now;
     /* §51: 20 s without a turn closes the card, so a glance shows the scope. */
     if (orb_dial_idle(&s_dial, now_ms())) s_sel[0] = 0;
+    range_step();                                /* a choice whose end never came lands */
     redraw();
 }
 
 ORB_EXPORT("orb_service") void orb_service(void)
 {
     /* A setting written from outside (the hub's /api/v1/apps/cfg door, the options
-     * page) or a new home lands here: a generation moved, so re-read and re-apply. */
-    if (orb_cfg_gen() != s_cfg_gen || orb_home_gen() != s_home_gen || orb_units_gen() != s_units_gen) {
-        /* A new home invalidates every kept contact: their east/north offsets are from
-         * the old one. */
-        if (orb_home_gen() != s_home_gen) {
+     * page), a new home or a changed place lands here: a generation moved, so re-read
+     * and re-apply. */
+    if (orb_cfg_gen() != s_cfg_gen || orb_home_gen() != s_home_gen ||
+        orb_places_gen() != s_places_gen || orb_units_gen() != s_units_gen) {
+        /* The centre moved — home moved, a place the owner moved, or the selected one gone
+         * (its slot cleared, or the whole list gone). Every kept contact's east/north offset
+         * is from the old centre, so they all go and the dial is home. */
+        const where_t *was = here();
+        const int32_t lat0 = was ? was->lat_e6 : 0, lon0 = was ? was->lon_e6 : 0;
+        load_settings();
+        const where_t *now = here();
+        if (!now || !was || now->lat_e6 != lat0 || now->lon_e6 != lon0) {
+            s_place_seq++;                       /* an answer in flight is the old centre's */
             s_m.n = s_m.norder = 0;
             s_sel[0] = 0;
         }
-        load_settings();
         F.kick = true;
         redraw();
     }
@@ -1171,16 +1285,20 @@ static void dial_sync(void)
     s_dial.pos = i < 0 || i >= n ? 0 : s_side > 0 ? i + 1 : -(n - i);
 }
 
+/* Turn: through the aircraft. Press: the next place, wrapping, and nothing else. Either
+ * while a range is still being chosen means its end went missing: the range lands, and the
+ * press is that gesture's let-go, not the next place. */
 ORB_EXPORT("orb_input") void orb_input(int32_t delta, int32_t pressed)
 {
-    if (pressed) {
-        /* The next range, wrapping: the next poll asks for the new radius, the rings
-         * rescale at once, and the header names it for a moment. */
-        s_set.range = (s_set.range + 1) % N_RANGES;
-        orb_cfg_set("range", s_set.range);
-        s_cfg_gen = orb_cfg_gen();
-        F.kick = true;
-        s_rng_until = now_ms() + 2000;
+    if (s_rng_want >= 0) {
+        orb_logf("flights: %s while choosing: the range lands", pressed ? "a press" : "a turn");
+        s_rng_click_ms = 0;
+        range_step();
+        pressed = 0;
+    }
+    if (pressed && s_nwhere > 1) {
+        s_where_sel = (s_where_sel + 1) % s_nwhere;
+        place_changed();
     }
     if (delta) {
         dial_sync();
@@ -1195,6 +1313,46 @@ ORB_EXPORT("orb_input") void orb_input(int32_t delta, int32_t pressed)
         }
     }
     redraw();
+}
+
+/* Press-and-turn: clockwise the range larger, anticlockwise smaller, the ends stop. Only the
+ * header moves until the knob is let go (orb_push(0)), when the choice lands. */
+ORB_EXPORT("orb_push") void orb_push(int32_t delta)
+{
+    if (!delta) {                                        /* let go: the choice lands */
+        orb_logf("flights: press-and-turn let go (choosing %d)", s_rng_want);
+        if (s_rng_want >= 0) s_rng_click_ms = 0;
+        range_step();
+        redraw();
+        return;
+    }
+    int r = (s_rng_want >= 0 ? s_rng_want : s_set.range) + (int)delta;   /* each click a step */
+    if (r < 0) r = 0;
+    if (r > N_RANGES - 1) r = N_RANGES - 1;
+    s_rng_want = r;
+    s_say_place = false;
+    s_rng_click_ms = now_ms();
+    s_rng_until = s_rng_click_ms + 2000;
+    redraw();
+}
+
+/* The gathered range lands: on the let-go (s_rng_click_ms cleared), and past RANGE_LOST_MS on
+ * a turn or press that says the end never came. The picture and the feed follow it then, not
+ * one click earlier. */
+static void range_step(void)
+{
+    if (s_rng_want < 0 || (s_rng_click_ms && now_ms() - s_rng_click_ms < RANGE_LOST_MS)) return;
+    const int r = s_rng_want;
+    orb_logf("flights: range lands at %d (%s)", r, s_rng_click_ms ? "no end came" : "let go");
+    s_rng_want = -1;
+    s_say_place = false;
+    s_rng_until = now_ms() + 2000;
+    if (r != s_set.range) {
+        s_set.range = r;
+        orb_cfg_set("range", s_set.range);
+        s_cfg_gen = orb_cfg_gen();              /* ours: the hub's re-read must not re-apply it */
+        F.kick = true;                          /* the new radius, at the next gap */
+    }
 }
 
 /* The options page is the OS's, drawn from app.json's settings (app-platform-plan §57):

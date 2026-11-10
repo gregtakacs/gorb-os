@@ -4,7 +4,7 @@
   "caps": ["net", "location"],
   "period_ms": 1000,
   "settings": [
-    {"id": "range", "type": "enum", "label": "Range", "default": 2, "choices": [{"km": "20 km", "mi": "10 mi", "nm": "10 nm"}, {"km": "40 km", "mi": "25 mi", "nm": "20 nm"}, {"km": "80 km", "mi": "50 mi", "nm": "40 nm"}, {"km": "140 km", "mi": "90 mi", "nm": "80 nm"}], "help": "How far from home the radar reaches. A press on the radar steps it too."},
+    {"id": "range", "type": "enum", "label": "Range", "default": 2, "choices": [{"km": "20 km", "mi": "10 mi", "nm": "10 nm"}, {"km": "40 km", "mi": "25 mi", "nm": "20 nm"}, {"km": "80 km", "mi": "50 mi", "nm": "40 nm"}, {"km": "140 km", "mi": "90 mi", "nm": "80 nm"}], "help": "How far from home the radar reaches. A press-and-turn on the radar steps it too."},
     {"id": "source", "type": "enum", "label": "Source", "choices": ["adsb.lol", "adsb.fi"], "default": 1, "help": "Where the aircraft come from. adsb.fi is the main source; adsb.lol is the fallback."},
     {"id": "bg", "type": "enum", "label": "Background", "choices": ["off", "every minute", "every 2 min", "every 5 min"], "default": 2, "help": "How often the tracker asks while it is off the glass, so the radar is current when you come back."},
     {"id": "boost", "type": "toggle", "label": "Boost", "default": 0, "help": "While something worth watching is near (an emergency, a low pass), ask every 20 seconds in the background."},

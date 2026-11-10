@@ -1244,6 +1244,90 @@ rolls ships at last, as a new row shape, `CLK_SHAPE_DRUM` (3):
   the top and bottom be glimpses (`ctx._glimpse`). Tests: `headless-wheels` 138, `host_clock3_test`
   388 (drum refusals and acceptance) with 30 mutants (two new), `headless-estimate` 55.
 
+### 4.5 A sub-dial is a face, its hands are pointers (P5e, owner 2026-11-10)
+
+**The fault.** §2 says a sub-dial is "a still row or a fold" and P5c says "every other hand
+ships as a pointer row". The bake did neither for a sub-dial. `compPlan3` made a sub-dial
+with a hand a **value row**: one plate per value of its scale (31 for a date), each plate
+the whole sub-dial with *every* hand it hosts painted in at that value
+(`compPass3`'s `handsOf`). Only a seconds or hours sub-dial that hosted nothing else
+became a pointer (`pointerDefault3`, `COMP3_RING_FULL`). Three consequences on Gold:
+
+- **A second hand on a sub-dial cannot be drawn.** An hour hand under the date hand on a
+  date sub-dial froze at whatever hour each date's render used.
+- **A wheel hosted on the sub-dial was painted into the sub-dial's plates** at the
+  sub-dial's values, over the wheel's own plates. Triple calendar's moon read January's
+  phase for the day of the month (patched 2026-11-10 by punching hosted wheels' cutouts in
+  `F.compHoles`; this slice removes the path that needed it).
+- **A large hand sweeping under the sub-dial** had no depth to pass under: the sub-dial
+  was a value row, not a face.
+
+**Rulings (owner, 2026-11-10).**
+
+1. **Every hand on a sub-dial is its own pointer row.** It reads its own `shows`
+   (second, minute, hour, 24-hour, GMT, day of week, date, month), turns about its own
+   pivot, and stacks in Layers order among its siblings. The pivot is the author's
+   setting: the sub-dial's centre is one choice, anywhere else is as legal (owner,
+   2026-11-10: "it can turn wherever it wants. That is a user setting"). Two, three or more
+   hands on one sub-dial are legal, under R6 and the pointer cap.
+2. **The sub-dial's face is a face, at its Layers depth.** It carries no values. It
+   folds into the plate unless something moving below it would pass under it (R5): a
+   layer lower in the stack whose reach (a hand's swept disc about its pivot, a wheel's
+   visible disc: what its cutouts show, or the whole disc of an exposed wheel) overlaps the
+   face's ink. A small hand beside it and below it in Layers that never
+   reaches under it does not lift it; the face folds into the base dial. When something
+   does pass under, the face ships as a still row at its depth and that layer passes under
+   the face *and* everything the face hosts. A face is never baked into the plate over a
+   hand that sweeps beneath it.
+3. **A wheel is a wheel.** A moon, date, day or month wheel hosted on a sub-dial is
+   handled exactly like one hosted on the dial: snapping plates cut to its cutouts, or a
+   turning row under its cover. Only its face paint and its turn differ. Hosted on a
+   lifted face, the wheel's rows sit just under that face's still row and above whatever
+   passes beneath.
+4. **The plate-per-value sub-dial is not a thing.** It goes, and with it the refusals that
+   existed only because of it: "a date ring does not close under its own hand"
+   (`COMP3_RING_FULL`), "a sub-dial that hosts another indication cannot be a pointer"
+   (`pointerPlan3`), and "a wheel turns under a lifted face" (`clock-logic.js` near
+   `lifted3`).
+
+5. **Every hand is smoothed** (owner, 2026-11-10: "we need to smooth all hands"). Every
+   hand or pointer row gets `EF_SMOOTH` (bilinear), whatever it reads and whatever the
+   frame-rate estimate grants. Turning rings and discs keep their own rule. A seconds hand
+   keeps §49.15's rule: it smooths, and its shadow smooths only when its switch is on.
+6. **A folded face's hands may sink to the base.** When a face folds into the plate, its
+   hands join the bottom of the moving layers with the other folded faces' hands. That's
+   fine as long as R1–R8 still hold.
+7. **Rink is right as built** (owner, 2026-11-10): its exposed rings run under each face's
+   rim, so all three faces lift to still rows, drop shadows and all. That adds ~265 KB,
+   and the glass now matches the preview.
+
+**The wire is unchanged.** The clock already drives any row from any source with any
+cadence about its own pivot (`apps/clock/main.c`: `comp_value`, `drive_units`,
+`drive_t`, `row_pose`). A date pointer is `src date, vmin 1, vmax 32, span 3600, cadence
+jump`: 31 steps a whole turn, the 31st one step short of the 1st, so the ring closes. A
+weekday is 7 (`vmin 0, vmax 7`), a month 12. Time hands take the hand's own motion, as the
+centre hands do. The pivot is the hand's own authored pivot as the engine lays it out
+(the sub-dial's centre by default), never derived from the hand's pixels. No firmware change is expected; if one is needed, it is a finding
+to stop and report, not to make.
+
+**Cost.** A date sub-dial drops from 31 full sub-dial plates (≈1.4 MB at 62 px) to one face
+(folded or one still row) plus one small plate per hand and its shadow twin. Each hand is
+one pointer row against `CLK_AUX_MAX` (8) and R6.
+
+**Proof.**
+- Host: a plan test per ruling — two hands on one date sub-dial give two pointer rows with
+  their own sources and each hand's authored pivot (one moved off the sub-dial's centre
+  keeps its own); a face with a lower hand that never reaches under it still folds; no sub-dial ever appears in
+  `compPlan3`'s rows; a moon wheel hosted on a sub-dial plans exactly as one hosted on the
+  dial; a centre hand under a sub-dial lifts the face to a still row with the hosted
+  wheel's rows between it and the hand; the retired refusals are gone.
+- Presets: every preset still bakes; the ones with sub-dial hands change bytes and say so
+  (named in the report), the rest stay byte-identical.
+- Gold: Triple calendar, and Triple calendar with an hour hand added under its date hand
+  and the centre hour hand dragged under the sub-dial, baked and sent. A warp strip over
+  dates and hours shows each sub-dial hand on its own value, the moon on its own age, and
+  the centre hand passing under the sub-dial and its moon window.
+
 ## 5. Preview: 1:1, and the panel
 
 ### 5.1 Views

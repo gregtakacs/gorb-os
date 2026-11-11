@@ -397,15 +397,20 @@
       // looks-design §3b: aeronautical chart symbols, hollow navy linework over a cream paper
       // knockout, with the magenta accent. Outlined glyphs, not Pictogram's solid blocks.
       var K5 = c.ink, A5 = c.accent, P5 = c.paper, W5 = c.warn;
+      // Small-day legibility (owner, 2026-11-11): the chart hairlines vanish at the 36 px day
+      // size, so navy strokes scale by size with a 2 px floor rather than with the icon. The
+      // magenta accents keep their own weights (unchanged), fog is three solid navy 2 px lines
+      // at both sizes, and drizzle and snow are filled navy marks, not hollow.
+      var SW = function (k, u) { return Math.max(k * u, 2); };
       pk = {
-        sun: function (x, y, R, u) { var t = ''; for (var i = 0; i < 8; i++) t += rad(1.06 * R, i % 2 ? 1.24 * R : 1.5 * R, i * 45, x, y); return [S(circ(x, y, 1.06 * R), { fill: P5 }), S(circ(x, y, R), { stroke: K5, sw: 1.6 * u }), S(t, { stroke: K5, sw: 1.2 * u, cap: 'butt' }), S(poly([[x, y - 1.42 * R], [x + 0.3 * R, y], [x, y + 1.42 * R], [x - 0.3 * R, y]]), { stroke: A5, sw: 1.2 * u }), S(circ(x, y, 0.16 * R), { fill: K5 })]; },
-        moon: function (x, y, R, u) { return [S(crescent(x, y, R), { fill: P5, stroke: K5, sw: 1.6 * u }), S(crescent(x, y, 0.7 * R), { stroke: K5, sw: 0.6 * u, op: 0.5 }), S(circ(x + 1.18 * R, y - 0.86 * R, 2.2 * u), { fill: A5 })]; },
-        cloud: function (cl, u) { var a = cl.m(28, 74), b = cl.m(72, 74); return [S(cl.d, { fill: P5, stroke: K5, sw: 1.7 * u }), S(cl.sub(0.72), { stroke: K5, sw: 0.6 * u, op: 0.45 }), S(ln(a[0] + 4 * u, a[1] - 2.8 * u, b[0] - 4 * u, b[1] - 2.8 * u), { stroke: A5, sw: 1.4 * u })]; },
-        rain: function (x, y, u) { return [S(ln(x + 3.4 * u, y - 7 * u, x - 2.4 * u, y + 6 * u), { stroke: K5, sw: 1.5 * u, cap: 'butt' }), S(ln(x + 7.6 * u, y - 4 * u, x + 3 * u, y + 4.4 * u), { stroke: K5, sw: 1.1 * u, op: 0.85, cap: 'butt' })]; },
-        drizzle: function (x, y, u) { return [S(circ(x, y, 2.4 * u), { fill: P5, stroke: K5, sw: 1.2 * u })]; },
-        snow: function (x, y, u) { var ps = []; for (var i = 0; i < 6; i++) ps.push(pt(5.4 * u, i * 60 + 30, x, y)); return [S(poly(ps), { fill: P5, stroke: K5, sw: 1.3 * u }), S(circ(x, y, 1.7 * u), { fill: A5 })]; },
+        sun: function (x, y, R, u) { var t = ''; for (var i = 0; i < 8; i++) t += rad(1.06 * R, i % 2 ? 1.24 * R : 1.5 * R, i * 45, x, y); return [S(circ(x, y, 1.06 * R), { fill: P5 }), S(circ(x, y, R), { stroke: K5, sw: SW(1.6, u) }), S(t, { stroke: K5, sw: SW(1.2, u), cap: 'butt' }), S(poly([[x, y - 1.42 * R], [x + 0.3 * R, y], [x, y + 1.42 * R], [x - 0.3 * R, y]]), { stroke: A5, sw: 1.2 * u }), S(circ(x, y, 0.16 * R), { fill: K5 })]; },
+        moon: function (x, y, R, u) { return [S(crescent(x, y, R), { fill: P5, stroke: K5, sw: SW(1.6, u) }), S(crescent(x, y, 0.7 * R), { stroke: K5, sw: SW(0.6, u), op: 0.5 }), S(circ(x + 1.18 * R, y - 0.86 * R, 2.2 * u), { fill: A5 })]; },
+        cloud: function (cl, u) { var a = cl.m(28, 74), b = cl.m(72, 74); return [S(cl.d, { fill: P5, stroke: K5, sw: SW(1.7, u) }), S(cl.sub(0.72), { stroke: K5, sw: SW(0.6, u), op: 0.45 }), S(ln(a[0] + 4 * u, a[1] - 2.8 * u, b[0] - 4 * u, b[1] - 2.8 * u), { stroke: A5, sw: 1.4 * u })]; },
+        rain: function (x, y, u) { return [S(ln(x + 3.4 * u, y - 7 * u, x - 2.4 * u, y + 6 * u), { stroke: K5, sw: SW(1.5, u), cap: 'butt' }), S(ln(x + 7.6 * u, y - 4 * u, x + 3 * u, y + 4.4 * u), { stroke: K5, sw: SW(1.1, u), op: 0.85, cap: 'butt' })]; },
+        drizzle: function (x, y, u) { return [S(circ(x, y, Math.max(2.4 * u, 1.8)), { fill: K5 })]; },
+        snow: function (x, y, u) { return [S(tx(STAR4, x, y, Math.max(5.4 * u, 2) / 8), { fill: K5 }), S(circ(x, y, 1.7 * u), { fill: A5 })]; },
         bolt: function (ox, oy, u) { return [S(tx(BOLT, ox, oy, u), { fill: P5, stroke: W5, sw: 1.7 * u })]; },
-        fog: function (ls, u) { return ls.map(function (l, i) { return S(ln(l[0], l[1], l[2], l[1]), { stroke: K5, sw: 1.6 * u, dash: f(7 * u) + ' ' + f(4.5 * u), op: 0.95 - i * 0.13, cap: 'butt' }); }); },
+        fog: function (ls, u) { return ls.slice(0, 3).map(function (l) { return S(ln(l[0], l[1], l[2], l[1]), { stroke: K5, sw: 2, cap: 'butt' }); }); },
       };
     } else {
       var K = c.ink, Rd = c.red;

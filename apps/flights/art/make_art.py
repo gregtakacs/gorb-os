@@ -245,11 +245,19 @@ def render_station(p, band, uid):
 
 def render_sectional(p, band, uid):
     """Shape and colour: a hollow chart symbol, the silhouette's outline only in the band
-    colour with the ground showing through. The same mask as blueprint's, so overlaps stay
-    out of the line, and a heavier stroke, so the line survives the downsample to 38 px.
-    A magenta tick at the pivot is the chart's accent."""
+    colour, at true size on the cream chart ground. The pale bands (the < 20k yellow, the
+    no-alt and ground greys) vanished there on their own, so the hollow line now carries a
+    navy casing one step wider under it (CASE_W = the band stroke plus OUTLINE_W, as the
+    Modern family's dark casing does) and a light interior fill, so every band reads. The
+    same mask as blueprint's keeps overlaps (wing over fuselage) out of the line. A magenta
+    tick at the pivot is the chart's accent."""
     s = _sil(p)
-    return (f'<mask id="{uid}" maskUnits="userSpaceOnUse" x="-10" y="-10" width="120" height="120">'
+    case = 11 + OUTLINE_W                                   # the casing one step wider than the band stroke
+    return (f'<mask id="{uid}c" maskUnits="userSpaceOnUse" x="-10" y="-10" width="120" height="120">'
+            f'<g fill="#fff" stroke="#fff" stroke-width="{case}" stroke-linejoin="round">{s}</g><g fill="#000">{s}</g></mask>'
+            f'<rect x="-10" y="-10" width="120" height="120" fill="#1F2A44" mask="url(#{uid}c)"/>'
+            f'<g fill="#F4F1E6" fill-opacity="0.85">{s}</g>'
+            f'<mask id="{uid}" maskUnits="userSpaceOnUse" x="-10" y="-10" width="120" height="120">'
             f'<g fill="#fff" stroke="#fff" stroke-width="11" stroke-linejoin="round">{s}</g><g fill="#000">{s}</g></mask>'
             f'<rect x="-10" y="-10" width="120" height="120" style="fill:{band}" mask="url(#{uid})"/>'
             f'<rect x="45" y="47.6" width="10" height="4.8" fill="#C2187A"/>')
@@ -1041,7 +1049,7 @@ code { font: .88em var(--mono); color: var(--ink); }
 <svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs>%SYMBOLS%</defs></svg>
 <main>
   <header style="display:grid;gap:10px">
-    <h1>Flights art, five families</h1>
+    <h1>Flights art, eight families</h1>
     <p class="lede">Plane families, radar arms and backgrounds for the tracker's themes. Each family comes in two forms: a plane per category, or one detailed plane for every category. Picking a family shows it with its own background and arm; every control still mixes freely. Range rings are drawn live, as the app draws them. The traffic is made up.</p>
   </header>
 

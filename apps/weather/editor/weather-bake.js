@@ -128,12 +128,16 @@
     folded: { title: 'Folded', note: 'two-tone paper facets with a cast shadow; a pinwheel sun', roles: [['ink', 'Ink'], ['inkD', 'Ink fold'], ['warm', 'Sun'], ['warmD', 'Sun fold'], ['paper', 'Paper'], ['shade', 'Paper fold'], ['shadow', 'Shadow'], ['warn', 'Lightning']] },
     nebula: { title: 'Nebula', note: 'translucent glows; a cratered full moon, meteor rain, star snow', roles: [['gold', 'Sun'], ['core', 'Sun core'], ['orange', 'Lightning'], ['violet', 'Cloud'], ['lilac', 'Cloud light'], ['moon', 'Moon'], ['crater', 'Craters'], ['rain', 'Rain']] },
     pictogram: { title: 'Pictogram', note: 'solid railway pictograms with one accent: the sun and the bolt', roles: [['ink', 'Ink'], ['red', 'Accent']] },
+    // looks-design §3a: the Silver look's own pack, cool single-tone engine-turned metal
+    guilloche: { title: 'Guilloché', note: 'engine-turned silver; a bright specular streak, one amber bolt', roles: [['metal', 'Body'], ['hi', 'Highlight'], ['deep', 'Shade'], ['warn', 'Lightning']] },
+    // looks-design §3b: the Sectional look's own pack, hollow aeronautical chart symbols
+    charted: { title: 'Charted', note: 'aeronautical chart symbols; hollow navy linework with a magenta accent', roles: [['ink', 'Chart ink'], ['accent', 'Magenta'], ['paper', 'Paper knockout'], ['warn', 'Magenta']] },
   };
   var GROUNDS = { scope: 'Phosphor scope', brass: 'Brass instrument', blueprint: 'Blueprint', paper: 'Chart paper', celestial: 'Galaxy', station: 'Station dial',
     silver: 'Silvered metal', sectional: 'Sectional chart' };
   var MONO = 'IBM Plex Mono', PLEX = 'IBM Plex Sans', CORM = 'Cormorant Garamond', GROT = 'Space Grotesk', MICH = 'Michroma', JOST = 'Jost';
   var PRESETS_DEF = {
-    scope: { name: 'Scope', match: 'Flights · Modern',
+    scope: { name: 'Scope', match: 'Flights · Scope',
       plate: { style: 'scope', c0: '#12361F', c1: '#0E2A1A', c2: '#08170E', detail: '#2A6A44', tick: '#3DBB6E' },
       words: { num: MONO, text: PLEX, label: MONO, caps: true, track: 2, ink: '#E6F0EA', quiet: '#8A9A90' },
       temps: { ramp: ['#2E9C88', '#3DFF8E', '#FFB23C'], rain: '#59D8C8', track: '#1C4A2E', cap: 'round' },
@@ -164,20 +168,20 @@
       temps: { ramp: ['#111111', '#8A8A8A', '#E3000F'], rain: '#111111', track: '#DADAD6', cap: 'butt' },
       icons: { pack: 'pictogram', c: { ink: '#111111', red: '#E3000F' } , shade: '3d', shadow: 'strong' } },
     // flights-map-plan §6 (look parity): Silver, polished metal and graphite, as the tracker's
-    // Modern silver and the radar's Silver wear it
+    // silver and the radar's Silver wear it; looks-design §3a: its own Guilloché pack
     silver: { name: 'Silver', match: 'Flights · Silver, Radar · Silver',
       // graphite under a silver bezel, as the radar's and the tracker's Silver
       plate: { style: 'silver', c0: '#3A3F46', c1: '#2C3138', c2: '#1C1F24', detail: '#C8CED6', tick: '#E4E8EC' },
       words: { num: 'Jost', text: 'Jost', label: 'Jost', caps: true, track: 2, ink: '#F2F4F7', quiet: '#AAB2BD' },
       temps: { ramp: ['#7FC8FF', '#C8CED6', '#FF9A5C'], rain: '#7FC8FF', track: '#3A3F46', cap: 'round' },
-      icons: { pack: 'engraved', c: { metal: '#C8CED6', hi: '#FFFFFF', deep: '#5A626C', warn: '#FF9A5C' } , shade: '3d', shadow: 'strong' } },
+      icons: { pack: 'guilloche', c: { metal: '#C8CED6', hi: '#FFFFFF', deep: '#5A626C', warn: '#FF9A5C' } , shade: '3d', shadow: 'strong' } },
     // flights-map-plan §4: a flight chart's look, made up: chart paper, a blue rose, a magenta
-    // band inside the rim, the station's pictograms in chart navy and magenta
+    // band inside the rim; looks-design §3b: its own Charted pack, hollow chart symbols
     sectional: { name: 'Sectional', match: 'Flights · Sectional, Radar · Sectional, Clock · Sectional',
       plate: { style: 'sectional', c0: '#F3F5EC', c1: '#EEF1E4', c2: '#E1E7D0', detail: '#2A5DB0', tick: '#2A5DB0' },
       words: { num: 'Barlow Condensed', text: 'Barlow Condensed', label: 'Barlow Condensed', caps: true, track: 1, ink: '#1F2A44', quiet: '#3E5A80' },
       temps: { ramp: ['#2A5DB0', '#2E7D32', '#C2187A'], rain: '#2A5DB0', track: '#D7DDC6', cap: 'round' },
-      icons: { pack: 'pictogram', c: { ink: '#1F2A44', red: '#C2187A' } , shade: '3d', shadow: 'strong' } },
+      icons: { pack: 'charted', c: { ink: '#1F2A44', accent: '#C2187A', paper: '#F3F5EC', warn: '#C2187A' } , shade: '3d', shadow: 'strong' } },
   };
   // the starts in every app's order (owner, 2026-11-08: one name and one place per look)
   var PRESETS = ['scope', 'paper', 'brass', 'blueprint', 'station', 'celestial', 'silver', 'sectional'];
@@ -365,6 +369,43 @@
         snow: function (x, y, u) { return [S(tx(STAR4, x, y, 0.8 * u), { fill: '#FFFFFF' })]; },
         bolt: function (ox, oy, u) { var d = tx(BOLT, ox, oy, u); return [S(d, { stroke: org, sw: 6 * u, op: 0.2 }), S(d, { fill: org })]; },
         fog: function (ls, u) { return ls.map(function (l, i) { return S(ell((l[0] + l[2]) / 2, l[1], (l[2] - l[0]) / 2, 3.2 * u), { stroke: lil, sw: 1.7 * u, op: 0.85 - i * 0.12, dash: '0.1 ' + f(4.2 * u) }); }); },
+      };
+    } else if (name === 'guilloche') {
+      // looks-design §3a: engine-turned silver, cool and single-tone; a specular streak, and the
+      // bolt the pack's only colour. Twelve slim engraved rays and turned rings, not Engraved's
+      // sixteen-ray sunburst, and no rim anywhere: the metal reads by its own light and shade.
+      var M4 = c.metal, H4 = c.hi, D4 = c.deep, W4 = c.warn;
+      var arc4 = function (x, y, r, a0, a1) { var p = pt(r, a0, x, y), q = pt(r, a1, x, y); return 'M' + f(p[0]) + ',' + f(p[1]) + 'A' + f(r) + ',' + f(r) + ' 0 0,1 ' + f(q[0]) + ',' + f(q[1]); };
+      var turned = function (x, y, R, u) { var o = []; for (var i = 1; i <= 3; i++) o.push(S(circ(x, y, (0.24 + i * 0.22) * R), { stroke: D4, sw: 0.6 * u, op: 0.5 })); return o; };
+      pk = {
+        sun: function (x, y, R, u) {
+          var d = ''; for (var i = 0; i < 12; i++) d += rad(1.02 * R, 1.62 * R, i * 30, x, y);
+          return [S(d, { stroke: M4, sw: 3.4 * u, cap: 'butt' }), S(d, { stroke: D4, sw: 0.7 * u, op: 0.7, cap: 'butt' }),
+            S(circ(x, y, R), { fill: M4, stroke: D4, sw: 1 * u })].concat(turned(x, y, R, u),
+            [S(arc4(x, y, 0.7 * R, -74, -14), { stroke: H4, sw: 2.6 * u, op: 0.9 }),
+             S(arc4(x, y, 0.42 * R, -68, -34), { stroke: H4, sw: 1.2 * u, op: 0.6 })]);
+        },
+        moon: function (x, y, R, u) { return [S(circ(x, y, 1.3 * R), { stroke: D4, sw: 0.6 * u, op: 0.45 }), S(crescent(x, y, R), { fill: M4, stroke: D4, sw: 0.9 * u }), S(arc4(x, y, 0.66 * R, -70, -20), { stroke: H4, sw: 1.5 * u, op: 0.7 })]; },
+        cloud: function (cl, u) { var b = cl.m(49, 50); return [S(cl.d, { fill: M4, stroke: D4, sw: 1 * u }), S(cl.sub(0.8), { stroke: D4, sw: 0.6 * u, op: 0.55 }), S(arc4(b[0], b[1], 16 * cl.k, -68, 44), { stroke: H4, sw: 1.7 * u, op: 0.85 })]; },
+        rain: function (x, y, u) { return [S(tx(DROP, x, y, u), { fill: M4, stroke: D4, sw: 0.8 * u }), S(ln(x - 1.1 * u, y - 1.2 * u, x - 1.1 * u, y + 1.8 * u), { stroke: H4, sw: 0.8 * u, op: 0.85 })]; },
+        drizzle: function (x, y, u) { return [S(circ(x, y, 2.8 * u), { fill: M4, stroke: D4, sw: 0.7 * u }), S(circ(x - 0.9 * u, y - 0.9 * u, 0.85 * u), { fill: H4, op: 0.9 })]; },
+        snow: function (x, y, u) { var d = ''; for (var i = 0; i < 3; i++) { var p = pt(6.4 * u, i * 60, x, y), q = pt(6.4 * u, i * 60 + 180, x, y); d += ln(p[0], p[1], q[0], q[1]); } return [S(d, { stroke: M4, sw: 3 * u, cap: 'butt' }), S(d, { stroke: D4, sw: 0.7 * u, op: 0.7, cap: 'butt' }), S(circ(x, y, 2.2 * u), { stroke: D4, sw: 0.7 * u, op: 0.85 }), S(ln(x, y - 6.4 * u, x, y - 3.6 * u), { stroke: H4, sw: 1.1 * u, op: 0.9 })]; },
+        bolt: function (ox, oy, u) { return [S(tx(BOLT, ox, oy, u), { fill: W4 })]; },
+        fog: function (ls, u) { var o = []; ls.forEach(function (l, i) { o.push(S(ln(l[0], l[1], l[2], l[1]), { stroke: M4, sw: 5.6 * u, op: 1 - i * 0.12 })); o.push(S(ln(l[0] + 2 * u, l[1] + 1.7 * u, l[2] - 2 * u, l[1] + 1.7 * u), { stroke: D4, sw: 1 * u, op: 0.55 })); if (!i) o.push(S(ln(l[0] + 3 * u, l[1] - 1.8 * u, l[2] - 3 * u, l[1] - 1.8 * u), { stroke: H4, sw: 1.4 * u, op: 0.9 })); }); return o; },
+      };
+    } else if (name === 'charted') {
+      // looks-design §3b: aeronautical chart symbols, hollow navy linework over a cream paper
+      // knockout, with the magenta accent. Outlined glyphs, not Pictogram's solid blocks.
+      var K5 = c.ink, A5 = c.accent, P5 = c.paper, W5 = c.warn;
+      pk = {
+        sun: function (x, y, R, u) { var t = ''; for (var i = 0; i < 8; i++) t += rad(1.06 * R, i % 2 ? 1.24 * R : 1.5 * R, i * 45, x, y); return [S(circ(x, y, 1.06 * R), { fill: P5 }), S(circ(x, y, R), { stroke: K5, sw: 1.6 * u }), S(t, { stroke: K5, sw: 1.2 * u, cap: 'butt' }), S(poly([[x, y - 1.42 * R], [x + 0.3 * R, y], [x, y + 1.42 * R], [x - 0.3 * R, y]]), { stroke: A5, sw: 1.2 * u }), S(circ(x, y, 0.16 * R), { fill: K5 })]; },
+        moon: function (x, y, R, u) { return [S(crescent(x, y, R), { fill: P5, stroke: K5, sw: 1.6 * u }), S(crescent(x, y, 0.7 * R), { stroke: K5, sw: 0.6 * u, op: 0.5 }), S(circ(x + 1.18 * R, y - 0.86 * R, 2.2 * u), { fill: A5 })]; },
+        cloud: function (cl, u) { var a = cl.m(28, 74), b = cl.m(72, 74); return [S(cl.d, { fill: P5, stroke: K5, sw: 1.7 * u }), S(cl.sub(0.72), { stroke: K5, sw: 0.6 * u, op: 0.45 }), S(ln(a[0] + 4 * u, a[1] - 2.8 * u, b[0] - 4 * u, b[1] - 2.8 * u), { stroke: A5, sw: 1.4 * u })]; },
+        rain: function (x, y, u) { return [S(ln(x + 3.4 * u, y - 7 * u, x - 2.4 * u, y + 6 * u), { stroke: K5, sw: 1.5 * u, cap: 'butt' }), S(ln(x + 7.6 * u, y - 4 * u, x + 3 * u, y + 4.4 * u), { stroke: K5, sw: 1.1 * u, op: 0.85, cap: 'butt' })]; },
+        drizzle: function (x, y, u) { return [S(circ(x, y, 2.4 * u), { fill: P5, stroke: K5, sw: 1.2 * u })]; },
+        snow: function (x, y, u) { var ps = []; for (var i = 0; i < 6; i++) ps.push(pt(5.4 * u, i * 60 + 30, x, y)); return [S(poly(ps), { fill: P5, stroke: K5, sw: 1.3 * u }), S(circ(x, y, 1.7 * u), { fill: A5 })]; },
+        bolt: function (ox, oy, u) { return [S(tx(BOLT, ox, oy, u), { fill: P5, stroke: W5, sw: 1.7 * u })]; },
+        fog: function (ls, u) { return ls.map(function (l, i) { return S(ln(l[0], l[1], l[2], l[1]), { stroke: K5, sw: 1.6 * u, dash: f(7 * u) + ' ' + f(4.5 * u), op: 0.95 - i * 0.13, cap: 'butt' }); }); },
       };
     } else {
       var K = c.ink, Rd = c.red;

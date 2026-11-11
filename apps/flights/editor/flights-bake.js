@@ -65,7 +65,7 @@
 
   /* ---- the design (schema 2) and the presets: the five families, each on its ground ---- */
   var SCHEMA = 2;
-  var PRESETS = ['modern', 'silver', 'brass', 'blueprint', 'paper', 'celestial'];
+  var PRESETS = ['modern', 'silver', 'brass', 'blueprint', 'paper', 'celestial', 'station', 'sectional'];
   // each ground's own scope: the old art's numbers, now the design's
   var SCOPES = {
     scope: { ground: 'scope', face: '#0E2A1A', detail: '#1C4A2E', grid: true,
@@ -153,19 +153,18 @@
     silver: { frame: 'silver' }, brass: { frame: 'brass' }, blueprint: { frame: 'drafting' }, paper: { frame: 'chart' },
     celestial: { frame: 'pill', heading: 'trail', arm: { kind: 'line', colour: '#C9BEFF', tailColour: '#8C7BFF', tail: 28, halo: 4 } },
   };
-  // the starts beyond the plane families: Sectional (flights-map-plan §4) flies the Modern
-  // silhouettes in a flight chart's inks
+  // the starts beyond the plane families: Sectional (flights-map-plan §4) on a flight chart's
+  // ground, Station (flights-map-plan §6) on the railway clock's white, each now with its own
+  // plane family in the art
   // one name per look in every app (owner, 2026-11-08), in the radar's and the weather's order;
   // Station joins the tracker for parity (flights-map-plan §6)
   var STARTS = ['modern', 'paper', 'brass', 'blueprint', 'station', 'celestial', 'silver', 'sectional'];
   var LOOK_TITLES = { modern: 'Scope', paper: 'Paper', brass: 'Brass', blueprint: 'Blueprint', station: 'Station', celestial: 'Celestial',
     silver: 'Silver', sectional: 'Sectional' };
-  var START_INFO = { sectional: { band: 'Flat silhouettes in a flight chart’s inks on chart paper: magenta, blue and yellow.' },
-    station: { band: 'The railway clock’s look: black silhouettes on white, a red arm.' } };
   var SECTIONAL_BANDS = ['#8A8A8A', '#A0A4AA', '#C2187A', '#D9480F', '#2E7D32', '#2A5DB0', '#1F2A44'];
   function startInfo(k) {
-    var f = A().families[k] || {}, x = START_INFO[k] || {};
-    return { title: LOOK_TITLES[k] || f.title || k, band: x.band || f.band || '', single: f.single };
+    var f = A().families[k] || {};
+    return { title: LOOK_TITLES[k] || f.title || k, band: f.band || '', single: f.single };
   }
   var clone = function (o) { return JSON.parse(JSON.stringify(o)); };
   function scopeOf(ground) { return clone(SCOPES[ground] || SCOPES.scope); }
@@ -198,7 +197,7 @@
     d.scope = scopeOf('sectional'); d.scope.image = null;
     d.arm = Object.assign(armOf('line', 8), { colour: '#C2187A', tailColour: '#C2187A', lead: '#C2187A', tail: 18, halo: 0,
       shadow: { on: false, opacity: 0.6, blur: 2.5 }, layer: 'under', length: 1 });
-    Object.assign(d.planes, { family: 'modern', colour: true, bands: SECTIONAL_BANDS.slice(), ground: 0.7, groundGrey: false,
+    Object.assign(d.planes, { family: 'sectional', colour: true, bands: SECTIONAL_BANDS.slice(), ground: 0.7, groundGrey: false,
       sel: '#1F2A44', em: '#E00000', selStyle: 'ring', emStyle: 'double', dots: { show: 'bands', colour: '#1F2A44', size: 6 },
       shadow: { on: true, opacity: 0.35, blur: 1.5 } });
     d.words = clone(WORDS.sectional);
@@ -219,7 +218,7 @@
       home: { colour: '#E3000F', size: 4 } };
     d.arm = Object.assign(armOf('line', 8), { colour: '#E3000F', tailColour: '#E3000F', lead: '#E3000F', tail: 0, halo: 0,
       shadow: { on: false, opacity: 0.6, blur: 2.5 }, layer: 'under', length: 1 });
-    Object.assign(d.planes, { family: 'modern', colour: true, bands: ['#8A8A8A', '#B0B0B0', '#E3000F', '#D9480F', '#2E7D32', '#1F4E8C', '#111111'],
+    Object.assign(d.planes, { family: 'station', colour: true, bands: ['#8A8A8A', '#B0B0B0', '#E3000F', '#D9480F', '#2E7D32', '#1F4E8C', '#111111'],
       ground: 0.7, groundGrey: false, sel: '#111111', em: '#E3000F', dots: { show: 'bands', colour: '#111111', size: 6 } });
     d.words = { face: 'Jost', size: 18, body: '#111111', accent: '#E3000F', accent2: null, quiet: '#555555', warning: '#E3000F' };
     d.frames = { style: 'square', edge: 1.5, pad: 8, fill: '#FFFFFF', opacity: 0.94, line: '#111111', image: null, corner: 4,

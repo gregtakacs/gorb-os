@@ -146,8 +146,13 @@ still show "Windows protected your PC" for a short while, even when signed.
 
 ## Adding the secrets
 
-In GitHub, go to the repo → Settings → Secrets and variables → Actions → New
-repository secret. Or use the CLI:
+`tools/signing_secrets.sh` sets them from the repo root: `windows` asks for the six
+Azure values at hidden prompts, `mac cert.p12 AuthKey_XXXX.p8` encodes the two files and
+asks for the other four, and `check` lists which are set. GitHub never shows a secret
+again, so with `SIGNING_SECRETS_DIR` set the script also files each value there (one
+owner-only file per secret) and loads it from there next time. Or, in GitHub, go to the repo →
+Settings → Secrets and variables → Actions → New repository secret. Or by hand with the
+CLI (`base64 -i` is macOS's spelling; on Linux use `base64 -w0`):
 
 ```sh
 base64 -i cert.p12 | gh secret set MACOS_CERT_P12

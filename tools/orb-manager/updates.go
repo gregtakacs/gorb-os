@@ -204,7 +204,9 @@ func (s *Server) appUpdateRows(restorable []RestorableApp) []updateItem {
 // exactly this version is held back until a newer one appears.
 //
 // A resolve that fails is reported rather than smoothed over: the row says the theme
-// could not be checked instead of implying it is current.
+// could not be checked instead of implying it is current. A resolve the site could not
+// answer yet (fu2-6) is a row of its own too — information, nothing to press, nothing
+// recorded — and only a site that says "gone" in its own body retires a design.
 func (s *Server) themeUpdateRows(r *http.Request, pl *LibraryPayload) []updateItem {
 	var out []updateItem
 	for _, t := range pl.Themes {
@@ -223,6 +225,15 @@ func (s *Server) themeUpdateRows(r *http.Request, pl *LibraryPayload) []updateIt
 		if ans.Gone {
 			out = append(out, updateItem{Kind: "theme", Key: t.Origin.DesignID, Title: t.Title,
 				Gone: true, Choices: []string{}})
+			continue
+		}
+		if ans.NotYet {
+			// A site that cannot answer the question yet is not news about the design: the
+			// row is information, it offers nothing to press, and it records nothing — so
+			// the next check asks this site again. siteHost names which one could not.
+			out = append(out, updateItem{Kind: "theme", Key: t.Origin.DesignID, Title: t.Title,
+				Note:    fmt.Sprintf("%s can’t check this theme for updates yet", siteHost(t.Origin.Site)),
+				Choices: []string{}})
 			continue
 		}
 		if ans.Version <= t.Origin.Version {
@@ -473,6 +484,12 @@ func (s *Server) applyThemeUpdate(r *http.Request, key, baked string) (*applyPay
 	if ans.Gone {
 		return nil, fmt.Errorf("%s is no longer shared on orb-os.net; the theme stays, and Orb Manager "+
 			"will stop checking it", oldName)
+	}
+	if ans.NotYet {
+		// The same refusal this row will still be offering nothing about: the site could
+		// not say what the design's current version is, which is not a reason to write
+		// anything. Nothing on the shelf, on an orb or in the state file changes.
+		return nil, fmt.Errorf("%s: %s can’t check for updates yet", oldName, siteHost(origin.Site))
 	}
 	if ans.Version <= origin.Version {
 		return nil, fmt.Errorf("orb-os.net has no newer version of %s than the one that was baked", oldName)

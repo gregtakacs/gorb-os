@@ -982,7 +982,7 @@ func TestResolveOriginReadsTheAnswerAndTheGone(t *testing.T) {
 	}
 
 	for _, code := range []int{http.StatusNotFound, http.StatusGone} {
-		gone, _ := siteServer(t, func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(code) })
+		gone, _ := siteServer(t, func(w http.ResponseWriter, r *http.Request) { resolveGoneBody(w, code) })
 		orig.Site = strings.ToLower(gone.URL)
 		ans, err := s.resolveOrigin(ctx, orig)
 		if err != nil {
@@ -1047,6 +1047,142 @@ func TestResolveOriginGateOpensTheSitesWwwName(t *testing.T) {
 	if n := len(dials); n != 2 {
 		t.Errorf("a refused origin sidecar dialled %d times, want the gate to have stopped it at 2", n)
 	}
+}
+
+// TestResolveSendsBearerOnlyToItsSite is H2's rule on the door fu2-6 asks more often than
+// the import did: the link's bearer rides on a resolve to exactly the site that minted it,
+// and on no other. An owner's credential is never carried to a host another theme came
+// from, and a dead link is not sent anywhere either.
+func TestResolveSendsBearerOnlyToItsSite(t *testing.T) {
+	answers := func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"designId":"` + siteDesignID +
+			`","app":"clock","version":9,"sharedName":"Night dial by @greg"}`))
+	}
+	// linkedHub is a hub holding a link to exactly one site, written by the hub's own
+	// writer so the test reads the credential the way every door reads it.
+	linkedHub := func(t *testing.T, site string) (*Server, string) {
+		t.Helper()
+		s := newHub()
+		s.statePath = filepath.Join(t.TempDir(), "state.json")
+		t.Setenv("GORB_SITE", site)
+		tok := hubRandom(32)
+		if err := s.saveSiteLink(&siteLink{Token: tok, Site: siteReleaseBase(), LinkedAt: 1730000000, Handle: "greg"}); err != nil {
+			t.Fatalf("saveSiteLink: %v", err)
+		}
+		return s, tok
+	}
+	asked := func(t *testing.T, s *Server, site string) (*resolveAnswer, error) {
+		t.Helper()
+		return s.resolveOrigin(context.Background(), &ThemeOrigin{
+			Site: strings.ToLower(site), DesignID: siteDesignID, Version: 3,
+		})
+	}
+
+	t.Run("the site that minted the token is the only one it is sent to", func(t *testing.T) {
+		a, aAsks := siteServer(t, answers)
+		b, bAsks := siteServer(t, answers)
+		s, tok := linkedHub(t, a.URL)
+		if ans, err := asked(t, s, a.URL); err != nil || ans == nil || !ans.Resolved {
+			t.Fatalf("the resolve to the linked site: %v %+v", err, ans)
+		}
+		if len(*aAsks) != 1 {
+			t.Fatalf("the linked site saw %d requests, want one", len(*aAsks))
+		}
+		if got := (*aAsks)[0].head.Get("Authorization"); got != "Bearer "+tok {
+			t.Errorf("a resolve to the site that minted the token carried %q, want its bearer", got)
+		}
+		if ans, err := asked(t, s, b.URL); err != nil || ans == nil || !ans.Resolved {
+			t.Fatalf("the resolve to another allowed site: %v %+v", err, ans)
+		}
+		if len(*bAsks) != 1 {
+			t.Fatalf("the other site saw %d requests, want one", len(*bAsks))
+		}
+		if got := (*bAsks)[0].head.Get("Authorization"); got != "" {
+			t.Errorf("a resolve to a site that minted nothing carried %q, want no Authorization header at all", got)
+		}
+	})
+
+	t.Run("a link that is gone or not live sends nothing anywhere", func(t *testing.T) {
+		a, asks := siteServer(t, answers)
+		s, _ := linkedHub(t, a.URL)
+		if err := s.saveSiteLink(&siteLink{Site: siteReleaseBase(), Handle: "greg", LinkedAt: 1, Disconnected: true}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := asked(t, s, a.URL); err != nil {
+			t.Fatalf("a resolve facing a disconnected link: %v", err)
+		}
+		if len(*asks) != 1 {
+			t.Fatalf("the site saw %d requests, want one", len(*asks))
+		}
+		if got := (*asks)[0].head.Get("Authorization"); got != "" {
+			t.Errorf("a hub that has been told the link is dead carried %q to it", got)
+		}
+		bare := newHub()
+		bare.statePath = filepath.Join(t.TempDir(), "state.json")
+		if _, err := asked(t, bare, a.URL); err != nil {
+			t.Fatalf("a hub with no link at all: %v", err)
+		}
+		if got := (*asks)[1].head.Get("Authorization"); got != "" {
+			t.Errorf("a hub with no credential carried %q", got)
+		}
+	})
+
+	// The production shape, with the site stood in by a transport: a hub linked to
+	// orb-os.net asks orb-os.net with its bearer, and a hub linked to a bench site asks
+	// orb-os.net as anonymously as the paste door always did.
+	siteStoodIn := func(s *Server, seen *http.Header, body string) {
+		s.siteClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+			*seen = r.Header.Clone()
+			rec := httptest.NewRecorder()
+			rec.Header().Set("Content-Type", "application/json")
+			_, _ = rec.Write([]byte(body))
+			return rec.Result(), nil
+		})}
+	}
+	t.Run("orb-os.net is the site this hub is linked to", func(t *testing.T) {
+		s, tok := linkedHub(t, "https://"+orbOSNet)
+		var seen http.Header
+		siteStoodIn(s, &seen, `{"designId":"`+siteDesignID+`","app":"clock","version":9}`)
+		if ans, err := asked(t, s, "https://"+orbOSNet); err != nil || ans == nil || !ans.Resolved {
+			t.Fatalf("the resolve to orb-os.net: %v %+v", err, ans)
+		}
+		if got := seen.Get("Authorization"); got != "Bearer "+tok {
+			t.Errorf("a resolve to the orb-os.net this hub is linked to carried %q, want its bearer", got)
+		}
+	})
+	t.Run("a bench site’s link does not ride to orb-os.net", func(t *testing.T) {
+		a, _ := siteServer(t, answers)
+		s, _ := linkedHub(t, a.URL)
+		var seen http.Header
+		siteStoodIn(s, &seen, `{"designId":"`+siteDesignID+`","app":"clock","version":9}`)
+		if _, err := asked(t, s, "https://"+orbOSNet); err != nil {
+			t.Fatalf("the resolve to orb-os.net: %v", err)
+		}
+		if got := seen.Get("Authorization"); got != "" {
+			t.Errorf("a link minted by a bench site carried %q to orb-os.net", got)
+		}
+	})
+
+	// A refused bearer is the site's answer about this design, not news about the
+	// credential: the check says so, the link stays exactly where it was, and the sentence
+	// the owner reads never repeats the token back.
+	t.Run("a refused resolve says nothing about the token and unlinking nobody", func(t *testing.T) {
+		for _, code := range []int{http.StatusUnauthorized, http.StatusInternalServerError} {
+			site, _ := siteServer(t, func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(code) })
+			s, tok := linkedHub(t, site.URL)
+			_, err := asked(t, s, site.URL)
+			if err == nil {
+				t.Fatalf("an HTTP %d resolved with no error", code)
+			}
+			if strings.Contains(err.Error(), tok) {
+				t.Errorf("an HTTP %d refusal carries the token: %v", code, err)
+			}
+			if l := s.loadSiteLink(); l == nil || l.Token != tok || l.Disconnected {
+				t.Errorf("an HTTP %d about one design undid the link: %+v", code, l)
+			}
+		}
+	})
 }
 
 // --- S3b: an SVG is art too -------------------------------------------------------------

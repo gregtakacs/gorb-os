@@ -2185,6 +2185,49 @@ func TestUpdatesListOnHome(t *testing.T) {
 	}
 }
 
+// TestUpdatesNotYetRowIsInformation is fu2-6's page half. A site that has no resolve door
+// to answer with sends the hub a note and no choices, and the row it draws must be plain
+// information: the muted note path an unchecked row already uses, no warning colour, and
+// nothing that reads as the theme having been retired — the "no longer shared" sentence and
+// its retiring OK stay behind the gone flag alone.
+func TestUpdatesNotYetRowIsInformation(t *testing.T) {
+	app := readAppJS(t)
+	// The hub's sentence is drawn on its own line, in the list's plain note class.
+	note := blockOf(t, app, "if (it.note)")
+	if !strings.Contains(note, `className = "upnote"`) || !strings.Contains(note, "it.note") {
+		t.Errorf("a row carrying a note no longer draws it as a note: %s", note)
+	}
+	for _, bad := range []string{"warn", "gone"} {
+		if strings.Contains(note, bad) {
+			t.Errorf("the note path mentions %q, so a site that cannot answer yet is drawn as a warning: %s", bad, note)
+		}
+	}
+	// §7.4's retirement sentence and its OK are the gone row's, and the page's only copy
+	// of each: a row the hub did not flag gone cannot reach either of them.
+	if n := strings.Count(app, "will stop checking it"); n != 1 {
+		t.Errorf("the stop-checking sentence appears %d times, want the gone row's one copy", n)
+	}
+	line := blockOf(t, app, "function updateRowLine(")
+	if i := strings.Index(line, "will stop checking it"); i >= 0 {
+		head := line[:i]
+		if j := strings.LastIndex(head, "it.gone === true"); j < 0 {
+			t.Error("the stop-checking sentence is no longer under the gone flag alone")
+		}
+	} else {
+		t.Error("the gone row does not say §7.4's sentence any more")
+	}
+	acts := blockOf(t, app, "function updateRowActions(")
+	if !strings.Contains(acts, `if (it.gone === true)`) {
+		t.Error("the OK that retires an origin is no longer drawn only for a gone row")
+	}
+	// And the class itself is the list's muted ink: an informational row is not an amber one.
+	css := readWebFile(t, "app.css")
+	rule := blockOfLine(t, css, "#mn-updates-list .upnote")
+	if !strings.Contains(rule, "var(--mut)") || strings.Contains(rule, "var(--warn)") {
+		t.Errorf("the update note rule is %s, want the muted colour and no warning colour", rule)
+	}
+}
+
 // TestUpdateButtonIsLive is g3-3's half of an Updates row. g3-2 pinned the Update button
 // disabled because no apply door existed; the door exists now, so the pin is inverted here
 // rather than left standing: a dead button over a live endpoint is a list that lies about

@@ -141,6 +141,25 @@ func (s *Server) liveSiteLink() *siteLink {
 	return l
 }
 
+// siteBearerFor is the credential one call to one site may carry: the link's bearer when
+// this hub holds a live link to exactly that origin, and "" for every other host. It is
+// the rule every bearer call already keeps — the token goes only to the site that minted
+// it — said once, so a new door cannot get it wrong, and the comparison is the canonical
+// one the import gate uses: an origin written with an explicit :443 or in another case
+// names the same site as the stored one. A hub with no link, a link that was marked
+// disconnected, and a site that is not the one this hub is open to all answer "".
+func (s *Server) siteBearerFor(site string) string {
+	l := s.liveSiteLink()
+	if l == nil {
+		return ""
+	}
+	want, asked := canonicalSiteOrigin(l.Site), canonicalSiteOrigin(site)
+	if want == "" || asked == "" || want != asked {
+		return ""
+	}
+	return l.Token
+}
+
 // saveSiteLink writes the credential whole: the config dir first (0700, exactly as
 // saveState learned — a hub whose statePath names a dir that does not exist yet must see
 // the dir before a 0600 file lands in it), then temp file, then rename, so a crash

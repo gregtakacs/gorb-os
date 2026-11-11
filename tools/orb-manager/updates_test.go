@@ -6,6 +6,7 @@ package main
 // thing under test is what the origin record does once it is on disk.
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -24,7 +25,9 @@ import (
 
 // updateSite is a design site that answers the resolve door too, remembers how many times
 // it was asked, and can be moved to a new version between two reads — which is the whole
-// of what Skip this version is a refusal about.
+// of what Skip this version is a refusal about. A not-found it answers with §7.4's Gone
+// body, because that is what a site holding the resolve door says; answerPlain moves it to
+// the generic not-found of a site that has not built that door yet.
 type updateSite struct {
 	srv      *httptest.Server
 	mu       sync.Mutex
@@ -32,6 +35,7 @@ type updateSite struct {
 	status   int
 	shared   string
 	resolves int
+	notFound func(w http.ResponseWriter, status int)
 	bundle   func() []byte
 }
 
@@ -47,10 +51,37 @@ func (u *updateSite) moveTo(version int, shared string) {
 	u.version, u.shared = version, shared
 }
 
+// answer moves the resolve door to one status. A not-found is answered the way a site
+// that holds the door answers it — with §7.4's Gone body — because that is the only
+// not-found with meaning: see answerPlain for the one without.
 func (u *updateSite) answer(status int) {
 	u.mu.Lock()
 	defer u.mu.Unlock()
+	u.status, u.notFound = status, nil
+}
+
+// answerPlain moves the resolve door to a not-found that says nothing about the design:
+// ctype and body are the page or the router's JSON a site that has not built the resolve
+// route answers with. fu2-6's whole question is what the hub makes of this.
+func (u *updateSite) answerPlain(status int, ctype string, body string) {
+	u.mu.Lock()
+	defer u.mu.Unlock()
 	u.status = status
+	u.notFound = func(w http.ResponseWriter, _ int) {
+		if ctype != "" {
+			w.Header().Set("Content-Type", ctype)
+		}
+		w.WriteHeader(status)
+		_, _ = w.Write([]byte(body))
+	}
+}
+
+// resolveGoneBody is the Gone answer as H3 will serve it: the status, and a JSON body that
+// says so in its own words.
+func resolveGoneBody(w http.ResponseWriter, status int) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_, _ = w.Write([]byte(`{"gone":true}`))
 }
 
 func (u *updateSite) url() string { return strings.ToLower(u.srv.URL) }
@@ -83,10 +114,13 @@ func updatesSite(t *testing.T, version int, shared string, art string) *updateSi
 		}
 		u.mu.Lock()
 		u.resolves++
-		v, st, name := u.version, u.status, u.shared
+		v, st, name, nf := u.version, u.status, u.shared, u.notFound
 		u.mu.Unlock()
 		if st != http.StatusOK {
-			w.WriteHeader(st)
+			if nf == nil {
+				nf = resolveGoneBody
+			}
+			nf(w, st)
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
@@ -397,6 +431,67 @@ func TestUpdatesGoneAndUncheckableThemeRows(t *testing.T) {
 	}
 }
 
+// stateChoices reads the refusals filed in the state file, so a test can say the strongest
+// thing about an answer that must be forgotten: that nothing was filed at all.
+func stateChoices(t *testing.T, s *Server) map[string]UpdateChoice {
+	t.Helper()
+	b, err := os.ReadFile(s.statePath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		t.Fatalf("state file: %v", err)
+	}
+	var st hubState
+	if err := json.Unmarshal(b, &st); err != nil {
+		t.Fatalf("state file is not the documented shape: %v", err)
+	}
+	return st.UpdateChoices
+}
+
+// TestResolvePlain404IsNotYet is fu2-6: the resolve door is H3's, and a site that has not
+// built it answers the ask with its own generic not-found page. That is not the design
+// being taken away — it is the site not knowing the question — so the row is information,
+// it presses nothing, nothing is recorded, and the next check asks again.
+func TestResolvePlain404IsNotYet(t *testing.T) {
+	s, _, root := libHub(t)
+	s.statePath = filepath.Join(root, "state.json")
+	u := updatesSite(t, 3, "Skeleton by @greg", "art")
+	shelf := importShelfTheme(t, s, u, "Skeleton by @greg")
+
+	u.answerPlain(http.StatusNotFound, "text/html; charset=utf-8",
+		"<!doctype html><html><head><title>Not Found</title></head><body>No such page</body></html>")
+	it, ok := updateRowOf(updatesOf(t, s), "theme")
+	if !ok {
+		t.Fatalf("a site that could not answer listed no row at all, so the theme would read as up to date")
+	}
+	if it.Gone || len(it.Choices) != 0 {
+		t.Errorf("not-yet row = %+v, want no gone flag and nothing to press", it)
+	}
+	if want := siteHost(u.url()) + " can’t check this theme for updates yet"; it.Note != want {
+		t.Errorf("note = %q, want the site named as the one that cannot answer: %q", it.Note, want)
+	}
+
+	// The keeping part: a second read of the list dials the site again. A not-yet answer
+	// that stopped the checking would be a keep the operator never pressed.
+	before := u.ask()
+	if before == 0 {
+		t.Fatal("the list resolved nothing, so the counter below proves nothing")
+	}
+	if _, ok := updateRowOf(updatesOf(t, s), "theme"); !ok {
+		t.Error("the second check dropped the row")
+	}
+	if got := u.ask(); got <= before {
+		t.Errorf("the site was asked %d times in all after a not-yet answer; the next check must ask again", got)
+	}
+	if c := stateChoices(t, s); len(c) != 0 {
+		t.Errorf("a not-yet answer recorded a refusal: %v", c)
+	}
+	if readThemeOrigin(shelf) == nil {
+		t.Error("the origin sidecar went away with an answer that said nothing about the design")
+	}
+}
+
 // With no orb, nothing imported and a release check that has not landed, the list is empty
 // and the answer is still ok:true: an offline hub is not an error page.
 func TestUpdatesEmptyWithNothingToReport(t *testing.T) {
@@ -500,5 +595,87 @@ func TestKeepMyVersionRefusesEveryOtherKind(t *testing.T) {
 	}
 	if len(s.updateChoices) != 0 {
 		t.Errorf("a refused keep still recorded a choice: %+v", s.updateChoices)
+	}
+}
+
+// TestResolveRouterJSON404IsNotYet: a framework's own 404 is JSON too, and JSON is not what
+// makes an answer a Gone one — the "gone" member is. Everything a site can put under a
+// not-found that is not the Gone body reads as "cannot check yet", including a body the hub
+// cannot parse and a Gone-shaped answer that is not a plain true.
+func TestResolveRouterJSON404IsNotYet(t *testing.T) {
+	ctx := context.Background()
+	s := newHub()
+	cases := []struct {
+		what   string
+		status int
+		ctype  string
+		body   string
+	}{
+		{"a router’s json 404", http.StatusNotFound, "application/json", `{"error":"not found"}`},
+		{"a not-found with nothing in it", http.StatusNotFound, "application/json", ``},
+		{"a json content type and an html page", http.StatusNotFound, "application/json; charset=utf-8", "<html>404</html>"},
+		{"a json content type and a bare true", http.StatusNotFound, "application/json", "true"},
+		{"a json content type and an array", http.StatusNotFound, "application/json", `[{"gone":true}]`},
+		{"a design still shared", http.StatusNotFound, "application/json", `{"gone":false}`},
+		{"a gone said as a word", http.StatusNotFound, "application/json", `{"gone":"true"}`},
+		{"a gone said as a number", http.StatusGone, "application/json", `{"gone":1}`},
+		{"an html page with the word in it", http.StatusGone, "text/html", `{"gone":true}`},
+		{"a plain text gone", http.StatusGone, "text/plain", `gone`},
+	}
+	for _, c := range cases {
+		site, _ := siteServer(t, func(w http.ResponseWriter, r *http.Request) {
+			if c.ctype != "" {
+				w.Header().Set("Content-Type", c.ctype)
+			}
+			w.WriteHeader(c.status)
+			_, _ = w.Write([]byte(c.body))
+		})
+		ans, err := s.resolveOrigin(ctx, &ThemeOrigin{
+			Site: strings.ToLower(site.URL), DesignID: siteDesignID, Version: 3,
+		})
+		if err != nil {
+			t.Errorf("%s: a not-found is not a transport failure: %v", c.what, err)
+			continue
+		}
+		if ans == nil || !ans.NotYet || ans.Gone || ans.Resolved {
+			t.Errorf("%s read as %+v, want NotYet and neither Gone nor Resolved", c.what, ans)
+		}
+	}
+}
+
+// TestResolveGoneBodyIsGone: the one answer that does retire a design, on both statuses it
+// arrives under, and the row it produces is the gone row the page already draws.
+func TestResolveGoneBodyIsGone(t *testing.T) {
+	s, _, root := libHub(t)
+	s.statePath = filepath.Join(root, "state.json")
+	u := updatesSite(t, 3, "Skeleton by @greg", "art")
+	importShelfTheme(t, s, u, "Skeleton by @greg")
+
+	for _, code := range []int{http.StatusNotFound, http.StatusGone} {
+		u.answer(code)
+		it, ok := updateRowOf(updatesOf(t, s), "theme")
+		if !ok {
+			t.Fatalf("a %d with the Gone body listed no row at all", code)
+		}
+		if !it.Gone || len(it.Choices) != 0 || it.Note != "" {
+			t.Errorf("a %d Gone body read as %+v, want the gone row exactly as it was before", code, it)
+		}
+	}
+
+	// The body carries the answer, so a fuller one — the hub's own word beside others — is
+	// still the Gone answer, charset parameter and all.
+	site, _ := siteServer(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		w.WriteHeader(http.StatusGone)
+		_, _ = w.Write([]byte(`{"gone":true,"designId":"` + siteDesignID + `","since":"2026-10-01"}`))
+	})
+	ans, err := s.resolveOrigin(context.Background(), &ThemeOrigin{
+		Site: strings.ToLower(site.URL), DesignID: siteDesignID, Version: 3,
+	})
+	if err != nil {
+		t.Fatalf("a Gone body is not a transport failure: %v", err)
+	}
+	if ans == nil || !ans.Gone || ans.NotYet || ans.Resolved {
+		t.Errorf("a Gone body beside other members read as %+v, want Gone and nothing else", ans)
 	}
 }

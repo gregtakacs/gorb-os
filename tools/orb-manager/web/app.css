@@ -392,6 +392,16 @@ body:has(.mask:not([hidden])){overflow:hidden}
 .tag.upd{background:var(--warn);border-color:var(--warn)!important;color:#1a1300!important;font-weight:700}
 button.upd{background:var(--warn);border-color:var(--warn);color:#1a1300;font-weight:700}
 button.upd:hover{border-color:#fff}
+/* A1 §7.4: ruling 18's one alarm. One banner above the app rows, shown only when the dial
+   runs a version the store lists withdrawn; the amber press inside it is the row's own
+   Update, and the banner itself says what happened and why and removes nothing. */
+#mn-site-withdrawn{border:1px solid var(--danger);border-radius:8px;background:#2a1416;padding:9px 12px;margin:6px 0}
+#mn-site-withdrawn .wrow{display:flex;gap:12px;align-items:center;flex-wrap:wrap;color:#f2a0a6}
+#mn-site-withdrawn .wrow+.wrow{margin-top:6px}
+#mn-site-withdrawn .wrow>b{color:#ffb4b4;white-space:nowrap}
+#mn-site-apps h4{margin:14px 0 6px}
+.site-store{align-items:start}
+.site-store .tinfo .hint{color:var(--mut)}
 @media (max-width:1100px){
   .themelist li.trow,.arow{grid-template-columns:44px minmax(0,1fr)}
   .arow{grid-template-columns:minmax(0,1fr)}

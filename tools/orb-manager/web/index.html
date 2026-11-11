@@ -388,6 +388,13 @@
          its interval; while it is on, each app on the dial has a checkbox for whether the
          rotation stops on it. The rotation is also on the dial (APPS > Rotate apps). -->
     <div id="mn-apps-rot"></div>
+    <!-- A1 §7.4: ruling 18's one alarm, and one banner is all it is. It shows only when
+         the dial runs a version the store lists withdrawn, names the host off the
+         site-sourced row that supplied those bytes, and carries the row's own Update
+         press when a live version exists (no press and "No other version is offered."
+         when it does not). It removes nothing, ever, and hides with the shelf when the
+         store says nothing. -->
+    <div id="mn-site-withdrawn" hidden></div>
     <div id="mn-apps-body"></div>
     <!-- D38: there is no "Hub library" section on this face. The shelf's files are rows
          in the list above, wearing their "in the hub library" chip and their row's own
@@ -416,6 +423,18 @@
       <button id="lib-restore" class="ghost" type="button" disabled>Restore bundled apps</button>
       <span class="hint" id="lib-import-state"></span>
     </div>
+    <!-- A1 §7.4: Get apps from orb-os.net, under the import row and behind the same
+         door as every other site surface: the face reads GET /api/site/apps once the
+         library says the site is open, and a shut door, a refusal or an empty store
+         keeps this whole section away. One row per store app the shelf does not hold,
+         its caps in plain words BEFORE the press (ruling 18), and Add to library is
+         the hub's add door — the app lands as an ordinary shelf row whose own Install
+         is still the only thing that moves bytes onto a board. -->
+    <section id="mn-site-apps" hidden>
+      <h4>Get apps from orb-os.net</h4>
+      <p class="hint" id="mn-site-apps-state" hidden></p>
+      <div id="mn-site-apps-list"></div>
+    </section>
     <pre id="lib-install-log" class="hint" hidden></pre>
   </article>
 

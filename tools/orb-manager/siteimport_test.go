@@ -878,7 +878,7 @@ func TestSiteDoorShutWithoutTheFlag(t *testing.T) {
 	if env := designCall(t, s, http.MethodGet, "/api/library", nil); env["data"].(map[string]any)["site"] != false {
 		t.Errorf("a shut hub's library says site = %v, want false", env["data"].(map[string]any)["site"])
 	}
-	for _, p := range []string{"/api/site/import", "/api/site/bundle", "/api/site/keep"} {
+	for _, p := range []string{"/api/site/import", "/api/site/bundle", "/api/site/keep", "/api/site/apps/add"} {
 		if rec := rawCall(t, s, http.MethodPost, p, []byte(`{}`)); rec.Code != http.StatusNotFound {
 			t.Errorf("POST %s on a shut hub = %d, want 404", p, rec.Code)
 		}
@@ -922,6 +922,11 @@ func TestSiteDoorShutWithoutTheFlag(t *testing.T) {
 			t.Errorf("GET %s on a shut hub = %d, want 404", p, rec.Code)
 		}
 	}
+	// A1 §7.1: the store read rides behind the same door. With -site off there is no
+	// /api/site/apps, and the shut hub above has dialed the site zero times.
+	if rec := rawCall(t, s, http.MethodGet, "/api/site/apps", nil); rec.Code != http.StatusNotFound {
+		t.Errorf("GET /api/site/apps on a shut hub = %d, want 404", rec.Code)
+	}
 	if b := blockOfLine(t, readWebFile(t, "index.html"), `id="mn-updates"`); !strings.Contains(b, "hidden") {
 		t.Error("#mn-updates is not hidden in the markup, so a shut hub shows an Updates list it can't read")
 	}
@@ -949,6 +954,22 @@ func TestSiteDoorShutWithoutTheFlag(t *testing.T) {
 	}
 	if !strings.Contains(app, `const site = data.site === true;`) {
 		t.Error("loadLibThemes no longer reads the library's site word before showing the door")
+	}
+	// A1 §7.4: the Get-apps section and the withdrawn banner ship hidden inside the Apps
+	// card, and the face reads the catalogue only behind the library's site word — so a
+	// shut hub's Apps tab shows no store furniture and its page asks /api/site/apps zero
+	// times (the GET above already took the 404 the reader turns into siteAppsDoorShut).
+	tabsJS := readWebFile(t, "tabs.js")
+	for _, id := range []string{"mn-site-apps", "mn-site-withdrawn", "mn-site-apps-state"} {
+		if b := blockOfLine(t, page, `id="`+id+`"`); !strings.Contains(b, "hidden") {
+			t.Errorf("#%s is not hidden in markup, so a shut hub would show store furniture it cannot fill", id)
+		}
+	}
+	if !strings.Contains(tabsJS, `return !!(libCache && libCache.site === true && !siteAppsDoorShut);`) {
+		t.Error("the Apps face's store door does not wait for the library's site word")
+	}
+	if !strings.Contains(tabsJS, `if (typeof siteApps === "function" && siteStoreOpen() && siteAppsCache === null) {`) {
+		t.Error("loadApps dials the catalogue without asking whether the site door is open")
 	}
 }
 

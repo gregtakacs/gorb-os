@@ -154,7 +154,10 @@ type siteBundle struct {
 	SharedName string
 	Name       string
 	Handle     string
-	Raw        []byte
+	// Schema is the design schema the bundle names, or 0 when it names none: A1 §7.5 looks it
+	// up in the store's readers to say which app version the theme needs.
+	Schema int
+	Raw    []byte
 }
 
 // checkBundle reads the site's answer as the design bundle §8.4 describes and checks the
@@ -217,6 +220,9 @@ func checkBundle(raw []byte, id string) (*siteBundle, error) {
 	}
 	b.Name, _ = siteJSONString(obj["name"])
 	b.Handle, _ = siteJSONString(obj["handle"])
+	if sc, err := siteJSONNumber(obj["schema"]); err == nil && sc >= 1 && sc <= 1<<20 && sc == float64(int64(sc)) {
+		b.Schema = int(sc)
+	}
 	return b, nil
 }
 
@@ -831,7 +837,7 @@ func (s *Server) handleSiteImport(w http.ResponseWriter, r *http.Request) {
 	log.Printf("site import: %s %s v%d -> %q", site, id, b.Version, b.SharedName)
 	s.jsonOK(w, map[string]any{
 		"ticket": ticket, "site": site, "id": id, "version": b.Version,
-		"app": b.App, "name": b.Name, "sharedName": b.SharedName, "handle": b.Handle,
+		"app": b.App, "name": b.Name, "sharedName": b.SharedName, "handle": b.Handle, "schema": b.Schema,
 	})
 }
 

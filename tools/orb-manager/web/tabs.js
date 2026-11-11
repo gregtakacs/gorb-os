@@ -1481,6 +1481,42 @@ let appsSub = "clock";
 // it made the shell look like a fourth app of the same kind as the other three.
 const APP_TITLES = { clock: "Clock", color_picker: "HSB" };
 
+// A1 §6 (ruling 18): every cap in plain words, this table the hub's half of a pair it
+// shares with the site's src/lib/caps.ts. Both chains grep the same constant names and
+// the same six lines, so the two wordings cannot drift apart; a store row and an orb's
+// own ledger say the permission the same way.
+const APP_CAP_WORDS = {
+  net: "uses the network",
+  location: "reads your location",
+  sound: "plays sounds",
+  power: "can ask the orb to stay awake or sleep",
+  sd_read: "reads files on the orb's card",
+  themes: "uses your themes",
+};
+// A cap outside the table is the token through the same prefix, never a bare word: a
+// future cap must never read as a lie and never vanish, and `glow` alone is not a
+// permission a person can read. The name is pinned by both chains' tests for exactly
+// this reason.
+const CAP_UNKNOWN_PREFIX = "uses ";
+// An empty list is not blank and not a shrug: it is the one sentence below, on both
+// sides of the fence.
+const CAP_EMPTY_SENTENCE = "uses nothing beyond its own screen";
+
+function capWords(caps) {
+  const out = [];
+  for (const c of Array.isArray(caps) ? caps : []) out.push(APP_CAP_WORDS[c] || (CAP_UNKNOWN_PREFIX + c));
+  return out;
+}
+
+// capSentence joins with ", " and a final ", and ": one item is just that item, and the
+// empty list is CAP_EMPTY_SENTENCE. The same joining as the site's capsSentence.
+function capSentence(caps) {
+  const w = capWords(caps);
+  if (!w.length) return CAP_EMPTY_SENTENCE;
+  if (w.length === 1) return w[0];
+  return w.slice(0, -1).join(", ") + ", and " + w[w.length - 1];
+}
+
 async function loadApps() {
   const state = $("#mn-appstate");
   if (!current.ip) { state.textContent = "no address to read"; return; }
@@ -1509,6 +1545,14 @@ async function loadApps() {
   // the Themes face already obeys: enumeration first, rows second.
   if (typeof renderLibrary === "function") {
     try { await renderLibrary(); } catch (e) { /* renderLibrary reports its own failure */ }
+  }
+  // A1 §7.4: the store is read on this same first paint, and only when the hub says the
+  // site is open — the reader in app.js rides its face cache (and the hub's five-minute
+  // one), takes the 404 of a shut door as "no face", and a refusal clears the cache so
+  // the next open asks again. Nothing here dials the site directly, and a shut hub's
+  // page asks the hub one question it has already answered in the library payload.
+  if (typeof siteApps === "function" && siteStoreOpen() && siteAppsCache === null) {
+    try { await siteApps(false); } catch (e) { /* a refused read keeps every A1 element hidden */ }
   }
   await loadCarousel();
   renderAppsTab();
@@ -1730,11 +1774,91 @@ function appRows() {
   return Array.from(seen.values()).sort((x, y) => String(x.title).localeCompare(String(y.title)));
 }
 
+// ---- A1 §7.4: the store on the Apps face -------------------------------------------
+//
+// Everything below sits behind the same door as every other site surface: the library
+// says site:true, the reader in app.js got an answer, and until then this face keeps
+// every A1 element away — no section, no banner, no amber site chip, and not one dial
+// to the site. siteAppsCache and siteAppsDoorShut are the reader's own face-level state,
+// read here and written nowhere else in this file.
+
+function siteStoreOpen() {
+  return !!(libCache && libCache.site === true && !siteAppsDoorShut);
+}
+
+function siteCatalog() {
+  return (siteAppsCache && Array.isArray(siteAppsCache.apps)) ? siteAppsCache.apps : [];
+}
+
+function siteCatalogEntry(slug) {
+  for (const a of siteCatalog()) if (a.slug === slug) return a;
+  return null;
+}
+
+// siteAppsToOffer: the store's orderable entries the shelf does not hold. A withdrawn-
+// only entry (no live version) is never offered here — §4.1 says only the banner reads
+// it — and a slug the shelf already carries belongs to its row, not to a second verb.
+function siteAppsToOffer() {
+  return siteCatalog().filter((a) => a && a.version && !libEntry(a.slug));
+}
+
+// siteWithdrawnHits: ruling 18's alarm, as a fact rather than a feeling — a worn row
+// whose running version the store lists withdrawn, matched on the vN.N.N head because
+// a +build tail is one build of a release, not a different release. The site-sourced
+// shelf row beside it supplies the host for the sentence (§7.4); none is known, none
+// is guessed: siteHostOf says "a site".
+function siteWithdrawnHits() {
+  const hits = [];
+  if (!siteStoreOpen()) return hits;
+  for (const e of appRows()) {
+    if (!e.installed || e.installed.compiled || !e.installed.version) continue;
+    const ent = siteCatalogEntry(e.slug);
+    if (!ent || !Array.isArray(ent.withdrawn) || !ent.withdrawn.length) continue;
+    const head = String(e.installed.version).split("+")[0];
+    let w = null;
+    for (const cand of ent.withdrawn) {
+      if (cand && String(cand.version || "").split("+")[0] === head) { w = cand; break; }
+    }
+    if (w) hits.push({ e: e, ent: ent, w: w, head: head });
+  }
+  return hits;
+}
+
+// siteUpdateEntry is §7.4's amber fork, and it keeps updateGate's strictness: the offer
+// is owed only when the store's newest live version is newer (by verCompare) than both
+// the copy the shelf holds and every copy already on the orb — and only on a row whose
+// sidecar names a site, because on any other copy the store gets nothing to say, and
+// the add door would rightly refuse to overwrite it.
+function siteUpdateEntry(e) {
+  if (!siteStoreOpen()) return null;
+  const f = e.lib;
+  if (!f || !f.origin || !f.origin.site) return null;
+  const ent = siteCatalogEntry(f.slug);
+  if (!ent || !ent.version) return null;
+  const held = f.version || f.origin.version;
+  if (!held || verCompare(ent.version, held) <= 0) return null;
+  const inst = a2v(e.installed), card = a2v(e.card);
+  if (inst && verCompare(inst, ent.version) >= 0) return null;
+  if (card && verCompare(card, ent.version) >= 0) return null;
+  return ent;
+}
+
+// a2v: the version a dial slot or a card copy states, "" when it states none.
+function a2v(t) {
+  return (t && t.version) ? String(t.version) : "";
+}
+
 function renderAppsTab() {
   const body = $("#mn-apps-body");
   $("#mn-apps-tabs").innerHTML = "";
   body.innerHTML = "";
   renderRotation();
+  // A1 §7.4: the alarm above the rows and Get apps under them, both hidden when the
+  // store has nothing to say (no door, no answer, nothing worn withdrawn, nothing
+  // offered the shelf does not hold). They draw on every redraw, so a row change and
+  // an add press leave the banner on the fact the ledger now states.
+  renderSiteWithdrawnBanner();
+  renderSiteAppsSection();
   if (!appList) return;
   const rows = appRows();
   if (!rows.length) {
@@ -1776,7 +1900,7 @@ function renderAppsTab() {
     if (g) g.focus();
     carFocus = "";
   }
-  const ups = rows.filter((e) => updateGate(e)).length;
+  const ups = rows.filter((e) => updateGate(e) || siteUpdateEntry(e)).length;
   tabBadge("apps", ups, ups + " app update" + (ups === 1 ? "" : "s") + " in the hub library");
   const st = $("#mn-appstate");
   // The list redraws on every carousel change: one chip, replaced, never one per redraw.
@@ -1863,6 +1987,7 @@ function appStateSentence(e) {
 function appRow(e, opt) {
   const a = e.installed, c = e.card, f = e.lib;
   opt = opt || {};
+  const su = siteUpdateEntry(e);   // A1 §7.4: the store's amber offer on a site-sourced row
   // The row is the face's table (owner, 2026-11-04): the name over its chips, then the
   // presses in fixed columns, the same verb in the same column on every row. An update is
   // a filled chip and a filled button, not a clause inside a sentence; the whole sentence
@@ -1920,7 +2045,13 @@ function appRow(e, opt) {
   // the amber "for older firmware" chip below already says it when the card copy is the only
   // thing behind and the dial runs the library's own release
   const staleOnly = !!(c && !c.ok && /^app format /.test(c.why || "") && f && a && a.version === f.version);
-  if (updateGate(e) && !staleOnly) {
+  if (su) {
+    // The site's newest live version, named with the host the sidecar carries — never a
+    // word about what the press will do beyond the one sentence the chip already is.
+    chip("update available \u00b7 " + siteHostOf(f.origin.site) + " " + su.version, "upd",
+      siteHostOf(f.origin.site) + " holds " + su.version
+      + "; Update fetches it into the hub library and puts it on this orb");
+  } else if (updateGate(e) && !staleOnly) {
     const have = a ? a.version : c && c.version;
     chip(sameRelease(have, f.version) ? "another build in the hub library" : "update available \u2192 " + f.version, "upd",
       "The hub library holds " + f.version + "; Update puts it on this orb");
@@ -1961,9 +2092,14 @@ function appRow(e, opt) {
   // the dial with the shelf's newer bytes, so Install stands down: one verb
   // per fact, never two buttons for one question. Columns: [Install | Update |
   // Clear fault] [Uninstall] [Add to card | Remove from card] [Remove from hub library].
-  if (!a && (f || (c && c.ok)) && !updateGate(e))
+  if (!a && (f || (c && c.ok)) && !updateGate(e) && !su)
     slots[0] = installButton(e, txt, "Install", false);
-  if (updateGate(e)) {
+  if (su) {
+    // A1 §7.4: the row's existing amber Update, same column and same ladder, with the
+    // store's newer bytes fetched into the library first. The press installs nothing
+    // of its own; it runs the one run.
+    slots[0] = siteUpdateButton(e, txt, su);
+  } else if (updateGate(e)) {
     slots[0] = installButton(e, txt, "Update", true);
     slots[0].className = "upd";
   }
@@ -1991,6 +2127,150 @@ function appRow(e, opt) {
   return row;
 }
 
+// renderSiteWithdrawnBanner redraws ruling 18's one alarm, above the rows and nowhere
+// else. No hit — no store, no door, nothing worn that the store lists withdrawn — and
+// the banner is gone; a healthy face shows no alarm. The press on a hit is the row's
+// own Update (§7.4): the store adds no install path of its own.
+function renderSiteWithdrawnBanner() {
+  const box = $("#mn-site-withdrawn");
+  if (!box) return;
+  box.innerHTML = "";
+  box.hidden = true;
+  const hits = siteWithdrawnHits();
+  if (!hits.length) return;
+  box.hidden = false;
+  for (const h of hits) box.appendChild(siteWithdrawnRow(h));
+}
+
+// siteWithdrawnRow: the sentence exactly as §7.4 words it — title, the withdrawn head,
+// the host the bytes themselves name, the reason — and beside it either the Update
+// press or the one line that says there is nothing to press. Nothing here removes a
+// version, an app or a file; the loudest truth is still a truth, not a broom.
+function siteWithdrawnRow(h) {
+  const row = document.createElement("div");
+  row.className = "wrow";
+  const b = document.createElement("b");
+  b.textContent = (h.e.title || h.ent.title || h.e.slug) + " " + h.head;
+  const s = document.createElement("span");
+  s.textContent = " was withdrawn by " + siteHostOf((h.e.lib && h.e.lib.origin && h.e.lib.origin.site) || (siteAppsCache && siteAppsCache.site))
+    + ": " + (h.w.reason || "The site gave no reason.");
+  row.append(b, s);
+  if (h.ent.version) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "ghost upd";
+    btn.textContent = "Update";
+    btn.title = "Fetch " + h.ent.version + " from the store into the hub library, then put it on this orb.";
+    btn.onclick = async () => {
+      if (!orbIP) { s.textContent = " \u2014 no orb in hand \u2014 connect one first."; return; }
+      btn.disabled = true;
+      const got = await siteAppAdd(h.ent.slug, h.ent.version);
+      if (!got.ok) { s.textContent = " \u2014 " + got.error; btn.disabled = false; return; }
+      try { await renderLibrary(); } catch (err) { /* renderLibrary reports its own failure */ }
+      await installRun({ slug: h.ent.slug, title: h.ent.title || h.e.slug }, btn, s, "Update", true);
+    };
+    row.appendChild(btn);
+  } else {
+    const off = document.createElement("span");
+    off.className = "hint";
+    off.textContent = "No other version is offered.";
+    row.appendChild(off);
+  }
+  return row;
+}
+
+// renderSiteAppsSection draws Get apps: one row per orderable store app the shelf does
+// not hold, caps in plain words before the press, and a state line that carries the
+// hub's own sentence on a refusal or a success. The section hides on a shut door, on a
+// read that refused, and on an empty store — the same discipline every site surface on
+// this page keeps, and why the markup ships hidden.
+function renderSiteAppsSection() {
+  const sec = $("#mn-site-apps"), list = $("#mn-site-apps-list");
+  if (!sec || !list) return;
+  list.innerHTML = "";
+  const state = $("#mn-site-apps-state");
+  const offer = siteAppsToOffer();
+  sec.hidden = !siteStoreOpen() || !offer.length;
+  if (sec.hidden) return;
+  for (const a of offer) list.appendChild(siteAppRow(a, state));
+}
+
+function siteAppRow(a, state) {
+  const row = document.createElement("div");
+  row.className = "arow site-store";
+  const info = document.createElement("div");
+  info.className = "tinfo";
+  const line = document.createElement("div");
+  const name = document.createElement("b");
+  name.textContent = a.title || a.slug;
+  const slug = document.createElement("span");
+  slug.className = "hint";
+  slug.textContent = " " + a.slug;
+  line.append(name, slug);
+  const meta = document.createElement("div");
+  meta.className = "hint";
+  meta.textContent = (a.developer || "gorb-os") + " \u00b7 " + a.version
+    + (a.osMin ? " \u00b7 needs firmware " + a.osMin : "");
+  const caps = document.createElement("div");
+  caps.className = "hint";
+  caps.textContent = capSentence(a.caps);
+  info.append(line, meta, caps);
+  row.appendChild(info);
+  const acts = document.createElement("div");
+  acts.className = "acts";
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = "ghost";
+  btn.textContent = "Add to library";
+  btn.title = "Fetch " + (a.title || a.slug) + " " + a.version
+    + " into the hub library. Nothing moves onto a board until that row's Install is pressed.";
+  btn.onclick = async () => {
+    btn.disabled = true;
+    if (state) { state.hidden = false; state.textContent = "fetching " + (a.title || a.slug) + "\u2026"; }
+    const got = await siteAppAdd(a.slug, a.version);
+    if (!got.ok) {
+      if (state) state.textContent = "\u2717 " + got.error;
+      btn.disabled = false;
+      return;
+    }
+    if (state) state.textContent = "\u2713 " + (a.title || a.slug) + " " + (got.data.version || a.version)
+      + " is in the hub library \u2014 its Install puts it on the orb.";
+    renderAppsTab();
+  };
+  acts.appendChild(btn);
+  row.appendChild(acts);
+  return row;
+}
+
+// siteUpdateButton is §7.4's amber press on a site-sourced row: the store's newer
+// bytes come through the add door first, and only then the ordinary ladder runs with
+// force — the shelf's newer bytes crossing again, the same run every Update press
+// walks. A fetch refusal stops the press with its sentence and the row unchanged.
+function siteUpdateButton(e, txt, ent) {
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = "upd";
+  btn.textContent = "Update";
+  btn.title = "Fetch " + ent.version + " from " + siteHostOf(e.lib.origin.site)
+    + " into the hub library, then put it on this orb.";
+  btn.onclick = async () => {
+    btn.disabled = true;
+    const was = btn.textContent;
+    txt.textContent = "fetching " + ent.version + " from " + siteHostOf(e.lib.origin.site) + "\u2026";
+    const got = await siteAppAdd(e.lib.slug, ent.version);
+    if (!got.ok) {
+      txt.textContent = got.error;
+      btn.disabled = false;
+      btn.textContent = was;
+      return;
+    }
+    btn.disabled = false;
+    try { await renderLibrary(); } catch (err) { /* renderLibrary reports its own failure */ }
+    await installRun(e, btn, txt, "Update", true);
+  };
+  return btn;
+}
+
 
 // installButton is the run that puts bytes on the dial: the shared progress
 // panel opens BEFORE the first byte leaves, the hub streams NDJSON into it, and
@@ -2011,42 +2291,50 @@ function installButton(e, txt, name, force) {
   btn.title = force
     ? "Push the hub's newer release onto the orb in hand, over the copies the card and the dial hold."
     : "Put this app on the orb in hand, through the device's own doors.";
-  btn.onclick = async function () {
-    if (!orbIP) { txt.textContent = "no orb in hand \u2014 connect one first."; return; }
-    btn.disabled = true;
-    const was = btn.textContent;
-    fpOpen();
-    const ui = fpUI();
-    ui.doing.textContent = name.toLowerCase() + "ing " + (e.title || e.slug) + " on " + orbIP;
-    ui.log.textContent = ""; ui.bar.style.width = "0%"; ui.bar.title = ""; ui.op.textContent = "";
-    ui.live.textContent = "";
-    const fromCard = !force && !!(e.card && e.card.ok);
-    const ok = await streamInstall(orbIP, e.slug, false, ui, force, fromCard);
-    btn.disabled = false;
-    btn.textContent = ok ? name + "ed" : was;
-    if (ok) fpClose();
-    libVerdict = { slug: e.slug, text: ok
-      ? (e.title || e.slug) + " \u00b7 " + (force ? "updated" : "installed") + " on the orb in hand"
-      : (e.title || e.slug) + " \u00b7 " + name.toLowerCase() + " refused \u2014 read the progress panel" };
-    // Re-read the ledger NOW: the run moved the state this face prints, and a
-    // row that still shows the pre-press truth is a row whose buttons lie.
-    try { await loadApps(); }
-    catch (err) {
-      // The run's own reboots routinely outlive this re-read: the board is usually
-      // mid-boot, not broken. Say so, wait the tail of the boot out, and try the
-      // read once more before printing a failure over an installed app (bench,
-      // 2026-10-29 PM: "would not re-read" over a board that answered a minute later).
-      const st = $("#mn-appstate");
-      if (st) st.textContent = libVerdict.text + " \u2014 the board is not answering the ledger re-read; trying once more as it comes back";
-      setTimeout(async () => {
-        try { await loadApps(); }
-        catch (e2) {
-          if (st) st.textContent = libVerdict.text + " \u2014 but the ledger would not re-read: " + e2.message;
-        }
-      }, 20000);
-    }
-  };
+  btn.onclick = () => installRun(e, btn, txt, name, force);
   return btn;
+}
+
+// installRun is installButton's press itself, spelled out so §7.4's site Update and the
+// banner's Update can walk the exact same ladder after the add door has put newer bytes
+// on the shelf: one run, one progress panel, one re-read. The install path does not fork,
+// it gains a step — which is the whole shape of ruling 18's "the site adds no install
+// path of its own".
+async function installRun(e, btn, txt, name, force) {
+  if (!orbIP) { txt.textContent = "no orb in hand \u2014 connect one first."; return false; }
+  btn.disabled = true;
+  const was = btn.textContent;
+  fpOpen();
+  const ui = fpUI();
+  ui.doing.textContent = name.toLowerCase() + "ing " + (e.title || e.slug) + " on " + orbIP;
+  ui.log.textContent = ""; ui.bar.style.width = "0%"; ui.bar.title = ""; ui.op.textContent = "";
+  ui.live.textContent = "";
+  const fromCard = !force && !!(e.card && e.card.ok);
+  const ok = await streamInstall(orbIP, e.slug, false, ui, force, fromCard);
+  btn.disabled = false;
+  btn.textContent = ok ? name + "ed" : was;
+  if (ok) fpClose();
+  libVerdict = { slug: e.slug, text: ok
+    ? (e.title || e.slug) + " \u00b7 " + (force ? "updated" : "installed") + " on the orb in hand"
+    : (e.title || e.slug) + " \u00b7 " + name.toLowerCase() + " refused \u2014 read the progress panel" };
+  // Re-read the ledger NOW: the run moved the state this face prints, and a
+  // row that still shows the pre-press truth is a row whose buttons lie.
+  try { await loadApps(); }
+  catch (err) {
+    // The run's own reboots routinely outlive this re-read: the board is usually
+    // mid-boot, not broken. Say so, wait the tail of the boot out, and try the
+    // read once more before printing a failure over an installed app (bench,
+    // 2026-10-29 PM: "would not re-read" over a board that answered a minute later).
+    const st = $("#mn-appstate");
+    if (st) st.textContent = libVerdict.text + " \u2014 the board is not answering the ledger re-read; trying once more as it comes back";
+    setTimeout(async () => {
+      try { await loadApps(); }
+      catch (e2) {
+        if (st) st.textContent = libVerdict.text + " \u2014 but the ledger would not re-read: " + e2.message;
+      }
+    }, 20000);
+  }
+  return ok;
 }
 
 // uninstallButton is D38's honest verb: the door homes a shown app and erases

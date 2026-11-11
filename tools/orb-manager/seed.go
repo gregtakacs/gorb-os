@@ -11,6 +11,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"strings"
 
 	"github.com/gregtakacs/gorb-os/tools/orb-manager/internal/orbnet"
 )
@@ -116,6 +117,16 @@ func seedUserLibrary(src fs.FS, userLib string, kinds []string) ([]string, error
 			if err := writeFileAtomic(to, body); err != nil {
 				did = append(did, fmt.Sprintf("skipped %s: %v", key, err))
 				continue
+			}
+			// A1 §7.3, the third writer of a `<slug>.orbapp`: a seeded app is a shipped app and so
+			// is never site-sourced. A record the store left beside a slug this seed overwrote
+			// would describe bytes the site did not send, so it comes down. Recorded as a refusal
+			// rather than aborting the seed, the way the unreadable ledger is: the bytes are right
+			// and only their provenance note is left standing.
+			if kind == libAppsSubdir && strings.EqualFold(filepath.Ext(e.Name()), ".orbapp") {
+				if err := removeAppOrigin(to); err != nil {
+					did = append(did, fmt.Sprintf("seeded %s with an origin record standing beside it: %v", key, err))
+				}
 			}
 			led[key], changed = sha256Hex(body), true
 			did = append(did, fmt.Sprintf("seeded %s into %s", key, userLib))
@@ -223,8 +234,15 @@ func restoreShippedApps(src fs.FS, lib *Library, ledgerRoot string) ([]string, e
 		if err != nil || !want[c.Slug] {
 			continue
 		}
-		if _, err := lib.KeepOver(c.Slug, body, true); err != nil {
+		dest, err := lib.KeepOver(c.Slug, body, true)
+		if err != nil {
 			return restored, err
+		}
+		// A1 §7.3: a bundled app is never site-sourced. A record the store left beside a slug this
+		// restore just wrote would describe bytes the site did not send, so it comes down with
+		// them — and having no record to remove, which is every bundled app's case, is success.
+		if err := removeAppOrigin(dest); err != nil {
+			return restored, fmt.Errorf("%s was restored with a site record standing beside it: %w", dest, err)
 		}
 		restored = append(restored, c.Slug)
 		if led != nil {

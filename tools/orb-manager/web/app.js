@@ -5582,8 +5582,28 @@ async function finishSiteImport(data) {
   if (!libApps.length) await loadLibThemes();
   const title = libAppTitle(data.app);
   const app = libApps.find((a) => a.slug === data.app);
+  // A1 §7.5: the version the theme needs is the store's first live version that reads its
+  // schema (ruling 21), never the version that saved it; null with no store or no schema.
+  const need = await siteThemeNeeds(data);
+  if (app && need && app.version && verCompare(app.version, need.version) < 0) {
+    st.textContent = "\u2717 \u201c" + shared + "\u201d is for " + need.title + " " + need.version
+      + " or later, and Orb Manager has " + app.version;
+    const offer = await siteThemeGetApp(data);
+    if (offer && st.parentNode) st.parentNode.insertBefore(offer, st.nextSibling);
+    siteImportEnded();
+    return;
+  }
   if (!app) {
-    st.textContent = "\u2717 \u201c" + shared + "\u201d is a theme for the " + title + " app, which Orb Manager doesn\u2019t carry";
+    st.textContent = need
+      ? "\u2717 \u201c" + shared + "\u201d is for " + need.title + " " + need.version + " or later, which Orb Manager doesn\u2019t carry"
+      : "\u2717 \u201c" + shared + "\u201d is a theme for the " + title + " app, which Orb Manager doesn\u2019t carry";
+    // A1 §7.5: the sentence always implied an offer, and on a hub whose store is open
+    // the offer now stands beside it — Get <Title> (the catalogue's title, never the
+    // slug), the add door at newest live, and then this same tail runs again so the
+    // bake proceeds. No catalogue, no door, no entry, no live version: null, and this
+    // line is exactly what H1b wrote, with no ghost of a button.
+    const offer = await siteThemeGetApp(data);
+    if (offer && st.parentNode) st.parentNode.insertBefore(offer, st.nextSibling);
     siteImportEnded();
     return;
   }
@@ -5594,6 +5614,57 @@ async function finishSiteImport(data) {
   }
   st.textContent = "baking \u201c" + shared + "\u201d in Orb Manager\u2019s " + title + " editor\u2026";
   openLibraryEditor(data.app, data.ticket);
+}
+
+// siteThemeNeeds answers {title, version}: the store's first live version of the theme's
+// app whose editor reads the theme's schema (the catalogue's readers map), or null when the
+// store is shut, unread, lacks the app, or the bundle named no schema.
+async function siteThemeNeeds(data) {
+  if (typeof siteApps !== "function" || siteAppsDoorShut || !data || !data.schema) return null;
+  let cat = siteAppsCache;
+  if (!cat) {
+    try { cat = await siteApps(false); } catch (e) { return null; }
+  }
+  const ent = ((cat && cat.apps) || []).find((a) => a && a.slug === data.app);
+  const v = ent && ent.readers && ent.readers[String(data.schema)];
+  return v ? { title: ent.title || ent.slug, version: v } : null;
+}
+
+// siteThemeGetApp builds the §7.5 press for a theme whose app the shelf lacks, or
+// returns null when there is nothing to offer. It reads the catalogue through the
+// same face-level reader as the Apps tab — never dialing the site, and never asking a
+// hub whose /api/site/apps is shut — and takes the entry's title for the button's
+// words. The press is siteAppAdd (newest live, the door's own six checks) followed by
+// a fresh shelf read and the ordinary import tail: add, bake, and only then the row's
+// own Install, which this never touches.
+async function siteThemeGetApp(data) {
+  if (typeof siteApps !== "function" || siteAppsDoorShut) return null;
+  let cat = siteAppsCache;
+  if (!cat) {
+    try { cat = await siteApps(false); } catch (e) { return null; }
+  }
+  const ent = ((cat && cat.apps) || []).find((a) => a && a.slug === data.app);
+  if (!ent || !ent.version) return null;
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = "ghost";
+  btn.textContent = "Get " + (ent.title || ent.slug);
+  btn.title = "Fetch " + (ent.title || ent.slug) + " " + ent.version
+    + " from the store into the hub library and carry on with this import.";
+  btn.onclick = async () => {
+    const st = $("#mn-site-state");
+    btn.disabled = true;
+    if (st) st.textContent = "fetching " + (ent.title || ent.slug) + " " + ent.version + "\u2026";
+    const got = await siteAppAdd(ent.slug, ent.version);
+    if (!got.ok) {
+      if (st) st.textContent = "\u2717 " + got.error;
+      btn.disabled = false;
+      return;
+    }
+    await loadLibThemes();   // the shelf now holds the app this theme was baked for
+    await finishSiteImport(data);
+  };
+  return btn;
 }
 
 // siteImportEnded frees the door after a fetch that never reached an editor. The
@@ -5701,6 +5772,61 @@ async function loadSiteLink() {
   }
   drawSiteLink(data);
   if (data.state === "linked") { stopSiteLinkPoll(); await loadSiteDesigns(); }
+}
+
+// siteAppsCache holds the store the hub read through GET /api/site/apps: the answer the
+// hub's last successful read produced, so the Apps face can open without the page dialing
+// the site (the hub already caches it for five minutes). It is face-level memory only: a
+// reload, like a hub restart, forgets it and asks again. The zero value — null — is "never
+// read", which is what makes the first open a real read rather than an empty state.
+let siteAppsCache = null;
+
+// siteAppsDoorShut records that this build has no /api/site/apps at all (a hub started
+// without -site). Step 1 draws no Apps face of its own, so the shut door is remembered in a
+// flag for step 3 to read rather than hidden on a section that is not in the page yet.
+let siteAppsDoorShut = false;
+
+// siteApps returns the catalogue, from the cache unless force is set, in which case it
+// asks the hub to re-read the site (?refresh=1). It follows the same door rule as
+// loadUpdates: a shut door (404, this build has no /api/site/apps) is not an error to
+// report for a face the hub never offered — it sets siteAppsDoorShut and returns null. A
+// refusal the hub did answer with (ok:false) throws so the caller can surface why, and
+// clears the cache so the next open asks again. The caller is step 3's Apps face.
+async function siteApps(force) {
+  if (siteAppsCache && !force) return siteAppsCache;
+  try {
+    const r = await hubFetch("/api/site/apps" + (force ? "?refresh=1" : ""));
+    if (r.status === 404) { siteAppsDoorShut = true; return null; }
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok || !j || j.ok !== true) throw new Error((j && j.error) || ("HTTP " + r.status));
+    siteAppsCache = j.data || { apps: [], stale: false };
+    return siteAppsCache;
+  } catch (e) {
+    siteAppsCache = null;
+    throw e;
+  }
+}
+
+// siteAppAdd is the one press every Get-apps verb takes: POST /api/site/apps/add with
+// {slug, version}, and the hub's sentence verbatim — the door owns the six checks of
+// A1 §7.2 (newest live only, sha agreed, sidecar guard), and the face owns no check of
+// its own. It answers {ok, error} or {ok, data} rather than throwing, because it is
+// called from three presses on two faces and each stops with the same sentence on its
+// own line. A success clears the catalogue cache: the shelf moved, so the store's rows
+// the face prints have moved with it.
+async function siteAppAdd(slug, version) {
+  try {
+    const r = await hubFetch("/api/site/apps/add", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ slug: slug, version: version }),
+    });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok || j.ok !== true) return { ok: false, error: (j && j.error) || ("HTTP " + r.status) };
+    siteAppsCache = null;
+    return { ok: true, data: j.data || {} };
+  } catch (e) {
+    return { ok: false, error: "the hub did not answer: " + (e && e.message || e) };
+  }
 }
 
 // drawSiteLink shows exactly one of the two blocks for the state it was handed — the connect

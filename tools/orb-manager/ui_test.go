@@ -1175,8 +1175,10 @@ func TestLibraryInstallOpensTheSharedProgressPanel(t *testing.T) {
 	}{
 		// The app press moved into installLibButton, which serves Install and Upgrade from
 		// one body: the label arrives as the `name` parameter, so the probe is the parameter
-		// assignment rather than a literal that no longer appears.
-		{"the app row's Install press", "btn.textContent = name;"},
+		// assignment rather than a literal that no longer appears. A1 step 3 lifted that body
+		// into installRun so the site Update (§7.4) walks the SAME run after the add door;
+		// the probe follows the body, and every app press still funnels through it.
+		{"the app row's Install press", "async function installRun(e, btn, txt, name, force)"},
 		// D38: a theme's Install press is the library row in app.js's themeLibraryRows,
 		// and its progress is one bar that fills while the push streams — the push
 		// route speaks the install ladder's own NDJSON dialect, so the bar moves
@@ -1195,7 +1197,7 @@ func TestLibraryInstallOpensTheSharedProgressPanel(t *testing.T) {
 		// The body is the handler alone: from its own `btn.onclick` to the two-space-indented
 		// brace that closes it. A looser cut ran past the app press into the theme press and
 		// let a silent app button pass on the theme's fpOpen.
-		onslice := "btn.onclick = async function"
+		onslice := "async function installRun(e, btn, txt, name, force)"
 		verdict := "if (ok) fpClose();"
 		wants := []string{"fpOpen();", "fpUI()", "streamInstall(orbIP"}
 		if probe.label == "the theme row's Install press" {
@@ -1212,6 +1214,8 @@ func TestLibraryInstallOpensTheSharedProgressPanel(t *testing.T) {
 		if n := strings.Index(body, "\n  };"); n > 0 {
 			body = body[:n]
 		} else if n := strings.Index(body, "\n    };"); n > 0 {
+			body = body[:n]
+		} else if n := strings.Index(body, "\n  return ok;\n}"); n > 0 {
 			body = body[:n]
 		}
 		for _, want := range wants {
@@ -1586,7 +1590,9 @@ func TestLibraryRowYieldsToWhatTheDialAlreadyRuns(t *testing.T) {
 	// Install requires the ABSENCE of a slot (not a) — that is what makes the
 	// two doors mutually exclusive by construction, and it is also why a
 	// current app never offers to reinstall: a slot's presence hides the door.
-	if !strings.Contains(body, "if (!a && (f || (c && c.ok)) && !updateGate(e))") {
+	// A1 §7.4 adds one more suppressor with the same polarity: a row the store
+	// can Update shows Update, never a second verb for the same question.
+	if !strings.Contains(body, "if (!a && (f || (c && c.ok)) && !updateGate(e) && !su)") {
 		t.Error("appRow's Install door is not gated on the absence of a slot, so one row " +
 			"can offer Install and Uninstall at once")
 	}

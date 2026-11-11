@@ -210,20 +210,25 @@ func (s *Server) appUpdateRows(restorable []RestorableApp) []updateItem {
 func (s *Server) themeUpdateRows(r *http.Request, pl *LibraryPayload) []updateItem {
 	var out []updateItem
 	for _, t := range pl.Themes {
-		if t.Origin == nil {
+		// A1 §7.3 gave the listing's one `origin` key an app shape as well as a theme one, so a
+		// theme row's record is read back as what it is. Anything that is not a theme record — no
+		// key at all included — is "this theme came from no site", which is what the nil check was
+		// for before.
+		o, ok := t.Origin.(*ThemeOrigin)
+		if !ok || o == nil {
 			continue
 		}
-		if c, ok := s.choiceFor("theme", t.Origin.DesignID); ok && c.Keep {
+		if c, ok := s.choiceFor("theme", o.DesignID); ok && c.Keep {
 			continue
 		}
-		ans, err := s.resolveOrigin(r.Context(), t.Origin)
+		ans, err := s.resolveOrigin(r.Context(), o)
 		if err != nil {
-			out = append(out, updateItem{Kind: "theme", Key: t.Origin.DesignID, Title: t.Title,
+			out = append(out, updateItem{Kind: "theme", Key: o.DesignID, Title: t.Title,
 				Note: "could not be checked: " + err.Error(), Choices: []string{}})
 			continue
 		}
 		if ans.Gone {
-			out = append(out, updateItem{Kind: "theme", Key: t.Origin.DesignID, Title: t.Title,
+			out = append(out, updateItem{Kind: "theme", Key: o.DesignID, Title: t.Title,
 				Gone: true, Choices: []string{}})
 			continue
 		}
@@ -231,22 +236,22 @@ func (s *Server) themeUpdateRows(r *http.Request, pl *LibraryPayload) []updateIt
 			// A site that cannot answer the question yet is not news about the design: the
 			// row is information, it offers nothing to press, and it records nothing — so
 			// the next check asks this site again. siteHost names which one could not.
-			out = append(out, updateItem{Kind: "theme", Key: t.Origin.DesignID, Title: t.Title,
-				Note:    fmt.Sprintf("%s can’t check this theme for updates yet", siteHost(t.Origin.Site)),
+			out = append(out, updateItem{Kind: "theme", Key: o.DesignID, Title: t.Title,
+				Note:    fmt.Sprintf("%s can’t check this theme for updates yet", siteHost(o.Site)),
 				Choices: []string{}})
 			continue
 		}
-		if ans.Version <= t.Origin.Version {
+		if ans.Version <= o.Version {
 			continue
 		}
-		if c, ok := s.choiceFor("theme", t.Origin.DesignID); ok && c.SkippedVersion == ans.Version {
+		if c, ok := s.choiceFor("theme", o.DesignID); ok && c.SkippedVersion == ans.Version {
 			continue
 		}
 		to := ans.SharedName
 		if to == "" {
 			to = t.Title
 		}
-		out = append(out, updateItem{Kind: "theme", Key: t.Origin.DesignID, Title: to,
+		out = append(out, updateItem{Kind: "theme", Key: o.DesignID, Title: to,
 			From: t.Title, To: to, Version: ans.Version,
 			Renamed: ans.SharedName != "" && ans.SharedName != t.Title,
 			Choices: []string{"update", "skip", "keep"}})

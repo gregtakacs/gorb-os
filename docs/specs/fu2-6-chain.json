@@ -1,0 +1,14 @@
+{
+  "name": "fu2-6",
+  "repo": "../..",
+  "base": "delegate/fu2-1-svg-parse",
+  "retries": 2,
+  "timeout": 5400,
+  "steps": [
+    {
+      "name": "fu2-6-resolve-not-yet",
+      "spec": "docs/specs/fu2-6-resolve-not-yet.md",
+      "verify": "export GOFLAGS=-buildvcs=false PATH=/usr/local/go/bin:$PATH && set -o pipefail && R=$PWD && cd tools/orb-manager && go vet ./... && test \"$(go test -run 'Resolve|Update|SiteImport|SiteLink' -v . | grep -cE '^--- PASS: Test(ResolvePlain404IsNotYet|ResolveRouterJSON404IsNotYet|ResolveGoneBodyIsGone|ResolveSendsBearerOnlyToItsSite) ')\" = 4 && node --check web/app.js && cd $R && sh docs/specs/s3-gotest.sh && make check-web && test -z \"$(git diff --name-only delegate/fu2-1-svg-parse -- apps tools/orb-manager/contract tools/orb-manager/sitelimits.go)\""
+    }
+  ]
+}

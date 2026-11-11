@@ -37,6 +37,8 @@ idf_component_register(
         "display/orb_boot_overlay.c"
         # The system edge arc: a copy's progress round the rim, stamped into the DMA tiles.
         "display/orb_edge_arc.c"
+        # The OS ring any app may set (§64.1): pure core + the LVGL-task glue, stamped like the arc.
+        "display/orb_ring.c"
         # The shell-transition bench (/api/v1/debug/fx): effects painted outside LVGL.
         "display/orb_fx.c"
         "display/orb_strip.c"

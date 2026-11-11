@@ -812,3 +812,20 @@ H. **Which colour the ring takes.**
 I. `pomodoro-3-editor-looks` and `pomodoro-4-ship` stay out of the worker's plumbing chain.
    They are now a separate slice (`pomodoro-editor`), designed from
    `docs/specs/pomodoro-looks.md` and its sketch `docs/specs/pomodoro-looks-preview.html`.
+
+## Orchestrator amendments, round 4 (2026-11-11) — the ring record, final
+
+J. Amendments C and H name the record's spare bytes differently from what the overlay slice
+   builds. The record is now:
+
+```c
+uint16_t fraction; uint8_t effect; uint8_t flags; uint32_t arc, track; uint16_t period_ms; uint16_t start;
+/* flags: ORB_RING_MATCH 0x01 ("Match the app"), ORB_RING_CCW 0x02; start: 0..359 degrees clockwise from twelve */
+```
+
+   - `ring_dir` anticlockwise sets `ORB_RING_CCW`. `ring_start` 0..3 sets `start` to 0, 90, 180
+     or 270.
+   - "Match the app" sets `ORB_RING_MATCH`.
+   - Use the names as they are in `apps/sdk/orb.h` on the base branch.
+   - If the base predates the overlay slice, leave `flags` 0 and `start` 0, with a one-line
+     comment naming §64.8/§64.9.

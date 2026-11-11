@@ -167,6 +167,53 @@ const edit = (app, p) => { app.set(p); app.ses.track(); };
       ok(a.ses.libraryEntry('R\u00e9ef') === null && fh.drafts.get('tint').has('One'),
         'the library is exactly what it was before that save', JSON.stringify(a.ses.library().map((e) => e.name)));
     }
+    // ---- fu2-4: a name the library already holds that breaks the rule is a dead end no more:
+    // the save offers a rename pre-filled with a cleaned, unique suggestion, and posts the
+    // normal save under the new name. A bad name the library does not hold keeps S3b's refusal.
+    {
+      const CHARS = "a design's name can use only letters (A\u2013Z, a\u2013z), numbers, spaces, dots, underscores and dashes";
+      const seed = (name, color) => { const d = doc(color); d.saved = { name, at: 1, extra: {} }; fh.drafts.get('tint').set(name, d); };
+      seed('caf\u00e9 \u2728', 'rose'); seed('Cafe', 'foam');
+      await a.ses.libraryRefresh();
+      let asked = null, nPrompt = 0;
+      const p = mk({ renamePrompt: (o) => { asked = o; nPrompt++; return Promise.resolve(o.suggest); } });
+      await p.ses.libraryRefresh();
+      ok(p.ses.renameSuggest('caf\u00e9 \u2728').toLowerCase() === 'cafe 2',
+        'the held bad name suggests the cleaned one, suffixed past the case-fold clash', p.ses.renameSuggest('caf\u00e9 \u2728'));
+      ok(p.ses.checkName(p.ses.renameSuggest('caf\u00e9 \u2728')) === null, 'and the suggestion is one the hub accepts');
+      ok(p.ses.renameSuggest('N\u00f6el \u2728') === 'Noel', 'accents fold, no-mapping symbols drop', p.ses.renameSuggest('N\u00f6el \u2728'));
+      ok(p.ses.renameSuggest('a/b') === 'a b', 'a separator is a word boundary', p.ses.renameSuggest('a/b'));
+      ok(p.ses.renameSuggest('\u2728 \u2728') === 'design', 'a name with nothing left falls back to the default', p.ses.renameSuggest('\u2728 \u2728'));
+      ok(p.ses.renameSuggest('... x ...') === 'x', 'spaces and periods trim from both ends', p.ses.renameSuggest('... x ...'));
+      ok(!(await p.ses.saveDraft({ name: 'R\u00e9ef', doc: doc('rose') })) && p.state.status === 'Not saved: ' + CHARS,
+        'a bad name the library does not hold keeps the plain refusal', p.state.status);
+      ok(nPrompt === 0, 'and no prompt stood behind it', nPrompt);
+      ok(await p.ses.saveDraft({ name: 'caf\u00e9 \u2728', doc: doc('fern') }) && /Renamed to \u201ccafe 2\u201d and saved/.test(p.state.status),
+        'the held bad name is offered the rename instead', p.state.status);
+      ok(nPrompt === 1 && asked && asked.from === 'caf\u00e9 \u2728', 'the prompt was asked once, for the name it holds', JSON.stringify(asked));
+      ok(fh.drafts.get('tint').get('cafe 2') && fh.drafts.get('tint').has('caf\u00e9 \u2728'),
+        'the save posted under the new name and the old entry stands until it is deleted',
+        JSON.stringify([...fh.drafts.get('tint').keys()]));
+      const q = mk({ renamePrompt: () => Promise.resolve(null) });
+      await q.ses.libraryRefresh();
+      const nBefore = fh.drafts.get('tint').size;
+      ok(!(await q.ses.saveDraft({ name: 'caf\u00e9 \u2728', doc: doc('x') })) && /Rename cancelled/.test(q.state.status),
+        'cancelling saves nothing and says so without an error', q.state.status);
+      ok(fh.drafts.get('tint').size === nBefore, 'and the hub did not hear about it', fh.drafts.get('tint').size);
+      let cQuiet = 0;
+      const s = mk({ renamePrompt: () => { cQuiet++; return Promise.resolve(null); } });
+      await s.ses.libraryRefresh();
+      ok(!(await s.ses.saveDraft({ name: 'caf\u00e9 \u2728', doc: doc('rose') }, true)) && cQuiet === 0 && !/Not saved/.test(s.state.status),
+        'Send to orb\u2019s quiet step keeps the silent refusal: no modal mid-send', cQuiet);
+      const r = mk({ renamePrompt: (o) => Promise.resolve(o.suggest + ' ') });
+      await r.ses.libraryRefresh();
+      ok(await r.ses.saveDraft({ name: 'caf\u00e9 \u2728', doc: doc('moss') }) && fh.drafts.get('tint').has('cafe 3'),
+        'an edited suggestion is trimmed and saved as typed', JSON.stringify([...fh.drafts.get('tint').keys()]));
+      const g = mk({ renamePrompt: () => Promise.resolve('\u2728') });
+      await g.ses.libraryRefresh();
+      ok(!(await g.ses.saveDraft({ name: 'caf\u00e9 \u2728', doc: doc('moss') })) && g.state.status === 'Not saved: ' + CHARS,
+        'a prompt answered with a name the rule refuses is the old refusal', g.state.status);
+    }
     // ?entry= opens that entry once the library is read
     location.search = '?entry=One';
     const e = mk(); await e.ses.boot();

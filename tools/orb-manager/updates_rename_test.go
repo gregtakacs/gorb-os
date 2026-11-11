@@ -51,7 +51,7 @@ func applyHub(t *testing.T, to string, worn bool) (*Server, *orbfake.Orb, string
 	// bytes differ from v1's on purpose: an update that shipped the same file would prove
 	// nothing about which bake landed on which card.
 	u.bundle = func() []byte {
-		return goodBundle(t, siteDesignID, 2, "clock", to, []byte("art v2"))
+		return goodBundle(t, siteDesignID, 2, "clock", to, pngArt(9, 9, artSeed("art v2")))
 	}
 	return s, orb, ip, u, old
 }

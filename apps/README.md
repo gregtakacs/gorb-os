@@ -72,6 +72,14 @@ check-migrations` runs the OS's migration runner over the fixtures in the app's 
 editor (it needs Node and Chromium), so deleting a migration step fails the check, and the
 template's CI workflow runs it before packing.
 
+Publishing an editor on orb-os.net is a CSP question, and ruling 37 settled it: the site
+relaxes `script-src` with `'unsafe-eval'` for exactly the two releases that need it —
+`support@1` and `babel@7.29.0` — on their own origin, and the relaxation follows the release
+being served rather than the app being edited, so every other release keeps the strict
+header. Two `support@1` features stay blocked under that header and the editor ships
+without them: its helmet mount's inline `<script>` (which would need `'unsafe-inline'`) and
+its cross-origin x-import (`connect-src 'self'` stays).
+
 ## The SDK
 
 ```

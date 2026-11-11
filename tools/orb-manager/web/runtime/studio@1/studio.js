@@ -425,89 +425,300 @@
    * forced to anything).
    * → Promise<{ dataUrl, type, width, height, scaled }> */
   S.FIT_MAX = 1024;
-  /* S3b's SVG rules, the hub's own checkSvgArt in one function: an SVG a design may hold is
-   * at most 256 KB of text, holds no event handler and links to nothing outside itself — a
-   * #fragment of its own file, or an embedded PNG, JPEG, GIF or WebP. The sentences are the
-   * hub's (tools/orb-manager/sitelimits.go), word for word, so the editor refuses a picked
-   * file before the site or the hub refuses the same one after an import.
-   * → null when the text may be kept, the sentence when it may not. */
+  /* fu2-1 (ruling 35, as docs/specs/fu2-svg-rules.md amends it): the SVG rules, read off a
+   * parse rather than off the text. An SVG a design may hold is at most 256 KB of valid
+   * UTF-8, parses as XML with nothing an HTML parser could pull back out of it, is one <svg>
+   * in the SVG namespace, holds only elements the allow-list names, carries no event
+   * handler, and reaches nothing outside itself but a #fragment of its own file or an
+   * embedded PNG, JPEG, GIF or WebP. The rules, their order and their ids are the rules
+   * file's; the sentences are the hub's (tools/orb-manager/sitelimits.go) word for word, so
+   * the editor refuses a picked file before the hub refuses the same one after an import.
+   * → null when the input may be kept; {ok:false, rule, message} when it may not. The input
+   * is a file's bytes — a Uint8Array or an ArrayBuffer — or a string; rule 2 is about the
+   * bytes, so pass the bytes whenever there are any. */
   S.SVG_MAX_BYTES = 262144;
   var svgRefusalSize = function (kb) { return 'an SVG in it is ' + kb + " KB, and a design's SVGs can be at most 256 KB"; };
-  // ruling 35's SVG rules, the same as the hub's checkSvgArt (sitelimits.go) and the site's svg-art.ts
+  // ruling 35's rules, the hub's (sitelimits.go) and the site's (svg-art.ts) included
   var svgHolds = function (what) { return 'an SVG in it holds ' + what + ", which a design's SVGs can't (no scripts, external links or entities)"; };
   var SVG_REFUSAL_NOT_TEXT = "an SVG in it can't be read as text";
   var SVG_REFUSAL_NOT_SVG = "an image in it says it is an SVG but isn't one";
-  var svgElement = function (name) { return new RegExp('<(?:[a-z0-9_.-]+:)?' + name + '(?:[^a-z0-9_.:-]|$)'); };
-  var SVG_FORBIDDEN = [
-    ['a DOCTYPE', function (t) { return t.indexOf('<!doctype') >= 0; }],
-    ['an entity', function (t) { return t.indexOf('<!entity') >= 0; }],
-    ['a script', function (t) { return svgElement('script').test(t); }],
-    ['foreignObject', function (t) { return svgElement('foreignobject').test(t); }],
-    ['an iframe', function (t) { return svgElement('iframe').test(t); }],
-    ['an embed', function (t) { return svgElement('embed').test(t); }],
-    ['an object', function (t) { return svgElement('object').test(t); }],
-    ['a stylesheet link', function (t) { return t.indexOf('<?xml-stylesheet') >= 0; }],
-    ['an @import', function (t) { return t.indexOf('@import') >= 0; }],
-    ['a javascript: URL', function (t) { return t.indexOf('javascript:') >= 0; }]
-  ];
-  // where the first element starts, past a declaration, comments, whitespace and a DOCTYPE
-  // (internal subset included); -1 when the text ends inside one of those
-  var svgFirstElement = function (t) {
-    var i = 0, e, sub;
-    for (;;) {
-      while (i < t.length && /[\s\ufeff]/.test(t[i])) i++;
-      if (i >= t.length) return -1;
-      if (t.indexOf('<?', i) === i) { e = t.indexOf('?>', i + 2); if (e < 0) return -1; i = e + 2; }
-      else if (t.indexOf('<!--', i) === i) { e = t.indexOf('-->', i + 4); if (e < 0) return -1; i = e + 3; }
-      else if (t.indexOf('<!', i) === i) {
-        e = t.indexOf('>', i + 2); if (e < 0) return -1;
-        sub = t.indexOf('[', i + 2);
-        if (sub >= 0 && sub < e) { e = t.indexOf(']>', i + 2); if (e < 0) return -1; e += 1; }
-        i = e + 1;
-      } else return i;
-    }
+  var SVG_RULE_SENTENCE = {
+    svg_not_well_formed: svgHolds('XML that does not parse'),
+    svg_markup: svgHolds('a DOCTYPE, a CDATA section, a processing instruction or a comment a design\'s SVGs can\'t hold'),
+    svg_element: svgHolds('an element a design\'s SVGs can\'t hold'),
+    svg_foreign_element: svgHolds('an element from another namespace'),
+    svg_event_attr: svgHolds('an event handler'),
+    svg_link: svgHolds('an outside link'),
+    svg_css: svgHolds('CSS that can reach outside the file')
   };
-  var svgRootAt = function (t, i) { return t.indexOf('<svg', i) === i && (i + 4 === t.length || /[\s\/>]/.test(t[i + 4])); };
-  var svgHandlerRe = /[\s"'/]on[a-z]+\s*=/i;
-  var svgHrefRe = /\b(?:xlink:)?href\s*=\s*"([^"]*)"|\b(?:xlink:)?href\s*=\s*'([^']*)'/gi;
-  var svgUrlRe = /url\(\s*['"]?([^'")]+)/gi;
-  var svgRasterRe = /^data:image\/(png|jpeg|gif|webp);base64,/i;
+  // svgSvgMessage is the hub's sentence for one rule id, and the size rule's needs the weight
+  var svgMessage = function (rule, kb) {
+    if (rule === 'svg_too_big') return svgRefusalSize(kb);
+    if (rule === 'svg_not_utf8') return SVG_REFUSAL_NOT_TEXT;
+    if (rule === 'svg_root') return SVG_REFUSAL_NOT_SVG;
+    return SVG_RULE_SENTENCE[rule] || '';
+  };
+  var svgRefuse = function (rule, kb) { return { ok: false, rule: rule, message: svgMessage(rule, kb) }; };
+
+  var SVG_NS = 'http://www.w3.org/2000/svg';
+  var SVG_XLINK_NS = 'http://www.w3.org/1999/xlink';
+  var SVG_XML_NS = 'http://www.w3.org/XML/1998/namespace';
+  var SVG_XMLNS_NS = 'http://www.w3.org/2000/xmlns/';
+  // rule 6: everything an editor can bake, and nothing that can fetch, animate, script or style
+  var SVG_ALLOWED = {};
+  ('svg g defs symbol use path rect circle ellipse line polyline polygon text tspan textPath ' +
+    'title desc metadata linearGradient radialGradient stop pattern clipPath mask marker image ' +
+    'filter feBlend feColorMatrix feComponentTransfer feComposite feDiffuseLighting ' +
+    'feDisplacementMap feDistantLight feDropShadow feFlood feFuncA feFuncB feFuncG feFuncR ' +
+    'feGaussianBlur feMerge feMergeNode feMorphology feOffset fePointLight feSpecularLighting ' +
+    'feSpotLight feTile feTurbulence switch view').split(' ').forEach(function (n) { SVG_ALLOWED[n] = true; });
+  // rule 7: an editor's own namespace may wrap a save's settings, but not a real element name,
+  // because an HTML parser inlining the file would ignore the prefix and see the element
+  var SVG_EDITOR_NS = {
+    'http://www.inkscape.org/namespaces/inkscape': true,
+    'http://sodipodi.sourceforge.net/DTD/sodipodi-0.dtd': true
+  };
+  var SVG_META_NS = {
+    'http://www.w3.org/1999/02/22-rdf-syntax-ns#': true,
+    'http://creativecommons.org/ns#': true,
+    'http://web.resource.org/cc/': true,
+    'http://purl.org/dc/elements/1.1/': true
+  };
+  var SVG_FORBIDDEN_NAMES = {};
+  (('a abbr address animate animateColor animateMotion animateTransform area article aside audio ' +
+    'b base basefont bdi bdo big blockquote body br button canvas caption center cite code col ' +
+    'colgroup data datalist dd del details dfn dialog dir div dl dt em embed fieldset figcaption ' +
+    'figure font footer form frame frameset h1 h2 h3 h4 h5 h6 head header hgroup hr html i iframe ' +
+    'img input ins kbd label legend li link main map mark menu meta meter nav noframes noscript ' +
+    'object ol optgroup option output p param picture pre progress q rp rt ruby s samp script ' +
+    'section select small source span strike strong style sub summary sup table tbody td template ' +
+    'textarea tfoot th thead time title tr u ul var video wbr ' +
+    'svg g defs symbol use path rect circle ellipse line polyline polygon text tspan textPath ' +
+    'foreignObject marker clipPath mask filter pattern image switch style cursor handler listener ' +
+    'font-face font-face-uri discard mpath tref altGlyph altGlyphDef altGlyphItem').split(' ')
+    ).forEach(function (n) { SVG_FORBIDDEN_NAMES[n.toLowerCase()] = true; });
+  // rule 9's extra half: names a renderer reads as a reference the way it reads href, and the
+  // substrings no value of any attribute may hold. The style attribute is rule 10's, not this.
+  var SVG_LINK_ATTR = { src: 1, background: 1, poster: 1, action: 1, formaction: 1, dynsrc: 1, lowsrc: 1 };
+  var SVG_VALUE_OUTSIDE = ['javascript:', 'data:', 'image-set('];
+  // rule 10: an escape, a comment opening, an at-rule or a tag opening hides a reference from
+  // the plain url( scan, and these two are CSS's own ways of naming a picture
+  var SVG_STYLE_BAD = ['\\', '/*', '@', '<', 'image-set', 'expression'];
+  var svgFragRe = /^#[\p{L}_\-:][\p{L}\p{N}\-._:]*$/u;
+  var svgDataURLRe = /^data:image\/(png|jpeg|gif|webp);base64,[A-Za-z0-9+/=]+$/;
+  var svgURLRe = /url\(\s*['"]?([^'")]*)/gi;
   var svgViewBoxRe = /viewBox\s*=\s*["']\s*[-\d.eE+]+[\s,]+[-\d.eE+]+[\s,]+([-\d.eE+]+)[\s,]+([-\d.eE+])/i;
-  var utf8Bytes = function (s) {
-    if (typeof TextEncoder !== 'undefined') return new TextEncoder().encode(s).length;
-    var n = 0;
-    for (var i = 0; i < s.length; i++) {
-      var c = s.charCodeAt(i);
-      if (c < 0x80) n += 1; else if (c < 0x800) n += 2;
-      else if ((c & 0xfc00) === 0xd800 && i + 1 < s.length && (s.charCodeAt(i + 1) & 0xfc00) === 0xdc00) { n += 4; i++; }
-      else n += 3;
-    }
-    return n;
-  };
-  var svgLinkOK = function (t) {
+
+  function svgFragment(t) { return svgFragRe.test(t); }
+  function svgRefOK(t) {
     t = String(t).trim();
-    return t.charAt(0) === '#' || svgRasterRe.test(t);
-  };
-  S.checkSvg = function (text) {
-    text = String(text == null ? '' : text);
-    var bytes = utf8Bytes(text);
-    if (bytes > S.SVG_MAX_BYTES) return svgRefusalSize(Math.ceil(bytes / 1024));
-    // a reader that met bad UTF-8 hands back U+FFFD; a NUL is never text
-    if (text.indexOf('\u0000') >= 0 || text.indexOf('\ufffd') >= 0) return SVG_REFUSAL_NOT_TEXT;
-    var lower = text.toLowerCase(), at = svgFirstElement(lower);
-    if (at < 0 || !svgRootAt(lower, at)) return SVG_REFUSAL_NOT_SVG;
-    for (var f = 0; f < SVG_FORBIDDEN.length; f++) if (SVG_FORBIDDEN[f][1](lower)) return svgHolds(SVG_FORBIDDEN[f][0]);
-    if (svgHandlerRe.test(text)) return svgHolds('an event handler');
-    svgHrefRe.lastIndex = 0; svgUrlRe.lastIndex = 0;
-    var m;
-    while ((m = svgHrefRe.exec(text))) {
-      var target = m[1] != null ? m[1] : m[2];
-      if (!svgLinkOK(String(target == null ? '' : target).trim())) return svgHolds('an outside link');
+    return svgFragment(t) || svgDataURLRe.test(t.toLowerCase());
+  }
+  function svgURLRef(value) {
+    svgURLRe.lastIndex = 0;
+    var m = svgURLRe.exec(String(value));
+    return m ? [String(m[1]).trim(), true] : ['', false];
+  }
+  function svgStyleOK(value) {
+    var lower = String(value).toLowerCase(), i;
+    for (i = 0; i < SVG_STYLE_BAD.length; i++) if (lower.indexOf(SVG_STYLE_BAD[i]) >= 0) return false;
+    var u = svgURLRef(value);
+    return !(u[1] && !svgFragment(u[0]));
+  }
+  function svgOutsideValue(value) {
+    var lower = String(value).toLowerCase(), i;
+    for (i = 0; i < SVG_VALUE_OUTSIDE.length; i++) if (lower.indexOf(SVG_VALUE_OUTSIDE[i]) >= 0) return true;
+    return false;
+  }
+
+  // ---- rules 3 and 4: the walk of the raw text, the hub's svgScanMarkup point for point.
+  // Nothing else settles them the same way in a browser and in Go: a CDATA section is text to
+  // a DOM, a bogus declaration is a DOCTYPE to encoding/xml, and a parsererror says nothing at
+  // all about which construct it was. "" is markup a design may hold.
+  function svgDeclEnd(t) {
+    var end = t.indexOf('>');
+    if (end < 0) return -1;
+    var sub = t.indexOf('[', 2);
+    if (sub >= 0 && sub < end) {
+      var closer = t.indexOf(']>');
+      if (closer < 0) return -1;
+      end = closer + 1;
     }
-    while ((m = svgUrlRe.exec(text))) {
-      if (!svgLinkOK(String(m[1]).trim())) return svgHolds('an outside link');
+    return end + 1;
+  }
+  function svgPIName(inst) {
+    var i = inst.search(/[ \t\r\n]/);
+    return i < 0 ? inst : inst.slice(0, i);
+  }
+  function svgSpace(c) { return c === ' ' || c === '\t' || c === '\n' || c === '\r'; }
+  function svgBreak(c) { return c === '<' || c === '>' || c === '/' || svgSpace(c); }
+  // svgScanTag walks one start tag from its "<" past its ">", honouring quotes so that neither
+  // a ">" nor a "<!" inside a value ends the tag early, and answers null for whatever a strict
+  // parser stops at: no name, an attribute with no value, an unquoted value, two attributes
+  // with one name, a value holding a literal "<", a tag that never closes.
+  function svgScanTag(t) {
+    var i = 1, n = t.length, seen = {}, name, q, e;
+    while (i < n && !svgBreak(t.charAt(i))) i++;
+    if (i === 1) return null;
+    for (;;) {
+      while (i < n && svgSpace(t.charAt(i))) i++;
+      if (i >= n) return null;
+      if (t.charAt(i) === '>') return i + 1;
+      if (t.charAt(i) === '/') {
+        if (t.charAt(i + 1) !== '>') return null;
+        return i + 2;
+      }
+      name = i;
+      while (name < n && !svgBreak(t.charAt(name)) && t.charAt(name) !== '=') name++;
+      if (name === i) return null;
+      var attrName = t.slice(i, name).toLowerCase();
+      i = name;
+      while (i < n && svgSpace(t.charAt(i))) i++;
+      if (i >= n || t.charAt(i) !== '=') return null;
+      i++;
+      while (i < n && svgSpace(t.charAt(i))) i++;
+      if (i >= n) return null;
+      q = t.charAt(i);
+      if (q !== '"' && q !== "'") return null;             // an unquoted value is not XML
+      e = t.indexOf(q, i + 1);
+      if (e < 0) return null;
+      if (t.slice(i + 1, e).indexOf('<') >= 0) return null; // a literal < has to be &lt;
+      if (seen[attrName]) return null;                       // one attribute, twice
+      seen[attrName] = true;
+      i = e + 1;
+      if (i < n && !svgSpace(t.charAt(i)) && t.charAt(i) !== '>' && t.charAt(i) !== '/') return null;
     }
-    return null;
+  }
+
+  function svgScanMarkup(text) {
+    var markup = '', i = text.charAt(0) === '\ufeff' ? 1 : 0, n = text.length, end, body;
+    while (i < n) {
+      var lt = text.indexOf('<', i);
+      if (lt < 0) break;
+      i = lt;
+      body = text.slice(i);
+      if (body.indexOf('<!--') === 0) {
+        end = text.indexOf('-->', i + 4);
+        if (end < 0 || text.slice(i + 4, end).indexOf('--') >= 0) return 'svg_not_well_formed';
+        if (/[<>]/.test(text.slice(i + 4, end))) markup = 'svg_markup';
+        i = end + 3;
+      } else if (body.indexOf('<![CDATA[') === 0) {
+        end = text.indexOf(']]>', i + 9);
+        if (end < 0) return 'svg_not_well_formed';
+        markup = 'svg_markup';
+        i = end + 3;
+      } else if (body.indexOf('<!DOCTYPE') === 0) {
+        end = svgDeclEnd(body);
+        if (end < 0) return 'svg_not_well_formed';
+        markup = 'svg_markup';
+        i += end;
+      } else if (body.indexOf('<!') === 0) {
+        return 'svg_not_well_formed';                        // no other <! is a declaration
+      } else if (body.indexOf('<?') === 0) {
+        end = text.indexOf('?>', i + 2);
+        if (end < 0) return 'svg_not_well_formed';
+        if (svgPIName(text.slice(i + 2, end)) !== 'xml' || i > (text.charAt(0) === '\ufeff' ? 1 : 0)) markup = 'svg_markup';
+        i = end + 2;
+      } else if (body.indexOf('</') === 0) {
+        end = text.indexOf('>', i);
+        if (end < 0) return 'svg_not_well_formed';
+        i = end + 1;
+      } else {
+        end = svgScanTag(body);
+        if (end === null) return 'svg_not_well_formed';
+        i += end;
+      }
+    }
+    return markup;
+  }
+
+  // ---- rules 5 to 10, off the parse. The document already answered rules 3 and 4: a
+  // parsererror, or a DOM that cannot be the tree the text describes, is rule 3, and every
+  // construct rule 4 names was refused before the text was handed to the parser.
+  function svgWalk(doc) {
+    var found = { svg_element: false, svg_foreign_element: false, svg_event_attr: false, svg_link: false, svg_css: false };
+    var root = doc.documentElement;
+    if (!root || root.nodeType !== 1 || root.namespaceURI !== SVG_NS || root.localName !== 'svg') return 'svg_root';
+    var stack = [[root, false]];
+    while (stack.length) {
+      var at = stack.shift(), el = at[0], inMeta = at[1], i, a, name, space, value, u;
+      for (i = 0; i < el.childNodes.length; i++) {
+        var kid = el.childNodes.item(i);
+        if (kid.nodeType === 1) stack.push([kid, inMeta || (el.namespaceURI === SVG_NS && el.localName === 'metadata')]);
+      }
+      if (el.namespaceURI === SVG_NS) {
+        if (!SVG_ALLOWED[el.localName]) found.svg_element = true;
+      } else if (SVG_EDITOR_NS[el.namespaceURI] || (inMeta && SVG_META_NS[el.namespaceURI])) {
+        if (SVG_FORBIDDEN_NAMES[String(el.localName).toLowerCase()]) found.svg_foreign_element = true;
+      } else {
+        found.svg_foreign_element = true;
+      }
+      for (i = 0; i < el.attributes.length; i++) {
+        a = el.attributes.item(i);
+        name = String(a.localName || a.name).toLowerCase();
+        space = a.namespaceURI || '';
+        value = String(a.value);
+        if (name.indexOf('on') === 0) { found.svg_event_attr = true; continue; }   // rule 8 asks first
+        if (a.prefix && space === null) return 'svg_not_well_formed';
+        if (a.prefix === 'xmlns' || name === 'xmlns' || space === SVG_XMLNS_NS) continue;
+        if (name === 'base' && space === SVG_XML_NS) { found.svg_link = true; continue; }
+        if (name === 'href' && (space === '' || space === SVG_XLINK_NS)) {
+          if (!svgRefOK(value)) found.svg_link = true;
+          continue;
+        }
+        if (name === 'style' && space === '') {
+          if (!svgStyleOK(value)) found.svg_css = true;
+          continue;
+        }
+        if (SVG_LINK_ATTR[name] || svgOutsideValue(value)) { found.svg_link = true; continue; }
+        u = svgURLRef(value);
+        if (u[1] && !svgFragment(u[0])) found.svg_link = true;
+      }
+    }
+    var rule = '';
+    ['svg_element', 'svg_foreign_element', 'svg_event_attr', 'svg_link', 'svg_css'].forEach(function (r) {
+      if (!rule && found[r]) rule = r;
+    });
+    return rule;
+  }
+  // svgBytes is the input as bytes: the file's own, or the string encoded, so that rule 1 and
+  // rule 2 are always weighed on the same thing the hub weighs.
+  function svgBytes(input) {
+    if (input == null) return new Uint8Array(0);
+    if (input instanceof Uint8Array) return input;
+    if (input instanceof ArrayBuffer) return new Uint8Array(input);
+    if (input.buffer instanceof ArrayBuffer) return new Uint8Array(input.buffer, input.byteOffset || 0, input.byteLength);
+    return new TextEncoder().encode(String(input));
+  }
+  // svgText is rule 2's answer and the text to parse: null when the bytes are not UTF-8 at
+  // all, or hold a NUL, which no XML document holds.
+  function svgText(bytes) {
+    var text;
+    try {
+      text = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+    } catch (e) {
+      return null;
+    }
+    for (var i = 0; i < bytes.length; i++) if (bytes[i] === 0) return null;
+    return text.charCodeAt(0) === 0xfeff ? text.slice(1) : text;   // a leading BOM is allowed
+  }
+
+  S.checkSvg = function (input) {
+    var bytes = svgBytes(input);
+    if (bytes.length > S.SVG_MAX_BYTES) return svgRefuse('svg_too_big', Math.ceil(bytes.length / 1024));
+    var text = svgText(bytes);
+    if (text === null) return svgRefuse('svg_not_utf8');
+    var rule = svgScanMarkup(text);
+    if (!rule) {
+      // node runs the studio's selftests without an XML parser of its own; a checker that
+      // could not parse would have to say "kept", and a file it never looked at is no reason
+      // to say that. The browser suites are where rules 3 to 10 are settled.
+      if (typeof DOMParser === 'undefined') throw new Error('this host has no XML parser: checkSvg needs a browser');
+      var doc = new DOMParser().parseFromString(text, 'application/xml');
+      rule = (doc.getElementsByTagName('parsererror').length || !doc.documentElement)
+        ? 'svg_not_well_formed' : svgWalk(doc);
+    }
+    return rule ? svgRefuse(rule) : null;
   };
   S.fitPicture = function (file, opts) {
     opts = opts || {};
@@ -518,6 +729,10 @@
     return new Promise(function (ok, bad) {
       var noPicture = function () { bad(new Error('That file is not a picture this browser can read')); };
       if (!file || typeof FileReader === 'undefined' || !root.document) { noPicture(); return; }
+      // fu2-2 (ruling 35, as amended): under 10 bytes no raster can state a size, so a
+      // file that short is refused here, before it is read — a truncated download
+      // cannot reach the canvas. The hub's artRefusal says the same of its bytes.
+      if (!(Number(file.size) >= 10)) { noPicture(); return; }
       var rd = new FileReader();
       rd.onerror = noPicture;
       rd.onload = function () {
@@ -528,25 +743,24 @@
         im.onload = function () {
           var w = im.naturalWidth || im.width || 0, h = im.naturalHeight || im.height || 0;
           if (svg) {
-            // S3b: an SVG is kept as the text it came in, so the check is on the text and no
-            // canvas is opened. A file the rules refuse is refused here, before its bytes ever
-            // reach a design, with the hub's own sentence.
+            // fu2-1: an SVG is kept as the bytes it came in, so the check is on the bytes —
+            // rule 2 is about them — and no canvas is opened. A file the rules refuse is
+            // refused here, before its bytes ever reach a design, with the hub's own sentence.
             var rd2 = new FileReader();
             rd2.onerror = noPicture;
             rd2.onload = function () {
-              var text = String(rd2.result);
-              var refusal = S.checkSvg(text);
-              if (refusal) { bad(new Error(refusal)); return; }
+              var refusal = S.checkSvg(new Uint8Array(rd2.result));
+              if (refusal) { bad(new Error(refusal.message)); return; }
               if (!(w > 0 && h > 0)) {
                 // a viewBox-only SVG has no intrinsic size: the box it names is its size, and
                 // a file naming no box takes the box it was asked to fit
-                var vb = svgViewBoxRe.exec(text);
+                var vb = svgViewBoxRe.exec(svgText(new Uint8Array(rd2.result)));
                 if (vb) { w = Math.round(+vb[1]) || 0; h = Math.round(+vb[2]) || 0; }
                 if (!(w > 0 && h > 0)) { w = max; h = max; }
               }
               ok({ dataUrl: url, type: 'image/svg+xml', width: w, height: h, scaled: false });
             };
-            rd2.readAsText(file, 'utf-8');
+            rd2.readAsArrayBuffer(file);
             return;
           }
           if (!(w > 0 && h > 0)) { noPicture(); return; }

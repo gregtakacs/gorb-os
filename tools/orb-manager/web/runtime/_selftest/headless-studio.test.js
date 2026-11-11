@@ -393,52 +393,35 @@ Object.defineProperty(global, 'fn', { get: mkfn });
   ok(JSON.stringify(noTheme) === JSON.stringify(HUB), 'with theme@1 not loaded the shell keeps the hub’s words rather than break', JSON.stringify(noTheme).slice(0, 200));
 }
 
-// ---- S3b: the SVG rules, the hub's own checkSvgArt read the same files (sitelimits.go)
+// ---- fu2-1: the SVG rules' byte half, which node can check without a parser. The rules
+// themselves are checked against the shared vector file in a real browser, where the parse
+// happens (_selftest/svg-vectors.js, which make check-editor also runs): node has no
+// DOMParser, and a stand-in parser there would test the stand-in and not the studio.
 {
-  const holds = (w) => 'an SVG in it holds ' + w + ", which a design's SVGs can't (no scripts, external links or entities)";
-  const HANDLER = holds('an event handler');
-  const LINK = holds('an outside link');
-  const NOTSVG = "an image in it says it is an SVG but isn't one";
   const size = (kb) => 'an SVG in it is ' + kb + " KB, and a design's SVGs can be at most 256 KB";
-  const vectors = [
-    ['plain rect', '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><rect width="10" height="10"/></svg>', null],
-    ['fragment href', '<svg xmlns="http://www.w3.org/2000/svg"><defs><linearGradient id="g"/></defs><rect fill="url(#g)" width="4" height="4"/><use href="#g"/></svg>', null],
-    ['embedded raster', '<svg xmlns="http://www.w3.org/2000/svg"><image href="data:image/png;base64,iVBORw0KGgo=" width="4" height="4"/></svg>', null],
-    ['xlink fragment', '<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink"><use xlink:href="#g"/></svg>', null],
-    ['handler', '<svg xmlns="http://www.w3.org/2000/svg" onload="fetch(\'//x\')">', HANDLER],
-    ['handler no space', '<svg xmlns="http://www.w3.org/2000/svg"><rect onclick=alert(1)/></svg>', HANDLER],
-    ['outside href', '<svg xmlns="http://www.w3.org/2000/svg"><image href="https://example.com/a.png"/></svg>', LINK],
-    ['outside single-quoted href', '<svg xmlns="http://www.w3.org/2000/svg"><use xlink:href=\'//example.com/x.svg\'/></svg>', LINK],
-    ['outside url()', '<svg xmlns="http://www.w3.org/2000/svg"><rect fill="url(https://example.com/a.png)" width="2" height="2"/></svg>', LINK],
-    ['data url of another kind', '<svg xmlns="http://www.w3.org/2000/svg"><rect fill="url(data:text/html;base64,PHN2Zz4=)" width="2" height="2"/></svg>', LINK],
-    ['not an svg', 'hello, not markup at all, and long enough to read', NOTSVG],
-    // ruling 35's shared table (the site's svg-art tests and the hub's TestSvgArtSharedVectors use it too)
-    ['decl, comment, fragment links', '<?xml version="1.0"?><!-- c --><svg xmlns="http://www.w3.org/2000/svg"><use href="#a"/><rect id="a" fill="url(#g)"/></svg>', null],
-    ['script', '<svg><script>alert(1)</script></svg>', holds('a script')],
-    ['event handler', '<svg onload="x()"></svg>', HANDLER],
-    ['doctype', '<?xml version="1.0"?><!DOCTYPE svg [<!ENTITY a "aa">]><svg/>', holds('a DOCTYPE')],
-    ['outside image', '<svg><image href="https://evil.example/x.png"/></svg>', LINK],
-    ['outside url in style', '<svg><rect style="fill:url(http://evil.example/p)"/></svg>', LINK],
-    ['javascript url', '<svg><a xlink:href="javascript:x()"/></svg>', holds('a javascript: URL')],
-    ['foreignObject', '<svg><foreignObject/></svg>', holds('foreignObject')],
-    ['html wrapper', '<html><svg/></html>', NOTSVG],
-    ['prefixed script', '<svg xmlns:x="http://www.w3.org/2000/svg"><x:script>1</x:script></svg>', holds('a script')],
-    ['prefixed iframe', '<svg><h:iframe xmlns:h="http://www.w3.org/1999/xhtml"/></svg>', holds('an iframe')],
-    ['nul', '<svg>\u0000</svg>', "an SVG in it can't be read as text"],
-    ['svg not first', '<rect/><svg/>', NOTSVG],
-    ['@import', '<svg><style>@import "x.css";</style></svg>', holds('an @import')],
-  ];
-  for (const [name, text, want] of vectors) ok(S.checkSvg(text) === want, 'checkSvg: ' + name, String(S.checkSvg(text)));
   const open = '<svg xmlns="http://www.w3.org/2000/svg">', close = '</svg>';
   const pad = (n) => { let t = open; while (t.length < n - close.length) t += ' '; return t + close; };
   ok(S.SVG_MAX_BYTES === 262144, 'checkSvg: the ceiling is 256 KB');
-  ok(S.checkSvg(pad(262144)) === null, 'checkSvg: exactly 256 KB is kept');
-  ok(S.checkSvg(pad(262145)) === size(257), 'checkSvg: one byte over is refused as 257 KB', String(S.checkSvg(pad(262145))));
-  ok(S.checkSvg(pad(3 * 1024 * 1024)) === size(3072), 'checkSvg: a 3 MB SVG is refused by its weight');
+  const over = S.checkSvg(pad(262145));
+  ok(over && over.ok === false && over.rule === 'svg_too_big' && over.message === size(257),
+    'checkSvg: one byte over is refused as 257 KB, with its rule id', JSON.stringify(over));
+  const big = S.checkSvg(pad(3 * 1024 * 1024));
+  ok(big.rule === 'svg_too_big' && big.message === size(3072), 'checkSvg: a 3 MB SVG is refused by its weight', big.message);
   const heavy = open + '<rect onload="x"/>' + ' '.repeat(262144) + close;
-  ok(heavy.length === 262208 && S.checkSvg(heavy) === size(257),
-    'checkSvg: weight is asked before handlers', String(S.checkSvg(heavy)) + ' at ' + heavy.length + ' B');
-  ok(S.checkSvg(null) === NOTSVG && S.checkSvg('') === NOTSVG, 'checkSvg: nothing to look at is not an SVG');
+  ok(heavy.length === 262208 && S.checkSvg(heavy).rule === 'svg_too_big',
+    'checkSvg: weight is asked before handlers', JSON.stringify(S.checkSvg(heavy)) + ' at ' + heavy.length + ' B');
+  const bytes = S.checkSvg(new TextEncoder().encode(pad(262145)));
+  ok(bytes.rule === 'svg_too_big' && bytes.message === size(257),
+    'checkSvg: the weight is the bytes, not the UTF-16 length', JSON.stringify(bytes));
+  ok(S.checkSvg(new TextEncoder().encode(pad(262145)).buffer).rule === 'svg_too_big',
+    'checkSvg: an ArrayBuffer is read the same way as a Uint8Array');
+  const accent = new TextEncoder().encode(open + '<!-- ü -->' + ' '.repeat(262145 - open.length - close.length - 10) + close);
+  ok(accent.length === 262146 && S.checkSvg(accent).message === size(257),
+    'checkSvg: a non-ASCII character costs the bytes it costs, so the ceiling is on the bytes',
+    accent.length + ' bytes, ' + (262146 - 64) + ' characters');
+  let threw = '';
+  try { S.checkSvg(open + '<rect width="2" height="2"/>' + close); } catch (e) { threw = String((e && e.message) || e); }
+  ok(/parser/.test(threw), 'checkSvg: asked to parse where no parser is, it says so instead of saying yes', threw || 'no error at all');
 }
 
 console.log(fails ? 'RESULT: FAIL — ' + fails + ' of ' + checked + ' checks' : 'all green (' + checked + ' checks)');

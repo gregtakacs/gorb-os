@@ -2,6 +2,8 @@ package main
 
 import (
 	"bytes"
+	"compress/zlib"
+	"encoding/base64"
 	"encoding/binary"
 	"encoding/json"
 	"hash/crc32"
@@ -10,6 +12,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -67,6 +70,48 @@ func designDoc(name, ver string, art int) []byte {
 	return []byte(`{"format":"wc-design","schema":1,"app":"clock","appVersion":"` + ver + `","made":"2026-11-04T00:00:00Z",` +
 		`"dial":"skeleton","themeName":"` + name + `","assets":[{"id":"bg-1","dataUrl":"data:image/png;base64,` + strings.Repeat("A", art) + `"}],` +
 		`"saved":{"name":"ignored","at":1,"extra":{"dial":"skeleton"}}}`)
+}
+
+// designArt is the base64 body of a picture that clears the art floor: a real, valid
+// 1×1 RGBA PNG — signature, one IHDR, one IDAT, one IEND, every CRC honest — whose tEXt
+// chunk carries a padded payload, so a body made for N is at least N bytes long.
+// fu2-3 (ruling 35, as amended): the branch gate pins contract/editor-api.json to its
+// fu2-1 bytes, so designDoc went back to letters — no door the Go suite checks reads a
+// designDoc asset's art — and this helper stays for the art-floor table in
+// sitelimits_test.go, which does check bytes and needs an honest picture at the floor.
+func designArt(art int) string {
+	ihdr := make([]byte, 13)
+	binary.BigEndian.PutUint32(ihdr[0:], 1)
+	binary.BigEndian.PutUint32(ihdr[4:], 1)
+	ihdr[8], ihdr[9], ihdr[10], ihdr[11], ihdr[12] = 8, 6, 0, 0, 0
+	idat := zlibChunk([]byte{0, byte(art), 0x7f, 0xb0, 0xff})
+	text := strconv.Itoa(art) + ";" + strings.Repeat("A", art+8)
+	b := append([]byte{0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a}, pngChunk("IHDR", ihdr)...)
+	b = append(b, pngChunk("tEXt", append([]byte("art\x00"), text...))...)
+	b = append(b, pngChunk("IDAT", idat)...)
+	b = append(b, pngChunk("IEND", nil)...)
+	return base64.StdEncoding.EncodeToString(b)
+}
+
+// pngChunk writes one PNG chunk — length, type, data, CRC over type and data, as any
+// decoder checks them. The hub reads only the header; a CRC that lies would fail one.
+func pngChunk(typ string, data []byte) []byte {
+	var head [4]byte
+	binary.BigEndian.PutUint32(head[:], uint32(len(data)))
+	body := append(append([]byte{}, typ...), data...)
+	var crc [4]byte
+	binary.BigEndian.PutUint32(crc[:], crc32.ChecksumIEEE(body))
+	return append(append(head[:], body...), crc[:]...)
+}
+
+// zlibChunk compresses one PNG image stream with a zlib default-method writer; flate is
+// deterministic run to run on a given toolchain, which is all a fixture needs.
+func zlibChunk(raw []byte) []byte {
+	var b bytes.Buffer
+	w := zlib.NewWriter(&b)
+	_, _ = w.Write(raw)
+	_ = w.Close()
+	return b.Bytes()
 }
 
 func libHub(t *testing.T) (*Server, string, string) {

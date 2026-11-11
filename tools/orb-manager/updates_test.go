@@ -55,13 +55,26 @@ func (u *updateSite) answer(status int) {
 
 func (u *updateSite) url() string { return strings.ToLower(u.srv.URL) }
 
+// artSeed folds an art label into one byte, so a test's "art" and "art v2" stand two
+// genuinely different pictures: distinct hashes, distinct sidecars, one helper call.
+func artSeed(label string) byte {
+	var h byte
+	for i := 0; i < len(label); i++ {
+		h ^= label[i]
+		h += 7
+	}
+	return h
+}
+
 // updatesSite stands the fake. The bundle door answers with the imported design at the
 // version it names, so an import through the real doors leaves a real sidecar behind.
+// fu2-2: the art the door carries is a real PNG header (ruling 35, as amended, refuses
+// a raster under 10 bytes), seeded from the label so two labels are two pictures.
 func updatesSite(t *testing.T, version int, shared string, art string) *updateSite {
 	t.Helper()
 	u := &updateSite{version: version, shared: shared, status: http.StatusOK}
 	u.bundle = func() []byte {
-		return goodBundle(t, siteDesignID, version, "clock", shared, []byte(art))
+		return goodBundle(t, siteDesignID, version, "clock", shared, pngArt(9, 9, artSeed(art)))
 	}
 	u.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/api/hub/resolve" {

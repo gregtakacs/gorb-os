@@ -160,6 +160,11 @@ func TestSiteLinkNamesOneDesignOnOneSite(t *testing.T) {
 		{"https://orb-os.net/t/" + siteDesignID + "?utm=share#copy", "https://orb-os.net", siteDesignID},
 		{"orb.takacsfamily.com/t/" + siteDesignID, "https://orb.takacsfamily.com", siteDesignID},
 		{"HTTPS://ORB-OS.NET/t/" + siteDesignID, "https://orb-os.net", siteDesignID},
+		// fu2-3 (ruling 35, as amended 2026-11-11): the site's other public name is the
+		// same site to this door, canonicalised and kept https-only exactly as its apex.
+		{"https://www.orb-os.net/t/" + siteDesignID, "https://www.orb-os.net", siteDesignID},
+		{"www.orb-os.net/t/" + siteDesignID, "https://www.orb-os.net", siteDesignID},
+		{"HTTPS://WWW.Orb-OS.NET/t/" + siteDesignID, "https://www.orb-os.net", siteDesignID},
 		{"http://127.0.0.1:8080/t/" + siteDesignID, "http://127.0.0.1:8080", siteDesignID},
 		{"http://localhost/t/" + siteDesignID, "http://localhost", siteDesignID},
 		{"http://[::1]:8080/t/" + siteDesignID, "http://[::1]:8080", siteDesignID},
@@ -192,6 +197,45 @@ func TestSiteLinkNamesOneDesignOnOneSite(t *testing.T) {
 	if _, _, err := parseSiteLink("http://orb-os.net/t/" + siteDesignID); err == nil ||
 		err.Error() != "the link must start with https://" {
 		t.Errorf("a remote http link = %v, want the https sentence", err)
+	}
+	if _, _, err := parseSiteLink("http://www.orb-os.net/t/" + siteDesignID); err == nil ||
+		err.Error() != "the link must start with https://" {
+		t.Errorf("a remote http link under the site's www name = %v, want the https sentence", err)
+	}
+}
+
+// TestSiteImportGateOpensBothNamesOfTheSite: fu2-3 (ruling 35, as amended 2026-11-11).
+// orb-os.net and www.orb-os.net are the two public names of the one site the hub imports
+// from, so both clear the gate and reach the fetch; any other subdomain of the domain is
+// refused by the gate itself, and the refusal costs the hub no request at all. The client
+// here is a transport that answers from memory and remembers the host it was asked for:
+// the gate is what is under test, and a dialled name is the evidence it opened.
+func TestSiteImportGateOpensBothNamesOfTheSite(t *testing.T) {
+	t.Setenv("GORB_SITE", "")
+	s, _, _ := libHub(t)
+	var dials []string
+	s.siteClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		dials = append(dials, r.URL.Host)
+		w := httptest.NewRecorder()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(goodBundle(t, siteDesignID, 3, "clock", "Skeleton by @greg"))
+		return w.Result(), nil
+	})}
+	for _, site := range []string{"https://orb-os.net", "https://www.orb-os.net"} {
+		ticketOf(t, siteImport(t, s, site+"/t/"+siteDesignID))
+	}
+	if want := []string{"orb-os.net", "www.orb-os.net"}; !slices.Equal(dials, want) {
+		t.Errorf("the gate opened for %v, want exactly %v", dials, want)
+	}
+	want := "Orb Manager imports themes only from orb.takacsfamily.com and orb-os.net/www.orb-os.net, not from api.orb-os.net"
+	if got := importErr(t, s, "https://api.orb-os.net/t/"+siteDesignID); got != want {
+		t.Errorf("import of a refused subdomain = %q, want %q", got, want)
+	}
+	if n := len(dials); n != 2 {
+		t.Errorf("a refused paste dialled %d times, want the gate to have stopped it at 2", n)
+	}
+	if n := len(s.tickets().live); n != 2 {
+		t.Errorf("%d imports held, want the two the gate opened", n)
 	}
 }
 
@@ -486,7 +530,7 @@ func shelfNames(t *testing.T, dir string) []string {
 func TestSiteKeepFilesTheThemeAndRecordsWhereItCameFrom(t *testing.T) {
 	s, _, root := libHub(t)
 	srv, _ := siteServer(t, func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write(goodBundle(t, siteDesignID, 4, "clock", "Skeleton by @greg", []byte("art")))
+		_, _ = w.Write(goodBundle(t, siteDesignID, 4, "clock", "Skeleton by @greg", pngArt(9, 9, 1)))
 	})
 	tk := ticketOf(t, siteImport(t, s, siteTestLink(srv, siteDesignID)))
 	bake := withDesign(orbfake.Container("Skeleton by @greg"), string(designDoc("Skeleton by @greg", "v1.2.30", 1)))
@@ -965,6 +1009,46 @@ func TestResolveOriginReadsTheAnswerAndTheGone(t *testing.T) {
 	}
 }
 
+// TestResolveOriginGateOpensTheSitesWwwName: fu2-3 (ruling 35, as amended 2026-11-11). An
+// origin sidecar written under the site's www name is the same site the apex names, so the
+// update check asks it; a sidecar naming any other subdomain is refused by the same gate in
+// the same sentence, and the refusal costs no request. The transport answers from memory and
+// records the host it was asked for, so "no socket opened" is a count, not a hope.
+func TestResolveOriginGateOpensTheSitesWwwName(t *testing.T) {
+	t.Setenv("GORB_SITE", "")
+	s := newHub()
+	var dials []string
+	s.siteClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		dials = append(dials, r.URL.Host)
+		w := httptest.NewRecorder()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"designId":"` + siteDesignID + `","app":"clock","version":9,"sharedName":"Night dial by @greg","handle":"greg"}`))
+		return w.Result(), nil
+	})}
+	for _, site := range []string{"https://orb-os.net", "https://www.orb-os.net"} {
+		ans, err := s.resolveOrigin(context.Background(), &ThemeOrigin{Site: site, DesignID: siteDesignID, Version: 3})
+		if err != nil {
+			t.Errorf("resolveOrigin(%q): %v", site, err)
+			continue
+		}
+		if !ans.Resolved || ans.Version != 9 {
+			t.Errorf("resolveOrigin(%q) = %+v, want the answer the site gave", site, ans)
+		}
+	}
+	if want := []string{"orb-os.net", "www.orb-os.net"}; !slices.Equal(dials, want) {
+		t.Errorf("the gate opened for %v, want exactly %v", dials, want)
+	}
+	want := "Orb Manager imports themes only from orb.takacsfamily.com and orb-os.net/www.orb-os.net, not from www.orb-os.net.evil.example"
+	if _, err := s.resolveOrigin(context.Background(), &ThemeOrigin{
+		Site: "https://www.orb-os.net.evil.example", DesignID: siteDesignID, Version: 3,
+	}); err == nil || err.Error() != want {
+		t.Errorf("a look-alike origin = %v, want %q", err, want)
+	}
+	if n := len(dials); n != 2 {
+		t.Errorf("a refused origin sidecar dialled %d times, want the gate to have stopped it at 2", n)
+	}
+}
+
 // --- S3b: an SVG is art too -------------------------------------------------------------
 
 // svgBody is one picture as S3b reads one: real SVG text, small enough and plain enough
@@ -1029,7 +1113,7 @@ func TestSiteImportRefusesSvgOutsideTheBounds(t *testing.T) {
 	}{
 		{"handler", []byte(`<svg xmlns="http://www.w3.org/2000/svg" onload="alert(1)"><rect width="2" height="2"/></svg>`), func([]byte) string { return svgRefusalHandler }},
 		{"outside link", []byte(`<svg xmlns="http://www.w3.org/2000/svg"><image href="https://example.com/a.png"/></svg>`), func([]byte) string { return svgRefusalLink }},
-		{"not an svg", []byte("text that is not markup, and is long enough to read as neither"), func([]byte) string { return svgRefusalNotSvg }},
+		{"not an svg", []byte("<html><body>text</body></html>"), func([]byte) string { return svgRefusalNotSvg }},
 		{"oversize", append([]byte(`<svg xmlns="http://www.w3.org/2000/svg">`),
 			append(bytes.Repeat([]byte(" "), svgMaxBytes), []byte("</svg>")...)...),
 			func(b []byte) string { return fmt.Sprintf(svgRefusalSizeFormat, (len(b)+1023)/1024) }},

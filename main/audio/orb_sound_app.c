@@ -14,6 +14,7 @@
 #include "orb_elems.h"
 #include "orb_svc.h"      /* orb_time_now(): an anchored loop's wall second */
 #include "orb_theme.h"
+#include "orb_stage.h"     /* stage_snd_gain: the one level law */
 
 int orb_sound_app_play(const void *owner, const char *slug, uint16_t slot,
                        uint32_t flags, uint32_t delay_ms)
@@ -25,7 +26,9 @@ int orb_sound_app_play(const void *owner, const char *slug, uint16_t slot,
     flags &= ~0xFF00u;
     if (flags & ~(ORB_SOUND_LOOP | ORB_SOUND_ANCHORED)) return -ESP_ERR_INVALID_ARG;
     const uint32_t pct = vol ? (vol - 1u > 100u ? 100u : vol - 1u) : 100u;
-    const uint16_t gain = (uint16_t)(ORB_SOUND_GAIN_1 * pct / 100u);
+    /* The same law as the clock's tick_vol/chime_vol and the master (stage_snd_gain: half a
+     * dB a step, 100 unity), so one number sounds the same in every app and on the Sound page. */
+    const uint16_t gain = stage_snd_gain((int)pct);
     if (gain == 0) return -ESP_ERR_INVALID_STATE;            /* 0 %: nothing to play */
     /* theme-cache-plan §2.6: from the app's voice bank, mapped from boot apart from the
      * display entry a bind replaces, so it plays whatever is on the glass. orb_voice_parse

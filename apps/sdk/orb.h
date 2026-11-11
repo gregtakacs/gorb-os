@@ -171,9 +171,10 @@ ORB_IMPORT("knob_dial")  void orb_knob_dial(void);
 
 #define ORB_SOUND_LOOP   0x01u
 #define ORB_SOUND_SECOND 0x02u
-/** A level for one play, as a share (0..100) of the orb's own volume, OR'd into flags:
- *  orb_sound_play(slot, ORB_SOUND_VOL(70), 0). It can only make a sound quieter than the
- *  master, never louder; without it a sound plays at the master volume (OS v1.7.x, §64.6). */
+/** A level for one play, 0..100 relative to the orb's own volume, OR'd into flags:
+ *  orb_sound_play(slot, ORB_SOUND_VOL(70), 0). 100 is the master volume and lower is quieter,
+ *  never louder, on the same law as the Sound page and the clock's levels (half a dB a step).
+ *  Without it a sound plays at the master volume (§64.6). */
 #define ORB_SOUND_VOL(pct) ((((uint32_t)((pct) > 100 ? 100 : ((pct) < 0 ? 0 : (pct)))) + 1u) << 8)
 /** Play one of this app's own theme sounds by slot. Answers a handle > 0, or a
  *  negative error (not granted, slot empty, quiet hours). */

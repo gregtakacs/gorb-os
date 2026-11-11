@@ -875,9 +875,13 @@ const orb_svc_t *orb_svc_table(void) { return &S_TABLE; }
 
 const char *orb_svc_cap_name(orb_cap_t cap)
 {
-    static const char *const N[CAP_N] = {
-        "time", "config", "ui", "art", "power", "net", "sd_read", "themes", "sound", "location"
+    /* Unsized, and held to CAP_N below: a sized table let CAP_RING (§64.1) land with no name,
+     * a NULL that /status's ledger handed snprintf("%s") and the httpd faulted on. */
+    static const char *const N[] = {
+        "time", "config", "ui", "art", "power", "net", "sd_read", "themes", "sound", "location",
+        "ring"
     };
+    _Static_assert(sizeof N / sizeof N[0] == CAP_N, "every cap has a name");
     return (unsigned)cap < CAP_N ? N[cap] : "?";
 }
 

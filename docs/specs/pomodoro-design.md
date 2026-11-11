@@ -785,3 +785,30 @@ orchestrator's look design. The chain is now:
 F. `apps/pomodoro/app.json` keeps `"shelf": false` in this chain. The orchestrator's shipping
    step turns it on with the editor and the shelf theme, so `make check-apps` here does not
    expect a shelf `.orbapp` for it.
+
+## Orchestrator amendments, round 3 (2026-11-11) — the owner's colour overrides (plan §64.9)
+
+G. **Two more settings, and the hidden state packed into two.** Visible settings: table A's 12
+   plus:
+
+| id | type | label | specials | default |
+|---|---|---|---|---|
+| `ring_col_here` | color | Ring colour here | "From the look" | -1 (From the look) |
+| `ring_col_away` | color | Ring over other apps | "From the look", "Match the app" | -1 (From the look) |
+
+   That is 14 visible settings, so the hidden state packs into **at most 2** (16 in all). The
+   `color` type with specials comes from the ring slice's ring-3 (stored -1, -2, …; a colour
+   is 0..0xFFFFFF). Update the app step's settings check to these 14 and ≤ 2 hidden.
+H. **Which colour the ring takes.**
+   - The app knows whether it is on the glass (`orb_activate` / `orb_suspend`, the visible flag
+     radar keeps), so it picks `ring_col_here` while it shows and `ring_col_away` otherwise.
+   - "From the look": the phase's colour from the theme's values (amendment B).
+   - A colour: that colour for every phase.
+   - "Match the app": the OS draws the ring in the overlay colour of whatever app is on the
+     glass (the overlay slice, plan §64.9). The app sets the record's match flag, which the
+     overlay slice adds. Until that exists on the base, "Match the app" behaves as "From the
+     look". Say so in the code with a one-line comment naming §64.9.
+   - The app re-sends the ring when it goes on or off the glass, since its colour may change.
+I. `pomodoro-3-editor-looks` and `pomodoro-4-ship` stay out of the worker's plumbing chain.
+   They are now a separate slice (`pomodoro-editor`), designed from
+   `docs/specs/pomodoro-looks.md` and its sketch `docs/specs/pomodoro-looks-preview.html`.

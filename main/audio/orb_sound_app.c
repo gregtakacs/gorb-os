@@ -19,7 +19,14 @@ int orb_sound_app_play(const void *owner, const char *slug, uint16_t slot,
                        uint32_t flags, uint32_t delay_ms)
 {
     if (!owner || !slug) return -ESP_ERR_INVALID_ARG;
+    /* §64.6: bits 8..15 carry a level as a share of the OS volume, stored +1 so 0 is "full"
+     * (every app before this). It only ever lowers the voice gain: never louder than the master. */
+    const uint32_t vol = (flags >> 8) & 0xFFu;
+    flags &= ~0xFF00u;
     if (flags & ~(ORB_SOUND_LOOP | ORB_SOUND_ANCHORED)) return -ESP_ERR_INVALID_ARG;
+    const uint32_t pct = vol ? (vol - 1u > 100u ? 100u : vol - 1u) : 100u;
+    const uint16_t gain = (uint16_t)(ORB_SOUND_GAIN_1 * pct / 100u);
+    if (gain == 0) return -ESP_ERR_INVALID_STATE;            /* 0 %: nothing to play */
     /* theme-cache-plan §2.6: from the app's voice bank, mapped from boot apart from the
      * display entry a bind replaces, so it plays whatever is on the glass. orb_voice_parse
      * held every sound to its bank's bounds and even offsets when boot listed it. */
@@ -38,6 +45,6 @@ int orb_sound_app_play(const void *owner, const char *slug, uint16_t slot,
         orb_time_now(&sec_now, &frac, &synced);
         anchor = now - (int64_t)(frac * 1e6);
     }
-    return orb_sound_play_enc(owner, clip, t->n, t->enc, ORB_SOUND_GAIN_1, flags,
+    return orb_sound_play_enc(owner, clip, t->n, t->enc, gain, flags,
                               delay_ms ? now + (int64_t)delay_ms * 1000 : 0, anchor);
 }

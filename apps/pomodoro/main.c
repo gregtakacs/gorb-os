@@ -433,12 +433,13 @@ static void ring_send(void)
  * its chime, and is spent here before this returns, so a restart over a theme landing cannot
  * sound it again. Under autostart the next phase has already started and the machine answers
  * that boundary exactly once, so the event itself is the once. The start, a pause and a
- * landed choice are silent (§9), and chime_vol at 0 is silence: the off-glass sound import
- * takes no level, the per-play volume call belonging to a bound stage. */
+ * landed choice are silent (§9), and chime_vol at 0 is silence. The level rides the play's
+ * flags (ORB_SOUND_VOL), which works off the glass too, and the OS never lets it pass the master. */
 static void chime(int ended)
 {
     const int slot = V.chime[ended];
-    if (s_chime_on && s_chime_vol > 0 && slot > PM_NO_CHIME) (void)orb_sound_play((uint32_t)slot, 0, 0);
+    if (s_chime_on && s_chime_vol > 0 && slot > PM_NO_CHIME)
+        (void)orb_sound_play((uint32_t)slot, ORB_SOUND_VOL(s_chime_vol), 0);   /* a share of the master (§64.6) */
     if (s.st == PM_WAIT) s.st = PM_WAITED;
 }
 

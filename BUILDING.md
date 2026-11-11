@@ -50,6 +50,13 @@ node suites. Two host suites read a configured firmware tree, so run `idf.py bui
 first. CI runs the same targets on every pull request. Each piece runs on its own
 too: `make check-host`, `check-apps`, `check-hub`, `check-editor`.
 
+**In a delegate worker's sandbox, run `make check-sandbox`** (the image is
+`tools/delegate/worker.Dockerfile`: clang 21, Go, ESP-IDF v5.4, tzdata). It builds the
+firmware first, then runs everything `check` runs except the suites named in the
+Makefile's `SANDBOX_SKIP`, each printed as SKIP with its reason (an older glibc, a WSL2
+sanitizer flake). Nothing is weakened: `make check` stays the full gate, run on the host
+before a slice lands and by CI. A worker never edits a test to get its gate green.
+
 `check-web`, `check-runner` and `check-migrations` are deliberately not in `check`: they
 open editors (the release file's, a scratch one, each app's schema fixtures) in headless
 Chromium, so they need a browser and a few minutes. `check-migrations` is

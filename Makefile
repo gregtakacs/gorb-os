@@ -19,10 +19,41 @@
 PYTHON ?= python3
 NODE   ?= $(shell command -v node 2>/dev/null || ls $$HOME/.local/share/nodeenv-gorb/bin/node 2>/dev/null)
 
-.PHONY: check check-host check-apps check-hub check-editor check-web check-pictures check-runner check-editor-origin check-migrations rebake firmware apps hub sdk dist web
+.PHONY: check check-sandbox check-host check-apps check-hub check-editor check-web check-pictures check-runner check-editor-origin check-migrations rebake firmware apps hub sdk dist web
 
 check: check-host check-apps check-hub check-editor
 	@echo 'check: host suites, apps, hub and editor all green'
+
+## check-sandbox: the gate a delegate worker runs, in tools/delegate/worker.Dockerfile's image.
+## Everything `check` runs, with the firmware built first when ESP-IDF is there (a .c file left
+## out of main/CMakeLists.txt then fails here, not on the bench), minus only the suites named in
+## SANDBOX_SKIP, each printed as SKIP with its reason. `make check`, the full gate, is what the
+## orchestrator runs on the host before landing and what CI runs: nothing is skipped there.
+## A worker never edits a suite to make this pass; a failure it cannot fix in its slice it reports.
+SANDBOX_SKIP := host_boot_overlay_test.py host_json_test.py host_mdns_test.py
+SANDBOX_WHY_host_boot_overlay_test.py := the shipped code calls strlcpy, which glibc has only from 2.38; the worker image is Debian bookworm (2.36)
+SANDBOX_WHY_host_json_test.py := -fsanitize=address dies intermittently under WSL2's kernel (libasan's runtime, not the code under test)
+SANDBOX_WHY_host_mdns_test.py := -fsanitize=address dies intermittently under WSL2's kernel (libasan's runtime, not the code under test)
+SANDBOX_LOG := /tmp/gorb-sandbox.log
+check-sandbox:
+	@if [ -n "$$IDF_PATH" ] && [ -f "$$IDF_PATH/export.sh" ]; then \
+	  echo "firmware: idf.py build"; \
+	  if . "$$IDF_PATH/export.sh" >/dev/null 2>&1 && idf.py build >$(SANDBOX_LOG) 2>&1; then echo "ok   firmware builds"; \
+	  else grep -E 'error:|undefined reference|ninja: build stopped' $(SANDBOX_LOG) | head -30; exit 1; fi; \
+	else echo "SKIP firmware build: no ESP-IDF (IDF_PATH unset)"; fi
+	@fail=0; for t in tools/host_*_test.py; do b=$${t#tools/}; \
+	  case " $(SANDBOX_SKIP) " in *" $$b "*) echo "SKIP $$t: $$($(MAKE) -s --no-print-directory sandbox-why-$$b)"; continue;; esac; \
+	  if $(PYTHON) $$t >$(SANDBOX_LOG) 2>&1; then echo "ok   $$t"; \
+	  else echo "FAIL $$t"; grep -E 'FAIL|FAILED|COMPILE|rror' $(SANDBOX_LOG) | head -40; \
+	    tail -5 $(SANDBOX_LOG); fail=1; fi; \
+	done; exit $$fail
+	tools/orb_version.sh --self-test
+	$(MAKE) --no-print-directory check-apps check-hub check-editor
+	@echo 'check-sandbox: green apart from the named skips; the host runs `make check` in full'
+
+sandbox-why-%:
+	$(info $(SANDBOX_WHY_$*))
+	@:
 
 ## check-host: every tools/host_*_test.py suite (the C readers and pure functions, on gcc)
 check-host:

@@ -2,7 +2,10 @@
   "name": "fu2-gorb",
   "repo": "../..",
   "base": "delegate/fu2-1-svg-parse",
-  "read": ["/home/greg/docker/worktrees/orb-os-net-fu2-lead"],
+  "read": [
+    "/home/greg/docker/worktrees/orb-os-net-fu2-lead",
+    "/home/greg/docker/worktrees/gorb-os-fu2-lead-fu2-rename-probe"
+  ],
   "retries": 2,
   "timeout": 5400,
   "steps": [
@@ -22,7 +25,7 @@
       "name": "fu2-4-rename-prompt",
       "spec": "docs/specs/fu2-4-rename-prompt.md",
       "hard": true,
-      "verify": "export GOFLAGS=-buildvcs=false PATH=/usr/local/go/bin:$PATH && set -o pipefail && R=$PWD && cd tools/orb-manager && go vet ./... && go test -run 'Rename|ThemeName|Design|LibEntry|Keep|Forget' . && node --check web/runtime/theme@1/session.js && grep -q 'func checkNewName' libentries.go && test -z \"$(git diff delegate/fu2-1-svg-parse -- libentries.go | grep -E '^[+-].*func (checkNewName|checkThemeName)')\" && cd $R && make check-editor && make check-web && sh docs/specs/s3-gotest.sh && test -z \"$(git diff --name-only delegate/fu2-1-svg-parse -- tools/orb-manager/contract apps)\""
+      "verify": "export GOFLAGS=-buildvcs=false PATH=/usr/local/go/bin:$PATH && set -o pipefail && R=$PWD && cd tools/orb-manager && go vet ./... && go test -run 'Rename|ThemeName|Design|LibEntry|Keep|Forget' . && node --check web/runtime/theme@1/session.js && grep -q 'func checkNewName' libentries.go && test -z \"$(git diff delegate/fu2-1-svg-parse -- libentries.go | grep -E '^[+-].*func (checkNewName|checkThemeName)')\" && cd $R && make check-rename-live 2>&1 | tail -3 | grep -qE 'rename-live: ([0-9]+)/\\1 passed' && make check-editor && make check-web && sh docs/specs/s3-gotest.sh && test -z \"$(git diff --name-only delegate/fu2-1-svg-parse -- tools/orb-manager/contract apps)\""
     },
     {
       "name": "fu2-5-app-versions",

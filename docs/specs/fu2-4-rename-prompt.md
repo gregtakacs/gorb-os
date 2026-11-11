@@ -71,3 +71,24 @@ character rule. The listing/open/forget doors already apply no character rule �
 tools/orb-manager/web/runtime/theme@1/session.js`; `make check-editor`; `make check-web`;
 `sh docs/specs/s3-gotest.sh`. `checkNewName`/`checkThemeName` show no diff (rule unchanged).
 
+
+## What an owner sees today (lead's live probe, base c648c00)
+
+A probe drove a real hub in headless Chromium with clock designs `Nöel ✨` and `a/b` in the
+library. Both list and open fine ("Opened “Nöel ✨” from the library"). Pressing Save to library
+sends nothing to the hub: the studio's own check shows a toast that is cut off at the toast's
+width ("Not saved: a design's name ca…") and fades in about 3 s. `Plain` saves normally.
+
+## Live check (required, in addition to the Gate)
+
+Copy `tools/orb-manager/web/runtime/_selftest/rename-live.js` from
+`/home/greg/docker/worktrees/gorb-os-fu2-lead-fu2-rename-probe` (mounted read-only; it is the
+probe above) into this tree, and extend it so it asserts the new behaviour and exits non-zero
+otherwise: for each bad name, pressing Save shows the rename prompt (a dialog that stays until
+answered, not a fading toast) with the suggestion pre-filled (`Noel` and `a b` for an empty
+library besides `Plain`); accepting it makes exactly one `POST /api/design/save` for the new name
+answered ok; afterwards both the old and the new name list, the old one still opens, and the
+old one can be forgotten. Cancelling the prompt saves nothing. It prints
+`rename-live: N/N passed` and keeps writing the screenshots to `.rename-shots/`.
+Add `.rename-shots/` to `.gitignore`. Root Makefile target `check-rename-live` runs it (not part
+of `check`).

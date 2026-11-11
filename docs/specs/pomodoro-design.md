@@ -685,3 +685,39 @@ Any change outside `docs/specs/` in *this* task; the ring and the `color` settin
 replace (the kit has no sound pane); an app-to-app share of looks, art or editors (atomic); touching
 another app's `PRESETS`, `STARTERS` or shelf file (§64.4's gaps are weather's and flights' own
 step, not this one).
+
+## Orchestrator amendments (2026-11-11) — the owner's answers; these override the sections above
+
+1. **Chime volume** (owner, answer 2). New setting `chime_vol`, `int` 0..100, step 5, unit "%",
+   default 70, label "Chime volume", help "A share of the orb's volume: the chime is never louder
+   than the orb's own volume." The chime plays at `master × chime_vol / 100` through the existing
+   per-play volume path (`stage_snd_play_v`, as §9's owner question already named). It can never
+   exceed the master. At 0 the chime is silent, but the chime toggle stays the consent.
+2. **Wake the screen** (owner, answer 4). New setting `wake`, `toggle` "off"/"on", default
+   **on** (a timer that ends unseen has failed; the OS's quiet hours still win), label "Wake the
+   screen", help "Light the screen when a phase ends, even while another app is showing."
+   The app adds cap `power`. The OS has no way to do this today (`svc_power_request` only holds
+   the glass while the app is on it), so the slice gains **one OS step, first in the chain**:
+   - a one-shot import `ORB_IMPORT("wake") int32_t orb_wake(uint32_t seconds);` under cap
+     `power`, callable from `orb_service`;
+   - it lights a dimmed glass for `seconds`, clamped 3..15;
+   - at most once per 60 s per app (a further call answers `ESP_ERR_INVALID_STATE`);
+   - refused (`ESP_ERR_NOT_ALLOWED`) during the OS's quiet hours or with the display off by the
+     owner;
+   - it never switches apps or takes the glass;
+   - it goes through `idle_dim`'s own request path, so idle_dim stays the policy owner.
+   
+   The rate limit and the clamps go in a pure function with a host suite (the ring-1 pattern).
+   The firmware glue (the import, `s_binds`, `orb.h`, `binds.json`) is compiled and benched by
+   the orchestrator: the sandbox has no ESP-IDF, and workers never touch a device. `apps/README.md`
+   gets one paragraph under caps for `orb_wake`.
+3. **The settings fit the loader's 16.** With `chime_vol` and `wake` there are 13 owner settings.
+   Pack the hidden state into **at most 3** hidden settings (§5 already packs `pm_st`). The
+   step's verify asserts `len(settings) <= 16`.
+4. **Every look has a header row** (owner, answer 7), New included. Owner question 7's fallback
+   to the state row goes: the press-and-turn choice is always shown on the header row.
+   `bake_check` asserts the header label (AUX 12) in every starter.
+5. **Ring send threshold** (§7): send when the fraction moved **≥ 5 thousandths**, matching
+   ring-1's `ORB_RING_STEP_PCT`, not 4. Otherwise every other send is swallowed by the OS.
+6. Owner questions 1, 3, 5 and 6: accepted as chosen (5 and 6 confirmed by the owner).
+7. The chain's `base` stays `RING_TIP` until the ring chain lands; the orchestrator sets it.

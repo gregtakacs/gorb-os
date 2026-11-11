@@ -73,6 +73,10 @@ type Orb struct {
 	// makes the interrupt observable rather than merely fast.
 	SDWait      time.Duration
 	PreviewWait time.Duration
+	// PreviewGate, when set, holds every plane answer until the test closes it: a test
+	// that must order a hub event before the first plane lands says so with a channel,
+	// not a sleep a slow runner can outrun.
+	PreviewGate chan struct{}
 
 	// The staged-commit contract, mirrored field-for-field from main/art/orb_theme.c's
 	// s_up/s_stage_tok: a duplicate refusal KEEPS the verified body (the firmware keeps
@@ -559,6 +563,13 @@ func (o *Orb) serveDesign(w http.ResponseWriter, r *http.Request) {
 }
 
 func (o *Orb) servePreview(w http.ResponseWriter, r *http.Request) {
+	if g := o.PreviewGate; g != nil {
+		select {
+		case <-g:
+		case <-r.Context().Done():
+			return
+		}
+	}
 	if d := o.PreviewWait; d > 0 {
 		select {
 		case <-time.After(d):

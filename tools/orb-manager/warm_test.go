@@ -757,6 +757,11 @@ func TestThePassParksForADemandAndResumesItsOwnQueue(t *testing.T) {
 		orbfake.Theme{Name: "aurora", Bytes: 99, Serial: 1, OK: true, Active: true},
 		orbfake.Theme{Name: "boring", Bytes: 99, Serial: 2, OK: true},
 	)
+	// No plane lands until the demand below is recorded: the kick starts the pass at once,
+	// and on a slow runner it used to finish its queue (or get a plane in) before the
+	// test's next line ran (CI, 2026-11-10). The gate makes that order the test's.
+	gate := make(chan struct{})
+	f.PreviewGate = gate
 	s, ip, _, fake := fakeOrbHubWith(t, f)
 	mux := http.NewServeMux()
 	s.routes(mux)
@@ -766,11 +771,17 @@ func TestThePassParksForADemandAndResumesItsOwnQueue(t *testing.T) {
 	s.recordPageDemand(ip)                            // the Wi-Fi press's claim, without a kick behind it
 	warmPost(t, s, `{"ip":"`+ip+`","face":"themes"}`) // the kick clears the stamp —
 	s.recordPageDemand(ip)                            // and a demand raised AFTER it is the one that parks
-	time.Sleep(120 * time.Millisecond)
-	rec := warmGet(t, s, mux, "/api/theme/warm-status?ip="+ip)
-	d := decodeEnv(t, rec)["data"].(map[string]any)
-	if n, _ := d["note"].(string); !strings.Contains(n, "page") {
-		t.Fatalf("the pass beside a live demand reported note %q, want the sentence naming the page", n)
+	close(gate)
+	// The park, waited for rather than slept on: the pass reports it at its next pick.
+	note := ""
+	for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); time.Sleep(10 * time.Millisecond) {
+		d := decodeEnv(t, warmGet(t, s, mux, "/api/theme/warm-status?ip="+ip))["data"].(map[string]any)
+		if note, _ = d["note"].(string); note == "waiting: the page is reading this orb" {
+			break
+		}
+	}
+	if note != "waiting: the page is reading this orb" {
+		t.Fatalf("the pass beside a live demand reported note %q, want the park's sentence naming the page", note)
 	}
 	// Age the demand out: the pass must then finish its plane queue on its own.
 	s.previewMu.Lock()
@@ -781,7 +792,8 @@ func TestThePassParksForADemandAndResumesItsOwnQueue(t *testing.T) {
 		t.Fatalf("after the demand aged out the pass sits at %v, want done", data["phase"])
 	}
 	if got := planeDials(fake); got != 2 {
-		t.Fatalf("the resumed pass dialed %d planes, want the two-row queue it parked in front of: %#v", got, fake.Calls())
+		t.Fatalf("the resumed pass dialed %d planes, want the two-row queue it parked in front of: %#v (its note: %q)",
+			got, fake.Calls(), data["note"])
 	}
 }
 

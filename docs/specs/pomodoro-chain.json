@@ -1,0 +1,26 @@
+{
+  "name": "pomodoro",
+  "repo": "../..",
+  "base": "RING_TIP",
+  "retries": 2,
+  "steps": [
+    {
+      "name": "pomodoro-0-wake",
+      "spec": "docs/specs/pomodoro-0-wake.md",
+      "hard": true,
+      "verify": "set -o pipefail; python3 tools/host_wake_test.py | tail -1 | grep -q 'RESULT: pass' && python3 tools/host_wake_test.py --mutations && python3 apps/sdk/orbsdk.py binds && grep -q '\"wake\"' apps/sdk/binds.json && grep -q 'orb_wake' apps/sdk/orb.h && grep -q 'orb_wake' apps/README.md && ORB_CLANG=/usr/lib/llvm-21/bin/clang make check-apps"
+    },
+    {
+      "name": "pomodoro-1-pure-core",
+      "spec": "docs/specs/pomodoro-1-pure-core.md",
+      "hard": true,
+      "verify": "set -o pipefail; test -f apps/pomodoro/pomodoro.h -a -f apps/pomodoro/pomodoro.c -a -f tools/host_pomodoro_test.py && grep -q pm_pos_step apps/pomodoro/pomodoro.h && grep -q pm_restore apps/pomodoro/pomodoro.c && ! grep -qE '#include +\"orb' apps/pomodoro/pomodoro.c && gcc -std=c11 -Wall -Wextra -Werror -I apps/pomodoro -c apps/pomodoro/pomodoro.c -o /dev/null && python3 tools/host_pomodoro_test.py && python3 tools/host_pomodoro_test.py --mutations | tee /tmp/pomodoro1m.log && grep -qE 'mutants caught ([0-9]+)/\\1' /tmp/pomodoro1m.log && ! grep -q MISSED /tmp/pomodoro1m.log"
+    },
+    {
+      "name": "pomodoro-2-app",
+      "spec": "docs/specs/pomodoro-2-app.md",
+      "hard": true,
+      "verify": "set -o pipefail; test -f apps/pomodoro/main.c -a -f apps/pomodoro/version.txt && grep -qx v1.7.0 apps/pomodoro/version.txt && for s in orb_ring_set orb_ring_clear ORB_RING_BREATHE ORB_RING_FLASH ORB_RING_STEADY pm_restore pm_pos_step; do grep -q \"$s\" apps/pomodoro/main.c || { echo \"missing $s\"; exit 1; }; done && grep -q 'ORB_EXPORT(\"orb_push\")' apps/pomodoro/main.c && grep -q 'ORB_EXPORT(\"orb_service\")' apps/pomodoro/main.c && grep -q '\"show\": \"none\"' apps/pomodoro/app.json && python3 -c 'import json,sys;s=json.load(open(\"apps/pomodoro/app.json\"))[\"settings\"];vis=[x for x in s if x.get(\"show\")!=\"none\"];ids=sorted(x[\"id\"] for x in vis);want=sorted([\"focus_len\",\"break_len\",\"long_len\",\"focuses\",\"autostart\",\"chime\",\"chime_vol\",\"wake\",\"ring_on\",\"ring_op\",\"ring_dir\",\"ring_start\",\"ring_col_here\",\"ring_col_away\"]);ok=ids==want and len(s)<=16 and len(s)-len(vis)<=2 and sorted(x[\"id\"] for x in s if x[\"type\"]==\"color\")==[\"ring_col_away\",\"ring_col_here\"] and all(len(x.get(\"help\",\"\"))>20 for x in vis);print(\"settings\",ids);sys.exit(0 if ok else 1)' && grep -q orb_stage_values apps/pomodoro/main.c && grep -q orb_wake apps/pomodoro/main.c && python3 -c 'import sys;s=open(\"apps/pomodoro/main.c\").read();b=s[s.index(\"orb_service\"):];j=b.find(\"ORB_EXPORT\",10);b=b[:j] if j>0 else b;bad=[n for n in (\"orb_stage_\",\"orb_cv_\",\"orb_ui_\",\"orb_blob_load\") if n in b];print(\"orb_service names \"+repr(bad) if bad else \"orb_service draws nothing\");sys.exit(1 if bad else 0)' && ORB_CLANG=/usr/lib/llvm-21/bin/clang make check-apps && python3 tools/host_pomodoro_test.py --mutations"
+    }
+  ]
+}

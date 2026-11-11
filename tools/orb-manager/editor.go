@@ -50,6 +50,13 @@ const editorMaxEntry = 4 << 20
 // files differently still opens.
 const editorManifestName = "editor.json"
 
+// editorFixturesDir is the one subdirectory an editor region may carry, and the one
+// member the serving doors never open (G4, ruling 36): `_fixtures/schema-<n>.orbdesign`
+// holds one sample design per past schema so `check-migrations` can replay them, which
+// makes it migration evidence rather than editor code an editor session loads. The SDK
+// packs it, `orb-manager extract-editors` unpacks it, and the doors refuse it.
+const editorFixturesDir = "_fixtures"
+
 // editorFetchTTL is how long one region read is reused. It was fifteen seconds
 // while nothing could invalidate it and a wrong region had no honest expiry.
 // The Theme page's read-ahead pass now fills this memo before the Edit door is
@@ -538,6 +545,15 @@ func (s *Server) serveEditorFile(w http.ResponseWriter, r *http.Request, ip, slu
 			// No manifest at all: index.html is what an archive without one means.
 			file = "index.html"
 		}
+	}
+	// Ruling 36's second half, on this side of the wire: a fixture is not a file an
+	// editor loads, so the door answers for it exactly as it would for a member the app
+	// does not ship. 404 and the same sentence, not 403 — a refusal must not tell a
+	// caller that a fixture is in there. Both doors reach it here, which is why the
+	// guard lives below the manifest rather than in either of them.
+	if file == editorFixturesDir || strings.HasPrefix(file, editorFixturesDir+"/") {
+		http.Error(w, "this app's editor ships no "+file, http.StatusNotFound)
+		return
 	}
 	data, found, err := editorBytes(zr, file)
 	if err != nil {

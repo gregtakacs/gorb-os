@@ -397,8 +397,10 @@ def build(appdir, out_dir=None):
 # An app whose app.json names a directory of its own as "editor" ships that directory as
 # its editor region: the hub opens it from the Themes page. The recipe was the clock's
 # (make_clock_region.py, retired with its dc page in E7 2d): a flat STORE ZIP, editor.json first and canonical, then
-# the directory's top-level files in name order, the fixed date and mode, read back
-# before it ships. Subdirectories (an editor's _selftest/) and dotfiles stay home. One member
+# the directory's top-level files and its schema fixtures in name order, the fixed date and
+# mode, read back before it ships. Ruling 36 grew the list to carry
+# `_fixtures/schema-<n>.orbdesign` (see fixture_members); every other subdirectory (an
+# editor's _selftest/) and every dotfile stays home. One member
 # is written here: orb-app.js, `window.__ORB_APP = {slug, version}`, the release the
 # theme@1 session stamps into every design (the clock's region sets the same), plus its
 # `schema` when editor.json names the design schema the editor reads (design §6.5 point 1,
@@ -435,13 +437,51 @@ def editor_schema(ej, slug):
 
 
 # The app keeps one sample design per past schema (design §6.5 point 4), in a folder of
-# its editor's like the _selftest/ beside it: the fixtures stay out of the container, and
-# check-migrations is what runs them.
+# its editor's like the _selftest/ beside it. Ruling 36 makes them travel: every sample at
+# or below the editor's own schema is packed into the editor region as
+# `_fixtures/schema-<n>.orbdesign`, so a hub holding only the container can run the check,
+# and the build refuses what check-migrations would refuse — one scan (fixture_schemas)
+# answers both, so neither can drift from the other.
 FIXTURES = "_fixtures"
+FIXTURE_RE = re.compile(r"^schema-([1-9][0-9]{0,5})\.orbdesign$")   # the site's check-plan.ts grammar: no 0, no leading zero
 
 
 def fixture_name(n):
     return "schema-%d.orbdesign" % n
+
+
+def fixture_region_name(n):
+    """The editor region member name a fixture rides as: its path under the editor directory,
+    so an unpacked region holds the folder check-migrations reads (ruling 36)."""
+    return "%s/%s" % (FIXTURES, fixture_name(n))
+
+
+def fixture_schemas(slug, schema, fdir):
+    """The schemas the app's _fixtures folder holds, ascending. A name that is not
+    schema-<n>.orbdesign, and a fixture newer than the editor's own schema, are refused here:
+    the folder is the app's promise of one design per past schema, so the build that packs it
+    and the check that runs it refuse the same things (design §6.5 point 4, ruling 36)."""
+    names = sorted(n for n in os.listdir(fdir) if os.path.isfile(os.path.join(fdir, n))) \
+        if os.path.isdir(fdir) else []
+    have = []
+    for n in names:
+        found = FIXTURE_RE.match(n)
+        if not found:
+            fail("%s: %s in _fixtures is not named schema-<n>.orbdesign" % (slug, n))
+        if int(found.group(1)) > schema:
+            fail("%s: %s is newer than the schema this editor reads (%d)" % (slug, n, schema))
+        have.append(int(found.group(1)))
+    return sorted(have)
+
+
+def fixture_members(slug, schema, fdir):
+    """The fixture members of an editor region: every sample the migration check would open,
+    which is every schema the folder holds at or below the editor's own (ruling 36) — the
+    past schemas the check migrates and an own-schema sample it opens as it is. An editor
+    with no design schema drives no design and packs none; no folder is nothing."""
+    if schema is None:
+        return []
+    return [fixture_region_name(k) for k in fixture_schemas(slug, schema, fdir)]
 
 
 def tree_region_builder(key):
@@ -470,19 +510,22 @@ def fixtures_dir(appdir, m):
 
 
 def schema_fixture_rule(slug, schema, fdir):
-    """An editor reading schema N > 1 must hold the fixture of schema N-1: the previous
-    release's designs migrate from it, and only check-migrations proves they still open
-    (design §6.5 point 4, ruling 21). Refused at build, not discovered on an orb."""
+    """An editor reading schema N >= 2 must hold a fixture for every past schema 1 … N-1
+    (ruling 36): a design migrates from the schema before its own, so a two-hop-old design is
+    proven to open only if its schema has a sample too. The first gap is named, and the same
+    scan refuses a stray name or a fixture newer than the editor — what check-migrations
+    would refuse, refused at build instead (design §6.5 point 4)."""
     if not schema or schema <= 1 or fdir is None:
         return
-    want = fixture_name(schema - 1)
-    if os.path.isfile(os.path.join(fdir, want)):
-        return
-    rel = os.path.relpath(os.path.join(fdir, want), os.path.dirname(os.path.dirname(fdir)))
-    fail("%s's editor reads design schema %d, so %s must keep a design of schema %d: the "
-         "previous release's designs migrate from it, and check-migrations proves they still "
-         "open. Save one with that release (orbsdk.py check-migrations --save-current, run "
-         "before raising schema) and commit it" % (slug, schema, rel, schema - 1))
+    have = fixture_schemas(slug, schema, fdir)
+    for k in range(1, schema):
+        if k in have:
+            continue
+        rel = os.path.relpath(os.path.join(fdir, fixture_name(k)), os.path.dirname(os.path.dirname(fdir)))
+        fail("%s's editor reads design schema %d, so %s must keep a design of schema %d: the "
+             "previous release's designs migrate from it, and check-migrations proves they still "
+             "open. Save one with that release (orbsdk.py check-migrations --save-current, run "
+             "before raising schema) and commit it" % (slug, schema, rel, k))
 
 
 def editor_region(appdir, m, release):
@@ -535,6 +578,9 @@ def editor_region(appdir, m, release):
             fail("editor.json's entry %s is not in %s" % (entry, d))
     if "orb-app.js" in files:
         fail("%s's editor carries orb-app.js, which the SDK writes" % m["slug"])
+    # ruling 36: the fixtures ride too, keyed as `_fixtures/schema-<n>.orbdesign`. They join
+    # the one sorted list below, where `_` (0x5F) sorts before the top-level files' letters.
+    fixtures = fixture_members(m["slug"], schema, fixtures_dir(appdir, m))
     members = [("editor.json", json.dumps(ej, sort_keys=True, separators=(",", ":")).encode())]
     st = {"slug": m["slug"], "version": release}
     if schema is not None:
@@ -542,7 +588,7 @@ def editor_region(appdir, m, release):
     if m.get("os_min"):
         st["os_min"] = m["os_min"]
     stamp = ("window.__ORB_APP = %s;\n" % json.dumps(st, sort_keys=True)).encode()
-    for n in sorted(files + ["orb-app.js"]):
+    for n in sorted(files + ["orb-app.js"] + fixtures):
         if n == "orb-app.js":
             members.append((n, stamp))
             continue
@@ -801,28 +847,17 @@ def cmd_binds(a):
 
 # ---- check-migrations (design §6.5 point 4) ------------------------------------------
 
-FIXTURE_RE = re.compile(r"^schema-(\d+)\.orbdesign$")
-
-
 def _fixtures_to_run(slug, schema, fdir):
     """The fixture names to run, in schema order. A stray file, a fixture newer than the
     editor, or a past schema without one of its own is refused here, before anything
-    reaches node: the folder is the app's promise of one design per past schema."""
-    names = sorted(n for n in os.listdir(fdir) if os.path.isfile(os.path.join(fdir, n))) \
-        if os.path.isdir(fdir) else []
-    have = []
-    for n in names:
-        found = FIXTURE_RE.match(n)
-        if not found:
-            fail("%s: %s in _fixtures is not named schema-<n>.orbdesign" % (slug, n))
-        if int(found.group(1)) > schema:
-            fail("%s: %s is newer than the schema this editor reads (%d)" % (slug, n, schema))
-        have.append(int(found.group(1)))
+    reaches node: the folder is the app's promise of one design per past schema. The scan
+    of what the folder holds is fixture_schemas, which the build shares (ruling 36)."""
+    have = fixture_schemas(slug, schema, fdir)
     for k in range(1, schema):
         if k not in have:
             fail("%s: no fixture for schema %d: check-migrations keeps one design per past schema"
                  % (slug, k))
-    return [fixture_name(k) for k in sorted(have)]
+    return [fixture_name(k) for k in have]
 
 
 def _run_migrate(a, node, runtime, editor_tmp, extra):

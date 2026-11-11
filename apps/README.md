@@ -63,9 +63,11 @@ one and adds one pure step `n → n+1` to the editor's migrations, and the lates
 carries every past design forward.
 
 Each app keeps one sample design per past schema, in `editor/_fixtures/schema-<n>.orbdesign`
-(it stays out of the container, like `_selftest/` beside it). Before raising `schema`, save
-the current design with `orbsdk.py check-migrations --save-current` and commit it; the
-build refuses a raised schema with no fixture of the one before. `orbsdk.py
+(ruling 36: every sample at or below the app's own schema travels in the editor region under
+that same name, so a hub holding only the container can run the check; `_selftest/` beside it
+stays home). Before raising `schema`, save the current design with `orbsdk.py
+check-migrations --save-current` and commit it; the
+build refuses a raised schema with no fixture for any past schema, naming the first gap. `orbsdk.py
 check-migrations` runs the OS's migration runner over the fixtures in the app's own packed
 editor (it needs Node and Chromium), so deleting a migration step fails the check, and the
 template's CI workflow runs it before packing.

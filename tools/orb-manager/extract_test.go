@@ -169,6 +169,17 @@ func checkExtractedApp(t *testing.T, out string, row extractRow) {
 				row.File, f.Name, f.Bytes, short(f.SHA256), len(disk), short(hexSha(disk)))
 		}
 		rec := editorGet(t, s, "/editor/"+ip+"/"+row.Slug+"/"+editorURL(f.Name), true)
+		// Ruling 36's two halves meet on this line. A fixture unpacks and is reported — that
+		// is how the migration check gets a container's past designs — and the serving door
+		// refuses the very same name, so the bytes above are read off disk by the check and
+		// never out of the editor origin.
+		if f.Name == editorFixturesDir || strings.HasPrefix(f.Name, editorFixturesDir+"/") {
+			if rec.Code != http.StatusNotFound {
+				t.Errorf("%s: GET %s: status %d, want the 404 an editor door gives a fixture",
+					row.File, f.Name, rec.Code)
+			}
+			continue
+		}
 		if rec.Code != http.StatusOK {
 			t.Errorf("%s: GET %s: status %d, want 200", row.File, f.Name, rec.Code)
 			continue
@@ -240,6 +251,114 @@ func orEmpty(s []string) []string {
 		return []string{}
 	}
 	return s
+}
+
+// TestExtractEditorsUnpacksFixtures is the half of ruling 36 the hub's refusal must not
+// reach: `_fixtures/schema-<n>.orbdesign` is how a migration check reads a container's past
+// designs when it cannot run code on the board, so the unpacker still writes them, still
+// makes the folder, and still reports them with a digest — while both serving doors refuse
+// that exact name (editor_test.go's TestEditorDoorRefusesFixtures is the other half).
+func TestExtractEditorsUnpacksFixtures(t *testing.T) {
+	const slug = "clock"
+	const one = `{"schema":1,"title":"what a schema-1 board shipped"}`
+	const two = `{"schema":2,"title":"the design one step back"}`
+	region := craft(t,
+		zipMember{name: "editor.json", body: `{"entry":"index.html","schema":3,"runtime":["support@1"]}`},
+		zipMember{name: "_fixtures/schema-1.orbdesign", body: one},
+		zipMember{name: "_fixtures/schema-2.orbdesign", body: two},
+		zipMember{name: "index.html", body: `<body>hi</body>`},
+	)
+	parent := t.TempDir()
+	out := filepath.Join(parent, "out")
+	if err := os.Mkdir(out, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	root, err := os.OpenRoot(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer root.Close()
+	res, err := extractEditorRegion(root, slug, region)
+	if err != nil {
+		t.Fatalf("the unpacker failed instead of writing: %v", err)
+	}
+	if res.status != "" || res.editor == nil {
+		t.Fatalf("a region carrying fixtures was refused: status %q reason %q", res.status, res.reason)
+	}
+	reported := map[string]extractFile{}
+	for _, f := range res.editor.Files {
+		reported[f.Name] = f
+	}
+	for name, want := range map[string]string{
+		"_fixtures/schema-1.orbdesign": one,
+		"_fixtures/schema-2.orbdesign": two,
+	} {
+		// the folder arrived as a folder, and the bytes are the archive's own
+		got, err := root.ReadFile(slug + "/" + name)
+		if err != nil {
+			t.Errorf("%s was not unpacked under %s: %v", name, slug, err)
+			continue
+		}
+		if string(got) != want {
+			t.Errorf("%s = %q, want the region's bytes %q", name, got, want)
+		}
+		f, listed := reported[name]
+		if !listed {
+			t.Errorf("%s is not in the report's file list %v", name, res.editor.Files)
+			continue
+		}
+		if f.Bytes != len(got) || f.SHA256 != hexSha(got) {
+			t.Errorf("%s: report says %d B / %s, disk holds %d B / %s",
+				name, f.Bytes, short(f.SHA256), len(got), short(hexSha(got)))
+		}
+	}
+	// A fixture is a member like any other to the unpacker: nothing about the rest changed.
+	if len(res.editor.Files) != 4 {
+		t.Errorf("%d files reported, want the two fixtures beside editor.json and index.html", len(res.editor.Files))
+	}
+	if _, err := root.ReadFile(slug + "/index.html"); err != nil {
+		t.Errorf("the editor beside the fixtures did not unpack: %v", err)
+	}
+
+	// The same claim on the tree's own g4-1 shelf, through the command a release job runs:
+	// the clock container carries a real fixture, and it lands on disk byte for byte.
+	t.Run("the shelf's own container", func(t *testing.T) {
+		body, err := os.ReadFile(filepath.Join("apps", "clock.orbapp"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := regionMember(t, body, "_fixtures/schema-1.orbdesign")
+		dir := filepath.Join(t.TempDir(), "editors")
+		code, stdout, stderr := runCommand(t, "extract-editors", filepath.Join("apps", "clock.orbapp"), dir)
+		if code != 0 {
+			t.Fatalf("extract-editors apps/clock.orbapp: exit %d\nstdout %s\nstderr %s", code, stdout, stderr)
+		}
+		got, err := os.ReadFile(filepath.Join(dir, "clock", "_fixtures", "schema-1.orbdesign"))
+		if err != nil {
+			t.Fatalf("the shelf's fixture was not unpacked: %v", err)
+		}
+		if !bytes.Equal(got, want) {
+			t.Errorf("the unpacked fixture is %d B, the region's is %d B", len(got), len(want))
+		}
+		var rep extractReport
+		readReport(t, filepath.Join(dir, "editors.json"), &rep)
+		if len(rep.Apps) != 1 || rep.Apps[0].Status != "ok" || rep.Apps[0].Editor == nil {
+			t.Fatalf("rows = %+v, want the one clock row unpacked", rep.Apps)
+		}
+		var found bool
+		for _, f := range rep.Apps[0].Editor.Files {
+			if f.Name == "_fixtures/schema-1.orbdesign" {
+				found = true
+				if f.Bytes != len(want) || f.SHA256 != hexSha(want) {
+					t.Errorf("the report says %d B / %s for the fixture, the region holds %d B / %s",
+						f.Bytes, short(f.SHA256), len(want), short(hexSha(want)))
+				}
+			}
+		}
+		if !found {
+			t.Error("the report did not list the fixture it unpacked")
+		}
+	})
 }
 
 // TestExportRuntimeMatchesWhatTheHubServes walks every file the export wrote back through

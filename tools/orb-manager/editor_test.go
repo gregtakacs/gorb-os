@@ -16,8 +16,10 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -307,6 +309,135 @@ func TestEditorGatesAddressAndPath(t *testing.T) {
 			t.Errorf("%s served a document", p)
 		}
 	}
+}
+
+// G4 ruling 36, hub half: `_fixtures/` rides in the region so the migration check can read
+// it, and neither serving door opens it. A fixture is evidence about past schemas, not code
+// an editor session loads, so the door answers for it with the response it already gives a
+// member the app does not ship — a 404 in the same words, which says no more than "not
+// here" and so leaks nothing about what the folder holds. One guard in serveEditorFile
+// covers both doors because both call it, so both are driven here.
+func TestEditorDoorRefusesFixtures(t *testing.T) {
+	const ip = "203.0.113.7"
+	const fixture = `{"schema":1,"marker":"fixture bytes must never travel"}`
+	const nested = `{"schema":2,"marker":"nested fixture bytes must never travel"}`
+	raw := zipWith(t, map[string]string{
+		"editor.json":                     `{"entry":"index.html","runtime":["support@1"]}`,
+		"index.html":                      `<body><h1>the entry document</h1></body>`,
+		"assets/b.js":                     `var b`,
+		"_fixtures/schema-1.orbdesign":    fixture,
+		"_fixtures/nested/deep.orbdesign": nested,
+		// names that merely contain the directory's name: the refused prefix is the whole
+		// path step `_fixtures/`, and the bare name `_fixtures`, and none of these three.
+		"my_fixtures.js":   `var mine`,
+		"a/_fixtures.json": `{"not":"a fixture"}`,
+		"_fixturesX/y":     `a folder that is not the folder`,
+	})
+	s, _ := editorHub(t, ip, raw, nil)
+
+	for _, c := range []struct {
+		file   string // as the door's cleaned path names it
+		onWire string // what the request carries, when that differs
+		leaks  string // member bytes that must not come back
+	}{
+		{"_fixtures", "", ""},
+		{"_fixtures", "_fixtures/", ""},               // a trailing slash cleans to the same name
+		{"_fixtures/schema-1.orbdesign", "", fixture}, // the g4-1 member by its real name
+		{"_fixtures/nested/deep.orbdesign", "", nested},
+		{"_fixtures/schema-9.orbdesign", "", ""}, // absent for another reason, refused the same way
+		{"_fixtures/schema-1.orbdesign", "%5Ffixtures/schema-1.orbdesign", fixture},
+	} {
+		onWire := c.file
+		if c.onWire != "" {
+			onWire = c.onWire
+		}
+		rec := editorGet(t, s, "/editor/"+ip+"/thermo/"+onWire, true)
+		if rec.Code != http.StatusNotFound {
+			t.Errorf("%s: status = %d body %.200s, want 404 from the per-orb door", onWire, rec.Code, rec.Body)
+			continue
+		}
+		if want := "this app's editor ships no " + c.file; !strings.Contains(rec.Body.String(), want) {
+			t.Errorf("%s: body = %.200s, want the ordinary no-such-member sentence %q", onWire, rec.Body, want)
+		}
+		if c.leaks != "" && strings.Contains(rec.Body.String(), c.leaks) {
+			t.Errorf("%s: the refusal echoed the fixture's bytes", onWire)
+		}
+	}
+	// A fixture reached through a step that is not a fixture is still the `..` refusal the
+	// door has always made, and a fixture reached from one that is is still a 404.
+	for _, p := range []string{"_fixtures/../../index.html", "_fixtures/%2e%2e/index.html", "./_fixtures/schema-1.orbdesign"} {
+		if rec := editorGet(t, s, "/editor/"+ip+"/thermo/"+p, true); rec.Code == http.StatusOK {
+			t.Errorf("%s: status 200, want the traversal gate or the fixture refusal to answer", p)
+		}
+	}
+	// The names that only look like the folder are still ordinary members.
+	for name, want := range map[string]string{
+		"my_fixtures.js":   `var mine`,
+		"a/_fixtures.json": `{"not":"a fixture"}`,
+		"_fixturesX/y":     `a folder that is not the folder`,
+	} {
+		rec := editorGet(t, s, "/editor/"+ip+"/thermo/"+name, true)
+		if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), want) {
+			t.Errorf("%s: status %d body %.120s, want the member served as itself", name, rec.Code, rec.Body)
+		}
+	}
+	// and nothing else about the region changed shape: the manifest's entry document and a
+	// plain sibling asset still come out.
+	if rec := editorGet(t, s, "/editor/"+ip+"/thermo/", true); rec.Code != http.StatusOK ||
+		!strings.Contains(rec.Body.String(), "the entry document") {
+		t.Errorf("the entry document stopped serving: status %d body %.200s", rec.Code, rec.Body)
+	}
+	if rec := editorGet(t, s, "/editor/"+ip+"/thermo/assets/b.js", true); rec.Code != http.StatusOK {
+		t.Errorf("assets/b.js: status %d, want a sibling asset still served", rec.Code)
+	}
+
+	// The hub door, on the shelf's own g4-1 container: same shared gate, same answer, and
+	// the fixture it refuses is a real member of the region behind the door.
+	hs, dir, dialed := hubShelfHub(t)
+	body, err := os.ReadFile(filepath.Join(dir, "weather.orbapp"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	shipped := regionMember(t, body, "_fixtures/schema-1.orbdesign")
+	for _, file := range []string{"_fixtures", "_fixtures/schema-1.orbdesign"} {
+		rec := editorGet(t, hs, "/editor/hub/weather/"+file, true)
+		if rec.Code != http.StatusNotFound {
+			t.Errorf("hub door %s: status = %d body %.200s, want 404", file, rec.Code, rec.Body)
+			continue
+		}
+		if !strings.Contains(rec.Body.String(), "this app's editor ships no _fixtures") {
+			t.Errorf("hub door %s: body = %.200s, want the same sentence the member refusal uses", file, rec.Body)
+		}
+		if bytes.Contains(rec.Body.Bytes(), shipped) {
+			t.Errorf("hub door %s: the refusal carried the shelf's fixture bytes", file)
+		}
+	}
+	if rec := editorGet(t, hs, "/editor/hub/weather/", true); rec.Code != http.StatusOK {
+		t.Errorf("the hub door's own entry page: status %d body %.200s, want it still served", rec.Code, rec.Body)
+	}
+	if n := atomic.LoadInt32(dialed); n != 0 {
+		t.Errorf("%d dials from a door that has no orb", n)
+	}
+
+	// An app whose manifest names a file in the fixtures folder as its entry is an app that
+	// means to have one served as code. rawEntryName only lets an .html through, so this is
+	// the shape that reaches the member read at all — and the guard runs on the resolved
+	// name, after the manifest has had its say, so the directory request is refused rather
+	// than walked into the folder.
+	t.Run("a manifest that names a fixture as its entry", func(t *testing.T) {
+		const other = "203.0.113.11"
+		const inFixtures = `<body>a document parked in the evidence folder</body>`
+		door, _ := editorHub(t, other, zipWith(t, map[string]string{
+			"editor.json":                  `{"entry":"_fixtures/entry.html","runtime":["support@1"]}`,
+			"_fixtures/entry.html":         inFixtures,
+			"_fixtures/schema-1.orbdesign": fixture,
+			"index.html":                   `<body>not the entry</body>`,
+		}), nil)
+		rec := editorGet(t, door, "/editor/"+other+"/thermo/", true)
+		if rec.Code != http.StatusNotFound || strings.Contains(rec.Body.String(), inFixtures) {
+			t.Errorf("status %d body %.200s, want a 404 that carries none of the fixture", rec.Code, rec.Body)
+		}
+	})
 }
 
 // A region that is not an archive is a corrupt app and must name what failed to

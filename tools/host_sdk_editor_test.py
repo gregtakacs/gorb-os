@@ -5,8 +5,11 @@
 
 An app whose app.json names a directory as "editor" ships it as a STORE ZIP: editor.json
 first and canonical, the directory's top-level files in name order, the fixed date, read
-back. The checks build regions from scratch app directories and read them the way the hub
-does (tools/orb-manager/editor.go: flat names, editor.json's entry and runtime ids).
+back. Ruling 36 grew the list: the editor's `_fixtures/schema-<n>.orbdesign` samples at or
+below the app's own schema ride too, under that nested name, so a hub holding only the
+container can run the migration check. The checks build regions from scratch app directories
+and read them the way the hub does (tools/orb-manager/editor.go: names under the editor
+directory, editor.json's entry and runtime ids).
 --mutations breaks each guarded line in a private copy of orbsdk.py and expects a check
 to fail.
 """
@@ -74,7 +77,7 @@ def run(sdk):
        "members: editor.json first, then the files in name order (%s)" % names)
     ck(all(i.compress_type == zipfile.ZIP_STORED for i in zf.infolist()), "every member is STORE")
     ck(all(i.date_time == (1980, 1, 1, 0, 0, 0) for i in zf.infolist()), "every member carries the fixed date")
-    ck(all("/" not in n for n in names), "names are flat, as the hub serves them")
+    ck(all("/" not in n for n in names), "with no fixtures to pack, every name is flat")
     ck(zf.read("editor.json") == b'{"editor":1,"entry":"index.html","runtime":["theme@1","react@18.3.1"],"schema":1}',
        "editor.json is canonical: sorted keys, no spaces (%r)" % zf.read("editor.json"))
     ck(zf.read("a.js") == b"a()", "a member's bytes are the file's")
@@ -131,8 +134,9 @@ def run(sdk):
     ck(b'"schema"' not in rr.read("orb-app.js"),
        "an editor with no design document and no schema stamps none (%r)" % rr.read("orb-app.js"))
     d9, m9 = app({"index.html": b"x"}, ej={"entry": "index.html", "runtime": ["theme@1"], "schema": 3})
-    os.makedirs(os.path.join(d9, "editor", "_fixtures"))  # the fixture rule: schema 3 keeps schema 2
-    open(os.path.join(d9, "editor", "_fixtures", "schema-2.orbdesign"), "w").write("{}\n")
+    os.makedirs(os.path.join(d9, "editor", "_fixtures"))  # the fixture rule: schema 3 keeps schema 1 and 2
+    for k in (1, 2):
+        open(os.path.join(d9, "editor", "_fixtures", "schema-%d.orbdesign" % k), "w").write("{}\n")
     r3 = zipfile.ZipFile(io.BytesIO(sdk.editor_region(d9, m9, "v9.9.9")))
     ck(r3.read("orb-app.js") == b'window.__ORB_APP = {"schema": 3, "slug": "radar", "version": "v9.9.9"};\n'
        and r3.read("editor.json") == b'{"entry":"index.html","runtime":["theme@1"],"schema":3}',
@@ -142,19 +146,28 @@ def run(sdk):
        and sdk.editor_schema({"host": 1, "runtime": ["theme@1"]}, "radar") is None,
        "editor_schema answers the schema, or None when the editor may name none")
 
-    # the fixture rule (design §6.5 point 4): schema N > 1 keeps a fixture of schema N-1
+    # the fixture rule (design §6.5 point 4, ruling 36): schema N >= 2 keeps a fixture for
+    # every past schema 1 … N-1, and every sample the check would open rides the region
     def with_fixtures(d, names):
         fdir = os.path.join(d, "editor", sdk.FIXTURES)
         os.makedirs(fdir)
         for n in names:
-            open(os.path.join(fdir, n), "w").write("{}\n")
+            open(os.path.join(fdir, n), "w").write(json.dumps({"fixture": n}) + "\n")
         return d
 
-    def schema_app(schema, fixture_names=()):
+    def schema_app(schema, fixture_names=None):
         d, m = app({"index.html": b"x"}, ej={"entry": "index.html", "runtime": ["theme@1"], "schema": schema})
-        if fixture_names:
+        if fixture_names is not None:
             with_fixtures(d, fixture_names)
         return d, m
+
+    def region_of(d, m):
+        r = sdk.editor_region(d, m, "v9.9.9")
+        return r, zipfile.ZipFile(io.BytesIO(r))
+
+    def source(d, n):
+        with open(os.path.join(d, "editor", sdk.FIXTURES, n), "rb") as f:
+            return f.read()
 
     d10, m10 = schema_app(2)
     ck(refused(lambda: sdk.editor_region(d10, m10, "v9.9.9"), "must keep a design of schema 1"),
@@ -162,14 +175,63 @@ def run(sdk):
     ck(not os.path.exists(os.path.join(d10, "editor", sdk.FIXTURES)),
        "the refusal creates no folder")
     d11, m11 = schema_app(2, ["schema-1.orbdesign"])
-    r11 = zipfile.ZipFile(io.BytesIO(sdk.editor_region(d11, m11, "v9.9.9")))
-    ck(r11.namelist() and not any("_fixtures" in n for n in r11.namelist()),
-       "schema 2 with the fixture of schema 1 packs, and _fixtures stays out of the region")
+    r11, z11 = region_of(d11, m11)
+    ck(z11.namelist() == ["editor.json", "_fixtures/schema-1.orbdesign", "index.html", "orb-app.js"],
+       "the fixture rides the region in name order, the one nested member it carries (%s)" % z11.namelist())
+    ck(z11.read(sdk.fixture_region_name(1)) == source(d11, "schema-1.orbdesign"),
+       "the region's fixture is the file's own bytes, undressed")
+    ck("_selftest" not in "".join(z11.namelist()) and ".DS_Store" not in z11.namelist(),
+       "a riding fixture carries no _selftest folder and no dotfile with it")
+    ck(sdk.editor_region(d11, m11, "v9.9.9") == r11, "a rebuild of a region carrying fixtures is byte-identical")
     d12, m12 = app({"index.html": b"x"})                        # the helper's ej is schema 1
-    ck(sdk.editor_region(d12, m12, "v9.9.9") != b"", "schema 1 needs no fixture")
+    ck(sdk.editor_region(d12, m12, "v9.9.9") != b"", "schema 1 with no _fixtures needs none and packs none")
+    d15, m15 = schema_app(1, ["schema-1.orbdesign"])            # the clock's and weather's case
+    z15 = zipfile.ZipFile(io.BytesIO(sdk.editor_region(d15, m15, "v9.9.9")))
+    ck("_fixtures/schema-1.orbdesign" in z15.namelist(),
+       "an own-schema sample travels: it is neither stray nor newer (%s)" % z15.namelist())
+    d16, m16 = schema_app(3, ["schema-1.orbdesign", "schema-2.orbdesign"])
+    r16, z16 = region_of(d16, m16)
+    ck(z16.namelist() == ["editor.json", "_fixtures/schema-1.orbdesign", "_fixtures/schema-2.orbdesign",
+                          "index.html", "orb-app.js"],
+       "the full past set rides, in schema order, `_` before the letters (%s)" % z16.namelist())
+    with tempfile.TemporaryDirectory() as td:                   # unpacked as check-migrations and the hub do
+        zipfile.ZipFile(io.BytesIO(r16)).extractall(td)
+        out = sorted(os.listdir(os.path.join(td, sdk.FIXTURES)))
+        ck(out == ["schema-1.orbdesign", "schema-2.orbdesign"]
+           and all(source(d16, n) == open(os.path.join(td, sdk.FIXTURES, n), "rb").read() for n in out),
+           "the region unpacks to the tree's _fixtures folder, byte for byte (%s)" % out)
     d13, m13 = schema_app(3, ["schema-1.orbdesign"])
     ck(refused(lambda: sdk.editor_region(d13, m13, "v9.9.9"), "schema-2.orbdesign"),
        "schema 3 holding only schema-1 is refused naming schema-2, the schema it must keep")
+    d17, m17 = schema_app(3, ["schema-2.orbdesign"])
+    ck(refused(lambda: sdk.editor_region(d17, m17, "v9.9.9"), "must keep a design of schema 1"),
+       "schema 3 holding only schema-2 is refused naming schema-1, the first gap the old N-1-only rule let through")
+    d18, m18 = schema_app(3, [])
+    ck(refused(lambda: sdk.editor_region(d18, m18, "v9.9.9"), "must keep a design of schema 1"),
+       "an empty _fixtures under schema 3 is refused before anything is packed")
+    for stray in ("notes.txt", "schema-x.orbdesign", "schema-01.orbdesign", "schema-0.orbdesign"):
+        dstay, mstay = schema_app(1, [stray])
+        ck(refused(lambda: sdk.editor_region(dstay, mstay, "v9.9.9"), "not named schema-<n>.orbdesign"),
+           "a _fixtures/%s is refused by the build with check-migrations' sentence" % stray)
+    dnew, mnew = schema_app(3, ["schema-1.orbdesign", "schema-2.orbdesign", "schema-9.orbdesign"])
+    ck(refused(lambda: sdk.editor_region(dnew, mnew, "v9.9.9"), "newer than the schema this editor reads (3)"),
+       "a fixture newer than the editor is refused before it packs, as check-migrations refuses it")
+    # every app this tree ships: the region carries its _fixtures folder and nothing else of it
+    for slug in sorted(os.listdir(os.path.join(ROOT, "apps"))):
+        ad = os.path.join(ROOT, "apps", slug)
+        if not os.path.isfile(os.path.join(ad, "app.json")):
+            continue
+        am = sdk.manifest(ad)
+        ed = sdk.editor_dir(ad, am)
+        if not ed:
+            continue
+        src = os.path.join(ed, sdk.FIXTURES)
+        held = sorted(os.listdir(src)) if os.path.isdir(src) else []
+        za = zipfile.ZipFile(io.BytesIO(sdk.editor_region(ad, am, sdk.version(ad))))
+        got = sorted(n[len(sdk.FIXTURES) + 1:] for n in za.namelist() if n.startswith(sdk.FIXTURES + "/"))
+        ck(got == held and all(za.read(sdk.FIXTURES + "/" + n) == open(os.path.join(src, n), "rb").read()
+                               for n in held),
+           "%s: the packed region and the source tree's _fixtures agree (%s vs %s)" % (slug, got, held))
 
     def disk(d, m, editor=True):                                # the same app, on disk for main()
         json.dump({"slug": m["slug"], "title": "Radar", "editor": "editor"} if editor
@@ -213,8 +275,12 @@ def run(sdk):
     ck(rc == 1 and "newer than" in why, "a fixture newer than the schema is refused (%s)" % why)
     d3, m3 = schema_app(3, ["schema-2.orbdesign"])
     txt, rc, why = say(["check-migrations", disk(d3, m3)])
-    ck(rc == 1 and "no fixture for schema 1" in why,
-       "schema 3 missing schema-1 fails the promise of one design per past schema (%s)" % why)
+    ck(rc == 1 and "must keep a design of schema 1" in why,
+       "schema 3 missing schema-1 is refused before a node is spawned: check-migrations packs the "
+       "region first, and the build's rule is the front door (%s)" % why)
+    ck(refused(lambda: sdk._fixtures_to_run("radar", 3, os.path.join(d3, "editor", sdk.FIXTURES)),
+               "no fixture for schema 1"),
+       "_fixtures_to_run still keeps its own promise of one design per past schema, the back door")
     d1, m1 = app({"index.html": b"x"})
     txt, rc, why = say(["check-migrations", disk(with_fixtures(d1, ["notes.txt"]), m1)])
     ck(rc == 1 and "not named schema-<n>.orbdesign" in why, "a stray in _fixtures is refused (%s)" % why)
@@ -249,7 +315,8 @@ def run(sdk):
 MUTANTS = (
     ("editor.json not first", 'members = [("editor.json", json.dumps(ej, sort_keys=True, separators=(",", ":")).encode())]',
      'members = []'),
-    ("files unsorted", 'for n in sorted(files + ["orb-app.js"]):', 'for n in ["orb-app.js"] + list(reversed(files)):'),
+    ("files unsorted", 'for n in sorted(files + ["orb-app.js"] + fixtures):',
+     'for n in ["orb-app.js"] + list(reversed(files)) + list(reversed(fixtures)):'),
     ("no canonical json", 'json.dumps(ej, sort_keys=True, separators=(",", ":"))', 'json.dumps(ej)'),
     ("deflated members", "zf.writestr(info, data, compress_type=zipfile.ZIP_STORED)", "zf.writestr(info, data, compress_type=zipfile.ZIP_DEFLATED)"),
     ("today's date", "info = zipfile.ZipInfo(name, date_time=ZIP_DATE)", "info = zipfile.ZipInfo(name, date_time=(2026, 11, 4, 12, 0, 0))"),
@@ -267,6 +334,16 @@ MUTANTS = (
     ("an escaping editor path", 'if not isinstance(e, str) or not e or "/" in e or e.startswith("."):',
      'if not isinstance(e, str) or not e:'),
     ("no fixture rule", "schema_fixture_rule(m[\"slug\"], schema, fixtures_dir(appdir, m))", "pass"),
+    ("fixtures stay home", 'fixtures = fixture_members(m["slug"], schema, fixtures_dir(appdir, m))', "fixtures = []"),
+    ("only the last past schema required",
+     "    for k in range(1, schema):\n        if k in have:\n            continue",
+     "    for k in [schema - 1]:\n        if k in have:\n            continue"),
+    ("a newer fixture passes", "        if int(found.group(1)) > schema:", "        if 0:"),
+    ("an own-schema fixture refused", "        if int(found.group(1)) > schema:",
+     "        if int(found.group(1)) >= schema:"),
+    ("a stray fixture passes", '        if not found:\n            fail("%s: %s in _fixtures is not named schema-<n>.orbdesign" % (slug, n))',
+     '        if not found:\n            continue'),
+    ("a fixture rides flat", 'return "%s/%s" % (FIXTURES, fixture_name(n))', "return fixture_name(n)"),
     ("build compiles first", "if editor_dir(d, m):\n            editor_region(d, m, version(d))",
      "if 0:\n            editor_region(d, m, version(d))"),
     ("the SDK is not skipped", "if os.path.realpath(d) == os.path.realpath(SDK):", "if 0:"),

@@ -1,5 +1,7 @@
 # ring-3: the `color` setting type (§64.2) — declared, palette-stepped on the dial, picked on the hub
 
+> **Read first: `docs/specs/ring-design.md` "Orchestrator amendments (2026-11-11)".** They override this spec where they differ (no per-pixel trig in the stamp; the hub accepts `ring`; mutation verifies by exit status; the whole hub gate; the colour setting turns like an enum).
+
 ## Goal
 
 Give app settings a `color` type: an app declares it, the OS stores the value as `0xRRGGBB` in

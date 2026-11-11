@@ -329,3 +329,41 @@ owns the ring (it set it from `orb_service`, drawing nothing). Ties in `seq` (sa
   *Chosen: mirror the other owner caps exactly.*
 - **Off-palette `color` on the dial** — show the literal `"custom"` and let the hub picker change
   it; the dial must not edit raw hex. *Chosen: "custom".*
+
+## Orchestrator amendments (2026-11-11) — these override the sections above
+
+1. **No per-pixel trigonometry in the stamp (§4, §6).** The copy arc's `atan2f`+`sqrtf` per band
+   pixel is fine for a copy that lasts seconds, but the ring can stand for 25 minutes over every
+   frame of every app (58 fps transitions), ~10k band pixels a frame. The stamp must do only
+   the blend per pixel:
+   - Per row, the annulus is at most two x-spans (left and right side, or one span on the cap
+     rows). Compute them from integer arithmetic or one `sqrtf` per row edge, or from a
+     233-entry half-width table (≤ 1 KB, PSRAM, built once).
+   - The arc/track boundary for a row is the x where the ray at the current fraction's angle
+     crosses that row. Compute it once per pick from the fraction (one `tanf`/`sinf`/`cosf` per
+     pick, not per pixel). Each span then splits into at most an arc part and a track part.
+   - The host suite proves the span version paints the **same pixels** as a per-pixel
+     reference (the copy arc's own `atan2f`/radius test) for every row and a sweep of fractions
+     (0, 1, 125, 250, 499, 500, 501, 750, 999, 1000 and 50 random values), allowing at most
+     1 px of disagreement only on the ray boundary. Mutants must cover the span edges and the
+     boundary side.
+   - State the per-frame cost in the design's terms: spans per row and blend per pixel.
+2. **The hub must accept the new cap (ring-2).** The hub refuses an `.orbapp` whose header
+   declares any cap outside `appCapOwnerAll` (`tools/orb-manager/internal/orbnet/appcontainer.go`
+   ~:140-160 and the refusal at ~:329). So ring-2 also:
+   - adds `AppCapRing = 1 << 10` (the same bit as the firmware's `CAP_RING = 10`) to that file,
+     to `appCapOwnerAll`, to `AppCapNames` as `"ring"`, and to the refusal sentence's list;
+   - updates `internal/orbfake` if it mirrors caps;
+   - updates `tools/orbapp.py`'s `CAP_OWNER` list;
+   - adds a Go test: a container declaring `ring` parses, and bit 1<<11 is still refused.
+   
+   ring-2's verify drops the "no tools/orb-manager change" test and adds `make check-hub`.
+3. **Mutation verifies must fail on any escaped mutant.** `host_ring_test.py --mutations` exits
+   non-zero when any mutant escapes, and prints `mutants caught N/N` (the existing suites'
+   wording). Verify by exit status, not by grepping a word.
+4. **ring-3 runs the whole hub gate** (`make check-hub`), not a `-run` subset.
+5. **The colour setting on the dial turns like an enum.** The settings page's own idiom is:
+   press a setting, turn to change, press to keep. A `color` setting turns through the palette
+   in that same flow. No press-and-turn on the settings page.
+6. **Base:** the chain runs on `delegate/ring-design`, so this plan travels with the slice.
+7. Owner questions: all accepted as chosen.

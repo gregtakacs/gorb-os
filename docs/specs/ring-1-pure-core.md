@@ -1,5 +1,7 @@
 # ring-1: the ring's pure core (geometry, blend, effect clock, clamps, ownership)
 
+> **Read first: `docs/specs/ring-design.md` "Orchestrator amendments (2026-11-11)".** They override this spec where they differ (no per-pixel trig in the stamp; the hub accepts `ring`; mutation verifies by exit status; the whole hub gate; the colour setting turns like an enum).
+
 ## Goal
 
 The host-testable brain of the OS ring (§64.1): a C module with **no ESP-IDF and no LVGL

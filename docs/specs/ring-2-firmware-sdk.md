@@ -1,5 +1,7 @@
 # ring-2: the ring's firmware glue — wasm import, cap, rim stamp, copy-wins, /status
 
+> **Read first: `docs/specs/ring-design.md` "Orchestrator amendments (2026-11-11)".** They override this spec where they differ (no per-pixel trig in the stamp; the hub accepts `ring`; mutation verifies by exit status; the whole hub gate; the colour setting turns like an enum).
+
 ## Goal
 
 Make the ring real on the device: bind `orb_ring_set`/`orb_ring_clear` in the wasm shim behind a

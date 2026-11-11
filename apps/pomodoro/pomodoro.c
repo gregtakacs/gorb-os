@@ -78,7 +78,10 @@ int pm_turn(pm_t *s, const pm_cfg_t *c, int delta, int64_t now_s)
     if (delta == 0) return PM_EV_NONE;
     if (delta > 90) delta = 90;                  /* a wild ask cannot overflow the seconds */
     if (delta < -90) delta = -90;
-    want = s->rem + delta * 60;
+    /* Running, a turn moves whole minutes and keeps the seconds (12:34 -> 13:34). Stopped,
+     * paused or waiting, it drops the seconds first, then moves (12:34 -> 13:00 or 11:00): a
+     * time being set reads in whole minutes (owner, 2026-11-11). */
+    want = (s->st == PM_RUN ? s->rem : s->rem / 60 * 60) + delta * 60;
     if (want > cap) { want = cap; lim = 1; }     /* the setting's own max, not its value */
     if (want < PM_MIN_S) { want = PM_MIN_S; lim = 1; }   /* never 0: that reads as finished */
     if (s->st == PM_RUN) {

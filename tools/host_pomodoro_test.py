@@ -74,6 +74,8 @@ def shape(fail, h_src, c_src):
 # Each is a behavioural edit to one line of the shipped source. An escaped mutant means the check
 # that names that rule is not watching it.
 MUTATIONS = [
+    ("(s->st == PM_RUN ? s->rem : s->rem / 60 * 60)", "(s->rem)"),
+    ("(s->st == PM_RUN ? s->rem : s->rem / 60 * 60)", "(s->rem / 60 * 60)"),
     ("    if (rem > len) rem = len;", "    if (rem > len) len = rem;"),
     ("        s->len = s->rem = len;", "        s->len = s->rem = rem;"),
     ("raw->st_k % PM_PACK_MUL == PM_RUN", "raw->st_k % PM_PACK_MUL == PM_PAUSE"),
@@ -88,7 +90,7 @@ MUTATIONS = [
     ("        if (s->len < PM_MIN_S) s->len = pm_len_s(c, pm_phase_at(s->k, c->focuses));", "        s->len = pm_len_s(c, PM_FOCUS);"),  # a press over the turned length
     ("        s->k = (int16_t)pm_next_k(s->k, c->focuses);\n        s->len", "        s->len"),                     # the press never moves on
     ("        s->len = pm_len_s(c, pm_phase_at(s->k, c->focuses));\n        s->rem = s->len;\n        s->st = PM_RUN;", "        s->len = pm_len_s(c, PM_FOCUS);\n        s->rem = s->len;\n        s->st = PM_RUN;"),  # the next phase at the focus's length
-    ("    want = s->rem + delta * 60;", "    want = s->rem + delta * 30;"),                                         # a click is not a minute
+    ("    want = (s->st == PM_RUN ? s->rem : s->rem / 60 * 60) + delta * 60;", "    want = s->rem + delta * 30;"),                                         # a click is not a minute
     ("    if (want > cap) { want = cap; lim = 1; }", "    if (want > cap) { want = cap; }"),                        # the stop never reported
     ("    if (want > cap) { want = cap; lim = 1; }", "    if (want > cap + 60) { want = cap; lim = 1; }"),          # the ceiling leaks a click
     ("    if (want < PM_MIN_S) { want = PM_MIN_S; lim = 1; }", "    if (want < PM_MIN_S) { want = 0; lim = 1; }"),  # turned to zero
@@ -310,6 +312,16 @@ int main(void)
             "in RUN the elapsed arc is kept: len grows with rem");
         ckk(r.end_s == 5960, 1, "and the end moves to now + the new rem");
         ckk(pm_fraction(&r) == 615 && pm_fraction(&r) >= 600, 1, "the fraction never goes back up on a lengthen");
+        q = mk(PM_PAUSE, 0, 1500, 754, 0);
+        ckk(pm_turn(&q, &c, 1, 5000) == PM_EV_NONE && q.rem == 780, 1, "paused at 12:34, a click up drops the seconds first: 13:00 (owner)");
+        q = mk(PM_PAUSE, 0, 1500, 754, 0);
+        ckk(pm_turn(&q, &c, -1, 5000) == PM_EV_NONE && q.rem == 660, 1, "and a click down from 12:34 is 11:00");
+        q = mk(PM_STOP, 0, 754, 754, 0);
+        ckk(pm_turn(&q, &c, 1, 5000) == PM_EV_NONE && q.rem == 780 && q.len == 780, 1, "stopped likewise: 12:34 then a click is 13:00");
+        q = mk(PM_RUN, 0, 1500, 754, 4000);
+        ckk(pm_turn(&q, &c, 1, 5000) == PM_EV_NONE && q.rem == 814, 1, "running keeps the seconds: 12:34 then a click is 13:34");
+        q = mk(PM_PAUSE, 0, 1500, 45, 0);
+        ckk(pm_turn(&q, &c, 1, 5000) == PM_EV_NONE && q.rem == 60, 1, "paused at 0:45, a click up is 1:00");
         q = mk(PM_WAIT, 1, 360, 0, 0);
         pm_turn(&q, &c, 1, 5000);
         ckk(q.st, PM_PAUSE, "a turn over a waiting phase ends the waiting");

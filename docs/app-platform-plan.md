@@ -8105,3 +8105,12 @@ On the pomodoro design's owner questions (`docs/specs/pomodoro-design.md`):
   `docs/specs/pomodoro-looks.md` and its working sketch `docs/specs/pomodoro-looks-preview.html`
   (the furniture drawn in canvas, the chime recipes in WebAudio) are the reference the editor and
   the kit sound pane are built to.
+
+### 64.10 The pomodoro's turn, found on Bronze — 2026-11-11
+
+- **A running phase's turn keeps the seconds; a stopped one's drops them first** (owner).
+  Running, a click adds or takes a minute (12:34 → 13:34). Stopped, paused or waiting, the
+  seconds go first, then the minute moves (12:34 → 13:00, or 11:00): a time being set reads in
+  whole minutes.
+- **While press-and-turn moves, the face shows the phase the let-go would land on**: its time,
+  name and dots, not only the header (owner). The ring stays on the live state until the let-go.

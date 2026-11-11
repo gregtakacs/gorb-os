@@ -106,3 +106,15 @@ sentences.
 
 ## Out of scope
 Sanitising (rewriting) an SVG; changing the 256 KB cap; raster rules.
+
+## Amendment (lead's review of fu2-1, 2026-11-11)
+
+Found live in Chromium after fu2-1 landed, and closed in all three checkers:
+- Rule 9/10 checks **every** `url(` in a value, not the first only (a filter list names several,
+  and Chromium fetches each).
+- A `\` or `/*` in **any** attribute value is `svg_css`, not only in `style`: presentation
+  attributes are parsed as CSS, and an escape there becomes `url(` after the scan looked.
+- A namespace URI with no `:` in it is `svg_not_well_formed` (Go's encoding/xml cannot tell it
+  from an undeclared prefix; the JS and TS walks match that).
+- JS lookup tables have no prototype (an element named `constructor` is not "allowed").
+The vectors are `probe2_*` and `lead_*` in `tools/orb-manager/testdata/svg-vectors.json`.

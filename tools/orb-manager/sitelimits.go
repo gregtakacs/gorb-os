@@ -673,6 +673,12 @@ func (doc *svgDoc) attr(a xml.Attr, name string) {
 		return
 	}
 	lower := strings.ToLower(value)
+	// Presentation attributes (fill, filter, mask, cursor …) are parsed as CSS values, so a
+	// CSS escape there turns into url( after the scans below have looked (Chromium fetches
+	// fill="\75rl(…)"). An escape or a comment opening in any attribute value is rule 10.
+	if strings.Contains(value, `\`) || strings.Contains(value, "/*") {
+		doc.css = true
+	}
 	for _, ref := range svgLinkAttr {
 		if name == ref {
 			doc.link = true // an attribute a renderer reads as a reference, href or no href
@@ -685,7 +691,7 @@ func (doc *svgDoc) attr(a xml.Attr, name string) {
 			return
 		}
 	}
-	if target, found := svgURLReference(value); found && !svgFragment(target) {
+	if svgURLOutside(value) {
 		doc.link = true
 	}
 }
@@ -717,21 +723,19 @@ func svgStyleOK(value string) bool {
 			return false
 		}
 	}
-	if target, found := svgURLReference(value); found && !svgFragment(target) {
-		return false
-	}
-	return true
+	return !svgURLOutside(value)
 }
 
-// svgURLReference is the target of the first url( in a value and whether it holds one at
-// all: the text past optional whitespace and optional quotes, which CSS allows as freely as
-// the rules do, up to the closing parenthesis, which is not part of it.
-func svgURLReference(value string) (string, bool) {
-	m := svgURLTarget.FindStringSubmatch(value)
-	if m == nil {
-		return "", false
+// svgURLOutside reports whether a value holds a url( whose target is anything but a
+// fragment of the same file. Every url( counts, not just the first: a filter list
+// (filter="url(#a) url(…)") names several, and Chromium fetches each one.
+func svgURLOutside(value string) bool {
+	for _, m := range svgURLTarget.FindAllStringSubmatch(value, -1) {
+		if !svgFragment(strings.TrimSpace(m[1])) {
+			return true
+		}
 	}
-	return strings.TrimSpace(m[1]), true
+	return false
 }
 
 // artPrefixRefusal is "" when a data-URL prefix names one of the five picture kinds a

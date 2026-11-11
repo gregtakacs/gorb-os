@@ -465,7 +465,7 @@
   var SVG_XML_NS = 'http://www.w3.org/XML/1998/namespace';
   var SVG_XMLNS_NS = 'http://www.w3.org/2000/xmlns/';
   // rule 6: everything an editor can bake, and nothing that can fetch, animate, script or style
-  var SVG_ALLOWED = {};
+  var SVG_ALLOWED = Object.create(null);
   ('svg g defs symbol use path rect circle ellipse line polyline polygon text tspan textPath ' +
     'title desc metadata linearGradient radialGradient stop pattern clipPath mask marker image ' +
     'filter feBlend feColorMatrix feComponentTransfer feComposite feDiffuseLighting ' +
@@ -474,17 +474,17 @@
     'feSpotLight feTile feTurbulence switch view').split(' ').forEach(function (n) { SVG_ALLOWED[n] = true; });
   // rule 7: an editor's own namespace may wrap a save's settings, but not a real element name,
   // because an HTML parser inlining the file would ignore the prefix and see the element
-  var SVG_EDITOR_NS = {
+  var SVG_EDITOR_NS = Object.assign(Object.create(null), {
     'http://www.inkscape.org/namespaces/inkscape': true,
     'http://sodipodi.sourceforge.net/DTD/sodipodi-0.dtd': true
-  };
-  var SVG_META_NS = {
+  });
+  var SVG_META_NS = Object.assign(Object.create(null), {
     'http://www.w3.org/1999/02/22-rdf-syntax-ns#': true,
     'http://creativecommons.org/ns#': true,
     'http://web.resource.org/cc/': true,
     'http://purl.org/dc/elements/1.1/': true
-  };
-  var SVG_FORBIDDEN_NAMES = {};
+  });
+  var SVG_FORBIDDEN_NAMES = Object.create(null);
   (('a abbr address animate animateColor animateMotion animateTransform area article aside audio ' +
     'b base basefont bdi bdo big blockquote body br button canvas caption center cite code col ' +
     'colgroup data datalist dd del details dfn dialog dir div dl dt em embed fieldset figcaption ' +
@@ -499,31 +499,37 @@
     ).forEach(function (n) { SVG_FORBIDDEN_NAMES[n.toLowerCase()] = true; });
   // rule 9's extra half: names a renderer reads as a reference the way it reads href, and the
   // substrings no value of any attribute may hold. The style attribute is rule 10's, not this.
-  var SVG_LINK_ATTR = { src: 1, background: 1, poster: 1, action: 1, formaction: 1, dynsrc: 1, lowsrc: 1 };
+  var SVG_LINK_ATTR = Object.assign(Object.create(null), { src: 1, background: 1, poster: 1, action: 1, formaction: 1, dynsrc: 1, lowsrc: 1 });
   var SVG_VALUE_OUTSIDE = ['javascript:', 'data:', 'image-set('];
   // rule 10: an escape, a comment opening, an at-rule or a tag opening hides a reference from
   // the plain url( scan, and these two are CSS's own ways of naming a picture
   var SVG_STYLE_BAD = ['\\', '/*', '@', '<', 'image-set', 'expression'];
-  var svgFragRe = /^#[\p{L}_\-:][\p{L}\p{N}\-._:]*$/u;
+  var svgFragRe = /^#[\p{L}_:][\p{L}\p{N}\-._:]*$/u;
   var svgDataURLRe = /^data:image\/(png|jpeg|gif|webp);base64,[A-Za-z0-9+/=]+$/;
   var svgURLRe = /url\(\s*['"]?([^'")]*)/gi;
   var svgViewBoxRe = /viewBox\s*=\s*["']\s*[-\d.eE+]+[\s,]+[-\d.eE+]+[\s,]+([-\d.eE+]+)[\s,]+([-\d.eE+])/i;
 
   function svgFragment(t) { return svgFragRe.test(t); }
+  // the hub trims exactly these four (strings.Trim(value, " \t\r\n")), not String#trim's set
+  function svgTrim(t) { return String(t).replace(/^[ \t\r\n]+|[ \t\r\n]+$/g, ''); }
   function svgRefOK(t) {
-    t = String(t).trim();
+    t = svgTrim(t);
     return svgFragment(t) || svgDataURLRe.test(t.toLowerCase());
   }
-  function svgURLRef(value) {
+  // every url( in the value counts: a filter list names several, and each is fetched
+  function svgURLOutside(value) {
     svgURLRe.lastIndex = 0;
-    var m = svgURLRe.exec(String(value));
-    return m ? [String(m[1]).trim(), true] : ['', false];
+    var m;
+    while ((m = svgURLRe.exec(String(value)))) {
+      if (!svgFragment(String(m[1]).replace(/^\s+|\s+$/g, ''))) return true;
+      if (m[0].length === 0) svgURLRe.lastIndex++;
+    }
+    return false;
   }
   function svgStyleOK(value) {
     var lower = String(value).toLowerCase(), i;
     for (i = 0; i < SVG_STYLE_BAD.length; i++) if (lower.indexOf(SVG_STYLE_BAD[i]) >= 0) return false;
-    var u = svgURLRef(value);
-    return !(u[1] && !svgFragment(u[0]));
+    return !svgURLOutside(value);
   }
   function svgOutsideValue(value) {
     var lower = String(value).toLowerCase(), i;
@@ -646,6 +652,9 @@
         var kid = el.childNodes.item(i);
         if (kid.nodeType === 1) stack.push([kid, inMeta || (el.namespaceURI === SVG_NS && el.localName === 'metadata')]);
       }
+      // the hub's encoding/xml hands back an undeclared prefix where a namespace URI belongs,
+      // so it reads any namespace with no ":" in it as undeclared: rule 3, the same here
+      if (el.namespaceURI && el.namespaceURI.indexOf(':') < 0) return 'svg_not_well_formed';
       if (el.namespaceURI === SVG_NS) {
         if (!SVG_ALLOWED[el.localName]) found.svg_element = true;
       } else if (SVG_EDITOR_NS[el.namespaceURI] || (inMeta && SVG_META_NS[el.namespaceURI])) {
@@ -659,6 +668,7 @@
         space = a.namespaceURI || '';
         value = String(a.value);
         if (name.indexOf('on') === 0) { found.svg_event_attr = true; continue; }   // rule 8 asks first
+        if (space && space.indexOf(':') < 0) return 'svg_not_well_formed';
         if (a.prefix && space === null) return 'svg_not_well_formed';
         if (a.prefix === 'xmlns' || name === 'xmlns' || space === SVG_XMLNS_NS) continue;
         if (name === 'base' && space === SVG_XML_NS) { found.svg_link = true; continue; }
@@ -670,9 +680,10 @@
           if (!svgStyleOK(value)) found.svg_css = true;
           continue;
         }
+        // presentation attributes are parsed as CSS: an escape or a comment opening is rule 10
+        if (value.indexOf('\\') >= 0 || value.indexOf('/*') >= 0) found.svg_css = true;
         if (SVG_LINK_ATTR[name] || svgOutsideValue(value)) { found.svg_link = true; continue; }
-        u = svgURLRef(value);
-        if (u[1] && !svgFragment(u[0])) found.svg_link = true;
+        if (svgURLOutside(value)) found.svg_link = true;
       }
     }
     var rule = '';

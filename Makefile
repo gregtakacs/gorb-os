@@ -48,7 +48,11 @@ check-sandbox:
 	    tail -5 $(SANDBOX_LOG); fail=1; fi; \
 	done; exit $$fail
 	tools/orb_version.sh --self-test
-	$(MAKE) --no-print-directory check-apps check-hub check-editor
+	@# the hub's bundle guard compares the committed firmware bundle with build/; a slice that
+	@# changes main/ always differs until the ship step repacks it, so the guard is off here only
+	@echo "SKIP hub bundle guard: a slice that changes main/ differs from the committed bundle until its ship step runs make -C tools/orb-manager firmware; make check arms it"
+	$(MAKE) --no-print-directory check-apps check-editor
+	$(MAKE) --no-print-directory -C tools/orb-manager check BUILD_DIR=/nonexistent
 	@echo 'check-sandbox: green apart from the named skips; the host runs `make check` in full'
 
 sandbox-why-%:

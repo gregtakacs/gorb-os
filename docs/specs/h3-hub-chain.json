@@ -1,0 +1,15 @@
+{
+  "name": "h3-hub",
+  "repo": "../..",
+  "base": "h3",
+  "retries": 2,
+  "timeout": 5400,
+  "steps": [
+    {
+      "name": "h3-hub-1-editor-commit-scope",
+      "spec": "docs/specs/h3-hub-1-editor-commit-scope.md",
+      "hard": true,
+      "verify": "set -o pipefail; export GOFLAGS=-buildvcs=false PATH=/usr/local/go/bin:$PATH && cd tools/orb-manager && go vet ./... && go test -run 'TestEditorCommit|TestEditorSendStatus|TestEditorAPI' -count=1 -v . 2>&1 | tee /tmp/h3-hub-1.log && grep -q -- '--- PASS: TestEditorCommitScopedToItsApp' /tmp/h3-hub-1.log && grep -q -- '--- PASS: TestEditorSendStatusScopedToItsApp' /tmp/h3-hub-1.log && ! grep -q -- '--- FAIL' /tmp/h3-hub-1.log && go test ./... -count=1 && cd ../.. && test -z \"$(git diff --name-only h3 | grep -v -E '^(tools/orb-manager/|docs/)')\""
+    }
+  ]
+}

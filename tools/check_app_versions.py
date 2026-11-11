@@ -108,9 +108,9 @@ def main():
         if changed and not (tag_bytes is None and tag_v is None):
             cur_k, tag_k = parse_version(cur), parse_version(tag_v)
             if not (cur_k is not None and tag_k is not None and cur_k > tag_k):
-                fails.append("%s: bytes changed against %s but version not raised "
-                             "(now %s, at %s %s)"
-                             % (label, tag, cur or "absent", tag, tag_v or "absent"))
+                fails.append("%s changed since %s but its version is %s, the same as or lower than "
+                             "%s at %s: raise it"
+                             % (label, tag, cur or "absent", tag_v or "absent", tag))
     for f in fails:
         sys.stderr.write("refused: %s\n" % f)
     if fails:

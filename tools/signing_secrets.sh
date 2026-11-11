@@ -22,6 +22,10 @@ die() { echo "signing_secrets.sh: $*" >&2; exit 1; }
 command -v gh >/dev/null || die "needs the gh CLI, logged in (gh auth login)"
 
 dir=${SIGNING_SECRETS_DIR:-}
+# With SIGNING_SECRETS_ENV set (release), the secrets go to that GitHub environment, not the
+# repo: the release workflow's signing jobs read them only after the owner approves the run.
+ENVARG=()
+[ -n "${SIGNING_SECRETS_ENV:-}" ] && ENVARG=(--env "$SIGNING_SECRETS_ENV")
 if [ -n "$dir" ]; then
 	umask 077
 	mkdir -p "$dir"
@@ -32,13 +36,13 @@ fi
 ask() {
 	echo
 	if [ -n "$dir" ] && [ -s "$dir/$1" ]; then
-		gh secret set "$1" <"$dir/$1"
+		gh secret set "${ENVARG[@]}" "$1" <"$dir/$1"
 		echo "$1 set from $dir/$1"
 		return
 	fi
 	echo "$1 — $2"
 	if [ -z "$dir" ]; then
-		gh secret set "$1"
+		gh secret set "${ENVARG[@]}" "$1"
 		return
 	fi
 	local v
@@ -46,24 +50,24 @@ ask() {
 	echo
 	[ -n "$v" ] || die "$1: empty value"
 	printf '%s' "$v" >"$dir/$1"
-	gh secret set "$1" <"$dir/$1"
+	gh secret set "${ENVARG[@]}" "$1" <"$dir/$1"
 	echo "$1 set, and filed in $dir/$1"
 }
 
 # A file's bytes as one line of base64, or the base64 already filed in $dir.
 file_secret() {
 	if [ -z "${2:-}" ] && [ -n "$dir" ] && [ -s "$dir/$1" ]; then
-		gh secret set "$1" <"$dir/$1"
+		gh secret set "${ENVARG[@]}" "$1" <"$dir/$1"
 		echo "$1 set from $dir/$1"
 		return
 	fi
 	[ -f "${2:-}" ] || die "no file for $1: usage: $0 mac <cert.p12> <AuthKey_XXXX.p8>"
 	if [ -n "$dir" ]; then
 		base64 <"$2" | tr -d '\n' >"$dir/$1"
-		gh secret set "$1" <"$dir/$1"
+		gh secret set "${ENVARG[@]}" "$1" <"$dir/$1"
 		echo "$1 set from $2, and filed in $dir/$1"
 	else
-		base64 <"$2" | tr -d '\n' | gh secret set "$1"
+		base64 <"$2" | tr -d '\n' | gh secret set "${ENVARG[@]}" "$1"
 		echo "$1 set from $2"
 	fi
 }
@@ -90,7 +94,7 @@ check) ;;
 esac
 
 echo
-have=$(gh secret list --json name -q '.[].name')
+have=$(gh secret list "${ENVARG[@]}" --json name -q '.[].name')
 for s in AZURE_TENANT_ID AZURE_CLIENT_ID AZURE_CLIENT_SECRET AZURE_SIGNING_ENDPOINT \
 	AZURE_SIGNING_ACCOUNT AZURE_CERT_PROFILE MACOS_CERT_P12 MACOS_CERT_PASSWORD \
 	MACOS_SIGN_IDENTITY APPLE_API_KEY_P8 APPLE_API_KEY_ID APPLE_API_ISSUER; do

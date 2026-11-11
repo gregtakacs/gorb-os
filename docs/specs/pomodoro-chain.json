@@ -1,7 +1,7 @@
 {
   "name": "pomodoro",
   "repo": "../..",
-  "base": "RING_TIP",
+  "base": "pomodoro-run",
   "retries": 2,
   "steps": [
     {

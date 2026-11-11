@@ -68,17 +68,16 @@ func withABI(body []byte, abi uint32) []byte {
 
 func designDoc(name, ver string, art int) []byte {
 	return []byte(`{"format":"wc-design","schema":1,"app":"clock","appVersion":"` + ver + `","made":"2026-11-04T00:00:00Z",` +
-		`"dial":"skeleton","themeName":"` + name + `","assets":[{"id":"bg-1","dataUrl":"data:image/png;base64,` + strings.Repeat("A", art) + `"}],` +
+		`"dial":"skeleton","themeName":"` + name + `","assets":[{"id":"bg-1","dataUrl":"data:image/png;base64,` + designArt(art) + `"}],` +
 		`"saved":{"name":"ignored","at":1,"extra":{"dial":"skeleton"}}}`)
 }
 
 // designArt is the base64 body of a picture that clears the art floor: a real, valid
 // 1×1 RGBA PNG — signature, one IHDR, one IDAT, one IEND, every CRC honest — whose tEXt
 // chunk carries a padded payload, so a body made for N is at least N bytes long.
-// fu2-3 (ruling 35, as amended): the branch gate pins contract/editor-api.json to its
-// fu2-1 bytes, so designDoc went back to letters — no door the Go suite checks reads a
-// designDoc asset's art — and this helper stays for the art-floor table in
-// sitelimits_test.go, which does check bytes and needs an honest picture at the floor.
+// designDoc carries one (ruling 35, as amended: art under 10 bytes is refused), so the
+// contract fixture the site replays holds real pictures; the art-floor table in
+// sitelimits_test.go uses it too.
 func designArt(art int) string {
 	ihdr := make([]byte, 13)
 	binary.BigEndian.PutUint32(ihdr[0:], 1)
@@ -180,7 +179,7 @@ func TestDraftsAreFilesOnTheHubOnePerName(t *testing.T) {
 	}
 	rec := rawCall(t, s, http.MethodGet, "/api/library/design?app=clock&name=Big%20sub", nil)
 	var got map[string]any
-	if json.Unmarshal(rec.Body.Bytes(), &got) != nil || got["format"] != "wc-design" || !strings.Contains(rec.Body.String(), strings.Repeat("A", 9000)) {
+	if json.Unmarshal(rec.Body.Bytes(), &got) != nil || got["format"] != "wc-design" || !strings.Contains(rec.Body.String(), designArt(9000)) {
 		t.Fatalf("design = %.200s, want the saved document with its art", rec.Body)
 	}
 	if sv, _ := got["saved"].(map[string]any); sv["name"] != "Big sub" {
@@ -258,7 +257,7 @@ func TestLibraryIsOneEntryPerName(t *testing.T) {
 	if env := designCall(t, s, http.MethodPost, "/api/library/forget?app=clock&name=Tourbillon&what=draft", nil); env["ok"] != true {
 		t.Fatalf("discard: %v", env)
 	}
-	if rec := rawCall(t, s, http.MethodGet, "/api/library/design?app=clock&name=Tourbillon", nil); !strings.Contains(rec.Body.String(), `base64,AA"`) {
+	if rec := rawCall(t, s, http.MethodGet, "/api/library/design?app=clock&name=Tourbillon", nil); !strings.Contains(rec.Body.String(), `base64,`+designArt(2)+`"`) {
 		t.Errorf("Tourbillon opened at %.200s after discarding its changes, want the (rebaked) theme's design", rec.Body)
 	}
 	if e := entriesOf(t, s, "clock")["Tourbillon"]; e.State != "theme" {

@@ -8129,3 +8129,38 @@ On the pomodoro design's owner questions (`docs/specs/pomodoro-design.md`):
 - **The ring's direction and start** (§64.8) ride in the same slice. The overlay slice left the
   record's `match` byte and `_r1` as they were (its amendment 1 was not built), so `flags`
   (MATCH 0x01, CCW 0x02) and `start` land with the lanes' new stamp geometry.
+
+### 64.12 The ring's alerts are opaque on black — 2026-11-11
+
+- **The owner, on Bronze:** a breathing or flashing ring blended over a busy app at the ring's
+  opacity "is lost". An alert must be seen.
+- **Ruling: a backed ring.** A ring record may ask for a black track (`flags` BACKED 0x04): the
+  whole rim band is drawn black, and the arc on it at full opacity, whatever the opacity byte
+  says. Breathe then fades the colour toward black and back (never into the app beneath), and
+  flash switches between the colour and black. The lanes already cover the whole band, so a
+  backed ring costs no extra pixels.
+- **The pomodoro backs its alerts only:** flash (a phase ended, waiting for a press) and breathe
+  (paused). The running drain keeps the owner's `ring_op`, so it stays quiet over other apps.
+- **Measured before the change (Bronze, v1.7.0+3bddfb6):** radar 16 fps with no ring, 17-18 fps
+  with the ring flashing (+0.7 M px/s); the clock's own face draws at 6 fps with or without it,
+  the same on the pre-lanes firmware.
+
+### 64.13 A press anywhere can go to the timer — 2026-11-11
+
+- **The owner:** leaving an app to reach the pomodoro just to start the next phase is a chore;
+  let the press reach the timer from any app, as an option.
+- **Ruling: the OS lends the press.** An app may claim the knob press while it is off the glass
+  (`orb_press_claim(on)`, under a new cap `press`, declared in app.json and shown on the
+  Permissions page like any other). While a claim stands, a press on whatever app is on the glass
+  goes to the claimant's service instead (a new event, `ORB_EV_PRESS_LENT`), and that app never
+  sees it. Turn and press-and-turn stay with the app on the glass, and hold stays the OS's. One
+  claimant at a time, latest caller wins, as with the ring (§64.1); a claimant uninstalled or
+  faulted loses its claim. The OS confirms a lent press with a short pulse of the claimant's
+  ring, so the press is seen to have gone somewhere.
+- **The pomodoro's setting `press_any`** (Off / When it's calling / Whenever it runs, default
+  When it's calling): calling = a phase has ended and the ring flashes for a press, which then
+  starts the next phase; whenever it runs = also while a phase runs or is paused, where the
+  press pauses and resumes. The pomodoro claims and drops the press as its state moves; on its
+  own glass it handles the press as it always has.
+- **This bends the knob rule that the press is the app's** (app-design-rules.md § The knob): the
+  rule now names the one exception, an app the owner has let borrow it.

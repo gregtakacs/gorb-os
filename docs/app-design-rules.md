@@ -30,6 +30,9 @@ so someone who has learned one app has learned them all.
 - One thing, always the same thing, wherever the dial stands: the next place, start or pause.
 - A press keeps the dial's position, so it compares rather than resets.
 - No double press, ever: waiting for a second press would delay every first one.
+- The one exception: an app the owner has let borrow the press (`orb_press_claim`, cap `press`,
+  §64.13) takes it from whatever app is on the glass while its claim stands. The pomodoro does
+  this, by setting, to start the next phase from anywhere.
 
 **Press-and-turn** (hold the knob down and turn before the hold fires).
 - For a second axis that is not the dial: radar's and flights' zoom, the pomodoro's phases.

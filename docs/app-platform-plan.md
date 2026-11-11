@@ -8079,3 +8079,24 @@ On the pomodoro design's owner questions (`docs/specs/pomodoro-design.md`):
   (clockwise, anticlockwise; default clockwise), and `ring_start`, an enum (top, right, bottom,
   left, i.e. twelve, three, six and nine o'clock; default top). With ring on/off and opacity,
   the visible settings number 12, and the hidden state fits in the remaining 4 of the loader's 16.
+
+### 64.9 The owner overrides the ring colour; every theme gets an overlay colour — 2026-11-11
+
+- **The ring colour can be overridden** (owner), separately on the pomodoro's own glass and
+  over other apps. That makes two pomodoro settings of the `color` type with named specials
+  (§64.7's withdrawal is reversed: the type is built, with specials):
+  - `ring_col_here`: From the look (default), or a colour;
+  - `ring_col_away`: From the look (default), Match the app, or a colour.
+  
+  A chosen colour is one colour for every phase; the effect (steady, breathe, flash) still
+  tells the state.
+- **Every theme carries an overlay colour** (owner): the colour the OS draws its overlays in
+  over that app. Each app's editor sets it with the kit's colour picker, and each look's default
+  is its own accent. The OS reads it from the theme the app on the glass wears. "Match the app"
+  draws the ring in it, and the copy arc and later §55's blips may use it too. **Every themed
+  app**: the clock, radar, weather, flights and the pomodoro. A theme without one (baked before
+  this) falls back to the overlay's own colour.
+- **Visuals are decided, so implementation is delegated** (owner).
+  `docs/specs/pomodoro-looks.md` and its working sketch `docs/specs/pomodoro-looks-preview.html`
+  (the furniture drawn in canvas, the chime recipes in WebAudio) are the reference the editor and
+  the kit sound pane are built to.

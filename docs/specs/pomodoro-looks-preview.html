@@ -1,0 +1,379 @@
+<title>Pomodoro Orb Preview</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600&family=IBM+Plex+Sans:wght@400;600&family=Playfair+Display:wght@600&family=Cormorant+Garamond:wght@500;600&family=Jost:wght@400;600&family=Space+Grotesk:wght@400;600&family=Barlow+Condensed:wght@500;600&display=swap">
+<style>
+/* Layout: a bench — the orb on its stand at left, the knob, settings and chimes beside it; one column on a phone. Dark-first, single look (the orb is a dark object). */
+:root {
+  --bg: #121417; --panel: #1a1d22; --line: #2a2f37; --fg: #e6e9ee; --muted: #8d96a3; --accent: #e8a33d;
+  --display: "Space Grotesk", system-ui, sans-serif; --body: "IBM Plex Sans", system-ui, sans-serif; --mono: "IBM Plex Mono", ui-monospace, monospace;
+  color-scheme: dark;
+}
+html, body { background: var(--bg); color: var(--fg); }
+body { font-family: var(--body); padding-block: 24px 40px; padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); }
+.wrap { max-width: 1120px; margin: 0 auto; display: grid; gap: 20px; }
+header h1 { font-family: var(--display); font-weight: 600; font-size: 1.6rem; margin: 0; text-wrap: balance; }
+header p { color: var(--muted); margin: 6px 0 0; max-width: 72ch; line-height: 1.5; }
+.bench { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 380px); gap: 20px; align-items: start; }
+@media (max-width: 820px) { .bench { grid-template-columns: minmax(0, 1fr); } }
+.stand { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 20px; display: grid; gap: 14px; justify-items: center; min-width: 0; }
+.orb { width: min(100%, 420px); aspect-ratio: 1; max-width: 100%; border-radius: 50%; background: #000; box-shadow: 0 0 0 10px #0b0c0e, 0 0 0 11px #33373e, 0 18px 40px rgba(0,0,0,.55); }
+.orb canvas { width: 100%; height: 100%; display: block; border-radius: 50%; }
+.readout { font-family: var(--mono); font-size: .8rem; color: var(--muted); text-align: center; line-height: 1.6; min-height: 2.6em; }
+.readout b { color: var(--fg); font-weight: 600; }
+.lookname { font-family: var(--display); font-size: 1.05rem; text-align: center; }
+.lookname small { display: block; font-family: var(--body); font-size: .8rem; color: var(--muted); margin-top: 2px; }
+.looks { display: flex; flex-wrap: wrap; gap: 6px; justify-content: center; }
+.chip { font: 600 .78rem var(--body); letter-spacing: .02em; padding: 6px 10px; border-radius: 999px; border: 1px solid var(--line); background: transparent; color: var(--muted); cursor: pointer; }
+.chip[aria-pressed="true"] { background: var(--fg); color: var(--bg); border-color: var(--fg); }
+.side { display: grid; gap: 14px; min-width: 0; }
+.card { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 16px; display: grid; gap: 12px; }
+.card h2 { font: 600 .72rem var(--body); letter-spacing: .12em; text-transform: uppercase; color: var(--muted); margin: 0; }
+.knob { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+.knob button, .row button { font: 600 .85rem var(--body); padding: 10px 8px; border-radius: 10px; border: 1px solid var(--line); background: #22262d; color: var(--fg); cursor: pointer; }
+.knob button:hover, .row button:hover { border-color: var(--accent); }
+button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.hint { font-size: .8rem; color: var(--muted); line-height: 1.5; margin: 0; }
+.row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+label.f { display: grid; grid-template-columns: 9.5em minmax(0, 1fr) 3.4em; align-items: center; gap: 8px; font-size: .85rem; }
+label.f output { font-family: var(--mono); font-size: .8rem; color: var(--muted); text-align: right; }
+label.s { display: grid; grid-template-columns: 9.5em minmax(0, 1fr); align-items: center; gap: 8px; font-size: .85rem; }
+select { font: .85rem var(--body); background: #22262d; color: var(--fg); border: 1px solid var(--line); border-radius: 8px; padding: 6px; }
+.toggle { display: flex; gap: 8px; align-items: center; font-size: .85rem; }
+.chimes { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; }
+.chimes button { font: 600 .78rem var(--body); padding: 8px 6px; border-radius: 9px; border: 1px solid var(--line); background: #22262d; color: var(--fg); cursor: pointer; }
+.chimes button[aria-current="true"] { border-color: var(--accent); }
+.note { font-size: .78rem; color: var(--muted); line-height: 1.5; border-top: 1px solid var(--line); padding-top: 12px; margin: 0; }
+</style>
+
+<div class="wrap">
+  <header>
+    <h1>Pomodoro on the orb</h1>
+    <p>The redesigned looks (docs/specs/pomodoro-looks.md): eight timers, not clocks. They have no minute scales, the digits never shift sideways, and the rim is left to the OS ring. The ring colours are baked into each look. The chimes are synthesized here the way the editor's sound pane would generate them. The art is a sketch of the design, not the real bake.</p>
+  </header>
+
+  <div class="bench">
+    <section class="stand" aria-label="The orb">
+      <div class="orb"><canvas id="glass" width="466" height="466" aria-label="Orb display"></canvas></div>
+      <div class="lookname" id="lookname"></div>
+      <div class="readout" id="readout" aria-live="polite"></div>
+      <div class="looks" id="looks" role="group" aria-label="Look"></div>
+    </section>
+
+    <div class="side">
+      <section class="card" aria-label="Knob">
+        <h2>Knob</h2>
+        <div class="knob">
+          <button id="tccw" title="Turn anticlockwise: a minute less">⟲ Turn</button>
+          <button id="press">Press</button>
+          <button id="tcw" title="Turn clockwise: a minute more">Turn ⟳</button>
+          <button id="pccw" title="Press-and-turn anticlockwise: back">⟲ Press+turn</button>
+          <button id="letgo">Let go</button>
+          <button id="pcw" title="Press-and-turn clockwise: the next phase">Press+turn ⟳</button>
+        </div>
+        <p class="hint">Press starts, pauses and resumes. Turn changes the time left, a minute a click. Press+turn picks a phase, shown in the header; it lands when you let go.</p>
+      </section>
+
+      <section class="card" aria-label="Chimes">
+        <h2>Chimes</h2>
+        <div class="chimes" id="chimes"></div>
+        <div class="toggle"><input type="checkbox" id="brighter"><label for="brighter">Play the break-end variant (brighter)</label></div>
+        <p class="note">Each look's chime is generated from a recipe, kept above 350 Hz for the orb's small speaker, and played at the chime volume (a share of the orb's volume). In the editor you could also pick any chime for any phase, or upload your own. Your speakers are much better than the orb's, so these will sound fuller here.</p>
+      </section>
+
+      <section class="card" aria-label="Preview controls">
+        <h2>Preview</h2>
+        <div class="toggle"><input type="checkbox" id="other"><label for="other">Over another app (a mock weather face)</label></div>
+        <div class="toggle"><input type="checkbox" id="fast" checked><label for="fast">Fast time: one second is one minute</label></div>
+        <div class="row"><button id="finish">Jump to the end of this phase</button></div>
+      </section>
+
+      <section class="card" aria-label="App settings">
+        <h2>App settings (on the dial and in Orb Manager)</h2>
+        <label class="f">Focus length <input type="range" id="focus_len" min="5" max="90" step="5" value="25"><output id="o_focus_len"></output></label>
+        <label class="f">Short break <input type="range" id="break_len" min="1" max="30" step="1" value="5"><output id="o_break_len"></output></label>
+        <label class="f">Long break <input type="range" id="long_len" min="5" max="60" step="5" value="15"><output id="o_long_len"></output></label>
+        <label class="f">Focuses per long break <input type="range" id="focuses" min="1" max="12" step="1" value="4"><output id="o_focuses"></output></label>
+        <div class="toggle"><input type="checkbox" id="autostart"><label for="autostart">Start next on its own</label></div>
+        <div class="toggle"><input type="checkbox" id="chime" checked><label for="chime">Chime at each change</label></div>
+        <label class="f">Chime volume <input type="range" id="chime_vol" min="0" max="100" step="5" value="70"><output id="o_chime_vol"></output></label>
+        <div class="toggle"><input type="checkbox" id="wake" checked><label for="wake">Wake the screen</label></div>
+        <div class="toggle"><input type="checkbox" id="ring_on" checked><label for="ring_on">Ring</label></div>
+        <label class="f">Ring opacity <input type="range" id="ring_op" min="0" max="100" step="5" value="85"><output id="o_ring_op"></output></label>
+        <label class="s" for="ring_dir">Ring direction <select id="ring_dir"><option value="0">clockwise</option><option value="1">anticlockwise</option></select></label>
+        <label class="s" for="ring_start">Ring starts at <select id="ring_start"><option value="0">top</option><option value="1">right</option><option value="2">bottom</option><option value="3">left</option></select></label>
+        <p class="note">Ring colours aren't settings: each look bakes its own three (focus, short break, long break), editable in the look's editor.</p>
+      </section>
+    </div>
+  </div>
+</div>
+
+<script>
+(() => {
+  // The eight looks plus New, from pomodoro-looks.md: ground, faces, inks, the instrument, header caption, dots, ring colours, chime.
+  const LOOKS = {
+    scope:     { name:"Scope", inst:"a phosphor countdown readout", g:["#0a1f14","#020805"], fig:"IBM Plex Mono", body:"IBM Plex Mono", ink:"#b4ffd2", quiet:"#5fbf8a", acc:"#e0b040", dots:"square", cap:"T−", ring:["#4BE38A","#E0B040","#5AD1E6"], chime:"scope" },
+    paper:     { name:"Paper", inst:"a printed timer ticket", g:["#f2ead8","#e3d7bd"], fig:"Playfair Display", body:"IBM Plex Sans", ink:"#2a2218", quiet:"#5a4a36", acc:"#a04a18", dots:"round", cap:"TIMER TICKET", ring:["#C8401E","#5E8C4A","#2F5B8C"], chime:"paper" },
+    brass:     { name:"Brass", inst:"a marine stopwatch", g:["#2e332e","#151815"], fig:"Cormorant Garamond", body:"Cormorant Garamond", ink:"#f2e6c8", quiet:"#a8946a", acc:"#ff9a3c", dots:"stud", cap:"CHRONOMETER", ring:["#E0A43C","#4FA38A","#3A6EA5"], chime:"brass" },
+    blueprint: { name:"Blueprint", inst:"a drawing of a timer", g:["#174a82","#0c2c58"], fig:"IBM Plex Mono", body:"IBM Plex Mono", ink:"#eaf4ff", quiet:"#a8cdf0", acc:"#ffe07a", dots:"square", cap:"DWG 25-MIN", ring:["#FFE07A","#EAF4FF","#8EC5FF"], chime:"blueprint" },
+    station:   { name:"Station", inst:"a departure board countdown", g:["#ffffff","#e6e6e3"], fig:"Jost", body:"Jost", ink:"#111111", quiet:"#555555", acc:"#e3000f", dots:"round", cap:"DEPARTS IN", ring:["#E3000F","#1E8E3E","#1F4E8C"], chime:"station" },
+    celestial: { name:"Celestial", inst:"an hourglass of stars", g:["#251a55","#0b0820"], fig:"Space Grotesk", body:"Space Grotesk", ink:"#edebff", quiet:"#9c95c9", acc:"#ffd27a", dots:"star", cap:"ANNO HORAE", ring:["#FFD27A","#B9A8FF","#62D2C6"], chime:"celestial" },
+    silver:    { name:"Silver", inst:"a chronograph stopwatch", g:["#3a3f46","#1c1f24"], fig:"Jost", body:"Jost", ink:"#f2f4f7", quiet:"#aab2bd", acc:"#7fc8ff", dots:"ring", cap:"SPLIT", ring:["#7FC8FF","#D6DCE4","#5B7DA8"], chime:"silver" },
+    sectional: { name:"Sectional", inst:"a flight log", g:["#eef1e4","#dfe5cf"], fig:"Barlow Condensed", body:"Barlow Condensed", ink:"#1f2a44", quiet:"#3e5a80", acc:"#c2187a", dots:"square", cap:"ETE", ring:["#C2187A","#2E7D32","#2A5DB0"], chime:"sectional" },
+    blank:     { name:"New", inst:"a blank face to start from", g:["#1c1c1c","#101010"], fig:"IBM Plex Sans", body:"IBM Plex Sans", ink:"#e8e8e8", quiet:"#a8a8a8", acc:"#c8c8c8", dots:"round", cap:"POMODORO", ring:["#D62828","#0FA36B","#2E93E4"], chime:"blank" },
+  };
+  const ORDER = ["scope","paper","brass","blueprint","station","celestial","silver","sectional","blank"];
+  const CHIME_NAMES = { scope:"Sonar ping", paper:"Kitchen bell", brass:"Ship's bell", blueprint:"Drafting beep", station:"Platform chime", celestial:"Glass bowl", silver:"Stopwatch", sectional:"Cabin chime", blank:"Simple tone" };
+
+  const cfg = { focus_len:25, break_len:5, long_len:15, focuses:4, autostart:false, chime:true, chime_vol:70, wake:true, ring_on:true, ring_op:85, ring_dir:0, ring_start:0 };
+  const ui = { look:"scope", other:false, fast:true };
+
+  // ---- the state machine (pomodoro-design.md §3.1) ----
+  const st = { k:0, state:"STOP", len:0, rem:0, endT:0, choosing:false, pos:0 };
+  const slots = () => 2 * cfg.focuses;
+  const phaseOf = k => (k % 2 === 0 ? "focus" : (k === slots() - 1 ? "long" : "short"));
+  const phaseIx = k => ({ focus:0, short:1, long:2 }[phaseOf(k)]);
+  const lenOf = k => 60 * ({ focus:cfg.focus_len, short:cfg.break_len, long:cfg.long_len }[phaseOf(k)]);
+  const capOf = k => 60 * ({ focus:90, short:30, long:60 }[phaseOf(k)]);
+  const phaseText = k => ({ focus:"Focus", short:"Short break", long:"Long break" }[phaseOf(k)]);
+  const rate = () => (ui.fast ? 60 : 1);
+  let simNow = 0, lastReal = performance.now();
+  function reset(k) { st.k = k; st.state = "STOP"; st.len = st.rem = lenOf(k); st.endT = 0; }
+  function remaining() { return st.state === "RUN" ? Math.max(0, st.endT - simNow) : st.rem; }
+  function startPhase(k) { st.k = k; st.state = "RUN"; st.len = lenOf(k); st.endT = simNow + st.len; }
+  function land() { if (!st.choosing) return false; st.choosing = false; if (st.pos === 0) return true;
+    reset(st.pos < 0 ? Math.max(0, st.k + st.pos + 1) : Math.min(slots() - 1, st.k + st.pos)); return true; }
+  function press() { if (land()) return;
+    if (st.state === "STOP") startPhase(st.k);
+    else if (st.state === "RUN") { st.rem = remaining(); st.state = "PAUSE"; }
+    else if (st.state === "PAUSE") { st.state = "RUN"; st.endT = simNow + st.rem; }
+    else if (st.state === "WAIT") startPhase((st.k + 1) % slots()); }
+  function turn(d) { if (land()) return;
+    const r0 = remaining(), r = Math.min(capOf(st.k), Math.max(60, Math.round(r0 / 60) * 60 + 60 * d));
+    if (st.state === "STOP") { st.rem = st.len = r; }
+    else if (st.state === "RUN") { st.len = (st.len - r0) + r; st.endT = simNow + r; }
+    else if (st.state === "PAUSE") { st.len = (st.len - st.rem) + r; st.rem = r; }
+    else if (st.state === "WAIT") { st.state = "PAUSE"; st.rem = st.len = r; } }
+  function pushTurn(d) { if (!st.choosing) { st.choosing = true; st.pos = 0; }
+    st.pos = Math.max(-(st.k + 1), Math.min(slots() - 1 - st.k, st.pos + d)); }
+  function choiceText() {
+    if (st.pos === 0) return phaseText(st.k);
+    if (st.pos === -1) return phaseText(st.k) + " · restart";
+    const k = st.pos < 0 ? st.k + st.pos + 1 : st.k + st.pos;
+    return phaseOf(k) === "focus" ? "Focus " + (k / 2 + 1) : phaseText(k);
+  }
+  function service() {
+    if (st.state === "RUN" && simNow >= st.endT) {
+      const ended = phaseOf(st.k);
+      if (cfg.chime) playChime(LOOKS[ui.look].chime, ended !== "focus");
+      if (cfg.autostart) startPhase((st.k + 1) % slots()); else { st.state = "WAIT"; st.rem = 0; }
+    }
+  }
+
+  // ---- the generated chimes (pomodoro-looks.md "The chimes"); WebAudio, started from a click ----
+  let ac = null;
+  function audio() { if (!ac) { try { ac = new (window.AudioContext || window.webkitAudioContext)(); } catch (e) { ac = null; } } return ac; }
+  function tone(t, f, dur, gain, type = "sine", attack = 0.004) {
+    const a = audio(); if (!a) return; const o = a.createOscillator(), g = a.createGain();
+    o.type = type; o.frequency.value = f; g.gain.setValueAtTime(0, t); g.gain.linearRampToValueAtTime(gain, t + attack);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + dur); o.connect(g).connect(master()); o.start(t); o.stop(t + dur + 0.05);
+  }
+  function click(t, gain) { const a = audio(); if (!a) return; const n = Math.floor(a.sampleRate * 0.012), b = a.createBuffer(1, n, a.sampleRate), d = b.getChannelData(0);
+    for (let i = 0; i < n; i++) d[i] = (Math.random() * 2 - 1) * (1 - i / n); const s = a.createBufferSource(), bp = a.createBiquadFilter(), g = a.createGain();
+    s.buffer = b; bp.type = "bandpass"; bp.frequency.value = 3000; bp.Q.value = 2; g.gain.value = gain; s.connect(bp).connect(g).connect(master()); s.start(t); }
+  let masterGain = null;
+  function master() { const a = audio(); if (!masterGain) { masterGain = a.createGain(); masterGain.connect(a.destination); } masterGain.gain.value = 0.6 * cfg.chime_vol / 100; return masterGain; }
+  const RECIPES = {
+    scope:     (t, b) => { const f = b ? 1500 : 1200; tone(t, f, 0.9, .5); tone(t + .18, f, 0.6, .18); },
+    paper:     (t, b) => { const k = b ? 1.12 : 1; [[2000,.45],[4800,.18],[7100,.08]].forEach(([f,g]) => tone(t, f * k, 1.2, g, "sine", .002)); },
+    brass:     (t, b) => { const base = b ? 740 : 620; [0, .55].forEach(dt => [[1,.4],[2.0,.2],[2.4,.14],[3.0,.08]].forEach(([r,g]) => tone(t + dt, base * r, 1.8, g, "sine", .002))); },
+    blueprint: (t, b) => { const f = b ? 1900 : 1600; [0, .16].forEach(dt => tone(t + dt, f, .11, .22, "square", .01)); },
+    station:   (t, b) => { const notes = b ? [784, 988, 1175] : [784, 659, 1047]; notes.forEach((f, i) => { tone(t + i * .38, f, 1.1, .35); tone(t + i * .38, f * 2, .6, .08); }); },
+    celestial: (t, b) => { const f = b ? 1046 : 880; tone(t, f, 2.4, .3, "sine", .03); tone(t, f + 3, 2.4, .3, "sine", .03); tone(t, 2600, 1.4, .06, "sine", .05); },
+    silver:    (t, b) => { click(t, .9); click(t + .09, .7); tone(t + .2, b ? 2800 : 2400, .7, .3); },
+    sectional: (t, b) => { const [hi, lo] = b ? [1250, 1050] : [1050, 830]; tone(t, hi, .9, .4); tone(t, hi * 2, .5, .05); tone(t + .55, lo, 1.1, .4); tone(t + .55, lo * 2, .6, .05); },
+    blank:     (t, b) => tone(t, b ? 1250 : 1000, .4, .4),
+  };
+  function playChime(id, brighter) { const a = audio(); if (!a) return; if (a.state === "suspended") a.resume(); RECIPES[id](a.currentTime + .03, brighter); }
+
+  // ---- the OS ring (§64.1): band r 224..231, drains from the start point in the chosen direction ----
+  function ringNow(t) {
+    if (!cfg.ring_on || cfg.ring_op === 0 || st.state === "STOP") return null;
+    const col = LOOKS[ui.look].ring[phaseIx(st.k)];
+    const arcA = Math.floor(0xE6 * cfg.ring_op / 100) / 255, trkA = Math.floor(0x33 * cfg.ring_op / 100) / 255;
+    let k = 1; const step = Math.floor(t / 500);
+    if (st.state === "PAUSE") k = 0.55 + 0.45 * Math.cos((step % 8) / 8 * 2 * Math.PI);
+    if (st.state === "WAIT") k = (Math.floor(t / 1000) % 2 === 0) ? 1 : 0;
+    const frac = st.state === "WAIT" ? 0 : Math.max(0, Math.min(1, remaining() / st.len));
+    return { col, arcA: arcA * k, trkA: trkA * k, frac };
+  }
+
+  const cv = document.getElementById("glass"), g = cv.getContext("2d"), C = 233;
+  const hexA = (hex, a) => { const n = parseInt(hex.slice(1), 16); return `rgba(${n >> 16},${(n >> 8) & 255},${n & 255},${a})`; };
+  const P = (a, r) => [C + r * Math.sin(a), C - r * Math.cos(a)];
+
+  function ground(L) { const gr = g.createLinearGradient(0, 0, 0, 466); gr.addColorStop(0, L.g[0]); gr.addColorStop(1, L.g[1]); g.fillStyle = gr; g.fillRect(0, 0, 466, 466); }
+  function circle(r, col, w, dash) { g.strokeStyle = col; g.lineWidth = w; g.setLineDash(dash || []); g.beginPath(); g.arc(C, C, r, 0, 7); g.stroke(); g.setLineDash([]); }
+  function line(x1, y1, x2, y2, col, w, dash) { g.strokeStyle = col; g.lineWidth = w; g.setLineDash(dash || []); g.beginPath(); g.moveTo(x1, y1); g.lineTo(x2, y2); g.stroke(); g.setLineDash([]); }
+  function seeded(seed) { let s = seed; return () => (s = (s * 9301 + 49297) % 233280) / 233280; }
+
+  // Furniture: every mark stays inside r 200, so the OS ring has the rim to itself.
+  function furniture(id, L) {
+    g.save();
+    if (id === "scope") {
+      for (let y = 0; y < 466; y += 3) { g.fillStyle = "rgba(0,0,0,.18)"; g.fillRect(0, y, 466, 1); }
+      circle(120, hexA("#5fbf8a", .22), 1); circle(190, hexA("#5fbf8a", .22), 1);
+      line(C, 40, C, 426, hexA("#5fbf8a", .16), 1); line(40, C, 426, C, hexA("#5fbf8a", .16), 1);
+    }
+    if (id === "paper") {
+      g.fillStyle = "rgba(255,255,255,.35)"; g.fillRect(96, 128, 274, 230);
+      line(96, 128, 370, 128, L.quiet, 1.2, [3, 4]); line(96, 358, 370, 358, L.quiet, 1.2, [3, 4]);
+      g.strokeStyle = L.acc; g.lineWidth = 1.5; g.strokeRect(300, 296, 58, 50);
+      g.fillStyle = L.acc; g.font = `600 10px "IBM Plex Sans"`; g.textAlign = "center"; g.fillText("No.", 329, 310);
+    }
+    if (id === "brass") {
+      const gr = g.createRadialGradient(C, C - 40, 20, C, C, 150); gr.addColorStop(0, "#3a3f38"); gr.addColorStop(1, "#1d211d");
+      g.fillStyle = gr; g.beginPath(); g.arc(C, C, 150, 0, 7); g.fill(); circle(150, "#b08d4a", 3); circle(143, "#6e5a2e", 1);
+      g.fillStyle = "#b08d4a"; g.fillRect(C - 10, 60, 20, 18); g.fillRect(C - 5, 52, 10, 10);                  // crown and pusher atop the plate
+      for (let i = 0; i < 4; i++) { const [x, y] = P(i * Math.PI / 2, 132); g.beginPath(); g.arc(x, y, 3, 0, 7); g.fill(); }
+    }
+    if (id === "blueprint") {
+      circle(185, hexA("#a8cdf0", .45), 1, [6, 5]);
+      line(130, 268, 336, 268, L.quiet, 1); [[130, 1], [336, -1]].forEach(([x, s]) => { g.fillStyle = L.quiet; g.beginPath(); g.moveTo(x, 268); g.lineTo(x + 9 * s, 264); g.lineTo(x + 9 * s, 272); g.closePath(); g.fill(); });
+      line(130, 258, 130, 278, L.quiet, 1); line(336, 258, 336, 278, L.quiet, 1);
+      g.strokeStyle = L.quiet; g.lineWidth = 1; g.strokeRect(128, 346, 210, 36); line(233, 346, 233, 382, L.quiet, 1);
+      g.fillStyle = L.quiet; g.font = `400 10px "IBM Plex Mono"`; g.textAlign = "left"; g.fillText("POMODORO", 134, 360);
+      g.fillText("SHEET " + sheetNo() + " OF " + cfg.focuses, 239, 360);
+    }
+    if (id === "station") {
+      g.fillStyle = L.acc; g.fillRect(96, 300, 274, 6);
+    }
+    if (id === "celestial") {
+      const rnd = seeded(7); g.fillStyle = "#fff"; for (let i = 0; i < 80; i++) { const x = rnd() * 466, y = rnd() * 466; if (Math.hypot(x - C, y - C) > 200) continue; g.globalAlpha = .2 + rnd() * .6; g.fillRect(x, y, 1.4, 1.4); } g.globalAlpha = 1;
+      const hg = [[150, 70], [316, 70], [233, 233], [316, 396], [150, 396], [233, 233]]; g.strokeStyle = hexA("#ffd27a", .35); g.lineWidth = 1; g.beginPath(); hg.forEach(([x, y], i) => i ? g.lineTo(x, y) : g.moveTo(x, y)); g.closePath(); g.stroke();
+      g.fillStyle = hexA("#ffd27a", .7); hg.slice(0, 5).forEach(([x, y]) => { g.beginPath(); g.arc(x, y, 2.4, 0, 7); g.fill(); });
+    }
+    if (id === "silver") {
+      const gr = g.createRadialGradient(C, C, 10, C, C, 170); gr.addColorStop(0, "#4a5058"); gr.addColorStop(1, "#262a30"); g.fillStyle = gr; g.beginPath(); g.arc(C, C, 170, 0, 7); g.fill();
+      for (let i = 0; i < 90; i++) { const a = i / 90 * Math.PI * 2, [x1, y1] = P(a, 40), [x2, y2] = P(a, 168); line(x1, y1, x2, y2, "rgba(255,255,255,.025)", 1); }
+      circle(170, "#8d96a3", 1.5);
+      [-0.5, 0.5].forEach(a => { g.save(); g.translate(...P(a, 178)); g.rotate(a); g.fillStyle = "#aab2bd"; g.fillRect(-7, -9, 14, 14); g.restore(); });
+      for (let i = 0; i < 4; i++) { const a = i * Math.PI / 2, [x1, y1] = P(a, 150), [x2, y2] = P(a, 162); line(x1, y1, x2, y2, "#f2f4f7", 3); }
+    }
+    if (id === "sectional") {
+      for (let x = 40; x < 466; x += 46) line(x, 0, x, 466, hexA("#3e5a80", .28), 1);
+      for (let y = 40; y < 466; y += 46) line(0, y, 466, y, hexA("#3e5a80", .28), 1);
+      line(60, 400, 406, 66, hexA("#c2187a", .45), 2, [10, 6]);
+      g.fillStyle = "rgba(238,241,228,.92)"; g.fillRect(118, 170, 230, 112); g.strokeStyle = L.acc; g.lineWidth = 2.5; g.strokeRect(118, 170, 230, 112);
+    }
+    g.restore();
+  }
+  function sheetNo() { return phaseOf(st.k) === "focus" ? st.k / 2 + 1 : Math.ceil(st.k / 2); }
+
+  function dots(L, n, N, y) {
+    const sz = N > 8 ? 9 : 11, gap = 6, w = N * sz + (N - 1) * gap; let x = C - w / 2;
+    for (let i = 0; i < N; i++, x += sz + gap) {
+      const on = i < n, cx = x + sz / 2, cy = y + sz / 2; g.lineWidth = 1.5; g.strokeStyle = L.quiet; g.fillStyle = L.dots === "star" ? L.acc : L.ink;
+      if (L.dots === "square") { on ? g.fillRect(x, y, sz, sz) : g.strokeRect(x + .75, y + .75, sz - 1.5, sz - 1.5); }
+      else if (L.dots === "star") { g.beginPath(); for (let p = 0; p < 10; p++) { const r = p % 2 ? sz * .22 : sz * .55, a = p / 10 * 2 * Math.PI; g.lineTo(cx + r * Math.sin(a), cy - r * Math.cos(a)); } g.closePath(); on ? g.fill() : g.stroke(); }
+      else if (L.dots === "ring") { g.beginPath(); g.arc(cx, cy, sz / 2 - 1, 0, 7); g.stroke(); if (on) { g.beginPath(); g.arc(cx, cy, sz / 2 - 3.5, 0, 7); g.fill(); } }
+      else if (L.dots === "stud") { g.fillStyle = on ? "#d9b26a" : "transparent"; g.strokeStyle = "#8a6f3a"; g.beginPath(); g.arc(cx, cy, sz / 2 - .75, 0, 7); on ? g.fill() : g.stroke(); }
+      else { g.beginPath(); g.arc(cx, cy, sz / 2 - .75, 0, 7); on ? g.fill() : g.stroke(); }
+    }
+  }
+  // Digits of one width: each character in a fixed cell, so the time never shifts (rule 3).
+  function fixedTime(text, font, size, y, col) {
+    g.font = `600 ${size}px "${font}"`; g.textAlign = "center"; g.textBaseline = "middle"; g.fillStyle = col;
+    const cell = Math.max(...[..."0123456789"].map(d => g.measureText(d).width)), colon = g.measureText(":").width;
+    const widths = [...text].map(ch => ch === ":" ? colon : cell), total = widths.reduce((a, b) => a + b, 0);
+    let x = C - total / 2; [...text].forEach((ch, i) => { g.fillText(ch, x + widths[i] / 2, y); x += widths[i]; });
+    return { total, cell, colon };
+  }
+  function flapTiles(text, y) {     // Station: the time on split-flap tiles
+    const size = 88; g.font = `600 ${size}px "Jost"`; const cell = Math.max(...[..."0123456789"].map(d => g.measureText(d).width)) + 14;
+    const chars = [...text], widths = chars.map(c => c === ":" ? 22 : cell), total = widths.reduce((a, b) => a + b, 0) + 4 * (chars.length - 1);
+    let x = C - total / 2; g.textAlign = "center"; g.textBaseline = "middle";
+    chars.forEach((ch, i) => { const w = widths[i];
+      if (ch === ":") { g.fillStyle = "#111"; g.beginPath(); g.arc(x + w / 2, y - 16, 5, 0, 7); g.arc(x + w / 2, y + 16, 5, 0, 7); g.fill(); }
+      else { g.fillStyle = "#151515"; roundRect(x, y - 56, w, 112, 6); g.fill(); line(x, y, x + w, y, "#000", 2); g.fillStyle = "#f4f4f2"; g.fillText(ch, x + w / 2, y + 3); }
+      x += w + 4; });
+  }
+  function roundRect(x, y, w, h, r) { g.beginPath(); g.moveTo(x + r, y); g.arcTo(x + w, y, x + w, y + h, r); g.arcTo(x + w, y + h, x, y + h, r); g.arcTo(x, y + h, x, y, r); g.arcTo(x, y, x + w, y, r); g.closePath(); }
+  const mmss = s => { s = Math.ceil(s); return String(Math.floor(s / 60)).padStart(2, "0") + ":" + String(s % 60).padStart(2, "0"); };
+
+  function drawPomodoro() {
+    const L = LOOKS[ui.look], id = ui.look; ground(L); furniture(id, L);
+    g.textAlign = "center"; g.textBaseline = "middle";
+    // header row: the look's caption, or the press-and-turn choice while choosing
+    g.fillStyle = st.choosing ? L.acc : L.quiet; g.font = `600 ${st.choosing ? 22 : 15}px "${L.body}"`;
+    const head = st.choosing ? choiceText() : L.cap; g.fillText(id === "scope" && !st.choosing ? "T− COUNTDOWN" : head, C, 104);
+    const ph = phaseOf(st.k);
+    g.fillStyle = ph === "focus" ? L.ink : L.acc; g.font = `600 ${id === "sectional" ? 30 : 26}px "${L.body}"`;
+    g.fillText(id === "station" ? phaseText(st.k).toUpperCase() : id === "sectional" ? "LEG · " + phaseText(st.k).toUpperCase() : phaseText(st.k), C, id === "station" ? 150 : 152);
+    const tcol = st.state === "WAIT" ? L.acc : L.ink;
+    if (id === "station") flapTiles(mmss(remaining()), 228);
+    else fixedTime(mmss(remaining()), L.fig, id === "brass" ? 84 : id === "sectional" ? 96 : 88, id === "sectional" ? 226 : 228, tcol);
+    const n = sheetNo();
+    dots(L, n, cfg.focuses, id === "station" ? 318 : 292);
+    g.fillStyle = L.quiet; g.font = `400 19px "${L.body}"`;
+    const cnt = ph === "focus" ? (id === "paper" ? "" : `${n} of ${cfg.focuses}`) : "break";
+    if (cnt) g.fillText(cnt, C, id === "station" ? 350 : 326);
+    if (id === "paper") { g.fillStyle = L.acc; g.font = `600 22px "Playfair Display"`; g.fillText(String(n), 329, 330); }
+    const s = { STOP:"Ready · press to start", PAUSE:"Paused", WAIT:"Waiting · press for next", RUN:"" }[st.state];
+    if (s) { g.fillStyle = st.state === "WAIT" ? L.acc : L.quiet; g.font = `400 18px "${L.body}"`; g.fillText(s, C, id === "station" ? 380 : id === "blueprint" ? 322 : 362); }
+  }
+  function drawOtherApp() {
+    const gr = g.createLinearGradient(0, 0, 0, 466); gr.addColorStop(0, "#1d3a5c"); gr.addColorStop(1, "#0a1626"); g.fillStyle = gr; g.fillRect(0, 0, 466, 466);
+    g.textAlign = "center"; g.textBaseline = "middle"; g.fillStyle = "#eef4fb"; g.font = `600 110px "Space Grotesk"`; g.fillText("18°", C + 10, 210);
+    g.font = `400 26px "Space Grotesk"`; g.fillStyle = "#9db8d6"; g.fillText("Partly cloudy", C, 290);
+    g.strokeStyle = "#ffd27a"; g.lineWidth = 6; g.beginPath(); g.arc(C - 120, 130, 22, 0, 7); g.stroke();
+    g.fillStyle = "#6f8aa8"; g.font = `400 16px "IBM Plex Mono"`; g.fillText("weather · another app", C, 360);
+  }
+  function drawRing(t) {
+    const R = ringNow(t); if (!R) return;
+    const r = 227.5, start = -Math.PI / 2 + cfg.ring_start * Math.PI / 2, ccw = cfg.ring_dir === 1, sweep = R.frac * 2 * Math.PI;
+    const end = ccw ? start - sweep : start + sweep;
+    g.lineWidth = 7; g.lineCap = "butt";
+    if (R.frac < 1 && R.trkA > 0) { g.strokeStyle = hexA(R.col, R.trkA); g.beginPath(); g.arc(C, C, r, end, ccw ? start - 2 * Math.PI : start + 2 * Math.PI, ccw); g.stroke(); }
+    if (R.frac > 0 && R.arcA > 0) { g.strokeStyle = hexA(R.col, R.arcA); g.beginPath(); g.arc(C, C, r, start, end, ccw); g.stroke(); }
+  }
+
+  const readout = document.getElementById("readout"), lookname = document.getElementById("lookname");
+  let lastText = "";
+  function frame(now) {
+    const dt = (now - lastReal) / 1000; lastReal = now;
+    if (!st.choosing) simNow += dt * rate();
+    service();
+    g.clearRect(0, 0, 466, 466); ui.other ? drawOtherApp() : drawPomodoro(); drawRing(now);
+    const eff = { STOP:"cleared", RUN:"steady", PAUSE:"slow breathe", WAIT:"flash" }[st.state];
+    const txt = `<b>${phaseText(st.k)}</b> · ${st.state.toLowerCase()} · ring ${cfg.ring_on ? eff : "off"}` + (st.choosing ? ` · choosing: <b>${choiceText()}</b>` : "");
+    if (txt !== lastText) { readout.innerHTML = txt; lastText = txt; }
+    requestAnimationFrame(frame);
+  }
+  function showLook() { const L = LOOKS[ui.look]; lookname.innerHTML = `${L.name}<small>${L.inst} · chime: ${CHIME_NAMES[L.chime]}</small>`;
+    document.querySelectorAll("#chimes button").forEach(b => b.setAttribute("aria-current", b.dataset.id === L.chime)); }
+
+  // ---- controls ----
+  const looksEl = document.getElementById("looks");
+  ORDER.forEach(id => { const b = document.createElement("button"); b.className = "chip"; b.textContent = LOOKS[id].name; b.id = "look_" + id;
+    b.setAttribute("aria-pressed", id === ui.look); b.onclick = () => { ui.look = id; ui.other = false; document.getElementById("other").checked = false;
+      looksEl.querySelectorAll(".chip").forEach(c => c.setAttribute("aria-pressed", c === b)); showLook(); }; looksEl.appendChild(b); });
+  const chimesEl = document.getElementById("chimes");
+  ORDER.forEach(id => { const b = document.createElement("button"); b.textContent = CHIME_NAMES[id]; b.dataset.id = id; b.id = "chime_" + id;
+    b.onclick = () => playChime(id, document.getElementById("brighter").checked); chimesEl.appendChild(b); });
+  const on = (id, f) => document.getElementById(id).addEventListener("click", f);
+  on("press", press); on("tcw", () => turn(1)); on("tccw", () => turn(-1));
+  on("pcw", () => pushTurn(1)); on("pccw", () => pushTurn(-1)); on("letgo", land);
+  on("finish", () => { audio(); if (st.state === "RUN") st.endT = simNow; else if (st.state === "STOP" || st.state === "PAUSE") { startPhase(st.k); st.endT = simNow; } });
+  document.getElementById("other").addEventListener("change", e => ui.other = e.target.checked);
+  document.getElementById("fast").addEventListener("change", e => ui.fast = e.target.checked);
+  ["focus_len","break_len","long_len","focuses","ring_op","chime_vol"].forEach(id => { const el = document.getElementById(id), out = document.getElementById("o_" + id);
+    const show = () => out.textContent = el.value + (id === "ring_op" || id === "chime_vol" ? "%" : id === "focuses" ? "" : " min"); show();
+    el.addEventListener("input", () => { cfg[id] = +el.value; show(); if (id === "focuses" && st.k > slots() - 1) reset(slots() - 1); if (st.state === "STOP" && id !== "ring_op" && id !== "chime_vol") reset(st.k); }); });
+  ["autostart","chime","wake","ring_on"].forEach(id => document.getElementById(id).addEventListener("change", e => cfg[id] = e.target.checked));
+  ["ring_dir","ring_start"].forEach(id => document.getElementById(id).addEventListener("change", e => cfg[id] = +e.target.value));
+
+  // Open in a working state: Focus 2 of 4, running, nine minutes in.
+  reset(2); startPhase(2); simNow += 60 * 9; showLook();
+  requestAnimationFrame(frame);
+})();
+</script>

@@ -8073,3 +8073,7 @@ On the pomodoro design's owner questions (`docs/specs/pomodoro-design.md`):
 - Apps are atomic, so the pomodoro does not borrow the clock's engine. Where the generator and
   the upload belong (the kit, for every app's editor, or the pomodoro's own editor) is Claude's
   call in the pomodoro look design.
+- **The ring's direction and start are pomodoro settings** (owner): `ring_dir`, an enum
+  (clockwise, anticlockwise; default clockwise), and `ring_start`, an enum (top, right, bottom,
+  left, i.e. twelve, three, six and nine o'clock; default top). With ring on/off and opacity,
+  the visible settings number 12, and the hidden state fits in the remaining 4 of the loader's 16.

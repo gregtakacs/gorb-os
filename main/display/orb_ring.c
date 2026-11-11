@@ -181,7 +181,7 @@ int ring_effect_alpha(const orb_ring_rec *r, int64_t now_ms)
     if (!r) return 0;
     if (r->effect == ORB_RING_FLASH) {
         const int64_t p = period_of(r);
-        return ((now_ms / p) & 1) ? 0 : 255;                  /* the first half lit, the second glass */
+        return ((now_ms / (p / 2 > 0 ? p / 2 : 1)) & 1) ? 0 : 255;   /* lit for half the period, then glass */
     }
     if (r->effect == ORB_RING_BREATHE) {
         const int64_t p = period_of(r);
@@ -348,6 +348,8 @@ static void mark_band(void)
     display_mark_rows(y0, y1);
 }
 
+static int s_alpha;                              /* the effect alpha of this grid step */
+
 void orb_ring_disp_service(void)
 {
     if (!s_init) orb_ring_disp_init();
@@ -360,7 +362,10 @@ void orb_ring_disp_service(void)
     const bool owned = ring_pick(orb_ring_tbl, orb_ring_owner, orb_ring_seq,
                                  ORB_APP_CAP, &cur) != 0;
     const bool anim  = owned && cur.effect != ORB_RING_STEADY;
-    const int  alpha = owned ? ring_effect_alpha(&cur, now / 1000) : 0;
+    /* The effect's alpha is fixed once a grid step, here, and the stamp uses it: a stamp that
+     * read the clock per tile would give an app's partial redraw a different breath from the
+     * rows marked at the step, banding the rim. */
+    s_alpha = owned ? ring_effect_alpha(&cur, now / 1000) : 0;
 
     if (!owned || !tiled) {
         if (s_have) mark_band();                 /* restore the glass under a gone ring */
@@ -390,7 +395,7 @@ void orb_ring_disp_service(void)
 void orb_ring_disp_stamp(int32_t y0, int rows, uint16_t *tile, int32_t x0, int32_t w)
 {
     if (!tile || !s_have || rows <= 0 || w <= 0) return;
-    const int alpha = ring_effect_alpha(&s_rec, esp_timer_get_time() / 1000);
+    const int alpha = s_alpha;                   /* fixed at the service's grid step     */
     if (alpha <= 0) return;                      /* off-phase or alpha-0: draw nothing   */
     const uint32_t ac = s_rec.arc, tc = s_rec.track;
     const uint32_t aa = (uint32_t)(((ac >> 24) & 0xFFu) * (uint32_t)alpha / 255u);

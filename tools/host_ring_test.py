@@ -42,7 +42,8 @@ MUTATIONS = [
     ("if (r->effect != ORB_RING_FLASH && r->effect != ORB_RING_BREATHE) r->effect = ORB_RING_STEADY;", ";"),
     ("? ORB_RING_BREATHE_MIN_MS", "? 0u"),
     ("? ORB_RING_FLASH_MIN_MS : 0u;", "? 0u : 0u;"),
-    ("return ((now_ms / p) & 1) ? 0 : 255;", "return ((now_ms / p) & 0) ? 0 : 255;"),
+    ("return ((now_ms / (p / 2 > 0 ? p / 2 : 1)) & 1) ? 0 : 255;", "return ((now_ms / (p / 2 > 0 ? p / 2 : 1)) & 0) ? 0 : 255;"),
+    ("return ((now_ms / (p / 2 > 0 ? p / 2 : 1)) & 1) ? 0 : 255;", "return ((now_ms / (p > 0 ? p : 1)) & 1) ? 0 : 255;"),
     ("(1.0f - cosf((float)TAU * ph))", "(0.5f - cosf((float)TAU * ph))"),
     ("(seq[i] == seq[best] && i > best)", "(seq[i] == seq[best] && i < best)"),
     ("        if (owner[i] < 0) continue;", "        if (0) continue;"),
@@ -293,8 +294,10 @@ def checks(exe, quiet=False):
     def eff(e, p, now):
         return int(run(exe, "eff", e, p, now).split()[1])
     ck(all(eff(0, 1000, t) == 255 for t in (0, 1, 999, 12345678)), "steady is simply on")
-    ck(eff(1, 500, 0) == 255 and eff(1, 500, 999) == 255 and eff(1, 500, 1000) == 0 and eff(1, 500, 1999) == 0
-       and eff(1, 500, 2000) == 255, "flash is on for a floor second, then off: the OS's 1 Hz")
+    ck(eff(1, 500, 0) == 255 and eff(1, 500, 499) == 255 and eff(1, 500, 500) == 0 and eff(1, 500, 999) == 0
+       and eff(1, 500, 1000) == 255, "flash's period is one whole cycle: at the 1 s floor, half a second lit, half dark")
+    ck(eff(1, 2000, 999) == 255 and eff(1, 2000, 1000) == 0 and eff(1, 2000, 1999) == 0 and eff(1, 2000, 2000) == 255,
+       "a 2 s flash is one second on, one second off (the pomodoro's waiting)")
     br = [eff(2, 100, t) for t in (0, 500, 1000, 1500, 2000, 2500, 3000, 3500, 3999)]
     ck(br[0] == 0 and br[4] == 255 and br[-1] < 3 and all(0 <= v <= 255 for v in br)
        and br[:5] == sorted(br[:5]) and br[4:] == sorted(br[4:], reverse=True),
@@ -328,7 +331,7 @@ def checks(exe, quiet=False):
     ck(oo[-1][1:] == ["0", "0", "0"], "a row is owned or it is not: two clears leave nothing")
     ors = own("I", "S 7 500 0 0 1000000", "S 1 300 0 0 2000000", "C 1", "A 500", "A 1500", n=8)
     ck(ors[-2:] == [["ALPHA", "1", "255"], ["ALPHA", "1", "255"]], "a steady owner shows through the clock")
-    fl = own("I", "S 0 500 1 1000 1000000", "A 500", "A 1500")
+    fl = own("I", "S 0 500 1 1000 1000000", "A 250", "A 750")
     ck(fl[-2:] == [["ALPHA", "1", "255"], ["ALPHA", "1", "0"]], "off-phase flash touches no glass")
     empty = own("I", "A 1000")
     ck(empty[-1] == ["ALPHA", "0", "-1"], "an empty table never reaches the effect clock")

@@ -5,6 +5,12 @@
   "retries": 2,
   "steps": [
     {
+      "name": "pomodoro-0-wake",
+      "spec": "docs/specs/pomodoro-0-wake.md",
+      "hard": true,
+      "verify": "set -o pipefail; python3 tools/host_wake_test.py | tail -1 | grep -q 'RESULT: pass' && python3 tools/host_wake_test.py --mutations && python3 apps/sdk/orbsdk.py binds && grep -q '\"wake\"' apps/sdk/binds.json && grep -q 'orb_wake' apps/sdk/orb.h && grep -q 'orb_wake' apps/README.md && ORB_CLANG=/usr/lib/llvm-21/bin/clang make check-apps"
+    },
+    {
       "name": "pomodoro-1-pure-core",
       "spec": "docs/specs/pomodoro-1-pure-core.md",
       "hard": true,
@@ -15,17 +21,6 @@
       "spec": "docs/specs/pomodoro-2-app.md",
       "hard": true,
       "verify": "set -o pipefail; test -f apps/pomodoro/main.c -a -f apps/pomodoro/version.txt && grep -qx v1.7.0 apps/pomodoro/version.txt && for s in orb_ring_set orb_ring_clear ORB_RING_BREATHE ORB_RING_FLASH ORB_RING_STEADY pm_restore pm_pos_step; do grep -q \"$s\" apps/pomodoro/main.c || { echo \"missing $s\"; exit 1; }; done && grep -q 'ORB_EXPORT(\"orb_push\")' apps/pomodoro/main.c && grep -q 'ORB_EXPORT(\"orb_service\")' apps/pomodoro/main.c && grep -q '\"show\": \"none\"' apps/pomodoro/app.json && python3 -c 'import json;import sys;s=json.load(open(\"apps/pomodoro/app.json\"))[\"settings\"];sys.exit(0 if len(s)==15 and sum(1 for x in s if x.get(\"show\")==\"none\")==4 and all(x.get(\"help\") and len(x[\"help\"])>20 for x in s if x.get(\"show\")!=\"none\") and sorted(x[\"id\"] for x in s if x[\"type\"]==\"color\")==[\"col_focus\",\"col_long\",\"col_short\"] else 1)' && python3 -c 'import sys;s=open(\"apps/pomodoro/main.c\").read();b=s[s.index(\"orb_service\"):];j=b.find(\"ORB_EXPORT\",10);b=b[:j] if j>0 else b;bad=[n for n in (\"orb_stage_\",\"orb_cv_\",\"orb_ui_\",\"orb_blob_load\") if n in b];print(\"orb_service names \"+repr(bad) if bad else \"orb_service draws nothing\");sys.exit(1 if bad else 0)' && ORB_CLANG=/usr/lib/llvm-21/bin/clang make check-apps && python3 tools/host_pomodoro_test.py --mutations"
-    },
-    {
-      "name": "pomodoro-3-editor-looks",
-      "spec": "docs/specs/pomodoro-3-editor-looks.md",
-      "hard": true,
-      "verify": "set -o pipefail; test -f apps/pomodoro/editor/editor.json -a -f apps/pomodoro/editor/pomodoro-bake.js -a -f apps/pomodoro/editor/pomodoro-editor.js -a -f apps/pomodoro/editor/_fixtures/schema-1.orbdesign -a -f apps/pomodoro/editor/_selftest/bake.html -a -f apps/pomodoro/editor/_selftest/bake_check.py && grep -q 'OrbHost.register' apps/pomodoro/editor/pomodoro-editor.js && grep -q '\"schema\": 1' apps/pomodoro/editor/editor.json && grep -q '\"editor\": \"editor\"' apps/pomodoro/app.json && grep -q '\"os_min\": \"v9.9.9\"' apps/pomodoro/app.json && awk '/STARTERS/{line=line $0} END{exit (line ~ /scope.*paper.*brass.*blueprint.*station.*celestial.*silver.*sectional/ && line !~ /vintage/) ? 0 : 1}' apps/pomodoro/editor/pomodoro-bake.js && export ORB_CHROME=/usr/bin/chromium && python3 apps/pomodoro/editor/_selftest/bake_check.py && python3 apps/sdk/orbsdk.py check-migrations apps/pomodoro && test $(ls $DELEGATE_EVIDENCE_DIR/looks/*.png | wc -l) -ge 9 && test $(ls $DELEGATE_EVIDENCE_DIR/states/*.png | wc -l) -ge 5 && ORB_CLANG=/usr/lib/llvm-21/bin/clang make check-apps && make check-editor"
-    },
-    {
-      "name": "pomodoro-4-ship",
-      "spec": "docs/specs/pomodoro-4-ship.md",
-      "verify": "set -o pipefail; grep -q '\"shelf\": true' apps/pomodoro/app.json && grep -q '\"os_min\": \"v9.9.9\"' apps/pomodoro/app.json && test -f tools/orb-manager/apps/pomodoro.orbapp -a -f tools/orb-manager/themes/pomodoro-scope.orbtheme && grep -q 'pomodoro-scope.orbtheme' tools/rebake_shelf.py && grep -q 'bake_pomodoro' tools/rebake_shelf.py && grep -qE 'BAKE *=.*pomodoro' tools/rebake_shelf.py && grep -q '| \\*\\*Pomodoro\\*\\* |' docs/user-guide.md && python3 -c 'import sys;d=open(\"docs/user-guide.md\").read();i=d.index(\"Press and turn\");sys.exit(0 if \"Pomodoro\" in d[i:i+900] else 1)' && python3 tools/rebake_shelf.py --check && ORB_CLANG=/usr/lib/llvm-21/bin/clang make check-apps && make check-editor && python3 tools/host_pomodoro_test.py --mutations"
     }
   ]
 }

@@ -721,3 +721,64 @@ step, not this one).
    ring-1's `ORB_RING_STEP_PCT`, not 4. Otherwise every other send is swallowed by the OS.
 6. Owner questions 1, 3, 5 and 6: accepted as chosen (5 and 6 confirmed by the owner).
 7. The chain's `base` stays `RING_TIP` until the ring chain lands; the orchestrator sets it.
+
+## Orchestrator amendments, round 2 (2026-11-11) — the owner's later rulings; these override everything above
+
+A. **The settings, final** (owner): 12 the owner edits, hidden state in at most 4, ≤ 16 in all.
+
+| id | type | label | range / choices | default |
+|---|---|---|---|---|
+| `focus_len` | int | Focus length | 5..90 step 5 " min" | 25 |
+| `break_len` | int | Short break | 1..30 " min" | 5 |
+| `long_len` | int | Long break | 5..60 step 5 " min" | 15 |
+| `focuses` | int | Focuses per long break | 1..12 | 4 |
+| `autostart` | toggle | Start next on its own | "wait for a press", "on its own" | 0 |
+| `chime` | toggle | Chime at each change | off, on | 1 |
+| `chime_vol` | int | Chime volume | 0..100 step 5 "%" | 70 |
+| `wake` | toggle | Wake the screen | off, on | 1 |
+| `ring_on` | toggle | Ring | off, on | 1 |
+| `ring_op` | int | Ring opacity | 0..100 step 5 "%" | 85 |
+| `ring_dir` | enum | Ring direction | "clockwise", "anticlockwise" | 0 |
+| `ring_start` | enum | Ring starts at | "top", "right", "bottom", "left" | 0 |
+
+**No colour settings.** `col_focus`, `col_short` and `col_long` are gone, and so is the `color`
+setting type: the owner ruled ring colours are theme bakes (plan §64.7).
+
+B. **Ring colours come from the theme's values** (`orb_stage_values`, as radar, weather and
+flights read theirs). The pomodoro's values layout, version 1, little-endian:
+
+```c
+typedef struct {
+    uint32_t ring_rgb[3];   /* 0xRRGGBB for focus, short break, long break */
+    uint8_t  chime[3];      /* the theme sound slot played when a focus, a short break, a long break ends */
+    uint8_t  _res;
+} pm_values_t;              /* 16 bytes, _Static_assert'd */
+```
+
+- Read it when the stage opens, and again when the theme changes, as radar's `stage_read` does.
+- Cache it in RAM, so `orb_service` uses it off the glass.
+- With no values (no theme, or a short or wrong-version blob), the defaults stand: Ruby
+  `0xD62828`, Emerald `0x0FA36B`, Sky `0x2E93E4`, and chime slots 0, 0, 0.
+- `pm_ring_for` takes the colour from the cached values, not from settings.
+
+C. **The ring's direction and start** (owner). The orchestrator extends `orb_ring_t` before this
+chain runs: the reserved `_res0` becomes `uint8_t dir` (0 clockwise, 1 anticlockwise), and
+`_res1` becomes `uint16_t start` (degrees 0..359, clockwise from twelve). Still 16 bytes.
+`pm_ring_for` maps `ring_dir` to `dir`, and `ring_start` 0..3 to 0, 90, 180, 270. Use the fields
+as they are in `apps/sdk/orb.h` on the base branch.
+
+D. **The chime** plays the theme sound slot the values name for the phase that ended, at
+`master × chime_vol / 100`. The sounds themselves (a generated batch plus the owner's uploads)
+are made by the editor, which is not this chain's.
+
+E. **The editor, the looks, the sounds and shipping are the orchestrator's** (owner, plan
+§64.7–64.8: design and audiovisual work stays with Claude). `pomodoro-3-editor-looks` and
+`pomodoro-4-ship` are removed from the chain, and §10–§11's look notes are superseded by the
+orchestrator's look design. The chain is now:
+- `pomodoro-0-wake`: the OS's `orb_wake` (amendment 2 of round 1); spec
+  `docs/specs/pomodoro-0-wake.md`.
+- `pomodoro-1-pure-core`.
+- `pomodoro-2-app`. Its `app.json` sets `"editor"` only if the editor directory exists; the
+  orchestrator adds the editor after. Its verify builds the app with `orbsdk.py` and checks
+  `app.json` against table A. It needs no baked theme: with no values, the app runs on its
+  defaults.

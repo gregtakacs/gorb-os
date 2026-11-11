@@ -396,6 +396,11 @@ void idle_dim_app_release(const char *slug)
     g_rel_calls++;
     snprintf(g_rel_slug, sizeof g_rel_slug, "%s", slug ? slug : "");
 }
+/* orb_wake's two policy inputs (§64.6): the OS's quiet hours and the owner's display switch.
+ * The decision itself is the real orb_wake.c, linked below; tools/host_wake_test.py owns it. */
+bool g_quiet_now; bool g_dim_enabled = true;
+bool orb_sound_quiet_now(void) { return g_quiet_now; }
+bool idle_dim_enabled(void) { return g_dim_enabled; }
 /* Revoking the ring cap drops that slot's record (ring-design §5); the shipped hook lives
  * in orb_ring.c's IDF glue, so the broker's revoke path reaches it as a stub here. */
 int g_ring_drop_slot = -999;
@@ -1102,7 +1107,7 @@ def build_run(td, tag, extra_cflags, arg):
               "-I", P("assets"), "-I", P("net"),
               "-I", P("power"), "-I", P("audio"), "-I", P("display"),
               "-I", os.path.join(ROOT, "assets")]  # real project headers
-           + extra_cflags + [SVC_C, cpath, "-lm", "-o", exe])
+           + extra_cflags + [SVC_C, P("app", "orb_wake.c"), cpath, "-lm", "-o", exe])
     r = subprocess.run(cmd, capture_output=True, text=True)
     if r.returncode != 0:
         return None, "COMPILE FAILED\n" + r.stdout + r.stderr

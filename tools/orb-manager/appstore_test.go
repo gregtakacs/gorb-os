@@ -410,8 +410,16 @@ func TestSiteAppsGetAppsSectionIsThereAndShut(t *testing.T) {
 		t.Error("a Get apps row uses innerHTML: catalogue names are foreign bytes")
 	}
 	if !strings.Contains(app, `"/api/site/apps/add"`) ||
-		!strings.Contains(app, `body: JSON.stringify({ slug: slug, version: version })`) {
+		!strings.Contains(app, `{ slug: slug, version: version }`) {
 		t.Error("siteAppAdd does not post {slug, version} to the hub's add door")
+	}
+	// A held copy (hand import, bundled app) is replaced only after the owner says yes in the
+	// hub's own dialog; the yes is the same press again with replace (owner, 2026-11-11).
+	add := blockOf(t, app, "async function siteAppAdd(slug, version, replace)")
+	if !strings.Contains(add, `j.held === true`) || !strings.Contains(add, `await askConfirm(`) ||
+		!strings.Contains(add, `{ slug: slug, version: version, replace: true }`) ||
+		!strings.Contains(add, `return siteAppAdd(slug, version, true);`) {
+		t.Error("siteAppAdd no longer asks before replacing a held copy, or replaces without asking")
 	}
 
 	// (d) The read is face-cached, on first paint only, behind the library's site word.

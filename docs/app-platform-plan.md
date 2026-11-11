@@ -8152,7 +8152,8 @@ On the pomodoro design's owner questions (`docs/specs/pomodoro-design.md`):
 - **Ruling: the OS lends the press.** An app may claim the knob press while it is off the glass
   (`orb_press_claim(on)`, under a new cap `press`, declared in app.json and shown on the
   Permissions page like any other). While a claim stands, a press on whatever app is on the glass
-  goes to the claimant's service instead (a new event, `ORB_EV_PRESS_LENT`), and that app never
+  goes to the claimant instead, read by its `orb_service` (services take no events today, so
+  the slice designs the delivery, e.g. a polled `orb_press_lent()` count), and that app never
   sees it. Turn and press-and-turn stay with the app on the glass, and hold stays the OS's. One
   claimant at a time, latest caller wins, as with the ring (§64.1); a claimant uninstalled or
   faulted loses its claim. The OS confirms a lent press with a short pulse of the claimant's

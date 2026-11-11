@@ -1749,12 +1749,16 @@ func TestSiteImportDoorInTheLibrary(t *testing.T) {
 	if !strings.Contains(row, "hidden") {
 		t.Error(`#mn-site-row is not hidden in the markup, so the link field is open before it is asked for`)
 	}
-	// Uploading needs an account, and an account needs a link that does not exist yet
-	// (H2). The door is labelled and dead rather than hidden, so the release says what
-	// it has left out.
+	// H4 step 3 turned this door on: the button is labelled and no longer dead, and it is
+	// still hidden in markup so it shows only once the hub says the site door is open. Its
+	// life after that is a fact of the link's scopes, drawn by drawSiteLink — see
+	// TestSiteUploadButtonIsEnabledByScopesOnly, which is this pin's successor.
 	upload := blockOfLine(t, home, `id="mn-lib-upload"`)
-	if !strings.Contains(upload, "disabled") {
-		t.Error("Upload to orb-os.net is not disabled: no Orb Manager can upload a theme yet")
+	if !strings.Contains(upload, "hidden") {
+		t.Error(`#mn-lib-upload is not hidden in the markup, so it shows before the hub says the site is open`)
+	}
+	if strings.Contains(upload, "disabled") {
+		t.Error(`#mn-lib-upload carries a disabled attribute again: a -site hub with designs:write can upload now`)
 	}
 	// The Themes card keeps its own import (a file onto an orb) and loses the site's,
 	// which is the one thing about that tab this step changes.
@@ -1995,6 +1999,498 @@ func TestSiteUISectionIsThereAndShut(t *testing.T) {
 	sh := blockOf(t, app, "function show(view)")
 	if !strings.Contains(sh, "stopSiteLinkPoll()") {
 		t.Error("leaving the manage view never stops the connect poll")
+	}
+}
+
+// upDialogRegion is the upload dialog's own markup: the mask through the panel it wraps.
+// regionOf closes at the sequence that ends a wrapped panel rather than at the first </div>,
+// because every row inside the panel is a div and the first one is a row's end, not the
+// dialog's. The closing sequence is itself the nesting pin: mask, panel, rows.
+func upDialogRegion(t *testing.T, page string) string {
+	t.Helper()
+	return regionOf(t, page, `<div class="mask" id="up-mask"`, "</div>\n  </div>\n</div>")
+}
+
+// buttonBlock is a button's opening attributes through its caption. A wrapped title — the
+// upload button's is a ruling's whole sentence — breaks onto its own line, where the single
+// line blockOfLine answers with cuts the words a pin needs in half. The end sequence is the
+// same one the toolbar pins at the compose buttons use, bounds and all.
+func buttonBlock(t *testing.T, page, id string) string {
+	t.Helper()
+	at := strings.Index(page, `id="`+id+`"`)
+	if at < 0 {
+		t.Fatalf("index.html lost #%s", id)
+	}
+	end := strings.Index(page[at:], "</button>")
+	if end < 0 || end > 600 {
+		t.Fatalf("#%s is no longer a captioned button", id)
+	}
+	return page[at : at+end]
+}
+
+// H4 hub step 3 (design §6's dialog, §7's hub rows): the button H2's UI reserved becomes the
+// upload dialog, and its life is a fact of the scopes the SITE answered — not of the scopes
+// this hub asked for, and not of the state file's shape. The pins are the contract minus the
+// pixels: this page has no DOM in this binary, so what is checked is that the one place
+// deciding the button's state reads the scopes, that the sentence the ruling fixed is the one
+// that explains a read-only link, and that the toolbar's line is the only place upload is
+// mentioned to a hub that cannot upload.
+func TestSiteUploadButtonIsEnabledByScopesOnly(t *testing.T) {
+	page := readWebFile(t, "index.html")
+	app := readAppJS(t)
+	home := regionOf(t, page, `<main id="manage"`, "</main>")
+
+	// (a) Markup: enabled, still hidden until the hub says the site door is open. The title is
+	// the new one — the button no longer promises a later release, it says what the upload does.
+	// The title wraps to its own line, so the block is the button through its caption.
+	upload := buttonBlock(t, home, "mn-lib-upload")
+	if strings.Contains(upload, "disabled") {
+		t.Error(`#mn-lib-upload carries a disabled attribute: only the link's scopes decide it now`)
+	}
+	if !strings.Contains(upload, "hidden") {
+		t.Error(`#mn-lib-upload is not hidden in markup, so it shows on a hub with no -site door`)
+	}
+	if !strings.Contains(upload, "Send a design from this hub") || !strings.Contains(upload, "nothing on the site is changed") {
+		t.Error(`#mn-lib-upload's title is not the ruling's: the button must say the upload lands in the library and changes nothing`)
+	}
+	if strings.Contains(upload, "later release") {
+		t.Error(`#mn-lib-upload still promises a later release while H4 ships the dialog`)
+	}
+	// The Reconnect door for a read-only link: beside the button, hidden until it is needed.
+	again := buttonBlock(t, home, "mn-lib-reconnect")
+	if !strings.Contains(again, "hidden") {
+		t.Error(`#mn-lib-reconnect is not hidden in markup, so it stands on a toolbar whose link can write`)
+	}
+	if !strings.Contains(again, "approve the two scopes") {
+		t.Error(`#mn-lib-reconnect's title does not say the reconnect is about the two scopes`)
+	}
+
+	// (b) The -site show/hide still lists the button: a hub built without the door never
+	// reaches the state that enables it.
+	lib := blockOf(t, app, "async function loadLibThemes()")
+	if !strings.Contains(lib, `["#mn-site-btn", "#mn-lib-upload"]`) {
+		t.Error("loadLibThemes no longer hides #mn-lib-upload for a hub with no -site door")
+	}
+
+	// (c) The one function that decides the button's state reads the scopes it was handed and
+	// records the ruling it draws from them; the line-drawing function it calls is pinned below.
+	draw := jsFuncBody(t, app, "function drawSiteLink(data)")
+	for _, want := range []string{"designs:write", "siteWritable", "siteUploadLinkLine(", "Array.isArray(data.scopes)"} {
+		if !strings.Contains(draw, want) {
+			t.Errorf("drawSiteLink does not read %s: the button's state would be invented rather than answered", want)
+		}
+	}
+	line := jsFuncBody(t, app, "function siteUploadLinkLine(readOnly)")
+	if !strings.Contains(line, "Reconnect to allow uploads") {
+		t.Error("the read-only link's sentence is not the ruling's, in the toolbar's own line")
+	}
+	for _, want := range []string{`#mn-lib-upload`, `#mn-lib-state`, `#mn-lib-reconnect`} {
+		if !strings.Contains(line, want) {
+			t.Errorf("the read-only draw does not reach %s: the refusal, its sentence and its way out belong together", want)
+		}
+	}
+	// A writable link empties the line rather than decorating it, and the four bound link
+	// sentences are nowhere near this function: the ruling's sentence is the only place upload
+	// is mentioned to a hub that cannot upload.
+	if !strings.Contains(line, `st.textContent = ""`) {
+		t.Error("a writable link leaves the toolbar's line unemptied, so a stale refusal outlives the relink")
+	}
+	if strings.Contains(line, "Waiting for orb-os.net") || strings.Contains(line, "Disconnected from orb-os.net") ||
+		strings.Contains(line, "Connected as @") || strings.Contains(line, "#mn-site-conn") {
+		t.Error("the toolbar's upload line reaches into the connect row's four bound sentences")
+	}
+	// One named handler for both Reconnect doors: the connect block's and the toolbar's.
+	if !strings.Contains(app, `$("#mn-lib-reconnect").onclick = siteLinkReconnectPress`) {
+		t.Error("#mn-lib-reconnect is not wired to the named connect handler")
+	}
+	if !strings.Contains(jsFuncBody(t, app, "function siteLinkWire()"), "siteLinkReconnectPress") {
+		t.Error("#mn-site-connect no longer presses the same named handler the toolbar's Reconnect does")
+	}
+}
+
+// The upload dialog is a modal the way the flash panel is one — the four assertions
+// jscheck_test.go makes of that panel, for this panel — because a dialog that floats beside the
+// page rather than over it is a suggestion. The rule that decides it is the mask contract: the
+// mask wraps, the panel is the dialog, and the panel's own CSS does not re-position itself.
+func TestSiteUploadDialogIsModalHonest(t *testing.T) {
+	page, app, css := readWebFile(t, "index.html"), readAppJS(t), readWebFile(t, "app.css")
+
+	mask := strings.Index(page, `class="mask" id="up-mask"`)
+	panel := strings.Index(page, `id="up-panel"`)
+	if mask < 0 || panel < 0 || mask > panel {
+		t.Error("#up-panel is not wrapped in #up-mask: the upload dialog must ride the page mask, not float beside it")
+	}
+	if !strings.Contains(page, `id="up-panel" role="dialog" aria-modal="true"`) {
+		t.Error("#up-panel lost its dialog role: a modal a reader cannot see is not modal")
+	}
+	at := strings.Index(css, ".uppanel{")
+	if at < 0 {
+		t.Error("app.css has no .uppanel rule, so the panel has no layout of its own")
+	} else if end := strings.Index(css[at:], "}"); end > 0 {
+		if rule := css[at : at+end+1]; strings.Contains(rule, "position:fixed") {
+			t.Error(".uppanel positions itself: the mask centers it, and a panel that re-positions itself escapes the scrim")
+		}
+	}
+	for _, sig := range []string{"async function siteUploadOpen()", "function siteUploadClose()"} {
+		body := jsFuncBody(t, app, sig)
+		if !strings.Contains(body, "#up-mask") {
+			t.Errorf("%s does not drive the mask", sig)
+		}
+		if strings.Contains(body, "#up-panel") {
+			t.Errorf("%s drives the panel inside the mask; the mask is the thing that opens and closes", sig)
+		}
+	}
+	// Every control the dialog names is inside the mask rather than loose in the page, so one
+	// closed mask takes the whole dialog away.
+	region := upDialogRegion(t, page)
+	for _, id := range []string{"up-title", "up-app", "up-name", "up-vis", "up-clash", "up-clash-line",
+		"up-replace", "up-new", "up-cancel", "up-replace-ask", "up-replace-line", "up-replace-yes",
+		"up-replace-no", "up-newname", "up-state", "up-close", "up-go"} {
+		if !strings.Contains(region, `id="`+id+`"`) && !strings.Contains(region, `name="`+id+`"`) {
+			t.Errorf("#%s is not inside the upload dialog's mask", id)
+		}
+	}
+	// Three radios, one word each, with private the answer that stands by default.
+	for _, want := range []string{`value="private" checked`, `value="unlisted"`, `value="public"`} {
+		if !strings.Contains(region, want) {
+			t.Errorf("the dialog's visibility radios do not carry %s", want)
+		}
+	}
+	if n := strings.Count(region, `name="up-vis"`); n != 3 {
+		t.Errorf("the dialog carries %d up-vis inputs; the answer is one choice of three", n)
+	}
+	// The new-name field is the hub's own bound: 64 characters, hidden until it is asked for.
+	field := blockOfLine(t, region, `id="up-newname"`)
+	if !strings.Contains(field, `maxlength="64"`) || !strings.Contains(field, "hidden") {
+		t.Error("#up-newname is not a hidden field bounded at 64 characters: designName's own bound belongs in the form")
+	}
+}
+
+// Everything the site answers is foreign bytes: a design's name, a sentence, a URL. The upload
+// path therefore builds its lines through textContent and href properties and never through
+// markup, as the design rows and the connect fallback already do — a site answering
+// "<img src=x onerror=alert(1)>" as a name must produce a label saying that and no request.
+func TestSiteUploadSendsForeignBytesAsTextOnly(t *testing.T) {
+	app := readAppJS(t)
+	drawn := ""
+	for _, sig := range []string{
+		"function siteUploadAnswer(j)", "function siteUploadSay(line)", "function siteUploadSuccess(data)",
+		"function siteUploadClash(j)", "function siteUploadReplaceAsk()", "function siteUploadVisCheck()",
+		"function siteUploadLinkLine(readOnly)", "function siteUploadFillApps()", "function siteUploadFillNames()",
+	} {
+		drawn += jsFuncBody(t, app, sig)
+	}
+	for _, bad := range []string{"innerHTML", "insertAdjacentHTML", "outerHTML", "document.write"} {
+		if strings.Contains(drawn, bad) {
+			t.Errorf("the upload answer path uses %s: site bytes must never become markup", bad)
+		}
+	}
+	for _, want := range []string{"textContent", ".href =", "createElement"} {
+		if !strings.Contains(drawn, want) {
+			t.Errorf("the upload answer path never uses %s: an answer has to reach the page some honest way", want)
+		}
+	}
+	// The success anchor's label is the SITE's name, so a hostile name can only ever be a
+	// label, and its href is assigned as a property rather than concatenated into an attribute.
+	succ := jsFuncBody(t, app, "function siteUploadSuccess(data)")
+	if !strings.Contains(succ, `"Open " + String((data && data.name) || "") + " on orb-os.net"`) {
+		t.Error("the success anchor's label is not built from the answer's name: the local spelling would name a design the site never stored")
+	}
+	for _, want := range []string{"a.href = url", `a.rel = "noopener noreferrer"`, `a.target = "_blank"`} {
+		if !strings.Contains(succ, want) {
+			t.Errorf("the success anchor does not set %s, of the three guards appendSiteFallback sets", want)
+		}
+	}
+	if strings.Contains(succ, "#up-name") || strings.Contains(succ, "#up-newname") {
+		t.Error("the success line reads the local picker: the site answered a name and the page shows that one")
+	}
+	// A refusal is the hub's sentence, verbatim, in textContent.
+	say := jsFuncBody(t, app, "function siteUploadSay(line)") + jsFuncBody(t, app, "function siteUploadAnswer(j)")
+	if !strings.Contains(say, "st.textContent = line") || !strings.Contains(say, "j.error") {
+		t.Error("a refusal is not drawn as the hub's own sentence in textContent")
+	}
+	// In flight: the button is off and the line names the design; and the button comes back on
+	// every ending, a stall included, so no answer leaves a dead press over an open dialog.
+	send := jsFuncBody(t, app, "async function siteUploadSend(replaceId, replaceName)")
+	if !strings.Contains(send, "go.disabled = true") || !strings.Contains(send, "go.disabled = false") {
+		t.Error("the upload button is not both disabled in flight and put back on an answer")
+	}
+	if !strings.Contains(send, `"Uploading " + name + "\u2026"`) {
+		t.Error("an upload in flight does not say which design it is sending")
+	}
+	if strings.Contains(jsFuncBody(t, app, "function siteUploadSay(line)"), "#up-mask") {
+		t.Error("a refused upload closes its own dialog: the sentence is the answer, and the human corrects the choice")
+	}
+}
+
+// A name_taken answer is a question with exactly three answers, and the hub's dialog keeps the
+// site's own object rather than this hub's spelling of it: §4's replace_mismatch refuses a
+// Replace whose name differs from the stored one even by case, so the id and the name the
+// confirm sends must be the answer's, and the clash with no existing object — the race §3.2
+// names — must draw the site's sentence alone, with no Replace button offered against nothing.
+func TestSiteUploadClashOffersThreeAnswers(t *testing.T) {
+	app, page := readAppJS(t), readWebFile(t, "index.html")
+	clash := jsFuncBody(t, app, "function siteUploadClash(j)")
+	for _, want := range []string{"j.nameTaken", "nameTaken = existing", `\u201c" + String(existing.name) + "\u201d`} {
+		if !strings.Contains(clash, want) {
+			t.Errorf("the clash does not hold the answer's own object the way %s requires", want)
+		}
+	}
+	// The guard returns before the row is shown, so a name_taken answering bare never offers
+	// an answer to Replace against.
+	guard := strings.Index(clash, "if (!existing || !existing.id)")
+	if guard < 0 || guard > strings.Index(clash, `#up-clash`) {
+		t.Error("a clash with no existing object would still show the three answers")
+	}
+	// The three answers stand wired, each to one named handler.
+	for _, w := range []string{`$("#up-replace").onclick = siteUploadReplaceAsk`, `$("#up-new").onclick = siteUploadNewDesign`, `$("#up-cancel").onclick = siteUploadCancel`} {
+		if !strings.Contains(app, w) {
+			t.Errorf("the clash row is missing its door: %s", w)
+		}
+	}
+	// Replace presses with the answer's id and the answer's stored name, never the picker's.
+	yes := jsFuncBody(t, app, "function siteUploadReplaceYes()")
+	if !strings.Contains(yes, "siteUploadSend(existing.id, existing.name)") {
+		t.Error("a confirmed Replace does not send the clash answer's own id and stored name")
+	}
+	// Cancel leaves the design on both sides untouched and the human where they stood: it puts
+	// the row away and nothing more — no fetch, no close.
+	cancel := jsFuncBody(t, app, "function siteUploadCancel()")
+	if strings.Contains(cancel, "hubFetch") || strings.Contains(cancel, "#up-mask") {
+		t.Error("the clash's Cancel sends bytes or closes the dialog; it is supposed to do neither")
+	}
+	// Upload-as-new prefills from the picker's current choice, so the edit starts where the
+	// human was, and shows the field the send then reads.
+	neu := jsFuncBody(t, app, "function siteUploadNewDesign()")
+	for _, want := range []string{"nn.value = sel ? String(sel.value)", "nn.hidden = false"} {
+		if !strings.Contains(neu, want) {
+			t.Errorf("Upload-as-a-new-design does not open the name field from the picker: %s", want)
+		}
+	}
+	// The field itself: the clash region pins where it lives; here, that it is the page's only
+	// text input inside the dialog and carries the placeholder that says what it is for.
+	region := upDialogRegion(t, page)
+	if !strings.Contains(region, `placeholder="upload under this name"`) {
+		t.Error("#up-newname has no placeholder: a bare field in a clash row is a guess")
+	}
+}
+
+// H4 hub step 4: "Upload as a new design" is the same design going out under a second name, so
+// the body has to carry two. The picker's entry is the only thing the hub can read a file from
+// and the typed field is the only thing the site is asked to store; the dialog that put the typed
+// name in the one `name` field answered itself with `no “Aurora 2” in the clock library on this
+// hub`, which is the feature refusing to exist. The pin is the shape of the object the send path
+// builds, since this page has no DOM in this binary.
+func TestSiteUploadAsNewSendsBothNames(t *testing.T) {
+	app := readAppJS(t)
+
+	// The entry name is the picker's and only the picker's: reading the typed field here is
+	// exactly how the hub ends up hunting for a draft the typing never wrote.
+	entry := jsFuncBody(t, app, "function siteUploadEntryName()")
+	if !strings.Contains(entry, `$("#up-name")`) {
+		t.Error("siteUploadEntryName no longer reads the picker's own entry")
+	}
+	if strings.Contains(entry, "#up-newname") {
+		t.Error("the entry's name reads the typed field: the hub would look for a file that does not exist")
+	}
+
+	// The site's name is the confirmed Replace's spelling, then the visible typed field, then
+	// nothing — and "nothing" is a null the send can tell from a name, not an empty string that
+	// would read back as an upload under the entry's own name.
+	site := jsFuncBody(t, app, "function siteUploadSiteName(replaceName)")
+	for _, want := range []string{"if (replaceName) return String(replaceName)", `$("#up-newname")`,
+		"if (nn && !nn.hidden) return String(nn.value)", "return null"} {
+		if !strings.Contains(site, want) {
+			t.Errorf("the site's name is not the replace spelling, then the visible field, then nothing: %s", want)
+		}
+	}
+
+	send := jsFuncBody(t, app, "async function siteUploadSend(replaceId, replaceName)")
+	if !strings.Contains(send, "const entry = siteUploadEntryName()") ||
+		!strings.Contains(send, "const siteName = siteUploadSiteName(replaceName)") {
+		t.Error("the send path does not ask both name doors before it builds the body")
+	}
+	if !strings.Contains(send, "const body = { app: String(app.value), name: entry }") {
+		t.Error("the upload body's name is no longer the picked entry, whatever the human typed")
+	}
+	if strings.Contains(send, "body.name") {
+		t.Error("the body's name is rewritten after the entry went in: the typed name may only ever ride as siteName")
+	}
+	if !strings.Contains(send, "if (siteName !== null) body.siteName = siteName") {
+		t.Error("a chosen second name is not sent as siteName: the hub would read the upload as a plain one")
+	}
+	// A typed-and-erased field is still a name the human gave: it rides as the empty string the
+	// door refuses with designName's own sentence, rather than quietly uploading under the name
+	// that just clashed.
+	if strings.Contains(send, "if (siteName) body.siteName") {
+		t.Error("an emptied name field is dropped instead of sent, so the upload would retry the clash")
+	}
+	// A plain press carries neither: the two fields §6 names and nothing else, so the site's own
+	// default for the name is never second-guessed by a hub that has nothing to say.
+	if n := strings.Count(jsFuncBody(t, app, "function siteUploadGo()"), "siteName"); n != 0 {
+		t.Error("the plain Upload press knows about site names")
+	}
+	// The line the human watches while the bytes move names the design as they asked for it.
+	if !strings.Contains(send, "const name = siteName === null ? entry : siteName") ||
+		!strings.Contains(send, `"Uploading " + name + "\u2026"`) {
+		t.Error("an upload in flight does not name the design the site is being asked for")
+	}
+	// A confirmed Replace still dials with the clash answer's id and stored name, and the stored
+	// name is what the site hears.
+	yes := jsFuncBody(t, app, "function siteUploadReplaceYes()")
+	if !strings.Contains(yes, "siteUploadSend(existing.id, existing.name)") {
+		t.Error("a confirmed Replace no longer sends the clash answer's own id and stored name")
+	}
+}
+
+// A Replace changes something already on the site, so it is the one clash answer the dialog
+// makes the human confirm before anything moves: the first press only draws the sentence about
+// versions, restoration and kept visibility; the second press is the only door through which
+// siteUploadSend ever sees a replace id.
+func TestSiteUploadReplaceConfirmsBeforeItSends(t *testing.T) {
+	app := readAppJS(t)
+	ask := jsFuncBody(t, app, "function siteUploadReplaceAsk()")
+	if strings.Contains(ask, "hubFetch") || strings.Contains(ask, "siteUploadSend(") {
+		t.Error("Replace's first press sends bytes: the confirm must draw before anything moves")
+	}
+	for _, want := range []string{"adds a new version of", "can be restored on the site", "ask.hidden = false", "String(existing.visibility)"} {
+		if !strings.Contains(ask, want) {
+			t.Errorf("the Replace confirm does not say %s: the sentence is what the human confirms against", want)
+		}
+	}
+	// The id rides only a confirmed press, and only ever one: no retry on the send path.
+	send := jsFuncBody(t, app, "async function siteUploadSend(replaceId, replaceName)")
+	if !strings.Contains(send, "if (replaceId) body.replaceId = String(replaceId)") {
+		t.Error("a plain upload could carry a replace id: only a confirmed Replace may")
+	}
+	if n := strings.Count(send, "hubFetch("); n != 1 {
+		t.Errorf("the upload path dials %d times; a retry could turn one confirmed Replace into two versions", n)
+	}
+	if strings.Contains(jsFuncBody(t, app, "function siteUploadGo()"), "replaceId") {
+		t.Error("the plain Upload press knows about replace ids")
+	}
+	// No leaves the confirm without an answer: Decline puts the ask away and keeps the clash
+	// standing, and nothing but the yes button dials.
+	if strings.Contains(jsFuncBody(t, app, "function siteUploadReplaceNo()"), "hubFetch") {
+		t.Error("Declining a Replace confirm sends anything")
+	}
+	dialers := 0
+	for _, sig := range []string{"function siteUploadGo()", "function siteUploadReplaceYes()"} {
+		if strings.Contains(jsFuncBody(t, app, sig), "siteUploadSend(") {
+			dialers++
+		}
+	}
+	if dialers != 2 {
+		t.Error("the two presses that may dial an upload are no longer exactly Go and the confirmed Replace")
+	}
+}
+
+// The success line is the site's answer, not the form's: the visibility word is the one the
+// 201 carried — a Replace's answer says public whatever the radio said — and the link the line
+// grows points at the site's url and names the site's spelling of the design. A shareRefused is
+// the one answer that is both a success and a warning, and it says so in one line.
+func TestSiteUploadSuccessNamesTheVisibility(t *testing.T) {
+	app := readAppJS(t)
+	succ := jsFuncBody(t, app, "function siteUploadSuccess(data)")
+	if !strings.Contains(succ, "data.visibility") || strings.Contains(succ, "siteUploadVis()") {
+		t.Error("the success line reads the radio instead of the answer: the site decides the word")
+	}
+	if !strings.Contains(succ, `"Uploaded to orb-os.net as " + vis`) {
+		t.Error("the success line is not the §7 sentence naming the visibility")
+	}
+	// A Replace against a public design must be able to say public: the word rides the answer,
+	// so no branch of the drawing may hard-code private into the plain case.
+	if strings.Contains(succ, `= "Uploaded to orb-os.net as private"`) {
+		t.Error("the plain success line hard-codes private: a Replace keeping public would be reported wrongly")
+	}
+	// shareRefused: the design landed, only its share failed, and the line carries the site's
+	// own reason after the fact.
+	if !strings.Contains(succ, `"Uploaded to orb-os.net as private: "`) || !strings.Contains(succ, "shareRefused") {
+		t.Error("shareRefused is not drawn as upload-plus-site-sentence in one line")
+	}
+	// The link rides only an answered url, and the dialog stays open on success: closing it
+	// would take the line the human has not read yet off the page.
+	if !strings.Contains(succ, "if (!st || !url) return") {
+		t.Error("the success anchor is grown without the url guard: a 201 with no url must draw the line alone")
+	}
+	if strings.Contains(succ, "#up-mask") {
+		t.Error("success closes the dialog: the line and its link are the point of the answer")
+	}
+}
+
+// Unlisted and public need a handle, and the handle is a fact about the account, not about this
+// form: the check runs before the door is dialed — the hub would refuse it anyway, and the
+// person would wait for a round trip to be told what was knowable locally — and what it draws
+// points at the site's own profile page, assembled from the site base the link answered with.
+func TestSiteUploadNoHandleIsLocal(t *testing.T) {
+	app := readAppJS(t)
+	check := jsFuncBody(t, app, "function siteUploadVisCheck()")
+	for _, want := range []string{"siteLinkHandle", `siteLinkSite + "/me"`, "need a handle"} {
+		if !strings.Contains(check, want) {
+			t.Errorf("the no-handle check is missing %s", want)
+		}
+	}
+	if strings.Contains(check, "hubFetch") {
+		t.Error("the handle check dials the hub: the handle was answered by the link draw already")
+	}
+	// The check runs before the fetch inside the send path, and private passes straight through
+	// it so the default answer costs nothing.
+	send := jsFuncBody(t, app, "async function siteUploadSend(replaceId, replaceName)")
+	block := strings.Index(send, "if (siteUploadVisCheck()) return")
+	if block < 0 || block > strings.Index(send, `hubFetch("/api/site/upload"`) {
+		t.Error("the send path dials the door before checking the handle")
+	}
+	if !strings.Contains(check, `if (v !== "unlisted" && v !== "public") return false`) {
+		t.Error("the check does not pass private through untouched: the default answer must never be blocked")
+	}
+}
+
+// Opening the dialog reads the hub's shelf once — not on every app change, not on a second open
+// while the first read is still up — and each open arrives clean of the last one's clash,
+// sentence, typed name and answer. The failure path leaves the dialog standing open with the
+// hub's reason and the press dead, because an empty shelf and a shelf that could not be read
+// are different facts and the human must be able to tell which one they are looking at.
+func TestSiteUploadReadsThePicker(t *testing.T) {
+	app := readAppJS(t)
+	open := jsFuncBody(t, app, "async function siteUploadOpen()")
+	if n := strings.Count(open, `hubFetch("/api/site/local-designs"`); n != 1 {
+		t.Errorf("the dialog reads the shelf %d times on open; one press is one read", n)
+	}
+	if n := strings.Count(app, `hubFetch("/api/site/local-designs"`); n != 1 {
+		t.Errorf("the shelf is read from %d places; the picker has one source", n)
+	}
+	if !strings.Contains(open, "if (!mask.hidden) return") {
+		t.Error("open re-reads over an open dialog: a double press would replace the state of a read in flight")
+	}
+	// Clean on every open: clash away, field away and emptied, line emptied, press live again,
+	// and the answer back at the default.
+	for _, want := range []string{"siteUploadClashAway()", "nn.hidden = true", `nn.value = ""`,
+		`st.textContent = ""`, "go.disabled = false", `siteUploadVisSet("private")`} {
+		if !strings.Contains(open, want) {
+			t.Errorf("open does not clear the previous visit through %s", want)
+		}
+	}
+	// Empty shelf: named for what it is, and the press is off, not left to be refused remotely.
+	empty := strings.Index(open, "This hub has no designs to upload.")
+	if empty < 0 || !strings.Contains(open[empty:], "go.disabled = true") {
+		t.Error("an empty shelf still offers an upload press")
+	}
+	// Unreadable shelf: the hub's reason, the press off, and the dialog standing open.
+	if !strings.Contains(open, "the library could not be read: ") {
+		t.Error("a failed shelf read is not drawn with the hub's reason")
+	}
+	catch := open[strings.Index(open, "catch (e)"):]
+	if !strings.Contains(catch, "go.disabled = true") || strings.Contains(catch, "mask.hidden = true") {
+		t.Error("a failed shelf read closes the dialog or leaves the press live")
+	}
+	// The app select drives only the name select, and neither picker change dials again: the
+	// open read is the shelf's only source.
+	if strings.Contains(jsFuncBody(t, app, "function siteUploadFillNames()"), "hubFetch") ||
+		strings.Contains(jsFuncBody(t, app, "function siteUploadFillApps()"), "hubFetch") {
+		t.Error("the picker dials the hub again on a change; the open read is its only source")
+	}
+	if !strings.Contains(app, `$("#up-app").onchange = siteUploadFillNames`) {
+		t.Error("the app select no longer drives the name select")
 	}
 }
 

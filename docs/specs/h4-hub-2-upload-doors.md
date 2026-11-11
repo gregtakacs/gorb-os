@@ -37,11 +37,16 @@ reads the local library. No HTML and no button in this step — step 3 wires the
     `filepath.Dir(writableThemesDir())` + `libDesignsSubdir`, empty when there is no writable
     library. Used only by the listing door.
   - `func (s *Server) handleSiteUpload` — `POST` only (`http.Error(w, "POST only", 405)` as
-    its siblings do). Body `{"app","name","visibility"?,"replaceId"?}` naming an **entry** in
-    this hub's library, read through the hub's
-    existing small-body bound. Order of local refusals, each one `{"ok":false,"error":<one
+    its siblings do). Body `{"app","name","siteName"?,"visibility"?,"replaceId"?}` naming an
+    **entry** in this hub's library, read through the hub's
+    existing small-body bound. `name` names that entry and is what the library lookup reads;
+    `siteName` (step 4's separation of the two names) is the name the site is dialed with when
+    the body carries one, and is held to the same `designName` grammar as `name` — an explicit
+    empty or blank one is the same refusal, not a silent fall back to the entry's name. Order of
+    local refusals, each one `{"ok":false,"error":<one
     sentence>}` at HTTP 200 as `jsonErr`'s shape already is: app failing `designAppRe` →
-    `expected an app slug`; a name `designName` refuses → its sentence; no writable library dir
+    `expected an app slug`; a name `designName` refuses → its sentence, and a carried `siteName`
+    `designName` refuses → that same sentence before anything is dialed; no writable library dir
     → the same sentence `designApp` uses; no such entry (`s.library().entryFold(app, name)`, the
     same fold the picker's rows and `handleLibDesign` match on) → `no “<name>” in
     the <app> library on this hub` (`handleLibDesign`'s words); an entry with a draft **and** no
@@ -67,9 +72,11 @@ reads the local library. No HTML and no button in this step — step 3 wires the
     h4-design.md §11's "one door, one job" inverted. Keep the two readings side by side in the
     new file with a comment naming `libentries.go`'s `handleLibDesign` as the shape.
   - The dial: `POST <l.Site>/api/hub/designs?app=<app>&name=<name>` — both always, through
-    `url.QueryEscape`, with the body's `app` and `name` forwarded **verbatim**: this door adds no
-    name of its own and rewrites none, so a Replace's spelling is whatever the dialog put in the
-    body (§6: on a Replace the dialog sends the clash answer's `existing.name`), and a body whose
+    `url.QueryEscape`, with the body's `app` forwarded verbatim and the query's `name` the body's
+    `siteName` when the body carried one and its `name` otherwise, in both cases forwarded
+    **verbatim**: this door adds no name of its own and rewrites none, so a Replace's spelling is
+    whatever the dialog put in the body (§6: on a Replace the dialog sends the clash answer's
+    `existing.name`, in `siteName`, while `name` still names the entry it reads), and a body whose
     name is not the site's spelling comes back as the site's `replace_mismatch` sentence and is
     passed through like any other refusal. Plus
     `?visibility=` when the body named one and
@@ -128,6 +135,13 @@ reads the local library. No HTML and no button in this step — step 3 wires the
   of `Big Ben` goes out as `name=Big+Ben` or `name=Big%20Ben`, never raw), the five headers, and
   that the body is the draft file's bytes; the hub's answer is `{"ok":true,"data":…}` with the
   site's `url` byte-identical.
+- `TestSiteUploadAsNewUsesTheTypedName` (step 4): an entry `Aurora` uploaded with
+  `siteName: "Aurora 2"` reaches the fake site as `?name=Aurora+2` carrying Aurora's own design
+  bytes, a case-folded `name` with a typed `siteName` still reads the file the hub wrote, a body
+  with no `siteName` still dials the entry's own name, and a `siteName` `designName` refuses —
+  empty, blank, past 64 characters, or carried on a body naming no entry at all — is refused with
+  that rule's sentence and zero requests. A Replace is the same field with the clash answer's
+  stored name, beside its `replaceId`.
 - `TestSiteUploadSendsAThemesDesign`: an entry with **no draft** — only a shelf `.orbtheme` whose
   bake carries a design — uploads `t.Design`, not the bake: assert the body the fake site got
   parses as a design document, is shorter than the shelf file, and equals what

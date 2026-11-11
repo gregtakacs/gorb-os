@@ -21,7 +21,9 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"reflect"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -44,7 +46,8 @@ type hubGrant struct {
 // hubSite is the fake orb-os.net: the approve page's rules (§2.1 + lead review 1), the
 // decision endpoint (§2.2, 303 per lead review 2), the exchange with the S256 check and
 // the same-install replacement (§2.3, refusal 400 invalid_grant per lead review 3), the
-// bearer's own revoke (§2.4) and a designs read (§2.5) to prove a stored token is live.
+// bearer's own revoke (§2.4), a designs read (§2.5) to prove a stored token is live, and
+// H4 §2's upload door on that read's path.
 type hubSite struct {
 	t            *testing.T
 	srv          *httptest.Server
@@ -65,6 +68,28 @@ type hubSite struct {
 	designBody string
 	designSeen []string
 	designHook func(w http.ResponseWriter, r *http.Request)
+
+	// The §2 upload door, same shape: the asks are recorded apart from the read's
+	// because "one attempt, no retry" is a claim about this door's count alone. The
+	// hook answers for it when a test needs a status or a body the honest fake never
+	// gives; otherwise a live bearer gets uploadStatus (201 unless the test set one)
+	// and uploadResp, and a dead one gets the same 401 §2.5's answers.
+	uploadSeen   []string
+	uploadQuery  []string
+	uploadBody   []byte
+	uploadHook   func(w http.ResponseWriter, r *http.Request)
+	uploadResp   string
+	uploadStatus int
+
+	// The §2.3 answer, the same way for H4's scopes: tokenScopes is the "scopes" member
+	// the exchange answers with, encoded verbatim so a test can hand null, [], junk or
+	// duplicates, and tokenScopesSet is what distinguishes that from the key being absent
+	// entirely — an H2 site's answer, which every older test still gets. tokenNoToken
+	// drops the token from an otherwise-good 200, the one refusal a scope answer must not
+	// talk the hub into ignoring.
+	tokenScopes    any
+	tokenScopesSet bool
+	tokenNoToken   bool
 }
 
 func hubSiteServer(t *testing.T) *hubSite {
@@ -146,6 +171,8 @@ func (hs *hubSite) handle(w http.ResponseWriter, r *http.Request) {
 		hs.revoke(w, r)
 	case r.Method == http.MethodGet && r.URL.Path == "/api/hub/designs":
 		hs.designs(w, r)
+	case r.Method == http.MethodPost && r.URL.Path == "/api/hub/designs":
+		hs.upload(w, r)
 	default:
 		http.NotFound(w, r)
 	}
@@ -236,8 +263,14 @@ func (hs *hubSite) token(w http.ResponseWriter, r *http.Request) {
 	hs.recordLocked("link " + g.install)
 	hs.mu.Unlock()
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]any{
-		"token": tok, "hubId": "link-" + g.install, "site": hs.srv.URL, "handle": "greg"})
+	ans := map[string]any{"hubId": "link-" + g.install, "site": hs.srv.URL, "handle": "greg"}
+	if !hs.tokenNoToken {
+		ans["token"] = tok
+	}
+	if hs.tokenScopesSet {
+		ans["scopes"] = hs.tokenScopes
+	}
+	_ = json.NewEncoder(w).Encode(ans)
 }
 
 func (hs *hubSite) refuseGrant(w http.ResponseWriter) {
@@ -354,6 +387,70 @@ func (hs *hubSite) record(event string) {
 	hs.mu.Lock()
 	hs.events = append(hs.events, event)
 	hs.mu.Unlock()
+}
+
+// upload is §2's door as step 2's caller needs to see it: the bearer, the query and the
+// design bytes every ask carried, and a hook for the answers the honest site never gives
+// — a 409 with a clash, a 429, a stall. A live bearer otherwise gets uploadStatus (201
+// unless the test set one) and uploadResp; a dead one gets the same 401 §2.5 answers,
+// because §2 puts the credential check in front of everything the body could say.
+func (hs *hubSite) upload(w http.ResponseWriter, r *http.Request) {
+	tok := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+	b, _ := io.ReadAll(io.LimitReader(r.Body, 16<<20))
+	hs.mu.Lock()
+	hs.uploadSeen = append(hs.uploadSeen, tok)
+	hs.uploadQuery = append(hs.uploadQuery, r.URL.RawQuery)
+	hs.uploadBody = b
+	hook, status, resp := hs.uploadHook, hs.uploadStatus, hs.uploadResp
+	_, ok := hs.owners[tok]
+	hs.mu.Unlock()
+	if hook != nil {
+		hs.record("upload")
+		hook(w, r)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-store")
+	if !ok {
+		hs.record("upload-401")
+		w.WriteHeader(http.StatusUnauthorized)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "unauthenticated"})
+		return
+	}
+	hs.record("upload")
+	if status == 0 {
+		status = http.StatusCreated
+	}
+	if resp == "" {
+		resp = `{"id":"d-1","app":"clock","name":"Skeleton","version":1,"visibility":"private","url":"https://orb-os.net/t/d-1"}`
+	}
+	w.WriteHeader(status)
+	_, _ = io.WriteString(w, resp)
+}
+
+// uploadAsks is how many times the §2 door was dialed, whatever it answered: the count
+// behind "one attempt, no retry" and behind every local refusal that asked for nothing.
+func (hs *hubSite) uploadAsks() int {
+	hs.mu.Lock()
+	defer hs.mu.Unlock()
+	return len(hs.uploadSeen)
+}
+
+// uploadAsk is the nth ask: the bearer it carried, the query it rode, and the document it
+// posted. The claim it serves is exact bytes, exact headers, one question.
+type hubUploadAsk struct {
+	bearer string
+	query  string
+	body   []byte
+}
+
+func (hs *hubSite) uploadAsk(n int) (hubUploadAsk, bool) {
+	hs.mu.Lock()
+	defer hs.mu.Unlock()
+	if n >= len(hs.uploadSeen) {
+		return hubUploadAsk{}, false
+	}
+	return hubUploadAsk{bearer: hs.uploadSeen[n], query: hs.uploadQuery[n], body: hs.uploadBody}, true
 }
 
 // recordLocked is record for a caller already holding hs.mu.
@@ -567,7 +664,7 @@ func TestSiteLinkFileRoundTrip(t *testing.T) {
 		t.Errorf("the config dir's mode is %o, want 0700", di.Mode().Perm())
 	}
 	got := s.loadSiteLink()
-	if got == nil || *got != *want {
+	if got == nil || !reflect.DeepEqual(got, want) {
 		t.Errorf("loadSiteLink = %+v, want the round trip of %+v", got, want)
 	}
 
@@ -579,6 +676,48 @@ func TestSiteLinkFileRoundTrip(t *testing.T) {
 	}
 	if strings.Contains(string(b), want.Token) {
 		t.Error("state.json carries the site token")
+	}
+
+	// H4's scopes ride the same file and the same write path: both words round-trip, and
+	// the key is spelled exactly as §6 spells it.
+	scoped := &siteLink{Token: "tok-scoped", Site: "https://orb.example", LinkedAt: 1700000001,
+		Handle: "greg", Scopes: []string{"designs:read", "designs:write"}}
+	if err := s.saveSiteLink(scoped); err != nil {
+		t.Fatalf("saveSiteLink scoped: %v", err)
+	}
+	sb, err := os.ReadFile(s.siteLinkPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(sb), `"scopes": [`) || !strings.Contains(string(sb), `"designs:read"`) ||
+		!strings.Contains(string(sb), `"designs:write"`) {
+		t.Errorf("the scopes key is not the one §6 spells:\n%s", sb)
+	}
+	if got := s.loadSiteLink(); got == nil || !reflect.DeepEqual(got, scoped) {
+		t.Errorf("scoped round trip = %+v, want %+v", got, scoped)
+	}
+
+	// The read-only DEFAULT writes no key at all: a link whose Scopes is the empty value —
+	// an H2 file, or any writer that carries no consent — lands on disk as an H2 hub's
+	// bytes. (A fresh link the site ANSWERED read-only carries the word explicitly, because
+	// the exchange stores what it was told; TestSiteExchangeScopesAreTheAnswer pins that.)
+	for _, ro := range []*siteLink{
+		{Token: "tok-plain", Site: "https://orb.example", LinkedAt: 1700000002, Handle: "greg"},
+		{Token: "tok-empty", Site: "https://orb.example", LinkedAt: 1700000003, Handle: "greg", Scopes: []string{}},
+	} {
+		if err := s.saveSiteLink(ro); err != nil {
+			t.Fatalf("saveSiteLink read-only: %v", err)
+		}
+		rb, err := os.ReadFile(s.siteLinkPath())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(string(rb), "scopes") {
+			t.Errorf("the read-only default wrote a scopes key:\n%s", rb)
+		}
+		if got := s.loadSiteLink(); got == nil || !slices.Equal(got.Scopes, ro.Scopes) {
+			t.Errorf("read-only round trip %v loaded as %+v", ro.Scopes, got)
+		}
 	}
 
 	// Unparseable bytes read as no link, never as a crash and never as an empty bearer.
@@ -689,7 +828,7 @@ func TestSiteConnectURLIsTheContract(t *testing.T) {
 		}
 		vals[k] = u
 	}
-	wantKeys := []string{"install", "label", "platform", "version", "redirect", "challenge", "state"}
+	wantKeys := []string{"install", "label", "platform", "version", "scope", "redirect", "challenge", "state"}
 	if strings.Join(keys, ",") != strings.Join(wantKeys, ",") {
 		t.Errorf("param order = %v, want %v", keys, wantKeys)
 	}
@@ -702,6 +841,11 @@ func TestSiteConnectURLIsTheContract(t *testing.T) {
 	if vals["platform"] != siteConnectPlatform() {
 		t.Errorf("platform = %q, want this machine's word %q", vals["platform"], siteConnectPlatform())
 	}
+	// H4 §6: the hub always asks for both words, space-separated, QueryEscaped — so the
+	// wire carries exactly this, and the field sits between version and redirect.
+	if vals["scope"] != "designs:read designs:write" {
+		t.Errorf("scope = %q, want the two known words joined with one space", vals["scope"])
+	}
 	if vals["redirect"] != "http://127.0.0.1:41234/callback" {
 		t.Errorf("redirect = %q", vals["redirect"])
 	}
@@ -710,6 +854,18 @@ func TestSiteConnectURLIsTheContract(t *testing.T) {
 	}
 	if vals["state"] != connectState {
 		t.Errorf("state = %q", vals["state"])
+	}
+	// The whole wire at once, so a reordering fails HERE rather than in a review: every
+	// field the contract fixes is literal bytes in its literal place, and only the three
+	// environmental values — this machine's label, its platform, this build's stamp — are
+	// interpolated as themselves. The scope segment reads designs%3Aread+designs%3Awrite
+	// because QueryEscape turns the join's space into a + and each colon into %3A.
+	wantRaw := "install=" + s.installID + "&label=" + url.QueryEscape(siteLabel()) +
+		"&platform=" + siteConnectPlatform() + "&version=" + url.QueryEscape(version) +
+		"&scope=designs%3Aread+designs%3Awrite&redirect=http%3A%2F%2F127.0.0.1%3A41234%2Fcallback" +
+		"&challenge=" + wantChallenge + "&state=" + connectState
+	if raw != wantRaw {
+		t.Errorf("the wire is\n got %q\nwant %q", raw, wantRaw)
 	}
 	hostname, hnErr := os.Hostname()
 	if want := siteLabelOf(hostname, hnErr); vals["label"] != want {
@@ -1251,6 +1407,8 @@ func TestSiteLinkRoutesRefuseEditorCreds(t *testing.T) {
 		{http.MethodGet, "/api/site/link-status"},
 		{http.MethodGet, "/api/site/designs"},
 		{http.MethodPost, "/api/site/disconnect"},
+		{http.MethodPost, "/api/site/upload"},
+		{http.MethodGet, "/api/site/local-designs"},
 	} {
 		for _, editor := range []bool{true, false} {
 			rec := call(c.method, c.path, editor, false, false)
@@ -1316,6 +1474,34 @@ func TestSiteLinkDoorVerbsAndEmptyState(t *testing.T) {
 	} else if env["data"].(map[string]any)["state"] != "none" {
 		t.Errorf("an unlinked hub says %v, want state none", env["data"])
 	}
+
+	// The scopes key belongs to the linked answer alone (h4-design.md §6): where there is
+	// no consent to name — no link, an attempt in flight, a link the site ended — the door
+	// answers no scopes key at all, as it answers no handle when there is none.
+	if st := linkStatusState(t, s); st["state"] != "none" {
+		t.Fatalf("an unlinked hub says %v, want none", st)
+	} else if _, has := st["scopes"]; has {
+		t.Errorf("a none answer carries a scopes key: %v", st)
+	}
+	if _, _, err := s.openSiteConnect(); err != nil {
+		t.Fatalf("openSiteConnect: %v", err)
+	}
+	t.Cleanup(func() { s.closeSiteAttempt() })
+	if st := linkStatusState(t, s); st["state"] != "pending" {
+		t.Fatalf("an open attempt says %v, want pending", st)
+	} else if _, has := st["scopes"]; has {
+		t.Errorf("a pending answer carries a scopes key: %v", st)
+	}
+	s.closeSiteAttempt()
+	disc := `{"site":"https://orb.example","linkedAt":0,"handle":"greg","disconnected":true}`
+	if err := os.WriteFile(s.siteLinkPath(), []byte(disc), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if st := linkStatusState(t, s); st["state"] != "disconnected" {
+		t.Fatalf("a disconnected file says %v, want disconnected", st)
+	} else if _, has := st["scopes"]; has {
+		t.Errorf("a disconnected answer carries a scopes key: %v", st)
+	}
 }
 
 // A site that will not complete the exchange costs the hub nothing but the attempt: the
@@ -1376,8 +1562,151 @@ func TestSiteConnectExchangeFailuresStoreNothing(t *testing.T) {
 
 	// A site that is gone at all fails the same way, straight through the client.
 	t.Setenv("GORB_SITE", "http://127.0.0.1:1")
-	if _, _, err := s.siteTokenExchange(context.Background(), "v", "c"); err == nil {
+	if _, _, _, err := s.siteTokenExchange(context.Background(), "v", "c"); err == nil {
 		t.Error("an unreachable site read as a successful exchange")
+	}
+}
+
+// jsonStrings reads a door's answer back as the strings it holds, [] for a key that was
+// absent or not an array — the shape a test compares with what the hub meant to answer.
+func jsonStrings(v any) []string {
+	arr, _ := v.([]any)
+	out := make([]string, 0, len(arr))
+	for _, e := range arr {
+		sv, _ := e.(string)
+		out = append(out, sv)
+	}
+	return out
+}
+
+// An H2 file — the exact bytes H2's own round-trip test left on disk, with no scopes key —
+// is a complete credential to an H4 hub: it loads whole, it lives, and every reader of its
+// consent comes away with the one word the file implies. Loading does not repair it: the
+// bytes on disk after the read are the bytes before, because a hub that rewrote a
+// credential it merely looked at could rewrite a good one it misread.
+func TestSiteLinkFileWithoutScopesStillLoads(t *testing.T) {
+	s := linkHub(t)
+	t.Setenv("GORB_SITE", "https://orb.example")
+	h2 := "{\n  \"token\": \"tok-h2\",\n  \"site\": \"https://orb.example\",\n  \"linkedAt\": 1700000000,\n  \"handle\": \"greg\"\n}"
+	if err := os.WriteFile(s.siteLinkPath(), []byte(h2), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	l := s.loadSiteLink()
+	if l == nil || l.Token != "tok-h2" || l.Site != "https://orb.example" || l.LinkedAt != 1700000000 || l.Handle != "greg" {
+		t.Fatalf("the H2 file loaded as %+v, want it whole", l)
+	}
+	if len(l.Scopes) != 0 {
+		t.Errorf("loading gave the file scopes it never had: %v", l.Scopes)
+	}
+	if live := s.liveSiteLink(); live == nil || live.Token != "tok-h2" {
+		t.Errorf("liveSiteLink = %+v, want the H2 file read as the live link it is", live)
+	}
+	if got := siteLinkScopes(l); !slices.Equal(got, []string{"designs:read"}) {
+		t.Errorf("siteLinkScopes = %v, want the read-only default", got)
+	}
+	if got := siteLinkScopes(nil); got != nil {
+		t.Errorf("siteLinkScopes(nil) = %v, want no scopes for no link", got)
+	}
+	st := linkStatusState(t, s)
+	if st["state"] != "linked" {
+		t.Fatalf("an H2 file says %v, want linked", st)
+	}
+	if got := jsonStrings(st["scopes"]); !slices.Equal(got, []string{"designs:read"}) {
+		t.Errorf("link-status scopes = %v, want the read-only array the page can draw", st["scopes"])
+	}
+	if b, err := os.ReadFile(s.siteLinkPath()); err != nil || string(b) != h2 {
+		t.Errorf("reading the credential file changed it: %q err %v", b, err)
+	}
+	// The transcription above is the bytes an H2 hub really wrote, not a guess at them:
+	// this hub's own writer, handed the same row with no consent on it, produces the same
+	// bytes — which is the whole claim about what scopes did to the file's shape.
+	if err := s.saveSiteLink(&siteLink{Token: "tok-h2", Site: "https://orb.example", LinkedAt: 1700000000, Handle: "greg"}); err != nil {
+		t.Fatal(err)
+	}
+	if b, err := os.ReadFile(s.siteLinkPath()); err != nil || string(b) != h2 {
+		t.Errorf("the H2 shape is not what this hub writes for a link with no consent:\n got %q\nwant %q (err %v)", b, h2, err)
+	}
+}
+
+// The exchange stores the site's ANSWER, not the hub's ask (h4-design.md §6): whatever the
+// fake site puts in the scopes member — both words, one, none, null, empty, junk,
+// duplicates — the file ends up with normalizeSiteScopes' reading of it. Nothing here may
+// cost a connect: a smaller answer is a smaller link, the page still says Orb Manager is
+// connected, and the one answer that does fail the flow, a 200 without a token, fails it
+// exactly as it always did and stores nothing.
+func TestSiteExchangeScopesAreTheAnswer(t *testing.T) {
+	both := []string{"designs:read", "designs:write"}
+	readOnly := []string{"designs:read"}
+	for _, c := range []struct {
+		name    string
+		scopes  any      // the scopes member the fake answers with, encoded verbatim
+		set     bool     // false: the key is absent, an H2 site's answer
+		noToken bool     // a 200 that carries no token at all
+		want    []string // the stored file's scopes; nil means "no file written"
+	}{
+		{"both", both, true, false, both},
+		{"read-only", readOnly, true, false, readOnly},
+		{"absent", nil, false, false, readOnly},
+		{"null", nil, true, false, readOnly},
+		{"empty", []string{}, true, false, readOnly},
+		{"write-only", []string{"designs:write"}, true, false, readOnly},
+		// A write-only answer is the site refusing designs:read whatever else rides along,
+		// and the hub reads it as the conservative thing it is (§10's first answer).
+		{"junk-write-only", []string{"bogus:all", "designs:write", "designs:write"}, true, false, readOnly},
+		// Unknown words and duplicates drop, and what remains sorts into the one spelling.
+		{"junk-both-duplicated", []string{"bogus:all", "designs:read", "designs:write", "designs:write"}, true, false, both},
+		{"no-token", both, true, true, nil},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			hs := hubSiteServer(t)
+			hs.tokenScopes, hs.tokenScopesSet, hs.tokenNoToken = c.scopes, c.set, c.noToken
+			s := linkHub(t)
+			connectURL, att, err := s.openSiteConnect()
+			if err != nil {
+				t.Fatalf("openSiteConnect: %v", err)
+			}
+			t.Cleanup(func() { s.closeSiteAttempt() })
+			loc := siteApprove(t, hs, connectURL)
+			status, page := fetchPage(t, loc)
+			if status != http.StatusOK {
+				t.Fatalf("the callback answered %d: %.200s", status, page)
+			}
+			if !att.done.Load() {
+				t.Error("the callback left the attempt open")
+			}
+			if c.want == nil {
+				if b := readSiteLinkFile(t, s); b != nil {
+					t.Errorf("a tokenless 200 stored a file anyway: %s", b)
+				}
+				if !strings.Contains(page, "Not connected") {
+					t.Errorf("the failure page reads %.200s, want the old sentence", page)
+				}
+				if st := linkStatusState(t, s); st["state"] != "none" {
+					t.Errorf("a failed exchange says %v, want none", st)
+				}
+				return
+			}
+			if !strings.Contains(page, "Orb Manager is connected") {
+				t.Errorf("%s: the page reads %.200s, want the success sentence: less than the ask is still a link", c.name, page)
+			}
+			l := s.loadSiteLink()
+			if l == nil {
+				t.Fatalf("%s: a completed connect stored no credential", c.name)
+			}
+			if !slices.Equal(l.Scopes, c.want) {
+				t.Errorf("%s: stored scopes = %v, want the answer %v", c.name, l.Scopes, c.want)
+			}
+			if l.Token == "" || l.Handle != "greg" || l.Site != siteReleaseBase() {
+				t.Errorf("%s: the scope answer disturbed the credential itself: %+v", c.name, l)
+			}
+			st := linkStatusState(t, s)
+			if st["state"] != "linked" {
+				t.Fatalf("%s: after storing, link-status says %v", c.name, st)
+			}
+			if got := jsonStrings(st["scopes"]); !slices.Equal(got, c.want) {
+				t.Errorf("%s: link-status scopes = %v, want %v", c.name, st["scopes"], c.want)
+			}
+		})
 	}
 }
 

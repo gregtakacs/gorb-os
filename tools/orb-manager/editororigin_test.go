@@ -544,12 +544,15 @@ func TestEditorAPIOnlyTheListedRoutes(t *testing.T) {
 		{http.MethodPost, "/api/orb/update"},
 		{http.MethodPost, "/api/theme/erase"},
 		// H2's site surface is a hub power too: an app's page cannot link the hub to an
-		// account, read whose designs it holds or sign it out of one, so not one of these
-		// five patterns is mounted on this mux at all.
+		// account, read whose designs it holds or sign it out of one — and H4's upload
+		// doors are the same kind of power, an account's write and the picker that
+		// feeds it — so not one of these patterns is mounted on this mux at all.
 		{http.MethodPost, "/api/site/connect"},
 		{http.MethodGet, "/api/site/link-status"},
 		{http.MethodGet, "/api/site/designs"},
 		{http.MethodPost, "/api/site/disconnect"},
+		{http.MethodPost, "/api/site/upload"},
+		{http.MethodGet, "/api/site/local-designs"},
 		{http.MethodGet, "/api/site/import"},
 		{http.MethodGet, "/api/status"},
 		{http.MethodGet, "/api/state"},

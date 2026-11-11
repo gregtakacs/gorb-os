@@ -52,8 +52,13 @@
     <div class="row toolbar">
       <button id="mn-site-btn" class="ghost" type="button" hidden
               title="Paste the link of a theme on orb-os.net. Orb Manager fetches its design, bakes it with its own editor for that app under its shared name (“name by @creator”), and keeps it here. No orb and no sign-in are needed.">Import from orb-os.net</button>
-      <button id="mn-lib-upload" class="ghost" type="button" disabled hidden
-              title="Not yet: uploading a theme to your orb-os.net account needs this Orb Manager connected to it (Connect to orb-os.net, coming in a later release).">Upload to orb-os.net</button>
+      <button id="mn-lib-upload" class="ghost" type="button" hidden
+              title="Send a design from this hub's library to your orb-os.net account. It lands in your library there under the same name; nothing on the site is changed.">Upload to orb-os.net</button>
+      <!-- H4: a link minted before designs:write reads designs only, and the one sentence
+           that says so is drawn beside this button rather than in the connect row, because
+           the fact belongs where the refused act was pressed. -->
+      <button id="mn-lib-reconnect" class="ghost" type="button" hidden
+              title="Link this Orb Manager to your orb-os.net account again, and approve the two scopes">Reconnect</button>
       <span id="mn-lib-state" class="hint"></span>
     </div>
     <div class="row" id="mn-site-row" hidden>
@@ -766,6 +771,52 @@
     <div class="row">
       <button id="cf-ok" class="danger">Confirm</button>
       <button id="cf-no" class="ghost">Cancel</button>
+    </div>
+  </div>
+</div>
+
+<!-- The upload dialog (H4 §6): one design off this hub's shelf, one visibility, one press.
+     Nothing is dialed before the press. A name clash is a choice of three answers rather
+     than a yes/no ask, which is why it lives here and not in the confirmation modal, and
+     Replace says what it does — a new version, the visibility kept, the old one restorable —
+     before any byte moves, because it is the one answer that changes something already on
+     the site. Markup only: app.js fills the two selects and draws every answer. -->
+<div class="mask" id="up-mask" hidden>
+  <div class="uppanel" id="up-panel" role="dialog" aria-modal="true" aria-labelledby="up-title">
+    <h3 id="up-title">Upload to orb-os.net</h3>
+    <div class="row">
+      <label class="inline">App <select id="up-app"></select></label>
+      <label class="inline">Design <select id="up-name"></select></label>
+    </div>
+    <div class="row">
+      <span class="inline">Visibility</span>
+      <label class="inline"><input type="radio" name="up-vis" value="private" checked> Private</label>
+      <label class="inline"><input type="radio" name="up-vis" value="unlisted"> Unlisted</label>
+      <label class="inline"><input type="radio" name="up-vis" value="public"> Public</label>
+    </div>
+    <!-- The clash: the site already has this name, so the human picks between three
+         answers. It stands hidden until a name_taken answer unhides it. -->
+    <div class="row" id="up-clash" hidden>
+      <span class="hint" id="up-clash-line"></span>
+      <button id="up-replace" class="danger" type="button" title="Add a new version of the design already on orb-os.net under this name. It asks first what that does.">Replace</button>
+      <button id="up-new" class="ghost" type="button" title="Keep this hub's design and upload it under a name you type.">Upload as a new design</button>
+      <button id="up-cancel" class="ghost" type="button" title="Send nothing. The dialog stays open and the library on this hub is untouched.">Cancel</button>
+      <!-- Replace's second ask: what pressing Replace again will cost. -->
+      <div class="row upask" id="up-replace-ask" hidden>
+        <span class="hint" id="up-replace-line"></span>
+        <button id="up-replace-yes" class="danger" type="button">Replace</button>
+        <button id="up-replace-no" class="ghost" type="button">Cancel</button>
+      </div>
+    </div>
+    <!-- Shown by “Upload as a new design”: the name this upload will go out under, prefilled
+         with what was first chosen and editable. maxlength is the hub's own 64-character name
+         bound, so the field cannot type a name the door would refuse for length. -->
+    <input type="text" id="up-newname" maxlength="64" hidden placeholder="upload under this name"
+           aria-label="Upload under this name" title="The name this design goes to orb-os.net under." spellcheck="false" autocomplete="off">
+    <p class="hint" id="up-state" aria-live="polite"></p>
+    <div class="row">
+      <button id="up-go" class="primary" type="button" title="Send this design to your orb-os.net library. Nothing on the site's existing designs changes.">Upload</button>
+      <button id="up-close" class="ghost" type="button" title="Close without sending anything.">Close</button>
     </div>
   </div>
 </div>

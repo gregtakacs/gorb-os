@@ -59,12 +59,18 @@ three answers.
     `GET /api/site/local-designs` read, and hide `#up-clash` and `#up-newname` on every open. The
     name select filters to the app select's choice; an empty library leaves the selects empty and
     says `This hub has no designs to upload.` in `#up-state`.
-  - `siteUploadSend(replaceId, replaceName)`: `POST /api/site/upload` with `{app, name}` (the
-    visible name — `#up-newname`'s value when it is showing, the select's otherwise — or, when
-    `replaceName` is given, that string instead: the clash answer's `existing.name`, which is the
-    only spelling §4 accepts on a Replace), `visibility` only when the
+  - `siteUploadSend(replaceId, replaceName)`: `POST /api/site/upload` with `{app, name}` where
+    `name` is **always the picker's entry** — `#up-name`'s value, never `#up-newname`'s, since it
+    is the one name the hub reads a file from — plus `siteName` when the human chose a second
+    name for the site to store it under: `#up-newname`'s value while that field is showing
+    (including an emptied field, which the hub refuses with its own grammar sentence rather than
+    the upload quietly retrying the name that just clashed), and `replaceName` when a Replace
+    confirmed one — the clash answer's `existing.name`, the only spelling §4 accepts on a Replace.
+    A plain upload sends no `siteName` at all, so the site stores the design under the name the
+    library already calls it. `visibility` only when the
     radio is not `private`, and `replaceId` only when given. `#up-go` is disabled and `#up-state`
-    reads `Uploading <name>…` while it runs, and the button comes back on every answer including
+    reads `Uploading <name>…` while it runs, naming the design as the human asked for it, and the
+    button comes back on every answer including
     a stall.
   - Answers: `ok` → `#up-state` reads `Uploaded to orb-os.net as ` plus the visibility **the site
     answered** (`private`, `unlisted` or `public`, from `data.visibility`, never from the radio),
@@ -120,11 +126,16 @@ The pins go in `ui_test.go` beside `TestSiteUISectionIsThereAndShut`, in that fi
   `"<img src=x onerror=alert(1)>"` as a name can only ever be a label.
 - `TestSiteUploadClashOffersThreeAnswers`: `#up-replace`, `#up-new`, `#up-cancel` exist, the
   clash row is `hidden` in markup, and the send function passes `nameTaken.id` as the replace id
-  and `nameTaken.existing.name` as the name (never the local spelling: §4 refuses a Replace whose
+  and `nameTaken.existing.name` as the site's `siteName` (never the local spelling: §4 refuses a Replace whose
   query name is not the stored one, so the hub that sent its own label would be refusing the human's
   own confirmation),
   and re-reads `#up-newname` for the new-name path — a `name_taken` can never be closed by
   anything but one of the three.
+- `TestSiteUploadAsNewSendsBothNames` (step 4): the two name doors are separate — the entry door
+  reads `#up-name` and never `#up-newname`, the site door answers the replace spelling, then the
+  visible field, then `null` — and the body the send path builds is `{app, name: <the entry>}`
+  with `siteName` added only when a second name stands, never by rewriting `body.name`. The
+  in-flight line still names the design as the human asked for it.
 - `TestSiteUploadReplaceConfirmsBeforeItSends`: `#up-replace-ask`, `#up-replace-line`,
   `#up-replace-yes` and `#up-replace-no` exist and the ask row is `hidden` in markup; the
   `#up-replace` handler's body (`jsFuncBody`) contains no `fetch` and no `siteUploadSend(` call,

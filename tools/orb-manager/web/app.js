@@ -5713,8 +5713,16 @@ function drawSiteLink(data) {
   const linked = $("#mn-site-linked");
   const state = (data && data.state) || "none";
   const isLinked = state === "linked";
+  // H4: the scopes are part of the linked answer, and the upload door's life follows them.
+  // Every draw recomputes this — the poll's included — so a relink that came back read-only
+  // cannot leave a live Upload button standing, and a link that never names the write scope
+  // never gets one. The site's own answer decides, not what this hub asked for.
+  siteWritable = isLinked && Array.isArray(data.scopes) && data.scopes.indexOf("designs:write") >= 0;
+  siteLinkHandle = (isLinked && data.handle) ? String(data.handle) : "";
+  siteLinkSite = (isLinked && data.site) ? String(data.site) : "";
   if (connectBlock) connectBlock.hidden = isLinked;
   if (designsBlock) designsBlock.hidden = !isLinked;
+  siteUploadLinkLine(isLinked && !siteWritable);
   if (isLinked) {
     siteConnectUrl = "";
     const handle = data.handle ? String(data.handle) : "";
@@ -5754,10 +5762,12 @@ function appendSiteFallback(conn, url) {
 }
 
 // The two presses the section answers to. Connect starts an attempt (the hub opens the
-// browser; this shows the URL and waits); Disconnect ends the link and redraws unlinked.
+// browser; this shows the URL and waits) and is named so the toolbar's Reconnect for a
+// read-only link presses the very same door rather than a copy of it (H4); Disconnect ends the
+// link and redraws unlinked.
 function siteLinkWire() {
   const connect = $("#mn-site-connect"), disc = $("#mn-site-disconnect");
-  if (connect) connect.onclick = siteConnectPress;
+  if (connect) connect.onclick = siteLinkReconnectPress;
   if (disc) disc.onclick = siteDisconnectPress;
 }
 
@@ -5947,6 +5957,381 @@ async function siteDisconnectPress() {
   if (st) st.textContent = "disconnected from orb-os.net";
   loadSiteLink();
 }
+
+// ---- Upload to orb-os.net (H4 §6, hub step 3) ---------------------------------------
+//
+// The dialog the H2 UI left disabled: one design off this hub's shelf, one visibility, one
+// press, one answer. It reads its picker from the hub (GET /api/site/local-designs) and
+// dials through the hub (POST /api/site/upload) — this page still never speaks to the site,
+// and nothing here dials before a human presses Upload. A name clash is three answers rather
+// than the page's yes/no ask, and Replace asks a second time about what it costs, because it
+// is the one answer that changes something already on the site.
+//
+// siteWritable is written only by drawSiteLink, so the scopes the site answered — not the
+// scopes this hub asked for — decide whether the button is live. siteLinkHandle and
+// siteLinkSite carry the same answer's two other upload facts: whether the account can hold
+// a shared design at all, and where its /me page lives.
+let siteWritable = false;
+let siteLinkHandle = "";
+let siteLinkSite = "";
+let upDesigns = [];
+let nameTaken = null;
+
+// siteUploadLinkLine is the toolbar's one sentence about the upload door, and the only place
+// upload is mentioned to a hub that cannot upload: a read-only link says the ruling's line and
+// offers the Reconnect that fixes it. Every other state leaves #mn-lib-state as it found it —
+// a library read that failed keeps its own sentence, and a writable link leaves the line empty
+// rather than decorating it.
+function siteUploadLinkLine(readOnly) {
+  const btn = $("#mn-lib-upload"), again = $("#mn-lib-reconnect"), st = $("#mn-lib-state");
+  if (btn) btn.disabled = !siteWritable;
+  if (again) again.hidden = !readOnly;
+  if (!st) return;
+  if (readOnly) { st.textContent = "Reconnect to allow uploads"; return; }
+  if (st.textContent === "Reconnect to allow uploads") st.textContent = "";
+}
+
+// siteLinkReconnectPress is what both Reconnect doors press: the connect block's own Connect
+// and the toolbar's, for a link that reads designs only. One named handler, so the two can
+// never grow two connect flows. The row opens first because the waiting line lives inside it:
+// a press that showed nothing would read as a button that did not work.
+function siteLinkReconnectPress() {
+  const row = $("#mn-site-row");
+  if (row) row.hidden = false;
+  siteConnectPress();
+}
+
+// siteUploadOpen reads the picker fresh on every open rather than caching it: a design saved
+// from an editor a minute ago should be uploadable without restarting the hub, and the read is
+// small. A second open while one stands is a no-op, as askConfirm's rule is, so the page never
+// holds two dialogs of the same kind.
+async function siteUploadOpen() {
+  const mask = $("#up-mask"), app = $("#up-app"), name = $("#up-name"), go = $("#up-go");
+  if (!mask || !app || !name) return;
+  if (!mask.hidden) return;
+  mask.hidden = false;
+  siteUploadClashAway();
+  const nn = $("#up-newname");
+  if (nn) { nn.hidden = true; nn.value = ""; }
+  const st = $("#up-state");
+  if (st) st.textContent = "";
+  if (go) go.disabled = false;
+  siteUploadVisSet("private");
+  let rows = [];
+  try {
+    const r = await hubFetch("/api/site/local-designs");
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok || !j || j.ok !== true) throw new Error((j && j.error) || ("HTTP " + r.status));
+    rows = Array.isArray((j.data || {}).designs) ? j.data.designs : [];
+  } catch (e) {
+    // The dialog stands open with empty selects and the hub's own reason in its line: the
+    // human closes it or retries, and the shelf beside it is untouched either way.
+    upDesigns = [];
+    siteUploadFillApps();
+    siteUploadFillNames();
+    if (st) st.textContent = "the library could not be read: " + e.message;
+    if (go) go.disabled = true;
+    return;
+  }
+  upDesigns = rows;
+  siteUploadFillApps();
+  siteUploadFillNames();
+  if (!upDesigns.length) {
+    if (st) st.textContent = "This hub has no designs to upload.";
+    if (go) go.disabled = true;
+  }
+}
+
+function siteUploadClose() {
+  const mask = $("#up-mask");
+  if (mask) mask.hidden = true;
+}
+
+// siteUploadFillApps draws the app select: one option per app the picker named, in the
+// picker's own newest-first order, labelled with the app's title the way the shelf labels it.
+function siteUploadFillApps() {
+  const app = $("#up-app");
+  if (!app) return;
+  app.textContent = "";
+  const seen = [];
+  for (const d of upDesigns) {
+    const a = String((d && d.app) || "");
+    if (a && seen.indexOf(a) < 0) seen.push(a);
+  }
+  for (const a of seen) {
+    const o = document.createElement("option");
+    o.value = a;
+    o.textContent = libAppTitle(a);
+    app.appendChild(o);
+  }
+}
+
+// siteUploadFillNames filters the name select to the app chosen above it, so the pair can only
+// ever name one entry of one app — the pair the hub's door takes as {app, name}. The row's own
+// size rides as the option's tooltip: the human sees how big the bytes are before sending them.
+function siteUploadFillNames() {
+  const app = $("#up-app"), name = $("#up-name");
+  if (!app || !name) return;
+  name.textContent = "";
+  for (const d of upDesigns) {
+    if (String((d && d.app) || "") !== String(app.value)) continue;
+    const o = document.createElement("option");
+    o.value = String((d && d.name) || "");
+    o.textContent = o.value;
+    if (d && d.bytes) o.title = Math.ceil(Number(d.bytes) / 1024) + " KB";
+    name.appendChild(o);
+  }
+}
+
+// siteUploadVis reads the three radios; siteUploadVisSet answers one of them, which is how an
+// open returns the dialog to its default rather than leaving last time's Public standing.
+function siteUploadVis() {
+  const on = document.querySelector("input[name=\"up-vis\"]:checked");
+  return on && on.value ? String(on.value) : "private";
+}
+
+function siteUploadVisSet(v) {
+  for (const r of document.querySelectorAll("input[name=\"up-vis\"]")) r.checked = String(r.value) === String(v);
+}
+
+// siteUploadVisCheck is the visibility change's whole answer, and the guard the send path runs
+// through first: the page learned from link-status whether this account has a handle at all, so
+// an unlisted or public upload that §5 refuses before writing a byte is answered here rather
+// than after a round trip. It returns true when the upload must not be dialed. The site's own
+// no_handle refusal is still drawn when it arrives — another browser can take or set a handle
+// between the two reads — so this shortcut is not the rule, and the anchor it draws is the same
+// answer's site plus /me, the one page where a handle is set.
+function siteUploadVisCheck() {
+  const v = siteUploadVis();
+  if (v !== "unlisted" && v !== "public") return false;
+  if (siteLinkHandle) return false;
+  const st = $("#up-state");
+  if (st) {
+    st.textContent = "Unlisted and public designs need a handle: set one on ";
+    if (siteLinkSite) {
+      const a = document.createElement("a");
+      a.className = "site-fallback";
+      a.href = siteLinkSite + "/me";
+      a.textContent = siteLinkSite;
+      a.target = "_blank";
+      a.rel = "noopener noreferrer";
+      st.appendChild(a);
+    }
+  }
+  return true;
+}
+
+// siteUploadEntryName is the library entry this upload reads: the picker's own choice, always,
+// however the name was typed over it. It is the one name the hub looks a file up with, so it
+// never takes the typed field — that field names the site's copy, not this hub's.
+function siteUploadEntryName() {
+  const sel = $("#up-name");
+  return sel ? String(sel.value) : "";
+}
+
+// siteUploadSiteName is the name the site is asked for: the clash answer's stored spelling when
+// a Replace confirmed one, the typed field when it is standing, and null when the human chose
+// neither and the entry's own name stands. The null is as load-bearing as the string — it is
+// what keeps a plain upload's body at the two fields §6 names, so the design lands under the
+// name the library already calls it. The field is read here rather than remembered, so editing
+// it twice before pressing sends what the human can see.
+function siteUploadSiteName(replaceName) {
+  if (replaceName) return String(replaceName);
+  const nn = $("#up-newname");
+  if (nn && !nn.hidden) return String(nn.value);
+  return null;
+}
+
+// siteUploadGo is the plain press: the picker's pair, no Replace, no stored name.
+function siteUploadGo() { siteUploadSend("", ""); }
+
+// siteUploadSend dials the hub's upload door once. One attempt, never a retry: a retry would
+// turn one confirmed Replace into two versions. The body carries the picker's entry as `name`
+// whatever the human typed, and the typed or confirmed name as `siteName` only when one was
+// chosen — so "Upload as a new design" reads the entry the picker holds and posts it under the
+// new name, instead of asking the hub for a file the typing never wrote. visibility is sent only
+// when the answer is not the default, and replaceId only when a Replace confirmed it, so an
+// ordinary private upload carries the two fields §6 calls for and nothing else. The button comes
+// back on every ending, a stall included — a send that never answers must not leave a dead
+// button over an open dialog.
+async function siteUploadSend(replaceId, replaceName) {
+  const go = $("#up-go"), st = $("#up-state"), app = $("#up-app");
+  if (!app) return;
+  if (siteUploadVisCheck()) return;
+  const entry = siteUploadEntryName();
+  const siteName = siteUploadSiteName(replaceName);
+  const name = siteName === null ? entry : siteName;
+  const body = { app: String(app.value), name: entry };
+  if (siteName !== null) body.siteName = siteName;
+  const vis = siteUploadVis();
+  if (vis !== "private") body.visibility = vis;
+  if (replaceId) body.replaceId = String(replaceId);
+  siteUploadClashAway();
+  if (go) go.disabled = true;
+  if (st) st.textContent = "Uploading " + name + "\u2026";
+  let j = null;
+  try {
+    const r = await hubFetch("/api/site/upload", {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+    });
+    j = await r.json().catch(() => ({}));
+  } catch (e) {
+    // The door shut between the draw and the press, or the hub went away: either way this is
+    // the hub not answering, said in the words every other door on this page uses.
+    j = { ok: false, error: "the hub did not answer: " + orbWaitWords(e) };
+  }
+  if (go) go.disabled = false;
+  siteUploadAnswer(j || {});
+}
+
+// siteUploadAnswer is the one fork over the hub's envelope. ok draws what the site answered;
+// name_taken hands the clash to the three answers; every other error is the hub's sentence
+// verbatim — including the "Reconnect to allow uploads" a scope refusal and the "not connected
+// to orb-os.net" a door that closed — and the dialog stays open on all of them, because none of
+// them is a reason to take away what the human was looking at.
+function siteUploadAnswer(j) {
+  if (j && j.ok === true) { siteUploadSuccess(j.data || {}); return; }
+  if (j && j.error === "name_taken") { siteUploadClash(j); return; }
+  siteUploadSay(String((j && (j.error || j.message)) || "orb-os.net did not answer"));
+}
+
+function siteUploadSay(line) {
+  const st = $("#up-state");
+  if (st) st.textContent = line;
+}
+
+// siteUploadSuccess reports the site's answer, not the form's: the visibility word is the one
+// the site sent (a Replace's 201 says public whatever the radio said, and the line must not
+// contradict the site), and the link names the design as the site now answers to it rather than
+// as this hub's folder calls it. A shareRefused is not a refusal — the design is on the site and
+// only its share failed — so the same line says both facts with the site's sentence on the end.
+// Foreign bytes reach textContent and an href property and never become markup: a site naming a
+// design "<img src=x onerror=alert(1)>" gets that string as a label and nothing else.
+function siteUploadSuccess(data) {
+  const st = $("#up-state");
+  const refused = data ? data.shareRefused : null;
+  const vis = refused ? "private" : String((data && data.visibility) || "private");
+  const line = refused
+    ? "Uploaded to orb-os.net as private: " + String(refused.message || "")
+    : "Uploaded to orb-os.net as " + vis;
+  if (st) st.textContent = line;
+  const url = (data && data.url) ? String(data.url) : "";
+  if (!st || !url) return;
+  const a = document.createElement("a");
+  a.className = "site-fallback";
+  a.href = url;
+  a.textContent = "Open " + String((data && data.name) || "") + " on orb-os.net";
+  a.target = "_blank";
+  a.rel = "noopener noreferrer";
+  st.appendChild(document.createTextNode(" "));
+  st.appendChild(a);
+}
+
+// siteUploadClash keeps the clash answer and offers the three: Replace, Upload as a new design,
+// Cancel. A clash with no existing object — the race §3.2 names, the answer the site gives
+// inside its own lock — names no design to Replace against, so it is the sentence alone, in the
+// site's words, and the dialog stands open with nothing added to it.
+function siteUploadClash(j) {
+  const existing = j ? j.nameTaken : null;
+  if (!existing || !existing.id) {
+    siteUploadSay(String((j && j.message) || "orb-os.net did not answer"));
+    return;
+  }
+  nameTaken = existing;
+  const line = $("#up-clash-line");
+  if (line) line.textContent = "orb-os.net already has a design called \u201c" + String(existing.name) + "\u201d.";
+  siteUploadAskAway();
+  const st = $("#up-state");
+  if (st) st.textContent = "";
+  const row = $("#up-clash");
+  if (row) row.hidden = false;
+}
+
+// siteUploadReplaceAsk is Replace's first press, and it sends nothing: a Replace is the one
+// clash answer that changes something already on the site, so the human reads what it does — a
+// new version, the visibility kept, the version now on the site restorable — before the bytes
+// move. Both names are the clash answer's own: the stored spelling, because §4's
+// replace_mismatch compares the query's name with the stored one and a case-only difference
+// here would refuse the confirmation the human just gave.
+function siteUploadReplaceAsk() {
+  const existing = nameTaken;
+  if (!existing || !existing.id) return;
+  const line = $("#up-replace-line");
+  if (line) {
+    line.textContent = "Replace adds a new version of \u201c" + String(existing.name) + "\u201d on orb-os.net. "
+      + "It stays " + String(existing.visibility) + " and keeps its link, and the current version can be restored on the site.";
+  }
+  const ask = $("#up-replace-ask");
+  if (ask) ask.hidden = false;
+}
+
+// siteUploadReplaceYes is the second press, and the only door through which a Replace is ever
+// dialed: the clash answer's id as the replace id, and the clash answer's stored name as the
+// name, never this hub's spelling of it.
+function siteUploadReplaceYes() {
+  const existing = nameTaken;
+  if (!existing || !existing.id) return;
+  siteUploadSend(existing.id, existing.name);
+}
+
+// siteUploadReplaceNo takes the ask back and leaves the question standing: the clash is still
+// unanswered, the design is still only on this hub, and the other two answers are still there.
+function siteUploadReplaceNo() { siteUploadAskAway(); }
+
+// siteUploadNewDesign is the second answer: the same design going out under a name the human
+// types, prefilled with what they first chose so the edit starts from where they were. The
+// clash row goes with the choice, and the field takes focus, being the thing to act on now.
+function siteUploadNewDesign() {
+  const nn = $("#up-newname"), sel = $("#up-name");
+  if (!nn) return;
+  if (nn.hidden) nn.value = sel ? String(sel.value) : "";
+  nn.hidden = false;
+  nameTaken = null;
+  siteUploadClashAway();
+  const st = $("#up-state");
+  if (st) st.textContent = "";
+  nn.focus();
+}
+
+// siteUploadCancel hides the clash and leaves the dialog open: the hub's design is untouched,
+// the site's design is untouched, and the human is still where they were.
+function siteUploadCancel() {
+  nameTaken = null;
+  siteUploadClashAway();
+}
+
+// siteUploadClashAway and siteUploadAskAway are the two put-aways, one named each, so no door
+// can hide half of the confirm and leave a Replace button over no question.
+function siteUploadClashAway() {
+  const row = $("#up-clash");
+  if (row) row.hidden = true;
+  siteUploadAskAway();
+}
+
+function siteUploadAskAway() {
+  const ask = $("#up-replace-ask");
+  if (ask) ask.hidden = true;
+}
+
+// The dialog's wiring: one door each. The mask owns the scrim and Escape owns the dismiss, as
+// the Add-by-IP dialog's wiring does, and pressing Upload is the only way anything in here
+// leaves this machine — every handler above either draws or asks, and none of them fetches.
+$("#mn-lib-upload").onclick = siteUploadOpen;
+$("#up-close").onclick = siteUploadClose;
+$("#up-app").onchange = siteUploadFillNames;
+$("#up-go").onclick = siteUploadGo;
+$("#up-replace").onclick = siteUploadReplaceAsk;
+$("#up-replace-yes").onclick = siteUploadReplaceYes;
+$("#up-replace-no").onclick = siteUploadReplaceNo;
+$("#up-new").onclick = siteUploadNewDesign;
+$("#up-cancel").onclick = siteUploadCancel;
+$("#mn-lib-reconnect").onclick = siteLinkReconnectPress;
+for (const r of document.querySelectorAll("input[name=\"up-vis\"]")) r.onchange = siteUploadVisCheck;
+$("#up-mask").addEventListener("click", (e) => { if (e.target === $("#up-mask")) siteUploadClose(); });
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && !$("#up-mask").hidden) siteUploadClose();
+});
+
 function watchSendState(ip, st, f) {
   stopSendWatch();
   const words = {

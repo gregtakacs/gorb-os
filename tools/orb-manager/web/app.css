@@ -433,6 +433,21 @@ button.upd:hover{border-color:#fff}
 #mn-site-designs li.trow{grid-template-columns:minmax(0,1fr) auto}
 #mn-site-designs li.trow>.tinfo{grid-column:1}
 #mn-site-designs li.trow>.acts{grid-column:2}
+/* H4 step 3: the upload dialog. The panel rides the page mask exactly as .flashpanel does —
+   .mask centers it, so this rule positions nothing itself and carries no z-index of its own.
+   Rows wrap because a clash answer is a sentence with three buttons after it, and [hidden] is
+   not decoration: .row's own display:flex beats the UA rule, the trap #mn-site-row steps
+   around above. The two answer lines claim a line of their own inside those rows. */
+.uppanel{width:min(560px,calc(100vw - 40px));max-height:calc(100vh - 40px);overflow:auto;background:var(--card);
+  border:1px solid var(--line);border-radius:12px;padding:18px 20px;box-shadow:0 8px 30px #0009;
+  display:flex;flex-direction:column}
+.uppanel h3{margin:0 0 6px;font-size:16px}
+.uppanel .row{flex-wrap:wrap;margin:10px 0}
+.uppanel .row[hidden]{display:none}
+.uppanel .row .hint{flex:1 1 100%;min-width:0}
+.uppanel p{margin:10px 0}
+.uppanel .upask{margin-left:14px;border-left:2px solid var(--line);padding-left:12px}
+.uppanel #up-newname{min-width:0}
 /* §59: the app list is the carousel (owner, 2026-11-08): a grip to drag by, the rotation's
    checkbox while rotation is on, then the row as before. Rows off the dial keep both cells,
    empty, so the columns line up down the list. */

@@ -897,6 +897,8 @@ func TestSiteDoorShutWithoutTheFlag(t *testing.T) {
 		{http.MethodGet, "/api/site/link-status"},
 		{http.MethodGet, "/api/site/designs"},
 		{http.MethodPost, "/api/site/disconnect"},
+		{http.MethodPost, "/api/site/upload"},
+		{http.MethodGet, "/api/site/local-designs"},
 	} {
 		if rec := rawCall(t, s, c.method, c.path, nil); rec.Code != http.StatusNotFound {
 			t.Errorf("%s %s on a shut hub = %d, want 404", c.method, c.path, rec.Code)

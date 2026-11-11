@@ -356,10 +356,22 @@ static void say(int slot, const char *txt, int tone)
 
 /* mm:ss and never h:mm:ss: the longest phase is 90 minutes. Over and waiting the machine
  * holds 0, which is the figure a finished phase shows while it waits. */
-static void time_text(char *b, int n)
+static void time_text(const pm_t *v, char *b, int n)
 {
-    const int r = s.rem < 0 ? 0 : s.rem;
+    const int r = v->rem < 0 ? 0 : v->rem;
     snprintf(b, n, "%02d:%02d", r / 60, r % 60);
+}
+
+/* What the face shows: the live state, or while press-and-turn moves, the state the let-go
+ * would land on (pm_land on a copy), so the time, the phase and the dots follow the knob as
+ * the header does (owner, 2026-11-11). Nothing lands until the let-go, and the ring stays on
+ * the live state, so another app's glass never shows a phase that is only being browsed. */
+static const pm_t *shown(pm_t *buf)
+{
+    if (!s_choosing || s_pos == 0) return &s;
+    *buf = s;
+    pm_land(buf, &cfg, s_pos);
+    return buf;
 }
 
 /* The choice's name. pm_land on a copy of the state is how pos becomes a slot: the mapping
@@ -463,19 +475,21 @@ static void wake_glass(void)
 static void face_rows(void)
 {
     char t[PM_TEXT], h[48];
-    const bool over = s.st == PM_WAIT || s.st == PM_WAITED;
-    time_text(t, sizeof t);
+    pm_t pv;
+    const pm_t *v = shown(&pv);
+    const bool over = v->st == PM_WAIT || v->st == PM_WAITED;
+    time_text(v, t, sizeof t);
     say(S_TIME, t, over || s_limit_ms ? ORB_TONE_WARNING : ORB_TONE_NORMAL);
-    pm_phase_text(&s, cfg.focuses, t, sizeof t);
-    say(S_PHASE, t, pm_ring_phase(&s, cfg.focuses) == PM_FOCUS ? ORB_TONE_NORMAL : ORB_TONE_ACCENT);
-    pm_count_text(&s, cfg.focuses, t, sizeof t);
+    pm_phase_text(v, cfg.focuses, t, sizeof t);
+    say(S_PHASE, t, pm_ring_phase(v, cfg.focuses) == PM_FOCUS ? ORB_TONE_NORMAL : ORB_TONE_ACCENT);
+    pm_count_text(v, cfg.focuses, t, sizeof t);
     say(S_COUNT, t, ORB_TONE_QUIET);
-    pm_state_text(&s, t, sizeof t);
+    pm_state_text(v, t, sizeof t);
     say(S_STATE, t, over ? ORB_TONE_WARNING : ORB_TONE_QUIET);
     if (s_choosing) { head_text(h, sizeof h); say(S_HEAD, h, ORB_TONE_ACCENT); }
     else say(S_HEAD, "", ORB_TONE_ACCENT);              /* the header is the choice's row */
     if (R[S_DOTS] >= 0) {
-        const int f = pm_focus_at(s.k, cfg.focuses);     /* 0 filled on either break */
+        const int f = pm_focus_at(v->k, cfg.focuses);    /* 0 filled on either break */
         if (f != s_frame_out) { orb_stage_frame(R[S_DOTS], f); s_frame_out = f; pose(R[S_DOTS]); }
     }
     s_sec_out = s.rem;
@@ -489,11 +503,13 @@ static void face_rows(void)
 static void bare_draw(void)
 {
     char t[PM_TEXT], line[48], p[PM_TEXT], c[PM_TEXT], q[PM_TEXT];
-    const bool over = s.st == PM_WAIT || s.st == PM_WAITED;
+    pm_t pv;
+    const pm_t *v = shown(&pv);
+    const bool over = v->st == PM_WAIT || v->st == PM_WAITED;
     orb_cv_fill(s_cv, 0x000000);
-    time_text(t, sizeof t);
+    time_text(v, t, sizeof t);
     orb_cv_text(s_cv, 0, CY - 44, CX * 2, ORB_FONT_48 | ORB_CV_CENTER,
-                over || s_limit_ms ? 0xFFC300u : cfg.col[pm_ring_phase(&s, cfg.focuses)], t);
+                over || s_limit_ms ? 0xFFC300u : cfg.col[pm_ring_phase(v, cfg.focuses)], t);
     if (s_choosing) head_text(line, sizeof line);        /* the choice takes the line's place */
     else {
         pm_phase_text(&s, cfg.focuses, p, sizeof p);

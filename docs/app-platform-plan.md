@@ -8114,3 +8114,18 @@ On the pomodoro design's owner questions (`docs/specs/pomodoro-design.md`):
   whole minutes.
 - **While press-and-turn moves, the face shows the phase the let-go would land on**: its time,
   name and dots, not only the header (owner). The ring stays on the live state until the let-go.
+
+### 64.11 Rim lanes: the ring sends only itself — 2026-11-11
+
+- **The owner found the slow breathe poor** (steppy at the 2 Hz grid, slow at the 4 s floor).
+  The cost was never the ring's 10k pixels but the rows they sit in: the flush keeps one dirty
+  span per row, and a ring has a sliver at both ends of nearly every row, so a ring step re-sent
+  ~216k pixels.
+- **Ruling: rim lanes.** A ring-only refresh sends the band itself as narrow windows (left and
+  right slabs, short spans across the top and bottom), blended from the mirror, aligned to the
+  CO5300's even-column rule, timed into a blanking window. Breathe, flash and the draining arc
+  then step at up to ~25 Hz. "Slow breathe only" (§64.1) is relaxed accordingly: the period floor
+  becomes a design number of the slice, measured on Bronze.
+- **The ring's direction and start** (§64.8) ride in the same slice. The overlay slice left the
+  record's `match` byte and `_r1` as they were (its amendment 1 was not built), so `flags`
+  (MATCH 0x01, CCW 0x02) and `start` land with the lanes' new stamp geometry.

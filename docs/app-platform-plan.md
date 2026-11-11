@@ -8070,9 +8070,11 @@ On the pomodoro design's owner questions (`docs/specs/pomodoro-design.md`):
 - **Both ride in the theme**, as every theme sound does (cap `sound`). They play at the chime
   volume, a share of the master (§64.6), and stay above 350 Hz, because the speaker is a 2 W
   micro speaker.
-- Apps are atomic, so the pomodoro does not borrow the clock's engine. Where the generator and
-  the upload belong (the kit, for every app's editor, or the pomodoro's own editor) is Claude's
-  call in the pomodoro look design.
+- Apps are atomic, so the pomodoro does not borrow the clock's engine. **The generator and the
+  upload live in the shared editor kit** (owner), like the colour picker: one sound pane in the
+  kit that any app's editor can offer, with the generated voices and the owner's upload. The
+  pomodoro is its first user. The clock keeps its own engine until it is moved onto the kit as
+  a separate job.
 - **The ring's direction and start are pomodoro settings** (owner): `ring_dir`, an enum
   (clockwise, anticlockwise; default clockwise), and `ring_start`, an enum (top, right, bottom,
   left, i.e. twelve, three, six and nine o'clock; default top). With ring on/off and opacity,

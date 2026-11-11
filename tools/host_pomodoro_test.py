@@ -74,6 +74,8 @@ def shape(fail, h_src, c_src):
 # Each is a behavioural edit to one line of the shipped source. An escaped mutant means the check
 # that names that rule is not watching it.
 MUTATIONS = [
+    ("    if (rem > len) rem = len;", "    if (rem > len) len = rem;"),
+    ("        s->len = s->rem = len;", "        s->len = s->rem = rem;"),
     ("raw->st_k % PM_PACK_MUL == PM_RUN", "raw->st_k % PM_PACK_MUL == PM_PAUSE"),
     ("    return focuses < PM_N_MIN ? PM_N_MIN : focuses > PM_N_MAX ? PM_N_MAX : focuses;", "    return focuses;"),  # N indexed off the cycle
     ("    if (k == last) return PM_LONG;", "    if (k == last - 1) return PM_LONG;"),                              # the long break a slot early
@@ -385,6 +387,15 @@ int main(void)
         pm_restore(&s, &c, &(pm_raw_t){42, 1500, 0, 240}, 0, 1000);
         ckk(s.st == PM_PAUSE && s.rem == 240, 1, "no clock: a stored RUN comes back PAUSE at pm_rem");
         ckk(pm_service(&s, &c, 1001) == PM_EV_NONE, 1, "the held restore does not count down");
+        pm_restore(&s, &c, &(pm_raw_t){2 * PM_PACK_MUL + PM_STOP, 1500, 0, 1794413844}, 1, 1000);
+        ckk(s.st == PM_STOP && s.k == 2 && s.len == 1500 && s.rem == 1500, 1,
+            "a torn pair (a stopped focus beside an old run's end second) restores the stored length, not the cap (Bronze)");
+        pm_restore(&s, &c, &(pm_raw_t){3 * PM_PACK_MUL + PM_STOP, 300, 0, 5400}, 1, 1000);
+        ckk(s.st == PM_STOP && s.len == 300 && s.rem == 300, 1, "a stopped short break beside a focus's stale 5400 stays 5:00, not 30:00");
+        pm_restore(&s, &c, &(pm_raw_t){2 * PM_PACK_MUL + PM_STOP, 1500, 0, 300}, 1, 1000);
+        ckk(s.st == PM_STOP && s.len == 1500 && s.rem == 1500, 1, "a stopped focus beside a break's stale 300 is 25:00: a stopped phase is its length");
+        pm_restore(&s, &c, &(pm_raw_t){2 * PM_PACK_MUL + PM_PAUSE, 1500, 0, 1794413844}, 1, 1000);
+        ckk(s.st == PM_PAUSE && s.len == 1500 && s.rem == 1500, 1, "a paused phase's remaining time never exceeds its length");
         ckk(pm_raw_needs_clock(&(pm_raw_t){41, 1500, 1010, 900}) == 1, 1,
             "a stored RUN needs the clock: its end is a wall second (held until sync, Bronze 2026-11-11)");
         ckk(pm_raw_needs_clock(&(pm_raw_t){42, 1500, 0, 240}) == 0 && pm_raw_needs_clock(&(pm_raw_t){0, 0, 0, 0}) == 0

@@ -173,17 +173,23 @@ void pm_restore(pm_t *s, const pm_cfg_t *c, const pm_raw_t *raw, int synced, int
     if (k > n - 1) k = n - 1;
     s->k = (int16_t)k;
     cap = c->cap_s[pm_phase_at(k, c->focuses)];
+    /* The length rides in pm_st with the state, written as one word, so it is the authority;
+     * pm_end is a separate write, so a restore can meet it torn (an old phase's end second, ~1.8e9,
+     * beside a new stopped phase). A remaining time past the length is that tear, never real:
+     * it used to raise the length to itself and both clamped to the cap, the "jumps back to 90"
+     * the owner hit on Bronze (2026-11-11). */
+    len = clamp_len(raw->len, cap);
     rem = clamp_len(raw->rem, cap);
-    len = clamp_len(raw->len < rem ? rem : raw->len, cap);
+    if (rem > len) rem = len;
     if (packed == 0) {                           /* no key at all: a fresh cycle, ready */
         s->st = PM_STOP;
         s->len = s->rem = pm_len_s(c, PM_FOCUS);
         s->end_s = 0;
         return;
     }
-    if (st == PM_STOP) {
+    if (st == PM_STOP) {                         /* a stopped phase is its length: pm_end is not read */
         s->st = PM_STOP;
-        s->len = s->rem = rem;
+        s->len = s->rem = len;
         s->end_s = 0;
         return;
     }

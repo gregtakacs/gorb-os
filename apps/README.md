@@ -46,7 +46,7 @@ my_app/
 | `period_ms` | the fastest beat the app may ask for, at least 1000. Leave it out and the app never ticks |
 | `memory_kb` | the module's linear memory, 64 (default) or 128 |
 | `shelf` | in this repo only: `true` puts the app on the hub's shelf; `false` builds and checks it but keeps it off |
-| `editor` | the app's theme editor: names a folder of the app (`"editor": "editor"`) holding `editor.json` (`entry`, the `runtime` ids it needs, and `schema` — the design schema the editor reads, required when it lists `theme@1`) and the editor's files. `orbsdk.py` packs that folder into the container's editor region, which Orb Manager opens from the Themes page (the clock's region is built by `tools/make_clock_region.py`) |
+| `editor` | the app's theme editor: names a folder of the app (`"editor": "editor"`) holding `editor.json` (`entry`, the `runtime` ids it needs, and `schema` — the design schema the editor reads, required when it lists `theme@1` — and optionally `minSchema`, the lowest design schema it still reads, which lifts the fixture floor) and the editor's files. `orbsdk.py` packs that folder into the container's editor region, which Orb Manager opens from the Themes page (the clock's region is built by `tools/make_clock_region.py`) |
 
 Kind, serial and the header's version all come from the SDK and `version.txt`, so
 there is nothing else to declare.
@@ -83,6 +83,20 @@ its cross-origin x-import (`connect-src 'self'` stays).
 Orb Manager does the same on its editor port (ruling 38): an app whose `editor.json` lists
 `babel@7.29.0` or `support@1` gets `'unsafe-eval'` on its own `<app>.localhost` origin, every
 other app's editor runs without it, and the Themes tab says which apps have it.
+
+An editor that stops reading old designs says so: `editor.json` may name `"minSchema": N`, the
+lowest design schema it still opens (ruling 34: a breaking change is declared, never silent).
+The build validates it as a whole number from 1 to `schema`, under a `schema`, and that floor
+then reshapes the rules above rather than forking them — the fixture rule requires a sample for
+every schema from `N` to `schema-1`, an older sample is skipped rather than refused, printing
+`<slug>: schema-<k> fixture is below minSchema <N>, not checked` (a container built before the
+floor keeps its file; packing and checking only stop reading it), the region packs `schema-N`
+and above, its stamp names `minSchema`, and `check-migrations` opens exactly those. That is what
+lets a release raise its schema and delete the migration steps below the floor. On orb-os.net a
+release whose floor drops a schema its earlier releases wrote is always reviewed by hand,
+whatever its check says, and the site keeps the older editors owners still need: a design below
+the floor opens in the last version that reads it, marked as needing a remake, so it can still
+be viewed, exported and worn.
 
 ## The SDK
 

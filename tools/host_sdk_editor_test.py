@@ -7,12 +7,15 @@ An app whose app.json names a directory as "editor" ships it as a STORE ZIP: edi
 first and canonical, the directory's top-level files in name order, the fixed date, read
 back. Ruling 36 grew the list: the editor's `_fixtures/schema-<n>.orbdesign` samples at or
 below the app's own schema ride too, under that nested name, so a hub holding only the
-container can run the migration check. The checks build regions from scratch app directories
-and read them the way the hub does (tools/orb-manager/editor.go: names under the editor
-directory, editor.json's entry and runtime ids).
+container can run the migration check. Ruling 34's `"minSchema": N` lifts that scan's floor:
+the build requires the samples from N up, stamps the floor it was given, and skips — without
+refusing — what the editor stopped reading. The checks build regions from scratch app
+directories and read them the way the hub does (tools/orb-manager/editor.go: names under the
+editor directory, editor.json's entry and runtime ids).
 --mutations breaks each guarded line in a private copy of orbsdk.py and expects a check
 to fail.
 """
+import contextlib
 import importlib.util
 import io
 import json
@@ -169,6 +172,25 @@ def run(sdk):
         with open(os.path.join(d, "editor", sdk.FIXTURES, n), "rb") as f:
             return f.read()
 
+    def floor_app(schema, names, **more):             # an editor.json that declares a floor
+        d, m = app({"index.html": b"x"}, ej=dict({"entry": "index.html", "runtime": ["theme@1"],
+                                                  "schema": schema}, **more))
+        if names is not None:
+            with_fixtures(d, names)
+        return d, m
+
+    def said(fn):                                     # a check's answer, what it printed, why it stopped
+        out, got, why = io.StringIO(), None, ""
+        with contextlib.redirect_stdout(out):
+            try:
+                got = fn()
+            except SystemExit as e:
+                why = str(e)
+        return out.getvalue(), got, why
+
+    def skip_line(k, floor):                          # the SDK's own skip sentence, ruling 34
+        return "%s: schema-%d fixture is below minSchema %d, not checked" % ("radar", k, floor)
+
     d10, m10 = schema_app(2)
     ck(refused(lambda: sdk.editor_region(d10, m10, "v9.9.9"), "must keep a design of schema 1"),
        "schema 2 with no _fixtures is refused: the previous release's designs would strand")
@@ -216,6 +238,105 @@ def run(sdk):
     dnew, mnew = schema_app(3, ["schema-1.orbdesign", "schema-2.orbdesign", "schema-9.orbdesign"])
     ck(refused(lambda: sdk.editor_region(dnew, mnew, "v9.9.9"), "newer than the schema this editor reads (3)"),
        "a fixture newer than the editor is refused before it packs, as check-migrations refuses it")
+
+    # ruling 34's declared floor: editor.json's `minSchema`, the lowest design schema this
+    # editor still reads, reshapes the same rule and the same pack rather than forking them
+    ck(sdk.editor_min_schema({"schema": 3}, "radar", 3) is None
+       and sdk.editor_min_schema({"schema": 3, "minSchema": 1}, "radar", 3) == 1
+       and sdk.editor_min_schema({"schema": 3, "minSchema": 3}, "radar", 3) == 3,
+       "editor_min_schema answers None with no key, and the whole number the key names")
+    for bad in (0, -1, 1.5, "2", True, 4):
+        db, mb = floor_app(3, [], minSchema=bad)
+        ck(refused(lambda: sdk.editor_region(db, mb, "v9.9.9"),
+                   "minSchema must be a whole number from 1 to its schema, not %r" % (bad,)),
+           "a minSchema of %r is refused: a whole number from 1 to the schema, never above it" % (bad,))
+    dno, mno = app({"a.js": b"a()"}, ej={"editor": 1, "host": 1, "module": ["a.js"],
+                                        "runtime": ["host@1"], "minSchema": 2})
+    ck(refused(lambda: sdk.editor_region(dno, mno, "v9.9.9"), "needs a schema to be under"),
+       "a floor with no schema under it is refused: it declares nothing the editor reads")
+    d20, m20 = floor_app(3, ["schema-1.orbdesign", "schema-2.orbdesign"], minSchema=1)
+    t20, r20, w20 = said(lambda: sdk.editor_region(d20, m20, "v9.9.9"))
+    z20 = zipfile.ZipFile(io.BytesIO(r20))
+    ck(w20 == "" and t20 == "" and z20.namelist() == ["editor.json", "_fixtures/schema-1.orbdesign",
+                                                      "_fixtures/schema-2.orbdesign", "index.html", "orb-app.js"],
+       "minSchema 1 is a floor that cuts nothing: same members, nothing skipped, nothing printed (%s, %r, %s)"
+       % (z20.namelist(), t20, w20))
+    ck(z20.read("orb-app.js") == b'window.__ORB_APP = {"minSchema": 1, "schema": 3, "slug": "radar", "version": "v9.9.9"};\n',
+       "a declared floor rides the stamp, in the same sorted keys (%r)" % z20.read("orb-app.js"))
+    ck(z20.read("editor.json") == b'{"entry":"index.html","minSchema":1,"runtime":["theme@1"],"schema":3}',
+       "and it rides the canonical editor.json, which the site reads (%r)" % z20.read("editor.json"))
+    ck(sdk.editor_region(d20, m20, "v9.9.9") == r20, "a rebuild of a floored region is byte-identical")
+    d21, m21 = floor_app(3, ["schema-2.orbdesign"], minSchema=1)
+    ck(refused(lambda: sdk.editor_region(d21, m21, "v9.9.9"), "must keep a design of schema 1"),
+       "minSchema 1 changes no rule: a schema-3 editor under a floor of 1 still wants schema 1")
+    d22, m22 = floor_app(3, ["schema-2.orbdesign", "schema-3.orbdesign"], minSchema=2)
+    t22, r22, w22 = said(lambda: sdk.editor_region(d22, m22, "v9.9.9"))
+    z22 = zipfile.ZipFile(io.BytesIO(r22))
+    ck(w22 == "" and t22 == "" and z22.namelist() == ["editor.json", "_fixtures/schema-2.orbdesign",
+                                                     "_fixtures/schema-3.orbdesign", "index.html", "orb-app.js"],
+       "the floor and above pack, and a folder holding nothing below it prints nothing (%s, %r, %s)"
+       % (z22.namelist(), t22, w22))
+    ck(z22.read("orb-app.js") == b'window.__ORB_APP = {"minSchema": 2, "schema": 3, "slug": "radar", "version": "v9.9.9"};\n',
+       "the stamp names the floor the region was packed to (%r)" % z22.read("orb-app.js"))
+    d23, m23 = floor_app(3, ["schema-3.orbdesign"], minSchema=2)
+    ck(refused(lambda: sdk.editor_region(d23, m23, "v9.9.9"), "_fixtures/schema-2.orbdesign"),
+       "a floored editor missing the first schema it still reads is refused naming that file")
+    ck(refused(lambda: sdk.editor_region(d23, m23, "v9.9.9"), "must keep a design of schema 2"),
+       "the same sentence names the gap the floor moved to, not the one it skipped")
+    d24, m24 = floor_app(3, ["schema-1.orbdesign", "schema-2.orbdesign", "schema-3.orbdesign"], minSchema=2)
+    t24, r24, w24 = said(lambda: sdk.editor_region(d24, m24, "v9.9.9"))
+    ck(w24 == "", "a sample below the floor is skipped, not refused (%s)" % w24)
+    ck(t24 == "%s\n" % skip_line(1, 2) * 2,
+       "the one scan the rule and the pack share prints the skip line once each (%r)" % t24)
+    ck(zipfile.ZipFile(io.BytesIO(r24)).namelist() == ["editor.json", "_fixtures/schema-2.orbdesign",
+                                                      "_fixtures/schema-3.orbdesign", "index.html", "orb-app.js"],
+       "a below-floor sample is not packed: the region holds the floor and above")
+    ck(os.path.isfile(os.path.join(d24, "editor", sdk.FIXTURES, "schema-1.orbdesign")),
+       "the floor stops the release reading the file, it does not delete it (correction 9)")
+    d25, m25 = floor_app(3, ["notes.txt", "schema-1.orbdesign"], minSchema=2)
+    t25, r25, w25 = said(lambda: sdk.editor_region(d25, m25, "v9.9.9"))
+    ck(r25 is None and "not named schema-<n>.orbdesign" in w25 and t25 == "",
+       "a floor exempts an old sample from the check, a stray name from nothing (%r, %s)" % (t25, w25))
+    d26, m26 = floor_app(2, ["schema-2.orbdesign"], minSchema=2)                    # floor at the schema
+    t26, r26, w26 = said(lambda: sdk.editor_region(d26, m26, "v9.9.9"))
+    ck(w26 == "" and zipfile.ZipFile(io.BytesIO(r26)).namelist() == ["editor.json", "_fixtures/schema-2.orbdesign",
+                                                                    "index.html", "orb-app.js"],
+       "a floor at the schema requires nothing below it and packs only its own sample (%s, %s)"
+       % (zipfile.ZipFile(io.BytesIO(r26)).namelist(), w26))
+    d27, m27 = floor_app(2, ["schema-1.orbdesign", "schema-2.orbdesign"], minSchema=2)
+    t27, r27, w27 = said(lambda: sdk.editor_region(d27, m27, "v9.9.9"))
+    ck(w27 == "" and [n for n in zipfile.ZipFile(io.BytesIO(r27)).namelist() if n.startswith(sdk.FIXTURES)]
+       == ["_fixtures/schema-2.orbdesign"] and t27 == "%s\n" % skip_line(1, 2) * 2,
+       "a floor at the schema skips an older sample it holds rather than refusing the folder")
+    d28, m28 = floor_app(2, [], minSchema=2)
+    t28, r28, w28 = said(lambda: sdk.editor_region(d28, m28, "v9.9.9"))
+    ck(w28 == "" and t28 == "" and [n for n in zipfile.ZipFile(io.BytesIO(r28)).namelist()
+                                   if n.startswith(sdk.FIXTURES)] == [],
+       "an empty _fixtures under a floor at the schema asks for nothing (%s, %r)" % (w28, t28))
+    fdir24 = os.path.join(d24, "editor", sdk.FIXTURES)
+    t29, got29, w29 = said(lambda: sdk.fixture_schemas("radar", 3, fdir24, 2))
+    ck(w29 == "" and got29 == [2, 3] and t29 == "%s\n" % skip_line(1, 2),
+       "fixture_schemas answers the floor and above, printing the skip for the rest (%r, %r)" % (t29, got29))
+    t29b, mem29, w29b = said(lambda: sdk.fixture_members("radar", 3, fdir24, 2))
+    ck(w29b == "" and mem29 == ["_fixtures/schema-2.orbdesign", "_fixtures/schema-3.orbdesign"]
+       and t29b == "%s\n" % skip_line(1, 2),
+       "fixture_members packs the floor and above, and its one scan says so once (%r, %r)" % (t29b, mem29))
+    t29c, mem29c, w29c = said(lambda: sdk.fixture_members("radar", 3, fdir24))
+    ck(w29c == "" and t29c == "" and mem29c == ["_fixtures/schema-1.orbdesign", "_fixtures/schema-2.orbdesign",
+                                                "_fixtures/schema-3.orbdesign"],
+       "fixture_members with no floor named packs the whole set it always packed (%r, %r)" % (t29c, mem29c))
+    d30, m30 = floor_app(3, ["schema-1.orbdesign", "schema-3.orbdesign"], minSchema=2)
+    fdir30 = os.path.join(d30, "editor", sdk.FIXTURES)
+    t30, _g30, w30 = said(lambda: sdk._fixtures_to_run("radar", 3, fdir30, 2))
+    ck("no fixture for schema 2" in w30 and "(this editor reads from minSchema 2)" in w30,
+       "_fixtures_to_run's missing floor-and-above fixture names the floor it reads from (%s)" % w30)
+    t30b, _g30b, w30b = said(lambda: sdk._fixtures_to_run("radar", 3, fdir30))
+    ck("no fixture for schema 2" in w30b and "minSchema" not in w30b and t30b == "",
+       "the same call with no floor keeps the sentence and the silence it always had (%r, %s)" % (t30b, w30b))
+    t30c, run30, w30c = said(lambda: sdk._fixtures_to_run("radar", 3, fdir24, 2))
+    ck(w30c == "" and run30 == ["schema-2.orbdesign", "schema-3.orbdesign"],
+       "_fixtures_to_run opens what the folder holds from the floor up, and no more (%r)" % run30)
+
     # every app this tree ships: the region carries its _fixtures folder and nothing else of it
     for slug in sorted(os.listdir(os.path.join(ROOT, "apps"))):
         ad = os.path.join(ROOT, "apps", slug)
@@ -248,8 +369,11 @@ def run(sdk):
         msg = str(e)
     ck("must keep a design of schema 1" in msg and "clang" not in msg,
        "build checks the editor before compiling: the fixture refusal, not the clang one (%s)" % msg)
-
-    import contextlib
+    d31, m31 = floor_app(3, ["schema-2.orbdesign", "schema-3.orbdesign"], minSchema=2)
+    t31, r31, w31 = said(lambda: sdk.main(["build", disk(d31, m31)]))
+    ck("has no .c sources" in w31 and t31 == "" and "keep a design" not in w31,
+       "a floored app's build passes every editor check and prints no skip: it stops where an app "
+       "with no C stops, past the region (%r, %s)" % (t31, w31))
 
     def say(argv):                                              # what check-migrations prints and refuses
         out = io.StringIO()
@@ -284,6 +408,40 @@ def run(sdk):
     d1, m1 = app({"index.html": b"x"})
     txt, rc, why = say(["check-migrations", disk(with_fixtures(d1, ["notes.txt"]), m1)])
     ck(rc == 1 and "not named schema-<n>.orbdesign" in why, "a stray in _fixtures is refused (%s)" % why)
+
+    # the floor through check-migrations: it reads minSchema from the region it packed, opens
+    # the floor and above, and stops at the node gate — a host suite never spawns a browser
+    node0 = os.environ.get("ORB_NODE")
+    try:
+        os.environ["ORB_NODE"] = "/nonexistent/node"
+        d32, m32 = floor_app(3, ["schema-1.orbdesign", "schema-2.orbdesign", "schema-3.orbdesign"], minSchema=2)
+        txt, rc, why = say(["check-migrations", disk(d32, m32)])
+        ck(rc == 1 and "Node and Chromium" in why and "no fixture for" not in why,
+           "a floored app whose fixtures all open asks nothing of a below-floor sample (%s)" % why)
+        ck(txt == ("%s\n" % skip_line(1, 2)) * 3,
+           "check-migrations prints the build's skip sentence about the same file, once per shared scan (%r)" % txt)
+        d33, m33 = floor_app(3, ["schema-1.orbdesign", "schema-3.orbdesign"], minSchema=2)
+        txt, rc, why = say(["check-migrations", disk(d33, m33)])
+        ck(rc == 1 and "must keep a design of schema 2" in why and skip_line(1, 2) in txt,
+           "check-migrations' front door refuses a floored app's gap, naming the floor's first schema (%s, %r)" % (why, txt))
+        d34, m34 = floor_app(2, ["schema-1.orbdesign", "schema-2.orbdesign"], minSchema=2)
+        txt, rc, why = say(["check-migrations", disk(d34, m34)])
+        ck(rc == 1 and "Node and Chromium" in why and "no fixture for" not in why,
+           "a floor at the schema needs no sample below it and skips the one the folder holds (%s)" % why)
+        d35, m35 = floor_app(3, ["schema-1.orbdesign", "schema-2.orbdesign"])      # no floor at all
+        txt, rc, why = say(["check-migrations", disk(d35, m35)])
+        ck(rc == 1 and "Node and Chromium" in why and "minSchema" not in txt and "minSchema" not in why,
+           "an app naming no floor prints and refuses exactly what it printed before M2 (%r, %s)" % (txt, why))
+        os.environ["ORB_NODE"] = "/bin/false"                                      # a runner that answers 1
+        d36, m36 = floor_app(2, [], minSchema=2)
+        txt, rc, why = say(["check-migrations", disk(d36, m36), "--save-current"])
+        ck(rc == 1 and "gave up no current design" in why and "minSchema" not in why,
+           "--save-current is untouched by the floor: it still asks the packed editor for its own design (%s)" % why)
+    finally:
+        if node0 is None:
+            os.environ.pop("ORB_NODE", None)
+        else:
+            os.environ["ORB_NODE"] = node0
 
     # The SDK's own directory is the generic SDK, not an app: apps/*/ catches it and
     # `apps/sdk/` has no app.json, so check-migrations skips it. Any other directory
@@ -333,10 +491,10 @@ MUTANTS = (
     ("theme@1 without schema passes", 'if "host" not in ej and "theme@1" in (ej.get("runtime") or []):', "if 0:"),
     ("an escaping editor path", 'if not isinstance(e, str) or not e or "/" in e or e.startswith("."):',
      'if not isinstance(e, str) or not e:'),
-    ("no fixture rule", "schema_fixture_rule(m[\"slug\"], schema, fixtures_dir(appdir, m))", "pass"),
-    ("fixtures stay home", 'fixtures = fixture_members(m["slug"], schema, fixtures_dir(appdir, m))', "fixtures = []"),
+    ("no fixture rule", "schema_fixture_rule(m[\"slug\"], schema, fixtures_dir(appdir, m), min_schema)", "pass"),
+    ("fixtures stay home", 'fixtures = fixture_members(m["slug"], schema, fixtures_dir(appdir, m), min_schema)', "fixtures = []"),
     ("only the last past schema required",
-     "    for k in range(1, schema):\n        if k in have:\n            continue",
+     "    for k in range(min_schema or 1, schema):\n        if k in have:\n            continue",
      "    for k in [schema - 1]:\n        if k in have:\n            continue"),
     ("a newer fixture passes", "        if int(found.group(1)) > schema:", "        if 0:"),
     ("an own-schema fixture refused", "        if int(found.group(1)) > schema:",
@@ -347,6 +505,26 @@ MUTANTS = (
     ("build compiles first", "if editor_dir(d, m):\n            editor_region(d, m, version(d))",
      "if 0:\n            editor_region(d, m, version(d))"),
     ("the SDK is not skipped", "if os.path.realpath(d) == os.path.realpath(SDK):", "if 0:"),
+    ("minSchema is no editor key", 'EDITOR_KEYS = {"baker", "editor", "entry", "host", "minSchema", "module", "runtime", "schema"}',
+     'EDITOR_KEYS = {"baker", "editor", "entry", "host", "module", "runtime", "schema"}'),
+    ("minSchema type unchecked", "    if isinstance(value, bool) or not isinstance(value, int) or value < 1:", "    if 0:"),
+    ("a floor above the schema passes", "    if value > schema:", "    if 0:"),
+    ("a floor with no schema passes",
+     '    if schema is None:\n        fail("%s\'s editor.json names minSchema, which needs a schema to be under" % slug)',
+     '    if 0:\n        pass'),
+    ("the rule does not skip below the floor", "    have = fixture_schemas(slug, schema, fdir, min_schema or 1)",
+     "    have = fixture_schemas(slug, schema, fdir)"),
+    ("the rule requires schemas below the floor", "    for k in range(min_schema or 1, schema):", "    for k in range(1, schema):"),
+    ("a below-floor fixture is refused again",
+     '        if int(found.group(1)) < floor:\n            print("%s: schema-%d fixture is below minSchema %d, not checked" % (slug, int(found.group(1)), floor))\n            continue',
+     "        if False:\n            continue"),
+    ("the pack does not cut at the floor",
+     "    return [fixture_region_name(k) for k in fixture_schemas(slug, schema, fdir, min_schema or 1)]",
+     "    return [fixture_region_name(k) for k in fixture_schemas(slug, schema, fdir)]"),
+    ("no minSchema in the stamp", '    if min_schema is not None:\n        st["minSchema"] = min_schema', "    if 0:"),
+    ("check-migrations ignores the floor", "    for k in range(floor, schema):", "    for k in range(1, schema):"),
+    ("the refusal names no floor", '" (this editor reads from minSchema %d)" % floor if floor > 1 else ""))', '""))'),
+    ("check-migrations never reads the floor", "            floor = editor_min_schema(ej, slug, schema) or 1", "            floor = 1"),
 )
 
 

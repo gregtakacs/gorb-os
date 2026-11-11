@@ -89,11 +89,15 @@ back to its home view by itself.
 | App | Home | Clockwise | Anticlockwise | Press |
 |---|---|---|---|---|
 | **Weather** | the weather now | hour by hour, from the next hour | the next five days, from tomorrow | the next place |
-| **Flights** | the radar | aircraft, nearest first, each with its details | aircraft, farthest first | the next range |
+| **Flights** | the radar | aircraft, nearest first, each with its details | aircraft, farthest first | the next place |
+| **Radar** | the rain now (left alone, the recent past plays as a loop) | ahead of now, the forecast | back from now, the past | the next place |
 | **Clock** | the watch face | opens the app list | opens the app list | nothing |
 
 Weather keeps your hour or day when you press for the next place, so you can compare
 the same afternoon in two places.
+
+**Press and turn.** In Radar and Flights, hold the knob down and turn it to zoom:
+clockwise closer, anticlockwise wider. The new zoom lands when you let go.
 
 **The app list.** Hold the knob in any app, or turn it on the clock, and the list of
 apps appears with the one you came from highlighted. Turn to choose, press to open,

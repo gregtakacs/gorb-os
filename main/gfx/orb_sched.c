@@ -763,6 +763,7 @@ static int sched_dyn_pace10(int base)
     }
     if (now - s_dyn_last_ms >= DYN_HOLD_MS) s_dyn_blip_us = 0;   /* no steps for that long: the plan's own */
     const uint32_t te = display_te_period_us();
+    if (!te) return base;    /* no TE period measured at boot: no scans to count, keep the plan's pace */
     /* Only a step well past a frame of the theme's own pace slows the sweep: on clear skies a
      * step costs about a frame, and pacing to it took London's arm from 15 to 10 fps (owner,
      * 2026-11-09: "does not feel as smooth as it did before"). */
@@ -821,10 +822,17 @@ static uint32_t sched_tick_period_ms(void)
     if (!s_bench_pace10 && s_plan_live && pace10 != (s_dyn_pace10 ? s_dyn_pace10 : s_plan_pace10)) {
         /* §7.8: the present paces to the new beat too */
         display_bench_pace(pace10);
-        ESP_LOGI(TAG, "an app's sweep paced to %u.%u fps (its live layer's steps cost %u ms)",
-                 (unsigned)(10000000u / ((uint32_t)pace10 * display_te_period_us() / 10u) / 10),
-                 (unsigned)(10000000u / ((uint32_t)pace10 * display_te_period_us() / 10u) % 10),
-                 (unsigned)(s_dyn_blip_us / 1000));
+        /* the frame time this beat asks for, in us; 0 when the boot's TE scan measured no
+         * period (or the pace is 0), which divided by zero here and panicked the LVGL task
+         * (Bronze, 2026-11-11) */
+        const uint32_t frame_us = (uint32_t)pace10 * display_te_period_us() / 10u;
+        if (frame_us)
+            ESP_LOGI(TAG, "an app's sweep paced to %u.%u fps (its live layer's steps cost %u ms)",
+                     (unsigned)(10000000u / frame_us / 10), (unsigned)(10000000u / frame_us % 10),
+                     (unsigned)(s_dyn_blip_us / 1000));
+        else
+            ESP_LOGI(TAG, "an app's sweep paced to %u.%u TE periods, none measured (its live layer's steps cost %u ms)",
+                     (unsigned)(pace10 / 10), (unsigned)(pace10 % 10), (unsigned)(s_dyn_blip_us / 1000));
         s_dyn_pace10 = pace10 == s_plan_pace10 ? 0 : pace10;
     }
     if (pace10 && display_te_period_us()) {

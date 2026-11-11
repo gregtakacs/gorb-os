@@ -15,7 +15,7 @@
 // nothing. That is this file. It builds the hub and the bench fake orb, seeds a stale
 // theme onto the shelf, and drives headless Chromium over CDP through the four live flows
 // (edit on the app's own origin, Rebake all, Send to orb, Import from a site) plus a
-// hostile third-party editor, then reports eight checks:
+// hostile third-party editor and the two ruling-38 eval checks, then reports ten checks:
 //
 //   edit-on-own-origin  the clock editor opens inside the Themes pane on clock.localhost
 //                       (not the control origin), boots its session, takes an edit through
@@ -37,9 +37,16 @@
 //                       editor port's own route table, the rest by CSP.
 //   hostile-did-nothing none of those probes moved a theme, an entry, a card row or a
 //                       fleet member: the before-and-after snapshots are equal.
+//   babel-evals         an app seeded from the shelf whose editor.json names babel@7.29.0
+//                       gets the allowance ruling 38 keeps for it: its document's CSP
+//                       carries the token, eval() inside the real page returns 4, and the
+//                       Themes tab says the same sentence — row field and painted line.
+//   others-cannot-eval  the same eval in the clock's editor, which asks for no such
+//                       runtime, is refused by the CSP; neither the clock's document nor
+//                       the manifest-less hostile app's carries the token.
 //
 // It is deliberately NOT part of `make check` (it needs Go, Chromium and minutes — like
-// check-web); `make check-editor-origin` runs it. Exits 0 only on 8/8.
+// check-web); `make check-editor-origin` runs it. Exits 0 only on 10/10.
 'use strict';
 const fs = require('fs');
 const http = require('http');
@@ -304,6 +311,68 @@ function spawnSync3(cmd, args, cwd) {
   return spawnSync(cmd, args, { cwd: cwd || REPO, encoding: 'utf8' });
 }
 
+// ---------- the ruling 38 probe apps ----------
+// Two third-party packages that differ in exactly one field: babeltest's editor.json
+// declares babel@7.29.0, plainprobe's declares only a runtime that needs none of it.
+// Each entry page tries eval and new Function from an inline SCRIPT — a page script,
+// under the same CSP the operator's editor documents live behind — and reports what
+// the browser let it do. Reading window.__PROBE is reading the policy the renderer
+// applied, not a header the gate fetched itself.
+
+const PROBE_HTML = '<!doctype html>\n<html lang="en"><head><meta charset="utf-8"><title>probe</title>\n' +
+  '<script>window.__V = []; document.addEventListener("securitypolicyviolation", function (e) {' +
+  'window.__V.push(String(e.effectiveDirective) + ":" + String(e.blockedURI)); });</' + 'script></head>\n' +
+  '<body><p>ruling 38 probe page</p>\n<script>\nwindow.__PROBE = {};\n' +
+  'try { window.__PROBE.eval = String(eval("1+1")); } catch (e) { window.__PROBE.eval = "refused:" + ((e && e.name) || e); }\n' +
+  'try { window.__PROBE.fn = String(new Function("return 6*7")()); } catch (e) { window.__PROBE.fn = "refused:" + ((e && e.name) || e); }\n' +
+  'window.__PROBE.viol = window.__V;\nwindow.__PROBE.done = true;\n</' + 'script></body></html>\n';
+
+function buildEvalProbeApp(outPath, slug, title, runtime) {
+  const dir = path.dirname(outPath);
+  const stage = fs.mkdtempSync(path.join(dir, 'probe-stage-'));
+  fs.writeFileSync(path.join(stage, 'index.html'), PROBE_HTML);
+  fs.writeFileSync(path.join(stage, 'editor.json'), JSON.stringify({ entry: 'index.html', title: title, runtime: runtime }));
+  const script = path.join(stage, 'mk.py');
+  fs.writeFileSync(script, ('import sys, zipfile, io, os\n' +
+    'sys.path.insert(0, @TOOLS@)\n' +
+    'import orbapp\n' +
+    'z = io.BytesIO()\n' +
+    'with zipfile.ZipFile(z, "w", zipfile.ZIP_DEFLATED) as w:\n' +
+    '    d = @STAGE@\n' +
+    '    for n in ("editor.json", "index.html"):\n' +
+    '        i = zipfile.ZipInfo(n, date_time=(1980, 1, 1, 0, 0, 0))\n' +
+    '        i.external_attr = 0o644 << 16\n' +
+    '        w.writestr(i, open(os.path.join(d, n), "rb").read())\n' +
+    'orbapp.write_container(@OUT@, @SLUG@, @TITLE@, version="v0.0.1", editor=z.getvalue())\n')
+      .replace('@TOOLS@', JSON.stringify(path.join(REPO, 'tools')))
+      .replace('@STAGE@', JSON.stringify(stage))
+      .replace('@OUT@', JSON.stringify(outPath))
+      .replace('@SLUG@', JSON.stringify(slug))
+      .replace('@TITLE@', JSON.stringify(title)));
+  const r = spawnSync3('python3', [script]);
+  fs.rmSync(stage, { recursive: true, force: true });
+  if (r.status !== 0) throw new Error(slug + ' .orbapp build failed: ' + r.stderr.slice(0, 400));
+  return outPath;
+}
+
+// docCSP fetches an editor document straight from the loopback address with the app's
+// own Host — the header a page can never read for its own frame, which is the point of
+// the check, so the gate reads it as the server's wire answer instead. Core http (not
+// fetch), because Host is a header fetch will not let a caller set.
+function docCSP(edPort, slug, token) {
+  return new Promise((res, rej) => {
+    const req = http.get({
+      host: '127.0.0.1', port: edPort, path: '/editor/hub/' + slug + '/?et=' + encodeURIComponent(token),
+      headers: { Host: slug + '.localhost:' + edPort }, timeout: 15000,
+    }, (r) => {
+      r.resume();
+      res({ status: r.statusCode, csp: String(r.headers['content-security-policy'] || '') });
+    });
+    req.on('error', rej);
+    req.on('timeout', () => { req.destroy(new Error('docCSP timeout')); });
+  });
+}
+
 // ---------- CDP over the platform WebSocket (no npm, no puppeteer) ----------
 // The minimum the gate needs: one browser connection, auto-attach flattened so a
 // cross-origin editor iframe becomes a session we can evaluate inside (the hub page
@@ -554,6 +623,10 @@ async function main() {
     const ctlPort = await freePort(), edPort = await freePort(), fakePort = await freePort();
     site = await startFakeSite();
     buildHostileApp(path.join(dirs.apps, 'hostile.orbapp'), ctlPort, edPort);
+    // the two ruling 38 probe apps (a later seed must not land on hostile's snapshot)
+    buildEvalProbeApp(path.join(dirs.apps, 'probebabel.orbapp'), 'probebabel', 'Probe Babel', ['babel@7.29.0']);
+    buildEvalProbeApp(path.join(dirs.apps, 'plainprobe.orbapp'), 'plainprobe', 'Plain Probe', ['react@18.3.1']);
+    say('seeded probebabel (babel@7.29.0) and plainprobe (no such runtime) on the app shelf');
     const seed = restampStale(SHELF_THEME, path.join(dirs.themes, 's2-seed.orbtheme'), 'S2 rebake', 5);
     say('seeded stale "S2 rebake" (' + seed.bytes + ' B, abi ' + 5 + ') on the theme shelf');
 
@@ -595,6 +668,8 @@ async function main() {
     if (!add.env || add.env.ok !== true) throw new Error('adopt 127.0.0.1: ' + add.text.slice(0, 200));
     const inst = await api('/api/library/install?ip=127.0.0.1&only=clock', { method: 'POST' });
     if (inst.status !== 200 || /"ok"\s*:\s*false/.test(inst.text)) throw new Error('install clock: ' + inst.text.slice(0, 200));
+    const instP = await api('/api/library/install?ip=127.0.0.1&only=probebabel', { method: 'POST' });
+    if (instP.status !== 200 || /"ok"\s*:\s*false/.test(instP.text)) throw new Error('install probebabel: ' + instP.text.slice(0, 200));
     const skel = fs.readFileSync(SHELF_THEME);
     const draftDoc = JSON.parse(skel.subarray(skel.readUInt32LE(29 * 4), skel.readUInt32LE(29 * 4) + skel.readUInt32LE(30 * 4)).toString('utf8'));
     draftDoc.themeName = 'S2 rebake';
@@ -642,6 +717,76 @@ async function main() {
     const drift = diffSnapshots(before, after);
     record('hostile-did-nothing', drift.length === 0, drift.length ? drift.join('; ') : 'entries, card, shelf and app list all identical');
 
+    // ---- ruling 38, live: 'unsafe-eval' is per app, decided by the app's own package,
+    // and the Themes tab — the page an operator stands on before pressing Edit — says
+    // the same sentence the CSP will be. Both documents are fetched (docCSP) and both
+    // pages are driven; the policy is proven at the wire and at the renderer.
+    const probeT0 = Date.now();
+    const evalLine = () => driver.evalIn(page, '(function(){var e=document.querySelector("#mn-themes-tabs .edeval");' +
+      'return e?e.textContent:null;})()');
+    const clickAppTab = (slug) => driver.evalIn(page, '(function(){var b=document.querySelector(' +
+      JSON.stringify('#mn-themes-tabs button[data-slug="' + slug + '"]') + ');if(!b)return "no-tab";b.click();return "clicked";})()');
+    // shownLine walks the face to the named app's pane and returns the eval sentence
+    // painted there — pressing the tab is the operator's own act, so the line checked
+    // is the line a press produces.
+    const shownLine = async (slug, want) => {
+      const press = await clickAppTab(slug);
+      if (press !== 'clicked') throw new Error('the ' + slug + ' tab never drew: ' + press);
+      return waitFor('the Themes line says "' + want + '" for ' + slug, 30000, async () => {
+        const t = await evalLine(); return t === want ? (t === null ? '(none)' : t) : null;
+      });
+    };
+    let themesPainted = false;
+    try {
+      const bo = await api('/api/editor/origin?app=probebabel');
+      if (!bo.env || bo.env.ok !== true) throw new Error('editor/origin probebabel: ' + bo.text.slice(0, 160));
+      const bdoc = await docCSP(edPort, 'probebabel', bo.env.data.token);
+      if (bdoc.status !== 200) throw new Error('the probebabel document answered ' + bdoc.status);
+      if (bdoc.csp.indexOf("'unsafe-eval'") < 0) throw new Error('its CSP has no token: ' + bdoc.csp.slice(0, 220));
+      const bTab = await driver.newTab(bo.env.data.origin + '/editor/hub/probebabel/?et=' + encodeURIComponent(bo.env.data.token));
+      const bp = JSON.parse(await waitFor('probebabel page script', 30000, async () =>
+        await driver.evalIn(bTab.sessionId, 'window.__PROBE && window.__PROBE.done ? JSON.stringify(window.__PROBE) : null').catch(() => null)));
+      if (bp.eval !== '2' || bp.fn !== '42') throw new Error('the page could not evaluate: ' + JSON.stringify(bp));
+      if (Array.isArray(bp.viol) && bp.viol.length !== 0) {
+        throw new Error('the relaxed page still reported violations: ' + JSON.stringify(bp.viol));
+      }
+      // the Themes face: the stamped row and the painted line, for both apps
+      await waitFor('Themes rows for both apps', 60000, async () =>
+        (await driver.evalIn(page, '(loadThemes("127.0.0.1").then(function(){return themeAppsRows.length>=2}))')) ? true : null);
+      const rows = JSON.parse(await driver.evalIn(page, 'JSON.stringify(themeAppsRows.map(function(a){return [a.slug,a.has_editor,a.editor_eval];}))'));
+      const brows = rows.find((x) => x[0] === 'probebabel');
+      if (!brows || brows[1] !== true || brows[2] !== true) throw new Error('the Themes row for probebabel: ' + JSON.stringify(brows));
+      const crows = rows.find((x) => x[0] === 'clock');
+      if (!crows || crows[1] !== true || crows[2] !== false) throw new Error('the Themes row for clock: ' + JSON.stringify(crows));
+      const lineClock = await shownLine('clock', null);
+      const lineBabel = await shownLine('probebabel', "This app's editor may run eval (it uses babel@7.29.0 or support@1).");
+      themesPainted = true;
+      record('babel-evals', true, 'wire CSP carries the token; the page evaluated (eval→' + bp.eval + ', new Function→' + bp.fn +
+        '); Themes rows say probebabel ' + brows[2] + ' and clock ' + crows[2] + '; the tab line reads “' + lineBabel + '” for probebabel, “' + lineClock + '” for clock');
+    } catch (e) {
+      record('babel-evals', false, String((e && e.message) || e).slice(0, 700));
+    }
+    try {
+      const po = await api('/api/editor/origin?app=plainprobe');
+      if (!po.env || po.env.ok !== true) throw new Error('editor/origin plainprobe: ' + po.text.slice(0, 160));
+      const pdoc = await docCSP(edPort, 'plainprobe', po.env.data.token);
+      if (pdoc.status !== 200) throw new Error('the plainprobe document answered ' + pdoc.status);
+      if (pdoc.csp.indexOf('unsafe-eval') >= 0) throw new Error('its CSP still carries the token: ' + pdoc.csp.slice(0, 220));
+      const pTab = await driver.newTab(po.env.data.origin + '/editor/hub/plainprobe/?et=' + encodeURIComponent(po.env.data.token));
+      const pp = JSON.parse(await waitFor('plainprobe page script', 30000, async () =>
+        await driver.evalIn(pTab.sessionId, 'window.__PROBE && window.__PROBE.done ? JSON.stringify(window.__PROBE) : null').catch(() => null)));
+      if (!/^refused/.test(String(pp.eval)) || !/^refused/.test(String(pp.fn))) {
+        throw new Error('the strict page could still evaluate: ' + JSON.stringify(pp));
+      }
+      if (!Array.isArray(pp.viol) || !pp.viol.some((v) => /^script-src/.test(v))) {
+        throw new Error('the renderer refused the eval but reported no securitypolicyviolation: ' + JSON.stringify(pp.viol));
+      }
+      record('others-cannot-eval', true, 'eval→' + pp.eval + ', new Function→' + pp.fn + '; ' + pp.viol.length +
+        ' securitypolicyviolation event(s) on script-src' + (themesPainted ? '' : '; Themes line unread (that half rode babel-evals)'));
+    } catch (e) {
+      record('others-cannot-eval', false, String((e && e.message) || e).slice(0, 700));
+    }
+
     // ---- the two checks that read the passive taps, not a flow
     const docCookie = G.editorDocs > 0 && G.docCookies.length === G.editorDocs && G.docCookies.every((c) => c === '');
     record('no-cookie-on-editor',
@@ -650,13 +795,14 @@ async function main() {
       ' Set-Cookie header(s) crossed the editor port; ' + G.editorDocs + ' editor documents all read document.cookie empty');
     const inFlows = driver.csp.filter((e) => flowWindows.some((w) => e.t >= w.t0 && e.t <= (w.t1 || Infinity)));
     record('no-csp-violation', inFlows.length === 0,
-      driver.csp.length + ' security entries logged across the run (the hostile probes CSP-blocked log ' +
+      driver.csp.length + ' security entries logged across the run (the hostile probes and the ruling 38 eval probe CSP-blocked ' +
       (driver.csp.length - inFlows.length) + ' of them as expected), ' + inFlows.length + ' inside the four flows' +
       (inFlows.length ? ': ' + inFlows[0].text.slice(0, 140) : ''));
 
     // ---- verdict
     const ORDER = ['edit-on-own-origin', 'rebake-all', 'send-to-orb', 'import-from-site',
-      'no-cookie-on-editor', 'no-csp-violation', 'hostile-refused', 'hostile-did-nothing'];
+      'no-cookie-on-editor', 'no-csp-violation', 'hostile-refused', 'hostile-did-nothing',
+      'babel-evals', 'others-cannot-eval'];
     const byName = {};
     for (const c of checks) byName[c.name] = c;
     const pass = ORDER.filter((n) => byName[n] && byName[n].ok);
@@ -664,7 +810,7 @@ async function main() {
       // the verdict in the report itself: under --json the one line on stdout is this
       // JSON, so a pipe that greps the tail for the pass line must be able to — and
       // must not when the run failed
-      const summary = 'editor-origin-live: ' + pass.length + '/8 passed';
+      const summary = 'editor-origin-live: ' + pass.length + '/10 passed';
       const report = JSON.stringify({
         passed: pass, failed: ORDER.filter((n) => pass.indexOf(n) < 0),
         summary: summary,
@@ -676,7 +822,7 @@ async function main() {
         catch (e) { say('could not write ' + FLAGS.jsonPath + ': ' + ((e && e.message) || e)); failed = true; }
       }
     }
-    say('editor-origin-live: ' + pass.length + '/8 passed');
+    say('editor-origin-live: ' + pass.length + '/10 passed');
     for (const n of ORDER) {
       if (!byName[n] || !byName[n].ok) say('  not passed: ' + n + (byName[n] && byName[n].detail ? ' — ' + byName[n].detail : ' — never ran'));
     }

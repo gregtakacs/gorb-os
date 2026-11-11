@@ -328,6 +328,11 @@ body:has(.mask:not([hidden])){overflow:hidden}
    app leaves nothing to choose, so the only honest control beside it is the one that
    authors: a button that re-reads the list already on screen reads as a door. */
 .subtabs .tablabel{align-self:center;padding:4px 10px;font-size:.95em;font-weight:600;opacity:.65}
+/* Ruling 38's line on the Themes face: the open app's editor either runs with
+   'unsafe-eval' or does not. Muted like the single-app label it sits beside; the
+   allowed state carries the warning tint, because that allowance is the loud one. */
+.appswitch .edeval{align-self:center;margin-left:auto;padding:4px 10px;font-size:.85em;opacity:.7;cursor:help}
+.appswitch .edeval.on{color:var(--warn);opacity:1;font-weight:600}
 .tzlist{display:flex;flex-direction:column;gap:2px;max-height:16em;overflow:auto;margin:6px 0}
 .tzlist[hidden]{display:none}
 .tzrow{display:block;text-align:left;background:none;border:1px solid var(--line);color:var(--fg);

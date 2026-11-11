@@ -97,7 +97,39 @@ func (s *Server) handleThemeApps(w http.ResponseWriter, r *http.Request) {
 		s.jsonErr(w, err.Error())
 		return
 	}
-	s.jsonOKRaw(w, raw)
+	s.jsonOKRaw(w, themeAppsMarkEval(s, raw))
+}
+
+// themeAppsMarkEval stamps ruling 38's eval answer onto each app row of a cached
+// /api/theme/apps read: the hub shelf copy's editor.json is consulted per row, off
+// the same memoised region read the editor door uses, so the Themes tab says what
+// the CSP will actually be. The cached bytes are never mutated — the memo is shared
+// with the Apps face and a stamp is this route's own answer, not a fact about the
+// card. A read that will not parse goes out exactly as it came: the enumeration
+// itself outranks the annotation, and the hub-side answer for a row the hub cannot
+// name is false anyway.
+func themeAppsMarkEval(s *Server, raw json.RawMessage) json.RawMessage {
+	if len(raw) == 0 {
+		return raw
+	}
+	var out orbnet.ThemeApps
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return raw
+	}
+	stamped := false
+	for i := range out.Apps {
+		if ev := s.editorAllowsEval(out.Apps[i].Slug); ev != out.Apps[i].EditorEval {
+			out.Apps[i].EditorEval = ev
+			stamped = true
+		}
+	}
+	if !stamped {
+		return raw
+	}
+	if again, err := json.Marshal(out); err == nil {
+		return again
+	}
+	return raw
 }
 
 // handleThemeInstall queues a Migration 1 store on the orb (POST /api/v1/sd/bundle).

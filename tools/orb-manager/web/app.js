@@ -3382,6 +3382,7 @@ function renderThemeTabs() {
     lab.dataset.slug = apps[0].slug;
     nav.appendChild(lab);
     paintThemeSubBadges();
+    paintThemeEvalNotice(nav, apps);
     return;
   }
   // H1 (owner, 2026-11-03): under Themes, each app has its own tab with its own themes and
@@ -3395,6 +3396,28 @@ function renderThemeTabs() {
     mk(a.slug, themeAppTitle(a.slug) + (n ? " (" + n + ")" : " (none)"), scope === a.slug);
   }
   paintThemeSubBadges();
+  paintThemeEvalNotice(nav, apps);
+}
+
+// paintThemeEvalNotice is ruling 38's sentence on the Themes tab: the app whose pane
+// is open either has an editor this hub runs with 'unsafe-eval' — its own
+// editor.json asks for a runtime that needs it — or it does not. The fact travels on
+// the /api/theme/apps row the hub stamped from its own shelf copy, and it shows next
+// to the app chooser because this is the page an operator stands on before pressing
+// into someone's editor, and "what will this package be allowed to run here" is the
+// question worth one line before the press. An app with no editor is no eval question
+// at all: a row that does not offer the door says nothing about it.
+function paintThemeEvalNotice(nav, apps) {
+  const old = nav.querySelector(".edeval");
+  if (old) old.remove();
+  const slug = themeFaceScope();
+  const row = slug ? apps.find((a) => a.slug === slug) : null;
+  if (!row || !row.has_editor || !row.editor_eval) return;
+  const s = document.createElement("span");
+  s.className = "edeval on";
+  s.textContent = "This app's editor may run eval (it uses babel@7.29.0 or support@1).";
+  s.title = "Its editor.json lists a runtime that compiles code in the browser, so this hub serves its editor, on its own origin only, with 'unsafe-eval'. Every other app's editor runs without it.";
+  nav.appendChild(s);
 }
 
 // themeUpsByApp is the Themes tab's count split by app ({slug: {ups, rebakes}}), so each

@@ -2,7 +2,8 @@
 # plus what gorb-os's own gates need, matching CI (.github/workflows/ci.yml):
 #   - clang 21 and lld 21 from apt.llvm.org: the apps build to wasm with them, and the shelf
 #     check is byte-for-byte, so a different clang would fail it (BUILDING.md);
-#   - zlib, Pillow, NumPy and tzdata for the host suites.
+#   - zlib, Pillow, NumPy and tzdata for the host suites;
+#   - Go (tools/orb-manager/go.mod's version) for the hub's gate, `make check-hub`.
 # Build:  docker build -t delegate-worker-gorb:local -f tools/delegate/worker.Dockerfile tools/delegate
 # Use:    DELEGATE_IMAGE=delegate-worker-gorb:local delegate run|chain ...
 FROM delegate-worker:local
@@ -17,3 +18,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends gnupg zlib1g-de
 
 ENV ORB_CLANG=/usr/lib/llvm-21/bin/clang \
     PATH=/usr/lib/llvm-21/bin:$PATH
+
+# Go for the hub's gate (make check-hub); the version is tools/orb-manager/go.mod's.
+ARG GO_VERSION=1.27.2
+RUN curl -fsSL "https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz" | tar -C /usr/local -xz \
+ && /usr/local/go/bin/go version
+ENV PATH=/usr/local/go/bin:$PATH GOFLAGS=-buildvcs=false

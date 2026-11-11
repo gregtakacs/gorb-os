@@ -8041,3 +8041,19 @@ On the pomodoro design's owner questions (`docs/specs/pomodoro-design.md`):
 - **No kitchen-timer mode**, as the design chose (`focuses = 1` is closest).
 - **Every look has a header row**, New included. The press-and-turn choice is always shown
   there, with no fallback.
+
+### 64.7 Colours are the theme's; the ring gains a direction and a start — 2026-11-11
+
+- **Ring colours are theme bakes, not settings** (owner). The pomodoro's per-phase ring colours
+  are baked by its editor into the theme's values (`orb_stage_values`, radar-plan §2.11), like
+  every other colour an app draws. So §64.2's `color` setting type has no user and is
+  withdrawn: it is not built.
+- **The ring takes a direction and a start** (owner): clockwise or anticlockwise, and the angle
+  on the rim where the arc begins (default twelve o'clock, clockwise). They ride the ring
+  record's reserved bytes, so the API keeps one call.
+- **The pomodoro's looks are redesigned by Claude, not the worker** (owner): each look is a
+  timer from its world, not a clock; no scale that names minutes the ring does not keep; digits
+  of one width, so the time never shifts; furniture kept inside the rim, so the OS ring stands
+  alone at the edge.
+- **Design and audiovisual work stays with Claude** unless the owner asks for it to be
+  delegated (looks, art, icons, colour, type, sound). The local worker builds the plumbing.

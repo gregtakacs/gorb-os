@@ -8057,3 +8057,19 @@ On the pomodoro design's owner questions (`docs/specs/pomodoro-design.md`):
   alone at the edge.
 - **Design and audiovisual work stays with Claude** unless the owner asks for it to be
   delegated (looks, art, icons, colour, type, sound). The local worker builds the plumbing.
+
+### 64.8 The pomodoro's chimes: generated, and the owner's own — 2026-11-11
+
+- **Ring opacity stays a setting** (owner).
+- **Several chimes, each made by a sound generator**, the way the clock's editor makes its
+  voices (`apps/clock/editor/sound-engine.js`: synthesized in code, so the editor carries the
+  recipe rather than WAVs). The first batch is generated. Each look has its own chime, and an
+  author can pick any of them.
+- **An owner's upload is a choice too**: a short sound file the editor converts to the theme's
+  format (ADPCM, §52), as the clock's upload already does.
+- **Both ride in the theme**, as every theme sound does (cap `sound`). They play at the chime
+  volume, a share of the master (§64.6), and stay above 350 Hz, because the speaker is a 2 W
+  micro speaker.
+- Apps are atomic, so the pomodoro does not borrow the clock's engine. Where the generator and
+  the upload belong (the kit, for every app's editor, or the pomodoro's own editor) is Claude's
+  call in the pomodoro look design.

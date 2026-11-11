@@ -335,7 +335,7 @@ ORB_EXPORT("orb_push") void orb_push(int32_t delta)
 | location | `orb_home`, `orb_home_gen` | `location` |
 | the ring | `orb_ring_set`, `orb_ring_clear` ([sdk/orb.h](sdk/orb.h), "The ring") | `ring` |
 | units | `orb_units`, `orb_units_gen`, and the `orb_*_from_*` and `orb_*_label` helpers | free (OS v1.2.10) |
-| power | `orb_power_request` | `power` |
+| power | `orb_power_request`, `orb_wake` ([sdk/orb.h](sdk/orb.h), "Waking the glass") | `power` |
 | stage | `orb_stage_*` ([sdk/orb_stage.h](sdk/orb_stage.h)) | free; draws only for the theme's own app |
 
 Strings cross the boundary as NUL-terminated pointers into the app's own memory,
@@ -419,6 +419,26 @@ orb_ring_clear();   // give the rim back
 - **The copy arc wins.** While a card copy is running the rim shows the copy arc and your
   ring holds its state; the first frame after the copy stamps your ring again — no work
   for the app, and `/status`'s `ring.on_glass` is false while it waits.
+
+### Waking the glass
+
+`orb_wake` (cap `power`) is a one-shot wake: an app **off the glass** lights a dimmed
+face for a few seconds — the pomodoro's "wake the screen" at a phase end, so a timer
+that fires while another app shows still gets a glance. It is not a hold
+(`orb_power_request` only holds the glass while the app is *on* it, revoked the moment
+it leaves): `orb_wake` goes through the idle-dim module's own request path, so idle-dim
+stays the policy owner, and it never switches apps, never takes the glass, and never
+changes what is drawn on it. `seconds` is clamped to **3..15** whatever you ask. It
+answers `ESP_OK` when the glass is lit (or already was); `ESP_ERR_NOT_ALLOWED` without
+the cap, during the OS's **quiet hours**, or with the display switched off by its owner;
+and `ESP_ERR_INVALID_STATE` when *this app* woke the glass **less than 60 s ago** — at
+most one wake a minute per app, and that minute is per app and resets when the app
+leaves the glass. Callable from `orb_service` on or off the glass.
+
+```c
+orb_wake(8);   // light the glass for 8 s (clamped 3..15). ESP_OK | ESP_ERR_NOT_ALLOWED
+               // (no cap / quiet hours / display off) | ESP_ERR_INVALID_STATE (< 60 s)
+```
 
 ### Secrets
 

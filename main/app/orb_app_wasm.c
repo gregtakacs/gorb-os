@@ -174,6 +174,10 @@ typedef struct {
     uint32_t       cfg_pending;  /* writes posted to the worker, not yet landed */
     bool           cfg_stale;    /* a posted write was refused: re-read at next call */
     bool           stage;        /* the live theme is this app's: it owns the stage */
+    uint32_t       wake_ms;      /* §64.6: this app's last orb_wake uptime stamp, 0 = never;
+                                  * the once-a-minute rate limit. Reset with the rest of the
+                                  * row in slot_release, so a wake does not survive an
+                                  * uninstall and a restarted app gets a fresh minute. */
     uint8_t       *icon;         /* §61: the app's icon (orb.icon), deflated disc, PSRAM */
     uint32_t       icon_n;
     uint16_t       icon_side;
@@ -214,6 +218,8 @@ static void slot_release(wasm_slot_t *s)
     orb_blob_free_all(slot_index(s));
     orb_map_release_app(slot_index(s));
     orb_ring_drop(slot_index(s));   /* the OS ring: an uninstalled app's record goes with it */
+    /* §64.6: no explicit wake drop — the memset below zeroes s->wake_ms, so an app that
+     * leaves and comes back has a fresh minute and its last wake is not held against it. */
     if (s->rt) m3_FreeRuntime(s->rt);
     if (s->env) m3_FreeEnvironment(s->env);
     if (s->code) heap_caps_free(s->code);
@@ -1096,6 +1102,23 @@ m3ApiRawFunction(imp_power_request)          /* i32 power_request(u32 timeout_s,
     m3ApiReturn(orb_svc_table()->power_request(s->app, timeout_s, hold != 0));
 }
 
+/* §64.6 orb_wake: a one-shot wake of a dimmed glass, an app off the glass lighting it
+ * for a glance. The clock is the same uptime-ms count idle_dim decides on; the
+ * once-a-minute record is the row's own wake_ms, stamped here (never in the broker) and
+ * only when the ask lights the glass, so a refusal — no cap, quiet hours, the owner's
+ * display off, or too soon — leaves the minute untouched and the next ask is judged
+ * against the last wake that actually happened. slot_release zeroes it with the row. */
+m3ApiRawFunction(imp_wake)                   /* i32 wake(u32 seconds) */
+{
+    m3ApiReturnType(int32_t);
+    CALLER();
+    m3ApiGetArg(uint32_t, seconds);
+    const uint32_t now = (uint32_t)(esp_timer_get_time() / 1000);
+    const esp_err_t e = orb_svc_table()->wake(s->app, seconds, now, s->wake_ms);
+    if (e == ESP_OK) s->wake_ms = now;
+    m3ApiReturn(e);
+}
+
 /* network: CAP_NET, the broker's own gate word (the broker's http_get entry is the
  * synchronous shape this asynchronous one replaces for a guest) */
 
@@ -1940,6 +1963,7 @@ static const wasm_bind_t s_binds[] = {
     { "orb", "units_gen",     "i()",       imp_units_gen },
     { "orb", "units_pressure", "i()",      imp_units_pressure },
     { "orb", "power_request", "i(ii)",     imp_power_request },
+    { "orb", "wake",          "i(i)",      imp_wake },
     { "orb", "net_request",   "i(iiiiii)", imp_net_request },
     { "orb", "net_header",    "i(iii)",    imp_net_header },
     { "orb", "json_begin",    "i(ii)",     imp_json_begin },

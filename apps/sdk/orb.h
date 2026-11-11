@@ -282,6 +282,24 @@ static inline void orb_time_text(char *out, int hour, int min, const orb_units_t
 
 ORB_IMPORT("power_request") int32_t orb_power_request(uint32_t timeout_s, int32_t hold);
 
+/** A one-shot wake: light a dimmed glass for a few seconds, from anywhere, without
+ *  taking the glass. The pomodoro's "wake the screen" at a phase end — an app whose
+ *  timer fires while another app shows can still light the dial for a glance, then
+ *  leave it back to whatever was there. Unlike orb_power_request (which only holds
+ *  the glass while the app is ON it, revoked the moment it leaves), this is a nudge:
+ *  it goes through the idle-dim module's own request path, so idle-dim stays the
+ *  policy owner, and it never switches apps, never takes the glass, and never changes
+ *  what is drawn on it. Callable from orb_service on or off the glass, under cap
+ *  `power`. `seconds` is clamped to 3..15 whatever you ask (a floor a glance needs, a
+ *  ceiling on holding a glass you do not own).
+ *
+ *  Answers ESP_OK when the glass is lit or was already lit; ESP_ERR_NOT_ALLOWED
+ *  without the cap, during the OS's quiet hours, or with the display switched off by
+ *  its owner; and ESP_ERR_INVALID_STATE when THIS app woke the glass less than 60 s
+ *  ago — at most one wake a minute per app, so a chatty timer cannot keep the dial up.
+ *  The rate limit is per app and resets when the app leaves the glass. */
+ORB_IMPORT("wake") int32_t orb_wake(uint32_t seconds);
+
 /* ---- network (cap "net") ------------------------------------------------------- *
  * The OS's HTTP and HTTPS client (D51): one request at a time per app, run off the UI
  * task behind the network gate. The body (any status's) lands in an OS buffer the app

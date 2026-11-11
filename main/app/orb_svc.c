@@ -35,6 +35,7 @@
 #include "orb_places.h"       /* and the three places beside it            */
 #include "orb_theme.h"        /* the D18 family: enumerate and request, never bytes */
 #include "idle_dim.h"         /* the power request path — a request, not a write */
+#include "orb_wake.h"         /* §64.6: the pure one-shot-wake decision */
 #include "orb_ring.h"         /* §64.1: revoking the ring cap drops the app's record */
 #include "orb_layers.h"       /* P5.5: the layer table the four entries drive */
 #include "orb_sound.h"        /* D39: the engine the sound entries hand off to */
@@ -529,6 +530,22 @@ static esp_err_t svc_power_request(orb_app_t *a, uint32_t timeout_s, bool hold)
     return idle_dim_app_request(a->slug, timeout_s, hold);
 }
 
+/* §64.6: a one-shot wake. The cap gate is the broker's, the decision is orb_wake.c's
+ * pure function (quiet hours, the owner's DISPLAY truth, the once-a-minute rate limit,
+ * the 3..15 clamp), and on the one verdict that lights the glass the wake is applied
+ * through idle_dim's OWN request path — a short window, no hold — so idle_dim remains
+ * the policy owner of the face and what is on it is untouched. The rate-limit record
+ * lives in the caller's wasm slot and is advanced by the import only when this returns
+ * ESP_OK; here the ask is refused (never recorded) on anything else. */
+static esp_err_t svc_wake(orb_app_t *a, uint32_t seconds, uint32_t now_ms, uint32_t last_wake_ms)
+{
+    SVC(a, POWER);
+    orb_wake_decision_t d = orb_wake_decide(now_ms, last_wake_ms, seconds,
+                                            orb_sound_quiet_now(), !idle_dim_enabled());
+    if (d.verdict != ORB_WAKE_OK) return (esp_err_t)d.verdict;
+    return idle_dim_app_request(a->slug, d.seconds, false);
+}
+
 static esp_err_t svc_http_get(orb_app_t *a, const char *url, orb_buf_t *out)
 {
     SVC(a, NET);
@@ -826,6 +843,7 @@ static const orb_svc_t S_TABLE = {
     .tz_label      = svc_tz_label,
     .tz_offset     = svc_tz_offset,
     .power_request = svc_power_request,
+    .wake          = svc_wake,
     .cfg_get       = svc_cfg_get,
     .cfg_set       = svc_cfg_set,
     .cfg_get_str   = svc_cfg_get_str,

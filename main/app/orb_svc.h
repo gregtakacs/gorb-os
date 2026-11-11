@@ -150,6 +150,14 @@ typedef struct {
   esp_err_t (*tz_offset)(orb_app_t *, time_t when, int32_t *offset_min);
   /* power: a request only, idle_dim owns the decision */
   esp_err_t (*power_request)(orb_app_t *, uint32_t timeout_s, bool hold);
+  /* power (cap): a one-shot wake for an app off the glass (plan §64.6), beside
+   * power_request. It applies a short idle_dim window for the
+   * app, taking nothing from the app on the glass; the whole verdict (quiet hours,
+   * the owner's display truth, the once-a-minute rate limit) comes from orb_wake.c.
+   * now_ms/last_wake_ms are the import's uptime clock and the caller app's own
+   * last-wake stamp (0 = never), read at the slot: the record lives in the wasm
+   * slot and is dropped in slot_release, so a wake does not survive an uninstall. */
+  esp_err_t (*wake)(orb_app_t *, uint32_t seconds, uint32_t now_ms, uint32_t last_wake_ms);
   /* config: bounded to this app's declared settings, int32 and string (C9) */
   esp_err_t (*cfg_get)(orb_app_t *, const char *id, int32_t *out);
   esp_err_t (*cfg_set)(orb_app_t *, const char *id, int32_t v);

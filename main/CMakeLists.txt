@@ -28,6 +28,9 @@ idf_component_register(
         # §59: the carousel's owner order and its rotation; pure decisions, host-tested.
         "app/orb_rotation.c"
         "app/orb_svc.c"
+        # §64.6: the one-shot wake an app may ask for from its service; a pure decision,
+        # host-tested by tools/host_wake_test.py, driven by the thin entry in orb_svc.c.
+        "app/orb_wake.c"
         "display/display.c"
         # C2 (theme-delta plan §6.2): the boot/install overlay — the one painter
         # that runs with LVGL unarmed, on esp_lcd_panel_draw_bitmap alone.

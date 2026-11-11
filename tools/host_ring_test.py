@@ -49,6 +49,9 @@ MUTATIONS = [
     ("        if (owner[i] < 0) continue;", "        if (0) continue;"),
     ("    owner[slot] = -1;", "    ;"),
     ("seq[slot] = now_us / 1000;", "seq[slot] = now_us;"),
+    ("if (!r || !r->match) return;", "if (!r) return;"),
+    ("r->arc   = (r->arc   & 0xFF000000u) | rgb;", "r->arc   = 0xFF000000u | rgb;"),
+    ("if ((overlay & 0xFF000000u) != 0x01000000u) return;", "if (overlay == 0) return;"),
 ]
 
 HARNESS = r"""
@@ -127,6 +130,25 @@ int main(int argc, char **argv)
     } else if (!strcmp(m, "eff")) {
         orb_ring_rec r = { 500, (uint8_t)lg(argv[2]), 0, 0, 0, (uint16_t)lg(argv[3]), 0 };
         printf("EFF %d\n", ring_effect_alpha(&r, strtoll(argv[4], NULL, 0)));
+    } else if (!strcmp(m, "ap")) {
+        /* ring_apply_overlay (overlay-design §6/§8 check 4): build a record with the ask and two
+         * colours, apply an overlay `times` times, dump all 16 bytes so a no-op is proven byte for
+         * byte. argv: match arc track overlay times. */
+        orb_ring_rec r = { 500, 0, (uint8_t)lg(argv[2]),
+                           (uint32_t)strtoul(argv[3], NULL, 0), (uint32_t)strtoul(argv[4], NULL, 0), 0, 0 };
+        const uint32_t ovl = (uint32_t)strtoul(argv[5], NULL, 0);
+        const int tm = (int)lg(argv[6]);
+        for (int i = 0; i < tm; i++) ring_apply_overlay(&r, ovl);
+        const unsigned char *p = (const unsigned char *)&r;
+        printf("AP");
+        for (unsigned i = 0; i < (unsigned)sizeof r; i++) printf(" %02X", p[i]);
+        printf("\n");
+    } else if (!strcmp(m, "mk")) {
+        /* ring_clamp owns the match byte (§8 check 5): argv fraction effect match period. */
+        orb_ring_rec r = { (uint16_t)lg(argv[2]), (uint8_t)lg(argv[3]), (uint8_t)lg(argv[4]),
+                           0, 0, (uint16_t)lg(argv[5]), 0 };
+        ring_clamp(&r);
+        printf("MK %u %u %u %u\n", r.fraction, r.effect, r.period_ms, r.match);
     } else if (!strcmp(m, "null")) {
         orb_ring_rec g;
         orb_ring_part_t p[4];
@@ -308,6 +330,35 @@ def checks(exe, quiet=False):
        % max(abs(b - a) for a, b in zip(bs, bs[1:])))
     ck(rec(500, 2, 100) == rec(500, 2, 4000) and rec(500, 1, 1000) == rec(500, 1, 500),
        "clamping a clamped record changes nothing")
+
+    # ---- overlay-2: the match byte and the substitution (§8 checks 4 and 5) --------------
+    def mk(f, e, match, p):
+        return run(exe, "mk", f, e, match, p).split()[1:]
+    ck(mk(500, 0, 7, 4000) == ["500", "0", "4000", "1"], "a match byte of 7 clamps to 1 and nothing else moves")
+    ck(mk(500, 1, 0, 100) == ["500", "1", "1000", "0"], "a match byte of 0 stays 0")
+    ck(mk(500, 0, 1, 4000) == ["500", "0", "4000", "1"], "a match byte of 1 stays 1")
+
+    def ap(match, arc, track, ovl, times=1):
+        return "".join(run(exe, "ap", match, hex(arc), hex(track), hex(ovl), times).split()[1:])
+    def rec_bytes(match, arc, track):
+        # the record as the harness built it (fraction 500, effect 0, period 0) with these fields
+        import struct
+        return struct.pack("<HBBIIHH", 500, 0, match, arc, track, 0, 0).hex().upper()
+    ck(ap(0, 0x80FF0000, 0x3300FF00, 0x01123456) == rec_bytes(0, 0x80FF0000, 0x3300FF00),
+       "a record that did not ask is unchanged byte for byte, over any theme colour")
+    ck(ap(1, 0x80FF0000, 0x3300FF00, 0x01123456) == rec_bytes(1, 0x80123456, 0x33123456),
+       "a matching record takes the theme RGB and keeps each alpha")
+    ck(ap(1, 0x80FF0000, 0x3300FF00, 0x01123456, 2) == ap(1, 0x80FF0000, 0x3300FF00, 0x01123456, 1),
+       "applying the substitution twice is applying it once")
+    ck(ap(1, 0x80FF0000, 0x3300FF00, 0) == rec_bytes(1, 0x80FF0000, 0x3300FF00),
+       "overlay 0 (a theme that names no colour) changes nothing — amendment H's 'behaves as From the look'")
+    ck(ap(1, 0x00FF0000, 0x0000FF00, 0x01123456) == rec_bytes(1, 0x00123456, 0x00123456),
+       "a muted band stays muted: alpha 0 keeps its alpha over any theme colour")
+    ck(ap(1, 0x80FF0000, 0x3300FF00, 0x01000000) == rec_bytes(1, 0x80000000, 0x33000000),
+       "0x01000000 (black, present) applies")
+    ck(ap(1, 0x80FF0000, 0x3300FF00, 0x02000000) == rec_bytes(1, 0x80FF0000, 0x3300FF00)
+       and ap(1, 0x80FF0000, 0x3300FF00, 0x00123456) == rec_bytes(1, 0x80FF0000, 0x3300FF00),
+       "a presence test, not a nonzero test: 0x02rrggbb and 0x00rrggbb are absence and change nothing")
 
     def own(*ops, n=8):
         return [ln.split() for ln in run(exe, "own", n, *ops).splitlines()]

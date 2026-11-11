@@ -133,9 +133,12 @@ int main(int argc, char **argv)
             printf("case%u refuse %s\n", id, why);
         } else {
             printf("case%u ok name %s\n", id, h.name);
-            printf("case%u ok hdr %u %u %u %u %u %u %u %u %u\n", id,
+            printf("case%u ok hdr %u %u %u %u %u %u %u %u %u %u %u\n", id,
                    b.n_sections, h.geom_off, h.geom_size, h.geom_crc,
-                   h.art_off, h.art_size, h.art_crc, h.serial, h.baked_s);
+                   h.art_off, h.art_size, h.art_crc, h.serial, h.baked_s,
+                   /* §64.9's word, dumped twice: what parse_core carried out of the
+                    * region, and what the one tag rule makes of it. */
+                   b.overlay, orb_bundle_overlay(&b));
             for (uint32_t i = 0; i < b.n_sections; i++) {
                 const orb_bundle_sec_t *s = &b.sec[i];
                 printf("case%u ok sec %u %s %u %u %u %u %u %u %u %u %u %u\n",
@@ -203,8 +206,8 @@ int main(int argc, char **argv)
                     if (r) printf("case%u R refuse %s\n", id, r);
                     else {
                         have = 1;
-                        printf("case%u R ok %u %u %u %u\n", id, b2.n_sections,
-                               rbsz, w.geom_crc, w.art_off);
+                        printf("case%u R ok %u %u %u %u %u\n", id, b2.n_sections,
+                               rbsz, w.geom_crc, w.art_off, b2.overlay);
                     }
                 } else if (!strncmp(qq, "bank:", 5)) {
                     unsigned si = 0; char md[8] = {0};
@@ -255,8 +258,8 @@ int main(int argc, char **argv)
                         printf("case%u X refuse %s\n", id, r);
                         continue;
                     }
-                    printf("case%u X ok %u %u %u %u", id, old, w2.art_off,
-                           w2.geom_crc, b3.n_sections);
+                    printf("case%u X ok %u %u %u %u %u", id, old, w2.art_off,
+                           w2.geom_crc, b3.n_sections, b3.overlay);
                     for (uint32_t i = 0; i < b3.n_sections; i++)
                         printf(" %u", b3.sec[i].art_off);
                     printf("\n");
@@ -353,13 +356,14 @@ def art_total(banks, aoff0):
 
 
 def build(name="Parity Bundle", specs=(), head_n=None, idx_n=None, geom_len=None,
-          hdr_words=None, hdr_crc_break=False, serial=3):
+          hdr_words=None, hdr_crc_break=False, serial=3, overlay=0):
     """specs: dicts of slug / elements / scalars / sprites / art, plus optional
     rec (overrides the computed index record) and raw_blob (forged blob bytes,
     which the record's geom_crc still answers to). head_n and geom_len forge
     the counts the readers cross-check; hdr_words patches raw header words
     before the header crc is re-stamped — the file stays honest everywhere
-    except the one rule under test."""
+    except the one rule under test. `overlay` is the index head's second word
+    (§64.9), and the default is the zero every vector was built with before."""
     blobs, banks = [], []
     for sp in specs:
         blob = sp.get("raw_blob")
@@ -390,7 +394,7 @@ def build(name="Parity Bundle", specs=(), head_n=None, idx_n=None, geom_len=None
         r.update(sp.get("rec") or {})
         recs.append(r)
         aoff = (aoff + len(art) + SECTOR - 1) & ~(SECTOR - 1)
-    region = bytearray(ob.pack_index(recs) + b"".join(blobs))
+    region = bytearray(ob.pack_index(recs, overlay) + b"".join(blobs))
     if idx_n is not None:
         # forge the INDEX head word alone: the count the readers
         # range-check first; the header keeps the true count
@@ -803,8 +807,9 @@ def stream_expect(raw, qs):
                 out.append("R refuse " + refuse)   # what the whole door says
                 have = False
                 continue
-            out.append("R ok %u %u %u %u" % (h["n_sections"], h["geom_size"],
-                                             h["geom_crc"], h["art_off"]))
+            out.append("R ok %u %u %u %u %u" % (h["n_sections"], h["geom_size"],
+                                                h["geom_crc"], h["art_off"],
+                                                ob.index_overlay(region)))
             have = True
         elif q.startswith("bank:"):
             if not have:
@@ -845,8 +850,9 @@ def stream_expect(raw, qs):
             if why:
                 out.append("X refuse " + why)
                 continue
-            out.append("X ok %u %u %u %u %s"
+            out.append("X ok %u %u %u %u %u %s"
                        % (base, new_base, _edited_crc(region, recs, moved), len(recs),
+                          ob.index_overlay(region),
                           " ".join(str(m) for m in moved)))
             cur, base, bound = moved, new_base, cap
         elif q == "secdump":
@@ -924,6 +930,109 @@ DESIGN_RAW = build(specs=[SOLO], hdr_words={29: len(_dbase), 30: len(_DESIGN),
 VECTORS += [
     (88, F_LAYOUT | F_FIND, 0, ["solo"], DESIGN_RAW, "ok", None, None),
 ]
+
+# ---------------------------------------------------------------------------
+# §64.9: the overlay colour — the index head's second word, written by the
+# Python writer, read by the shipped C reader, and dumped on every accept vector
+# against ob.index_overlay() of the same region (check_case). That comparison
+# runs on EVERY vector above too, which is the suite's share of §8 check 1: a
+# file that never asked for a colour is still read as carrying none. These
+# vectors are the coloured half, and they are declared once and built twice —
+# the same declaration feeds the vectors and the writer mutant below, which
+# rebuilds each file through the real writer with the argument pinned to 0.
+# ---------------------------------------------------------------------------
+
+OV_VECS = [
+    # 1. the golden two-app bundle with a colour: the C's dump names the word and
+    #    the writer's own helper answers the same number for the same bytes.
+    (90, F_LAYOUT | F_FIND, 0, ["chrono", "paint"], 0x01135c79,
+     dict(name="Bundle Two Apps", serial=3, hdr_words={10: 1793000000},
+          specs=[dict(SOLO, slug="chrono"), dict(BETA, slug="paint")])),
+    # 2. the same bundle with the default: the dump says overlay=0, and the bytes
+    #    are the ones the suite shipped before the word had a name (check below).
+    (91, F_LAYOUT | F_FIND, 0, ["chrono", "paint"], 0,
+     dict(name="Bundle Two Apps", serial=3, hdr_words={10: 1793000000},
+          specs=[dict(SOLO, slug="chrono"), dict(BETA, slug="paint")])),
+    # 3. absence, not damage: a full RGB under the absent tag, and a tag this build
+    #    does not know. Both parse with no refusal at any door, the dump carries
+    #    the raw word, and the tag rule answers 0 for both — the pair that pins
+    #    §64.9's fallback for a theme from a build that filled the low bits and
+    #    left the tag zero. The second also carries two sections, and the section
+    #    count is still one read of one head.
+    (93, F_LAYOUT, 0, [], 0x00ff8800, dict(specs=[SOLO])),
+    (94, F_LAYOUT, 0, [], 0x02aabbcc,
+     dict(name="Twin Banks", serial=9,
+          specs=[dict(SOLO, slug="chrono"),
+                 dict(SOLO, slug="paint",
+                      art=bytes((i * 7 + 3) & 0xFF for i in range(3000)))])),
+    # 4. the tag, not the value, is the presence bit: a black under a 0x01 tag is
+    #    a colour and reads back as itself.
+    (95, F_LAYOUT, 0, [], 0x01000000, dict(specs=[SOLO])),
+    # 5. the installer's door over a coloured two-section bundle: the region word
+    #    through orb_bundle_parse_region, and the rebase's X line showing the word
+    #    untouched under records that moved and a geom_crc that was recomputed.
+    (96, F_STREAM, NO_ROW, ["region", "rebase", "secdump", "recheck",
+                            "bank:0:FULL", "bank:1:FULL"], 0x01135c79,
+     dict(name="Twin Banks", serial=9,
+          specs=[dict(SOLO, slug="chrono"),
+                 dict(SOLO, slug="paint",
+                      art=bytes((i * 7 + 3) & 0xFF for i in range(3000)))])),
+]
+
+_OV_KW = {c[0]: c[5] for c in OV_VECS}
+OV_RAW = {c[0]: build(overlay=c[4], **c[5]) for c in OV_VECS}
+OV_EXPECT = {c[0]: c[4] for c in OV_VECS}
+
+# 6. the forgery: one byte of the overlay word in a written file, with the header
+#    still holding the checksum the writer stamped over the old region. Damage
+#    inside the region is geom_crc's job (§2), so the field is protected and not
+#    trusted, and the sentence is the one case 79 already pins.
+OV_FORGE = (92, 0, NO_ROW, [], _flip(OV_RAW[90], 132),
+            "same", None, "geometry checksum")
+
+VECTORS += [(c[0], c[1], c[2], c[3], OV_RAW[c[0]],
+             "dump" if (c[1] & F_LAYOUT) else "stream", None, None) for c in OV_VECS]
+VECTORS += [OV_FORGE]
+
+# The additive half of §8 check 1, on bytes and not on verdicts: for each family
+# here, an overlay=0 write reproduces the file the suite shipped before this step
+# gave the word a meaning, so nothing on a shelf, a card or in a fixture moves.
+OV_IDENTICAL = [(91, GOLDEN), (94, TWIN)]
+
+
+def _ov_path(cid):
+    return os.path.join(tmpdir, "ov%u.orbtheme" % cid)
+
+
+def check_overlay_additive():
+    """§8 check 1's two claims, both on the writer's own bytes: the new argument's
+    default is the zero every file already holds, and the one-line read-back that
+    the app gate, the shelf check and a bench script all want answers the word the
+    writer was handed — which is the only reason orbbundle carries file_overlay at
+    all rather than three callers copying the same four lines."""
+    for cid, base in OV_IDENTICAL:
+        check(build(overlay=0, **_OV_KW[cid]) == base,
+              "case %d: the new argument's default is not the zero every file already "
+              "holds — this vector's default bytes moved" % cid)
+    for cid, word in sorted(OV_EXPECT.items()):
+        p = _ov_path(cid)
+        with open(p, "wb") as f:
+            f.write(OV_RAW[cid])
+        got = ob.file_overlay(p)
+        check(got == word, "case %d: ob.file_overlay() reads %#x where the writer wrote %#x"
+              % (cid, got, word))
+
+
+def _force_writer_overlay_zero(cases):
+    """pack_index's `overlay` argument pinned to 0: every file in the run rebuilt
+    through the real writer, so a colour a theme asked for is quietly gone. The
+    dump comparison alone cannot see this — the oracle reads the same bytes the C
+    does — so the vector's declared word (OV_EXPECT) is what the suite claims and
+    the harness's stdout is what must move."""
+    return [(cid, flags, row, queries,
+             build(overlay=0, **_OV_KW[cid]) if cid in _OV_KW else raw)
+            for (cid, flags, row, queries, raw) in cases]
+
 
 # ---------------------------------------------------------------------------
 # run: one compile, one batch, then compare every case against the oracle
@@ -1012,6 +1121,19 @@ def check_case(cid, flags, row, queries, raw, kind, expect, rule, cl):
           and int(f_[4]) == h["art_off"] and int(f_[5]) == h["art_size"]
           and int(f_[7]) == h["serial"] and int(f_[8]) == h["baked_s"],
           "case %d: header fields disagree: %s vs %r" % (cid, f_, h))
+    # §64.9's word, on both legs of its claim: the raw word the C carried out of the region is
+    # the one the writer's own reader-helper answers for those very bytes, and the field after
+    # it is the tag rule applied to that word — restated here in the suite's own three lines,
+    # because an expectation computed by the code under test proves nothing. The length check
+    # keeps a dropped dump field from shifting the two reads into each other's place.
+    ov_exp = ob.index_overlay(_pytable(raw)[2])
+    check(len(f_) == 11 and int(f_[9]) == ov_exp
+          and int(f_[10]) == (ov_exp if (ov_exp & 0xFF000000) == 0x01000000 else 0),
+          "case %d: overlay word disagrees: %s vs %#x" % (cid, f_[9:], ov_exp))
+    if cid in OV_EXPECT:
+        check(int(f_[9]) == OV_EXPECT[cid],
+              "case %d: the file carries %#x and the C read %#x"
+              % (cid, OV_EXPECT[cid], int(f_[9])))
     secs = [l.split()[3:] for l in cl if l.startswith("ok sec")]
     check(len(secs) == len(out), "case %d: C dumped %d sections, oracle read %d"
           % (cid, len(secs), len(out)))
@@ -1179,14 +1301,40 @@ MUTANTS = [
         if (moved > slot_cap || s->art_size > slot_cap - moved)
             return "section bank would run past the end of the slot";
     }""", 85),
+    # §64.9's word, in both directions: a reader that stops carrying it, and a
+    # writer that never writes it. The reader mutant breaks the shipped C like every
+    # entry above. The writer mutant is a CALLABLE, because the writer is the Python
+    # this suite treats as its oracle: it hands back the same vectors rebuilt through
+    # that writer with the colour argument pinned to 0, and the CLEAN reader must
+    # notice the file it was handed. Without this pair, a dropped read or a dropped
+    # write ships silently, and the field is a lie by the next bake.
+    ("stop carrying the region's overlay word",
+     "b->overlay = b32(region + 4);", "b->overlay = 0;", 90),
+    ("write the overlay word the theme never asked for",
+     _force_writer_overlay_zero, None, 90),
 ]
 
 
 def mutants(binp_clean, cases, stdout_clean, tmp):
+    """Every mutant, one at a time: the run must differ. Returns (caught, missed)
+    and prints the misses here, so the caller can print the summary LAST — the
+    `mutants caught N/N` line is what the host gate greps.
+
+    A writer-side mutant (tools/orbbundle.py is the oracle of this suite, so it
+    cannot be broken by editing the C) is a callable that returns a rebuilt vector
+    list, and it runs against the CLEAN binary: what it mutates is the file."""
     caught, missed = 0, []
     with open(READER_C) as f:
         src = f.read()
     for name, old, new, _vec in MUTANTS:
+        if callable(old):
+            # a writer-side mutant: same clean binary, vectors rebuilt by a broken writer
+            rc, out = run_bin(binp_clean, old(cases))
+            if rc == 0 and out == stdout_clean:
+                missed.append("%s: the run did not notice" % name)
+            else:
+                caught += 1
+            continue
         if src.count(old) != 1:
             missed.append("%s (anchor hit %d times)" % (name, src.count(old)))
             continue
@@ -1201,11 +1349,9 @@ def mutants(binp_clean, cases, stdout_clean, tmp):
             missed.append("%s: the run did not notice" % name)
         else:
             caught += 1
-    print("== orb_bundle_c mutants: %d/%d caught, %d anchor misses"
-          % (caught, len(MUTANTS), len(missed)))
     for m in missed:
         print("  MISSED " + m)
-    return missed
+    return caught, missed
 
 
 if __name__ == "__main__":
@@ -1223,14 +1369,20 @@ if __name__ == "__main__":
                    vec[7], got.get(vec[0], []))
         if vec[1] & F_STREAM:
             check_stream(vec[0], vec[4], vec[3], got.get(vec[0], []))
-    print("== orb_bundle_c parity: %d checks, %d failure(s)"
-          % (nchecks[0], len(failures)))
+    check_overlay_additive()
+    caught = missed = None
+    if "--mutations" in sys.argv:
+        caught, missed = mutants(binp, cases, stdout, tmpdir)
     for m in failures:
         print("  FAIL " + m)
-    code = 1 if failures else 0
-    if "--mutations" in sys.argv:
-        if mutants(binp, cases, stdout, tmpdir):
-            code = 1
+    print("== orb_bundle_c parity: %d checks, %d failure(s)"
+          % (nchecks[0], len(failures)))
+    code = 1 if failures or missed else 0
+    print("RESULT: pass" if code == 0 else
+          "RESULT: fail (%d check(s), %d uncaught mutant(s))"
+          % (len(failures), len(missed or [])))
+    if caught is not None:
+        print("mutants caught %d/%d" % (caught, len(MUTANTS)))
     sys.exit(code)
 
 

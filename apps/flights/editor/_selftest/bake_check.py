@@ -34,6 +34,11 @@ RUNTIME = os.path.join(ROOT, "tools", "orb-manager", "web", "runtime")
 EDITOR = os.path.dirname(HERE)
 APPV = open(os.path.join(EDITOR, "..", "version.txt")).read().strip()
 
+# §64.9 / gate §8.6: the region's second head word is the OS's overlay colour, tagged 0x01.
+OVL_TAG = 0x01000000
+EXPECT_OVL = {"modern": OVL_TAG | 0x39FF14,               # the modern (scope) look's word accent, #39FF14
+              "overlay-set": OVL_TAG | 0x135C79}          # the owner's #135c79, set on the design
+
 
 def stage(stage_dir):
     for src in (os.path.join(HERE, "bake.html"), os.path.join(EDITOR, "flights-art.js"),
@@ -89,6 +94,13 @@ def check(name, raw, exe, card, period, mapped):
     hdr, secs = ob.read_bundle(path)
     sec = secs[0]
     els = sec["blob"]["elements"]
+    # §64.9 / gate §8.6: the region's second head word is the OS's overlay colour, tagged 0x01;
+    # an untouched design bakes its words' accent, an owner's setting wins.
+    ov = ob.file_overlay(path)
+    if (ov & 0xFF000000) != OVL_TAG:
+        bad.append("overlay word 0x%08x: no 0x01 colour tag" % ov)
+    if name in EXPECT_OVL and ov != EXPECT_OVL[name]:
+        bad.append("overlay 0x%08x, expected 0x%08x" % (ov, EXPECT_OVL[name]))
     if sec["blob"]["slug"] != "flights":
         bad.append("section slug %r" % sec["blob"]["slug"])
     try:
@@ -146,7 +158,7 @@ def check(name, raw, exe, card, period, mapped):
     rc, out, err = H3.run(exe, "--dump3f", path, "flights")
     if rc != 0:
         bad.append("orb_clock3.c refused it: %s" % (out or err).strip()[:200])
-    return bad, len(raw)
+    return bad, len(raw), ov
 
 
 def main():
@@ -171,8 +183,8 @@ def main():
             raw = base64.b64decode(b64)
             if keep:
                 open(os.path.join(keep, name + ".orbtheme"), "wb").write(raw)
-            bad, n = check(name, raw, exe, int(card), int(period), mapped == "1")
-            print("%s %-18s %8d B  %s" % ("ok  " if not bad else "FAIL", name, n, "; ".join(bad)))
+            bad, n, ov = check(name, raw, exe, int(card), int(period), mapped == "1")
+            print("%s %-18s %8d B  ovl=0x%08x  %s" % ("ok  " if not bad else "FAIL", name, n, ov, "; ".join(bad)))
             fails += bool(bad)
     if "DONE" not in dom:
         print("FAIL the page did not finish (virtual time ran out, or it threw)")

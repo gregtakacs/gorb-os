@@ -46,6 +46,8 @@
     'arrow-grey-ground': (d) => { d.planes.heading = { style: 'arrow', length: 0.8, colour: '#FFFFFF' }; d.planes.colour = false; d.planes.groundGrey = true; d.planes.ground = 0.7; return d; },
     'custom-trail-shadow': (d) => { d.planes.family = 'custom'; d.planes.form = 'single'; d.planes.custom.image = PLANE; d.planes.heading.style = 'trail'; d.planes.heading.length = 1; d.planes.shadow.on = true; return d; },
     'saved-before-fields': () => { const d = B.preset('paper'); delete d.planes.shadow; delete d.planes.selStyle; delete d.planes.emWidth; delete d.arm.shadow; delete d.scope.gridWidth; delete d.frames.corner; delete d.planes.heading; delete d.planes.groundGrey; return B.complete(d); },
+    // §64.9: a design whose owner set the OS's overlay explicitly, so the bake carries that colour
+    'overlay-set': (d) => { d.overlay = '#135c79'; return d; },
   };
   // the far-contact dots: one colour, none, and a design saved before the field existed
   VARIANTS['dots-plain'] = (d) => { d.planes.dots = { show: 'plain', colour: '#FFFFFF', size: 8 }; return d; };

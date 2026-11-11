@@ -334,6 +334,10 @@
       fields.push(num('Size', 'words.scale.px', 14, 40, 1, function (v) { return v + ' px'; }));
       fields.push(C('Colour', 'words.scale.colour'));
       fields.push(K.Nt('', 'The round length the figure shows (1, 2, 5, 10…) is the largest that fits a ring’s scope, or the bar’s longest.'));
+      fields.push(K.H("The OS's overlay"));
+      fields.push(K.Co("The OS's overlay", B.overlayOf(d), function (nv) { upd('overlay', nv); }, '', 'overlay',
+        { noAuto: true, preset: getIn(base, 'words.accent') }));
+      fields.push(K.Nt('', 'The colour the orb’s own overlays — the ring, the battery, the notices — are drawn in over this look. It starts as the words’ accent; set it to something else to make the OS’s marks stand apart.'));
     } else if (step === 'map') {
       var mp = d.map, base0 = d.base;
       fields.push(K.H('Map'));

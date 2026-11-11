@@ -3022,8 +3022,11 @@
   var IDX_OFF   = [0, 2, 4, 6, 8, 12, 16, 20, 24, 28, 32, 36, 38];
   var IDX_TYPES = ['u16', 'u16', 'u16', 'u16', 'u32', 'u32', 'u32', 'u32',
                    'u32', 'u32', 'u32', 'u16', 'u16'];
-  function packIndex3(recs) {
-    var words = [recs.length, 0];
+  function packIndex3(recs, overlay) {
+    // The head's second word is the theme's overlay colour (design §2): 0x01RRGGBB names one,
+    // 0 names none, and the wrap into the u32 word is orbbundle._u's exact rule so the two
+    // writers land byte for byte. An absent argument is the zero every file already holds.
+    var words = [recs.length, (overlay >>> 0)];
     for (var i = 0; i < recs.length; i++) {
       var row = new Array(IDX_WORDS).fill(0);
       for (var k = 0; k < IDX_ORDER.length; k++) {
@@ -3091,7 +3094,7 @@
    * sum and not the file's shape, and it fires before a byte of art is encoded.
    *
    * o = {name, sections: [{slug, elements, scalars, sprites, art, abi_min, abi_max,
-   * scr_w, scr_h}], serial, bakedMs}. Section keys are orbbundle.write_bundle's own names,
+   * scr_w, scr_h}], serial, bakedMs, overlay}. Section keys are orbbundle.write_bundle's own names,
    * so the vectors a mirror test feeds this function are the vectors it feeds the Python
    * with no translation layer to drift. `art` is a Uint8Array of already-encoded pixels:
    * the baker's plane encoders fill it, and this function looks inside it no further than
@@ -3167,7 +3170,7 @@
     var artCrcAll = anyArt ? crc32(concat(artJoin)) : 0;
     checkBudget3(run, artSize);
 
-    var region = concat([packIndex3(recs)].concat(blobs));
+    var region = concat([packIndex3(recs, o.overlay >>> 0)].concat(blobs));
     // The header stamps the clock's v6 when a v6 section rides along, else v3 (D42):
     // the two stamps a reader takes, never an app section's own forward aim.
     var hdrAbi = GEOM_ABI3;
@@ -3226,9 +3229,15 @@
     for (i = 0; i < len; i++) bytes[i] = (w[W_NAME + (i >> 2)] >>> ((i & 3) * 8)) & 0xFF;
     var name = new TextDecoder('utf-8', { fatal: true }).decode(bytes);   // D28: invalid UTF-8 is damage
     if (!name) throw new Error('theme has no name in its header — re-bake it');
+    // The overlay colour rides the geometry region's second head word (design §2), so it is a
+    // region read and not a header read, and the region's checksum is verifyBundle3's job: what
+    // comes out HERE is the raw word of an unchecked region, which is why the C keeps its own
+    // read inside parse_core after the crc. A region too short to hold the head names no colour.
+    var ov = (w[4] + 8 <= raw.length && w[5] >= 8) ? v.getUint32(w[4] + 4, true) : 0;
     return { fmt: w[1], abi: w[2], hdrSize: w[3], geomOff: w[4], geomSize: w[5], geomCrc: w[6],
              artSize: w[7], artCrc: w[8], nSections: w[9], bakedS: w[10], serial: w[11], bakedMs: w[12],
-             artOff: w[13], name: name, designOff: w[W_DESIGN_OFF], designSize: w[W_DESIGN_SIZE], designCrc: w[W_DESIGN_CRC] };
+             artOff: w[13], name: name, designOff: w[W_DESIGN_OFF], designSize: w[W_DESIGN_SIZE], designCrc: w[W_DESIGN_CRC],
+             overlay: ov };
   }
   /* P7: a theme's design, or why there is none to reopen. Never throws for the design's own
    * faults: the dial is good whatever its design says, so a damaged one is a sentence. */
@@ -3299,7 +3308,12 @@
       prev = b.slug;
       out.push({ rec: r, blob: b, art: a });
     }
-    return { header: h, sections: out };
+    // The overlay colour (§64.9) off the region this function has just checksummed: the
+    // browser leg's dump, which is how the two writers get compared on one word. Raw here —
+    // the tag rule is the device's orb_bundle_overlay()'s, and an editor that wants it applies
+    // the same three-line test to this number.
+    return { header: h, sections: out,
+             overlay: new DataView(region.buffer, region.byteOffset, region.length).getUint32(4, true) };
   }
 
   /* The resolver's per-section ABI test, which is NOT part of the walk above: the
@@ -3798,6 +3812,7 @@
     }
     function pack(m) {
       return writeBundle3({ name: m.name, serial: m.serial || 0, bakedMs: m.bakedMs || 0, bakedS: m.bakedS || 0, design: m.design || null,
+        overlay: m.overlay || 0,
         sections: [{ slug: m.slug, scr_w: scrW, scr_h: scrH, elements: elems, scalars: m.scalars || {},
                      sprites: bank.sprites, art: bank.art,
                      abi_min: m.abi, abi_max: m.abi }] });
@@ -4335,7 +4350,8 @@
     // D42: every clock section is v6.
     var secAbi = GEOM_ABI6;
     var pack = function () {
-      return B.pack({ name: o.name, serial: o.serial, bakedMs: o.bakedMs, bakedS: o.bakedS, design: o.design, slug: 'clock', scalars: sc, abi: secAbi });
+      return B.pack({ name: o.name, serial: o.serial, bakedMs: o.bakedMs, bakedS: o.bakedS, design: o.design, slug: 'clock', scalars: sc, abi: secAbi,
+                      overlay: o.overlay || 0 });
     };
     var b = pack();
     if (deltaBank && !selfVerify3(frames, bank.sprites, (elems[0].frame0 | 0),

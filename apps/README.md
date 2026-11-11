@@ -416,6 +416,11 @@ orb_ring_clear();   // give the rim back
 - **Colours are `0xAARRGGBB`** (the canvas's convention): the arc's and track's alpha ride
   the top byte, and an alpha of 0 draws nothing. `effect` is `ORB_RING_STEADY`, `_FLASH`
   or `_BREATHE`; the OS clamps the period (breathe is slow only) whatever you ask.
+- **`match` asks the ring to wear the theme.** The record's byte-1 flag (`ORB_RING_MATCH`, `match`)
+  tells the OS to take the arc's and track's RGB from the live theme's overlay colour (§64.9), each
+  keeping its own alpha — a muted band stays muted. Set nothing there (`0`) and the ring keeps the
+  colours you sent. An OS without this slice ignores the byte entirely: it does nothing with it, so
+  the ring simply draws in your own colours.
 - **The copy arc wins.** While a card copy is running the rim shows the copy arc and your
   ring holds its state; the first frame after the copy stamps your ring again — no work
   for the app, and `/status`'s `ring.on_glass` is false while it waits.

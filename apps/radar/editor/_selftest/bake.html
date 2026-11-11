@@ -19,6 +19,8 @@
   // the mock-up's look (it keeps the round track, the bar, no sweep)
   const V = { 'no-sweep': () => { const d = B.preset('scope'); d.sweep.on = false; return d; },
     'sweep-station': () => { const d = B.preset('station'); d.sweep = { on: true, colour: '#ffffff', tail: 30, period: 10 }; return d; },
+    // §64.9: a design whose owner set the OS's overlay explicitly, so the bake carries that colour
+    'overlay-set': () => { const d = B.preset('scope'); d.overlay = '#135c79'; return d; },
     'saved-before-look': () => { const d = B.preset('station'); delete d.layout; delete d.sweep; delete d.forecast; return B.complete(d); } };
   const jobs = B.PRESETS.map((n) => [n, () => B.preset(n)]).concat(Object.entries(V));
   for (const [name, mk] of jobs) {

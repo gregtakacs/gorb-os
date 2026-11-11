@@ -24,6 +24,8 @@
     'map-saved-before': () => { const d = B.preset('paper'); delete d.map; return B.complete(d); },
     // a pack worn by another ground, its colours from the pack's own start
     'scope-wears-nebula': () => { const d = B.preset('scope'); d.icons.pack = 'nebula'; d.icons.c = {}; return B.complete(d); },
+    // §64.9: a design whose owner set the OS's overlay explicitly, so the bake carries that colour
+    'overlay-set': () => { const d = B.preset('scope'); d.overlay = '#135c79'; return d; },
     'paper-no-caps-mono': () => { const d = B.preset('paper'); d.words.caps = true; d.words.num = 'IBM Plex Mono'; d.temps.cap = 'butt'; return d; },
     'saved-before-fields': () => { const d = B.preset('station'); delete d.temps.cap; delete d.words.track; return B.complete(d); },
     'wide-gradient-bars': () => { const d = B.preset('celestial'); d.temps.width = 14; d.temps.fill = 'gradient'; return d; },

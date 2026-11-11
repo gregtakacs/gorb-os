@@ -5112,6 +5112,7 @@
     ['print', 'numerals', 'numOrient', 'numColor', 'numScale', 'n12Scale', 'nQScale', 'n12Font', 'nQFont', 'n12Color', 'nQColor', 'numStyle', 'plotRim', 'font',
       'perim', 'perimShrink', 'perimColor', 'perimFont', 'perimOrient', 'perimSize', 'perimPos', 'perimRot', 'hv'].forEach((k) => delete d[k]);
     if (!isHex(d.bezelInk)) delete d.bezelInk;
+    if (!isHex(d.overlay)) delete d.overlay;
     if (!d.openwork || d.openwork === 'none') ['openwork', 'owBar', 'owRing', 'owHub', 'owRim', 'owInlay', 'owDepth'].forEach((k) => delete d[k]);
     if (!d.secStyle || d.secStyle === 'classic') delete d.secStyle;
     if (d.noDial !== true) delete d.noDial;   // the dial removed (a part like any other); kept only when true
@@ -5307,12 +5308,28 @@
     return d;
   }
 
+  /* The colour the OS draws its overlays in over this look (§64.9): the owner's, else the first
+   * exposed wheel comp's accent (the engine reads a wheel's accent the same way, and falls back to
+   * #ff2d55 at :1498), else the lume colour, else that same engine constant. A rule, not a table:
+   * a new preset needs no edit here, and one whose art is not an accent is themed the dial's red. */
+  function overlayOf(d) {
+    if (d && isHex(d.overlay)) return d.overlay;
+    const comps = (d && d.comps) || [];
+    for (let i = 0; i < comps.length; i++) {
+      const c = comps[i];
+      if (c && c.type === 'wheel' && c.exposed === true && c.shows !== 'moon' && isHex(c.accent)) return c.accent;
+    }
+    if (d && isHex(d.handLume)) return d.handLume;
+    return '#ff2d55';
+  }
+  function overlayWord(d) { return (0x01000000 | (parseInt(overlayOf(d).slice(1), 16) & 0xFFFFFF)) >>> 0; }
+
   /* The bank depth and the teeth-per-loop constant live in dial-renderer.js; the
    * composer's copy and the packer both read them back through here so no
    * second copy of the number exists to drift. */
   window.WatchEngine = { SIZE: S, PRESETS, SCRATCH, template,
     TEETH_PER_LOOP: window.DialRenderer.TEETH_PER_LOOP,
-    bankFrames: (f) => window.DialRenderer.bankFrames(f), gearTempo: (g) => (Math.abs(g - 7.5) < 0.01 ? 8 : Math.round(g)), LENSES, DIAL_COLORS, COLOR_GROUPS, PLATES, BEZEL, canonDesign, faceFit, SCALE_STYLES, SCALE_GAP, TRACK_OF, FIGURES, scaleFamily, scaleRadius, CAL_DIMS, HAND_DIMS, caseMetalOf: (o) => caseMetal(o), TYPEFACES, OPENWORK, SEC_STYLES, NEW_COMP, TRAINS, HAND_STYLES, HAND_FINISHES, COMP_TYPES, COMP_STYLES, FRAME_COLORS, SHOWS, NUMERALS, SURFACES, COLOR_NAMES, SHAPES, SIZE_RANGE, TURN, CASE_STYLES, CASE_METALS, GLASS_STYLES, HAND_SHOWS, MARKERS, WHEEL_SHOWS, WHEEL_DIGITS, WHEEL_SRC, wheelSpec, CUT_LIES, WHEEL_TICKS, TICK_POS, wheelTicks, WHEEL_RIMS, RIM_POS, wheelRims, WHEEL_FINISHES, INDEX_STYLES, INDEX_SPANS, FACE_SNAPS, normDeg, prime, _holePts: holePts, WHEEL_FORMS, WHEEL_FACES, WHEEL_STYLES, LEGIBLE, LEGIBLE_PX, legible, PANEL, MM_PER_PX, pxMm, REAL_CSS, REAL_Z, RULER_MM, realCss, rulerPx, screenInch, handParts, caseLayer, glassLayer, movement, face, compose, composeLayers, topLayer, liveSeq, faceReach, punchHoles, drawCage, handPreview, moonPhase, cycleDate, previewDate, PREVIEW_MOON, isHex, fmtDate, features, aimAngle, trainAngle, tune, wb: whiteBalance, wbData, FONT_NAME, FONTS, FLARE_ICONS, IMAGES,
+    bankFrames: (f) => window.DialRenderer.bankFrames(f), gearTempo: (g) => (Math.abs(g - 7.5) < 0.01 ? 8 : Math.round(g)), LENSES, DIAL_COLORS, COLOR_GROUPS, PLATES, BEZEL, canonDesign, overlayOf, overlayWord, faceFit, SCALE_STYLES, SCALE_GAP, TRACK_OF, FIGURES, scaleFamily, scaleRadius, CAL_DIMS, HAND_DIMS, caseMetalOf: (o) => caseMetal(o), TYPEFACES, OPENWORK, SEC_STYLES, NEW_COMP, TRAINS, HAND_STYLES, HAND_FINISHES, COMP_TYPES, COMP_STYLES, FRAME_COLORS, SHOWS, NUMERALS, SURFACES, COLOR_NAMES, SHAPES, SIZE_RANGE, TURN, CASE_STYLES, CASE_METALS, GLASS_STYLES, HAND_SHOWS, MARKERS, WHEEL_SHOWS, WHEEL_DIGITS, WHEEL_SRC, wheelSpec, CUT_LIES, WHEEL_TICKS, TICK_POS, wheelTicks, WHEEL_RIMS, RIM_POS, wheelRims, WHEEL_FINISHES, INDEX_STYLES, INDEX_SPANS, FACE_SNAPS, normDeg, prime, _holePts: holePts, WHEEL_FORMS, WHEEL_FACES, WHEEL_STYLES, LEGIBLE, LEGIBLE_PX, legible, PANEL, MM_PER_PX, pxMm, REAL_CSS, REAL_Z, RULER_MM, realCss, rulerPx, screenInch, handParts, caseLayer, glassLayer, movement, face, compose, composeLayers, topLayer, liveSeq, faceReach, punchHoles, drawCage, handPreview, moonPhase, cycleDate, previewDate, PREVIEW_MOON, isHex, fmtDate, features, aimAngle, trainAngle, tune, wb: whiteBalance, wbData, FONT_NAME, FONTS, FLARE_ICONS, IMAGES,
     // uploaded art: the registry the composer persists, and the two draw helpers
     // (drawAsset for a placed backdrop, handSpriteAsset for a sprite-backed hand)
     assetFromFile, assetGet, assetReady, assetKnown, assetFits, assetBytes, assetDump, assetRestore, assetDrop, assetClear,

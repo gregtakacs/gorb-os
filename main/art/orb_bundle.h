@@ -133,6 +133,11 @@ typedef struct {
     const uint8_t     *region;         /* caller-owned; parse keeps no copy  */
     uint32_t           region_size;
     uint32_t           n_sections;
+    uint32_t           overlay;        /* the index head's second word, RAW: 0x01RRGGBB names
+                                        * this theme's overlay colour and anything else names
+                                        * none (§64.9). Carried undecoded because the word is
+                                        * the container's, not this build's opinion; the tag
+                                        * rule below is the only reader of it. */
     orb_bundle_sec_t   sec[ORB_BUNDLE_SECT_MAX];
 } orb_bundle_t;
 
@@ -206,6 +211,11 @@ const char *orb_bundle_rebase(orb_bundle_t *b, orb_bundle3_hdr_t *h, uint8_t *re
                               uint32_t new_art_off, uint32_t slot_cap,
                               uint32_t *out_file_art_off);
 
+
+/* The bundle's overlay colour (§64.9), already tag-checked: 0x01RRGGBB, or 0 when the theme names
+ * none — no word, a zero tag, or a tag this build does not know. The rule lives here so the C
+ * reader, the installer's dump and orb_theme.c's accessor cannot each invent their own. */
+uint32_t orb_bundle_overlay(const orb_bundle_t *b);
 
 /* The resolver's one lookup (D31's question stays a question here): exact
  * slug, or NULL. Hitting one is the app's own default question to answer. */

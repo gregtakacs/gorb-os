@@ -174,6 +174,7 @@ void ring_clamp(orb_ring_rec *r)
     if (r->fraction > 1000) r->fraction = 1000;               /* uint16: the floor at 0 is free */
     if (r->effect != ORB_RING_FLASH && r->effect != ORB_RING_BREATHE) r->effect = ORB_RING_STEADY;
     r->period_ms = period_of(r);
+    r->match = r->match ? 1 : 0;                        /* any ask is the one bit; garbage is not a second meaning */
 }
 
 int ring_effect_alpha(const orb_ring_rec *r, int64_t now_ms)
@@ -192,6 +193,19 @@ int ring_effect_alpha(const orb_ring_rec *r, int64_t now_ms)
         return a < 0 ? 0 : (a > 255 ? 255 : a);               /* slow in and out, never a step */
     }
     return 255;                                               /* steady, and anything unknown */
+}
+
+/* overlay-design §6: the substitution, kept pure so it has a host test and the glue stays three
+ * lines. Only a 0x01RRGGBB word is a colour (tag 0x00 absent, 0x02+ unassigned read as none, so a
+ * later meaning is never mistaken for one); a record that did not ask, and an absent theme colour,
+ * are byte-for-byte no-ops. The alphas ride the top byte and are preserved untouched. */
+void ring_apply_overlay(orb_ring_rec *r, uint32_t overlay)
+{
+    if (!r || !r->match) return;                              /* not asked: unchanged */
+    if ((overlay & 0xFF000000u) != 0x01000000u) return;       /* absent or unknown tag: unchanged */
+    const uint32_t rgb = overlay & 0x00FFFFFFu;
+    r->arc   = (r->arc   & 0xFF000000u) | rgb;                /* keep each alpha, take the RGB */
+    r->track = (r->track & 0xFF000000u) | rgb;
 }
 
 void ring_init(orb_ring_rec *tbl, int *owner, int n)
@@ -250,6 +264,7 @@ int ring_pick(const orb_ring_rec *tbl, const int *owner, const int64_t *seq, int
 #include "esp_timer.h"       /* the service and stamp read the wall clock             */
 #include "board_config.h"    /* SCREEN_HEIGHT: the full-band mark, the arc's own      */
 #include "orb_app.h"         /* ORB_APP_CAP, orb_app_row, flash_slot: the owner slug  */
+#include "orb_theme.h"       /* §64.9: orb_theme_overlay(), the live theme's colour    */
 #include "display.h"         /* display_mark_rows, display_tiles                       */
 #include "lvgl.h"            /* the corner invalidate, exactly as the arc does it     */
 
@@ -267,6 +282,7 @@ EXT_RAM_BSS_ATTR int64_t       orb_ring_seq[ORB_APP_CAP];
  * animating effect re-marks the annulus each grid step (design §6). LVGL task only. */
 static orb_ring_rec s_rec;          /* the record last stamped (a copy of the latest pick) */
 static bool         s_have;         /* s_rec names an owned record the glass shows         */
+static uint32_t     s_ovl;          /* the last overlay colour seen, so a theme swap repaints (§6) */
 static int64_t      s_step_us;      /* the last grid tick (ORB_RING_STEP_MS cadence)       */
 static bool         s_init;
 
@@ -309,6 +325,7 @@ void orb_ring_disp_init(void)
     for (int i = 0; i < ORB_APP_CAP; i++) orb_ring_seq[i] = 0;
     s_rec = (orb_ring_rec){ 0 };
     s_have = false;
+    s_ovl = 0;
     s_step_us = 0;
     s_init = true;
 }
@@ -361,6 +378,16 @@ void orb_ring_disp_service(void)
     orb_ring_rec cur;
     const bool owned = ring_pick(orb_ring_tbl, orb_ring_owner, orb_ring_seq,
                                  ORB_APP_CAP, &cur) != 0;
+
+    /* overlay-design §6: fold the live theme's colour into the winner, and notice a theme that
+     * moved under a standing ring — the substitution rides the same 2 Hz grid the effect does, so
+     * a colour is stale on the glass for at most one ORB_RING_STEP_MS. It runs on a freshly picked
+     * record each tick, so a theme taken down hands the record's own colours straight back. */
+    const uint32_t ovl = orb_theme_overlay();
+    const bool     ovl_changed = (ovl != s_ovl);
+    if (ovl_changed) s_ovl = ovl;
+    ring_apply_overlay(&cur, ovl);
+
     const bool anim  = owned && cur.effect != ORB_RING_STEADY;
     /* The effect's alpha is fixed once a grid step, here, and the stamp uses it: a stamp that
      * read the clock per tile would give an app's partial redraw a different breath from the
@@ -370,8 +397,8 @@ void orb_ring_disp_service(void)
     if (!owned || !tiled) {
         if (s_have) mark_band();                 /* restore the glass under a gone ring */
         s_have = false;
-    } else if (!s_have || memcmp(&s_rec, &cur, sizeof cur) != 0) {
-        mark_band();                             /* a new owner, or its ask changed     */
+    } else if (!s_have || ovl_changed || memcmp(&s_rec, &cur, sizeof cur) != 0) {
+        mark_band();                             /* a new owner, its ask, or the theme changed */
         s_rec = cur;
         s_have = true;
     } else if (anim) {

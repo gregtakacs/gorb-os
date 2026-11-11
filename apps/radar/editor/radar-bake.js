@@ -696,12 +696,24 @@
     // §60: the whole glass, the look as it is drawn (over the owner's map when the editor gives it)
     St.preview({ plane: plane(await picture(d, G, o.picture)), x: 0, y: 0, order: 3 });
     var out = St.finish({ name: d.name || 'Radar', slug: 'radar', serial: o.serial || serialOf(d, o.design), abi: GB.GEOM_ABI6, design: o.design || null,
+                          overlay: overlayWord(d),
                           bakedS: o.bakedS != null ? o.bakedS : Math.floor(Date.now() / 1000) });
     return { bytes: out.bytes, meter: out.meter, est: out.est, rows: St.elements.length };
   }
 
   // the scale's words: their own font (face, size, colour), the names' when a design has none
   function W_scale(W) { return W.scale || { face: W.nameFace, px: W.namePx, colour: W.quiet }; }
+
+  // the colour the OS draws its overlays in over this look (§64.9): the owner's, or the look's
+  // own accent — the glass ring, live where the design carries one and the preset's otherwise.
+  var OVL_HEX = /^#[0-9a-f]{6}$/i;
+  function overlayOf(d) {
+    if (d && OVL_HEX.test(d.overlay)) return d.overlay;
+    var g = (d && d.glass) || preset(d && d.base).glass;            // the look's own accent, live or preset
+    return OVL_HEX.test(g && g.ring) ? g.ring : '#3ddc84';
+  }
+  // the container's word (§2): the tag 0x01 names a colour, and only overlayOf answers the string
+  function overlayWord(d) { return (0x01000000 | (parseInt(overlayOf(d).slice(1), 16) & 0xFFFFFF)) >>> 0; }
 
   // the bake's serial is its content (weather-bake.js serialOf): FNV-1a, never 0 or 1
   function serialOf(d, doc) {
@@ -715,7 +727,7 @@
     STARTERS: STARTERS, STARTER_TITLES: STARTER_TITLES, STARTER_NOTES: STARTER_NOTES, DETAILS: DETAILS, NAMES: NAMES,
     COLOUR_ROLES: COLOUR_ROLES, ROLE_TITLES: ROLE_TITLES, LINE_ROLES: LINE_ROLES, DASH: DASH, detailOf: detailOf, namesOf: namesOf,
     scheme: scheme, complete: complete, rainLut: rainLut, argb: argb, rgba: rgba, dotCanvas: dotCanvas, FACES: FACES,
-    preset: preset, bake: bake, picture: picture, valuesBytes: valuesBytes, serialOf: serialOf,
+    preset: preset, bake: bake, picture: picture, valuesBytes: valuesBytes, serialOf: serialOf, overlayOf: overlayOf, overlayWord: overlayWord,
     frame: frame, mapCanvas: mapCanvas, rainCanvas: rainCanvas, sweepCanvas: sweepCanvas, radiusM: radiusM, scaleOf: scaleOf,
     rolesAt: rolesAt, FORECASTS: FORECASTS, FORECAST_TITLES: FORECAST_TITLES,
     plateCanvas: plateCanvas, glassCanvas: glassCanvas, font: font

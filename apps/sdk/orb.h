@@ -464,11 +464,12 @@ ORB_IMPORT("maps_gen")    uint32_t orb_maps_gen(void);
 #define ORB_RING_STEADY   0     /* on while shown; redraws only when the fraction moves */
 #define ORB_RING_FLASH    1     /* on/off twice a period: "waiting for you"             */
 #define ORB_RING_BREATHE  2     /* slow in/out: "paused"                               */
+#define ORB_RING_MATCH    0x01u /* byte-1 ask: arc/track take the live theme's overlay colour (§64.9) */
 
 typedef struct {
     uint16_t fraction;   /* 0..1000, clockwise from twelve; >1000 clamps to 1000        */
     uint8_t  effect;     /* ORB_RING_STEADY | _FLASH | _BREATHE; other values => STEADY  */
-    uint8_t  _res0;      /* reserved, 0                                                  */
+    uint8_t  match;      /* ORB_RING_MATCH to match the app's theme; 0 otherwise         */
     uint32_t arc;        /* 0xAARRGGBB — arc alpha in bits 31..24 (0 => the arc draws nothing) */
     uint32_t track;      /* 0xAARRGGBB — track alpha in bits 31..24 (0 => a bare arc)    */
     uint16_t period_ms;  /* effect period, clamped by the OS; 0 => the OS default        */

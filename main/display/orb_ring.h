@@ -28,6 +28,12 @@ extern "C" {
 #define ORB_RING_FLASH   1   /* on/off twice a period: "waiting for you"              */
 #define ORB_RING_BREATHE 2   /* slow in/out: "paused"                                 */
 
+/* §64.9 / overlay-design §5: the arc/track colours come from the live theme's overlay colour.
+ * It rides the record's old reserved byte (offset 1), not a bit of `effect`: ring_clamp validates
+ * the effect and three readers consume it, so a flag bit there would turn FLASH|0x80 into a
+ * silent steady. An app that sets it on firmware without this slice keeps its own colours. */
+#define ORB_RING_MATCH   0x01u
+
 /* The clamps the OS applies whatever the app asks (ring-design §6). */
 #define ORB_RING_STEP_MS            500    /* at most 2 repaints a second            */
 #define ORB_RING_BREATHE_MIN_MS     4000   /* breathe is slow only                    */
@@ -40,7 +46,7 @@ extern "C" {
 typedef struct {
     uint16_t fraction;    /* 0..1000, clockwise from twelve; > 1000 clamps to 1000     */
     uint8_t  effect;      /* ORB_RING_STEADY | _FLASH | _BREATHE; other values => STEADY */
-    uint8_t  _r0;         /* reserved, 0                                                */
+    uint8_t  match;       /* ORB_RING_MATCH => arc/track take the live theme's colour; 0 otherwise */
     uint32_t arc;         /* 0xAARRGGBB — arc alpha in bits 31..24 (0 => the arc draws nothing) */
     uint32_t track;       /* 0xAARRGGBB — track alpha in bits 31..24 (0 => a bare arc)  */
     uint16_t period_ms;   /* effect period, clamped by the OS; 0 => the OS default      */
@@ -82,6 +88,12 @@ int ring_row_parts(int y, int fraction, orb_ring_part_t *parts, int max);
  *  is 0, and the caller blends nothing, so the glass is untouched (ring-design §13).
  *  The record's own colour alphas are multiplied by this, not folded into it. */
 int ring_effect_alpha(const orb_ring_rec *r, int64_t now_ms);
+
+/* Fold the live theme's overlay colour into a picked record (§64.9): `overlay` is 0x01RRGGBB or 0,
+ * and anything that is not 0x01RRGGBB — including a record that did not ask — changes nothing.
+ * Where it does apply, arc and track keep their own alphas and take this RGB; an alpha of 0 still
+ * draws nothing, so a theme cannot unmute a record its app muted. Idempotent. */
+void ring_apply_overlay(orb_ring_rec *r, uint32_t overlay);
 
 /** Clamp a record in place: fraction to 0..1000, an unknown effect to STEADY, and
  *  period_ms up to the effect's floor (0 first becomes ORB_RING_DEFAULT_PERIOD_MS). */

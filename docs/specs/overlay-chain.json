@@ -1,0 +1,31 @@
+{
+  "name": "overlay",
+  "repo": "../..",
+  "base": "overlay-run",
+  "retries": 2,
+  "steps": [
+    {
+      "name": "overlay-1-container-field",
+      "spec": "docs/specs/overlay-1-container-field.md",
+      "hard": true,
+      "verify": "set -o pipefail; export GOFLAGS=-buildvcs=false PATH=/usr/local/go/bin:$PATH; export ORB_CLANG=/usr/lib/llvm-21/bin/clang; test -z \"$(git status --porcelain -- tools/orb-manager/themes main/art/orb_theme.c main/display apps)\" && python3 tools/host_orb_bundle_c_test.py | tail -1 | grep -q 'RESULT: pass' && python3 tools/host_orb_bundle_c_test.py --mutations > /tmp/ov1m.log 2>&1 && grep -qE 'mutants caught ([0-9]+)/\\1' /tmp/ov1m.log && ! grep -q MISSED /tmp/ov1m.log && python3 tools/host_theme_format3_test.py && make check-host && make check-hub && (cd tools/orb-manager/web/runtime/_selftest && PY=$(command -v python3) node headless-test.js) && grep -q 'def file_overlay' tools/orbbundle.py && grep -q 'def index_overlay' tools/orbbundle.py && grep -q 'orb_bundle_overlay' main/art/orb_bundle.h && grep -q 'b32(region + 4)' main/art/orb_bundle.c && grep -q 'packIndex3(recs, overlay' tools/orb-manager/web/runtime/baker@1/orbtheme-baker.js && python3 -c 'import sys,struct;sys.path.insert(0,\"tools\");import orbbundle as ob;assert ob.index_overlay(struct.pack(\"<2I\",1,0x01135c79))==0x01135c79 and ob.index_overlay(struct.pack(\"<2I\",1,0))==0 and ob.index_overlay(struct.pack(\"<2I\",1,0x02aabbcc))==0x02aabbcc;print(\"overlay word ok\")'"
+    },
+    {
+      "name": "overlay-2-firmware-ring",
+      "spec": "docs/specs/overlay-2-firmware-ring.md",
+      "hard": true,
+      "verify": "set -o pipefail; export ORB_CLANG=/usr/lib/llvm-21/bin/clang; python3 tools/host_ring_test.py | tail -1 | grep -q 'RESULT: pass' && python3 tools/host_ring_test.py --mutations > /tmp/ov2m.log 2>&1 && grep -qE 'mutants caught ([0-9]+)/\\1' /tmp/ov2m.log && ! grep -q MISSED /tmp/ov2m.log && gcc -std=c11 -Wall -Wextra -Werror -I main/display -c main/display/orb_ring.c -o /dev/null && grep -q 'ORB_RING_MATCH' main/display/orb_ring.h && grep -q 'ORB_RING_MATCH' apps/sdk/orb.h && grep -q 'ring_apply_overlay' main/display/orb_ring.h && grep -q 'ring_apply_overlay' main/display/orb_ring.c && grep -q 'orb_theme_overlay' main/art/orb_theme.h && grep -q 'orb_theme_overlay' main/display/orb_ring.c && grep -q 's_geo.overlay' main/art/orb_theme.c && grep -q 'r->match' main/display/orb_ring.c && grep -q 'ORB_RING_MATCH' apps/README.md && python3 apps/sdk/orbsdk.py binds && test -z \"$(git status --porcelain -- apps/sdk/binds.json main/app tools/orb-manager)\" && make check-host && ORB_CLANG=/usr/lib/llvm-21/bin/clang make check-apps"
+    },
+    {
+      "name": "overlay-3-editor-fields",
+      "spec": "docs/specs/overlay-3-editor-fields.md",
+      "hard": true,
+      "verify": "set -o pipefail; export ORB_CLANG=/usr/lib/llvm-21/bin/clang; for a in radar weather flights; do grep -q 'overlayOf' apps/$a/editor/$a-bake.js || exit 1; grep -q 'file_overlay' apps/$a/editor/_selftest/bake_check.py || exit 1; done && grep -q 'overlayOf' apps/clock/editor/watch-engine.js && grep -q 'd.overlay' apps/clock/editor/watch-engine.js && grep -qE 'overlay' apps/clock/editor/_selftest/headless-bundle3.test.js && for f in apps/radar/editor/radar-editor.js apps/weather/editor/weather-editor.js apps/flights/editor/flights-editor.js apps/clock/editor/clock-logic.js; do grep -q 'The OS.s overlay' $f || exit 1; done && python3 apps/radar/editor/_selftest/bake_check.py && python3 apps/weather/editor/_selftest/bake_check.py && python3 apps/flights/editor/_selftest/bake_check.py && make check-editor && ORB_CLANG=/usr/lib/llvm-21/bin/clang make check-apps && test -z \"$(git status --porcelain -- 'apps/*/version.txt' tools/orb-manager/themes)\""
+    },
+    {
+      "name": "overlay-4-ship",
+      "spec": "docs/specs/overlay-4-ship.md",
+      "verify": "set -o pipefail; export ORB_CLANG=/usr/lib/llvm-21/bin/clang; grep -qx v1.7.2 apps/clock/version.txt && grep -qx v1.7.1 apps/radar/version.txt && grep -qx v1.7.2 apps/weather/version.txt && grep -qx v1.7.3 apps/flights/version.txt && python3 tools/rebake_shelf.py --check && ORB_CLANG=/usr/lib/llvm-21/bin/clang make check-apps && python3 -c 'import sys,glob;sys.path.insert(0,\"tools\");import orbbundle as ob;W=sorted((p,ob.file_overlay(p)) for p in glob.glob(\"tools/orb-manager/themes/*.orbtheme\"));print([(p.split(\"/\")[-1],hex(w)) for p,w in W]);r=dict(W);assert len(W)==4 and all(w>>24==1 for _,w in W),\"a shelf theme carries no overlay colour\";assert r[\"tools/orb-manager/themes/radar-scope.orbtheme\"]==0x013ddc84 and r[\"tools/orb-manager/themes/weather-scope.orbtheme\"]==0x01ffb23c and r[\"tools/orb-manager/themes/flights-scope.orbtheme\"]==0x0139ff14,\"a map theme is not its look accent\";print(\"clock skeleton reads\",hex(r[\"tools/orb-manager/themes/skeleton.orbtheme\"]))' && python3 tools/host_orb_bundle_c_test.py | tail -1 | grep -q 'RESULT: pass' && test -z \"$(git status --porcelain -- main apps tools/orb-manager/web tools/orb-manager/internal | grep -v version.txt)\""
+    }
+  ]
+}

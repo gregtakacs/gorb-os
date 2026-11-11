@@ -224,6 +224,24 @@
     return clone(PRESETS_DEF.station.icons.c);
   }
 
+  // the colour the OS draws its overlays in over this look (§64.9): the owner's, or the pack's own
+  // accent role — the one its table labels Lightning or Accent, so a pack with no `warn` key still
+  // answers (nebula's orange, pictogram's red). Fallback the Scope preset's bolt, #FFB23C.
+  var OVL_HEX = /^#[0-9a-f]{6}$/i;
+  function accentKey(pack) {
+    var roles = PACKS[pack] ? PACKS[pack].roles : PACKS.pictogram.roles;
+    for (var i = 0; i < roles.length; i++) if (roles[i][1] === 'Lightning' || roles[i][1] === 'Accent') return roles[i][0];
+    return null;
+  }
+  function overlayOf(d) {
+    if (d && OVL_HEX.test(d.overlay)) return d.overlay;
+    var k = accentKey(d && d.icons && d.icons.pack);
+    var c = k && d && d.icons && d.icons.c && d.icons.c[k];
+    return OVL_HEX.test(c) ? c : '#FFB23C';
+  }
+  // the container's word (§2): the tag 0x01 names a colour, and only overlayOf answers the string
+  function overlayWord(d) { return (0x01000000 | (parseInt(overlayOf(d).slice(1), 16) & 0xFFFFFF)) >>> 0; }
+
   /* ---- rasterising ---- */
   function canvas(w, h) { var c = document.createElement('canvas'); c.width = w; c.height = h; return c; }
   function image(src) {
@@ -837,6 +855,7 @@
     if (d.map && d.map.on) St.values(root.WeatherMap.valuesBytes(d.map), root.WeatherMap.VALUES_VER);
     St.preview({ plane: plane(await picture(d, 466, { plate: plateC })), x: 0, y: 0, order: 3 });
     var out = St.finish({ name: d.name || 'Weather', slug: 'weather', serial: o.serial || serialOf(d, o.design), abi: GB.GEOM_ABI6, design: o.design || null,
+                          overlay: overlayWord(d),
                           bakedS: o.bakedS != null ? o.bakedS : Math.floor(Date.now() / 1000) });
     return { bytes: out.bytes, meter: out.meter, est: out.est, rows: St.elements.length };
   }
@@ -854,7 +873,7 @@
     FACES: FACES, SLOT: SLOT, LIVE_ROWS: LIVE_ROWS, ICON_PX: ICON_PX, SICON_PX: SICON_PX, BAR_LEN: BAR_LEN, BAR_RAIN: BAR_RAIN, DAY_POS: DAY_POS,
     SIZES: SIZES, WEAR: WEAR, groundOf: groundOf, sizeOf: sizeOf, ELEMENTS: ELEMENTS, placeOf: placeOf, stackNow: stackNow, layoutNow: layoutNow, dayLayout: dayLayout,
     haloFrame: haloFrame, fontSpecs: fontSpecs, fontPlan: fontPlan, loadFace: loadFace,
-    preset: preset, complete: complete, packStart: packStart, bake: bake, thumb: thumb, picture: picture, serialOf: serialOf,
+    preset: preset, complete: complete, packStart: packStart, bake: bake, thumb: thumb, picture: picture, serialOf: serialOf, overlayOf: overlayOf, overlayWord: overlayWord, accentKey: accentKey,
     plateCanvas: plateCanvas, iconSvg: iconSvg, iconFrames: iconFrames, barFrames: barFrames, dayFrames: dayFrames, dotFrames: dotFrames,
     fonts: fonts, font: font, labels: labels, rast: rast, ramp: ramp, mix: mix, image: image,
     partFrames: partFrames, PART_FRAMES: PART_FRAMES, N_PART: N_PART, boltFrame: boltFrame,

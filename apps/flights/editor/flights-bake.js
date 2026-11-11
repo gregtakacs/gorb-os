@@ -169,6 +169,21 @@
   }
   var clone = function (o) { return JSON.parse(JSON.stringify(o)); };
   function scopeOf(ground) { return clone(SCOPES[ground] || SCOPES.scope); }
+
+  // the colour the OS draws its overlays in over this look (§64.9): the owner's, else the design's
+  // own word accent (live, so an owner's earlier change to it moves the default), else that ground's
+  // preset accent. Fallback the scope green #39FF14.
+  var OVL_HEX = /^#[0-9a-f]{6}$/i;
+  function overlayOf(d) {
+    if (d && OVL_HEX.test(d.overlay)) return d.overlay;
+    var a = d && d.words && d.words.accent;
+    if (OVL_HEX.test(a)) return a;
+    var g = (d && d.scope && d.scope.ground) || 'scope';
+    a = WORDS[g] && WORDS[g].accent;
+    return OVL_HEX.test(a) ? a : '#39FF14';
+  }
+  // the container's word (§2): the tag 0x01 names a colour, and only overlayOf answers the string
+  function overlayWord(d) { return (0x01000000 | (parseInt(overlayOf(d).slice(1), 16) & 0xFFFFFF)) >>> 0; }
   function armOf(kind, period) { return Object.assign({ kind: kind, period: period || 8, length: 1 }, clone(ARM_LOOKS[kind] || ARM_LOOKS.wedge)); }
   // the blank start (§12.9): every part present, in plain greys on a plain ground, so nothing
   // is a family's look to work against; its own values are what the colour rows offer back
@@ -1024,6 +1039,7 @@
     // the bake time rides the header (word 10) so the hub can tell a newer copy from an older one;
     // it is not content, so the serial above stays the design's own
     var out = S.finish({ name: d.name || 'Flights', slug: 'flights', serial: o.serial || serialOf(d, o.design), abi: GB.GEOM_ABI6, design: o.design || null,
+                         overlay: overlayWord(d),
                          bakedS: o.bakedS != null ? o.bakedS : Math.floor(Date.now() / 1000) });
     return { bytes: out.bytes, meter: out.meter, est: out.est, rows: S.elements.length };
   }
@@ -1070,7 +1086,7 @@
     PLANE_ROWS: PLANE_ROWS, SWEEP_FPS: SWEEP_FPS, PILL_SLOT: PILL_SLOT, pillCanvas: pillCanvas, CARD_SLOT: CARD_SLOT, CARD_CLEAR_SLOT: CARD_CLEAR_SLOT,
     DOT_SLOTS: DOT_SLOTS, DOTS: DOTS, dotFrames: dotFrames, dotBox: dotBox,
     FRAME_STYLES: FRAME_STYLES, MARKS: MARKS, HEADINGS: HEADINGS, serialOf: serialOf, GRID_W: GRID_W,
-    preset: preset, upgrade1: upgrade1, complete: complete, pictureFit: pictureFit, panelCanvas: panelCanvas, planeBox: planeBox, markers: markers, scopeOf: scopeOf, armOf: armOf, bake: bake, thumb: thumb, period: period,
+    preset: preset, upgrade1: upgrade1, complete: complete, pictureFit: pictureFit, panelCanvas: panelCanvas, planeBox: planeBox, markers: markers, scopeOf: scopeOf, armOf: armOf, bake: bake, thumb: thumb, period: period, overlayOf: overlayOf, overlayWord: overlayWord,
     // the preview draws from the same parts
     planeSvg: planeSvg, planeFrames: planeFrames, planePx: planePx, arm: arm, markerSvg: markerSvg, panelSvg: panelSvg, layout: layout, sizes: sizes,
     plateCanvas: plateCanvas, rast: rast, font: font, svgImage: svgImage, image: image, shade: shade,

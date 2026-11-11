@@ -782,3 +782,6 @@ orchestrator's look design. The chain is now:
   orchestrator adds the editor after. Its verify builds the app with `orbsdk.py` and checks
   `app.json` against table A. It needs no baked theme: with no values, the app runs on its
   defaults.
+F. `apps/pomodoro/app.json` keeps `"shelf": false` in this chain. The orchestrator's shipping
+   step turns it on with the editor and the shelf theme, so `make check-apps` here does not
+   expect a shelf `.orbapp` for it.

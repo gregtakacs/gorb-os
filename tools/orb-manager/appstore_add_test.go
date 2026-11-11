@@ -431,11 +431,21 @@ func TestSiteAppsAddRefusesOverForeignCopy(t *testing.T) {
 				t.Fatalf("the door accepted an overwrite of %s: %v", c.name, env)
 			}
 			msg, _ := env["error"].(string)
-			if !strings.Contains(msg, "remove it from the library first") {
-				t.Errorf("refused with %q, want the sentence that names the library as where to fix it", msg)
+			if !strings.Contains(msg, "replace it with") || env["held"] != true {
+				t.Errorf("refused with %q (held=%v), want the question that asks to replace it", msg, env["held"])
 			}
 			if c.record && readAppOrigin(dest) == nil {
 				t.Error("the refusal threw away the record that was beside the file it refused to touch")
+			}
+			// The owner confirms: the same press with replace swaps the copy for the store's and
+			// writes this site's record beside it.
+			env = designCall(t, s, http.MethodPost, "/api/site/apps/add",
+				[]byte(`{"slug":"`+slug+`","version":"`+version+`","replace":true}`))
+			if env["ok"] != true {
+				t.Fatalf("the confirmed replace was refused: %v", env)
+			}
+			if _, o := addHeld(t, root, slug); o == nil || o.Site != srv.URL {
+				t.Errorf("after the confirmed replace the record is %+v, want this site's", o)
 			}
 		})
 	}

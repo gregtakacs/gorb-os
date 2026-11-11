@@ -5814,13 +5814,25 @@ async function siteApps(force) {
 // called from three presses on two faces and each stops with the same sentence on its
 // own line. A success clears the catalogue cache: the shelf moved, so the store's rows
 // the face prints have moved with it.
-async function siteAppAdd(slug, version) {
+// A library copy that did not come from this store (a hand import, a bundled app) is not
+// replaced silently: the hub answers held, this asks the owner in the hub's own dialog, and a
+// yes is the same press again with replace (owner, 2026-11-11).
+async function siteAppAdd(slug, version, replace) {
   try {
     const r = await hubFetch("/api/site/apps/add", {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ slug: slug, version: version }),
+      body: JSON.stringify(replace ? { slug: slug, version: version, replace: true } : { slug: slug, version: version }),
     });
     const j = await r.json().catch(() => ({}));
+    if (!replace && j && j.held === true) {
+      const yes = await askConfirm({
+        title: "Replace " + slug + "?",
+        body: "Orb Manager's library already holds " + slug + " from somewhere else (imported by hand or bundled), not from orb-os.net. Replace it with " + version + " from orb-os.net?",
+        yes: "Replace",
+      });
+      if (!yes) return { ok: false, error: "kept the library's own " + slug + "; nothing was replaced" };
+      return siteAppAdd(slug, version, true);
+    }
     if (!r.ok || j.ok !== true) return { ok: false, error: (j && j.error) || ("HTTP " + r.status) };
     siteAppsCache = null;
     return { ok: true, data: j.data || {} };

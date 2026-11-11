@@ -215,7 +215,7 @@ const (
 	siteAddOversize    = "orb-os.net sent a %s bigger than the %d MB the hub's own import takes"
 	siteAddHashDiff    = "the bytes orb-os.net sent for %s %s hash to %s and the store named %s"
 	siteAddNotThatApp  = "the file orb-os.net sent is not that app: %s"
-	siteAddHeld        = "The library already holds %s from somewhere else: remove it from the library first."
+	siteAddHeld        = "The library already holds %s from somewhere else, not from orb-os.net: replace it with %s %s from orb-os.net?"
 	siteAddNeedsPress  = "add needs a slug and a version: {\"slug\": \"aurora\", \"version\": \"v1.3.0\"}"
 )
 
@@ -239,6 +239,9 @@ func (s *Server) h_siteAppsAdd(w http.ResponseWriter, r *http.Request) {
 	var named struct {
 		Slug    string `json:"slug"`
 		Version string `json:"version"`
+		// Replace is the owner's answer to siteAddHeld: yes, swap the copy that came from
+		// somewhere else (a hand import, a bundled app, another site) for the store's.
+		Replace bool `json:"replace"`
 	}
 	// A number where a string belongs, or an object where a pair of strings belongs, is the same
 	// refusal as an empty body: the caller did not say which app to add either way.
@@ -351,15 +354,18 @@ func (s *Server) h_siteAppsAdd(w http.ResponseWriter, r *http.Request) {
 
 	// check 6, the last gate before the write: the shelf is safe to write into. An empty slot is.
 	// So is a copy this hub added from this same site. A copy with no sidecar — a hand import or
-	// a bundled app — or one whose sidecar names a different site is not the store's to replace,
-	// and an Update on such a row never happens either (§7.4).
+	// a bundled app — or one whose sidecar names a different site is not the store's to replace
+	// on its own: the door asks (held: true) and replaces it only when the owner confirmed, by
+	// pressing again with replace: true (owner, 2026-11-11: confirm rather than make them remove
+	// it by hand). Every check above still ran on the second press.
 	lib := s.library()
 	held := filepath.Join(lib.writableAppsDir(), slug+".orbapp")
 	_, statErr := os.Stat(held)
 	overwrote := statErr == nil
 	if overwrote {
-		if o := readAppOrigin(held); o == nil || o.Site != site {
-			s.jsonErr(w, fmt.Sprintf(siteAddHeld, slug))
+		if o := readAppOrigin(held); (o == nil || o.Site != site) && !named.Replace {
+			s.jsonErrFields(w, fmt.Sprintf(siteAddHeld, slug, slug, rel),
+				map[string]any{"held": true, "slug": slug, "version": rel})
 			return
 		}
 	}

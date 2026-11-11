@@ -215,6 +215,18 @@ An app moves into this repo unchanged:
    `orbsdk.py`, writes the shelf ones into `tools/orb-manager/apps/`, and the hub
    compiles them in.
 4. Commit the directory and the container.
+5. **Reserve its slug on orb-os.net before it ships.** The site hands a slug to the first
+   outside developer whose release of it is approved, and holds it for anyone with a release
+   of it pending (orb-os.net ruling 44). A shelf app's slug is protected only once it is in
+   the site's reserved list, `RESERVED_SLUGS` in orb-os.net `src/lib/slug-claims.ts`, or once
+   a gorb-os release carrying it has been loaded there. Add the slug to that list in the same
+   change that adds `"shelf": true`; otherwise someone could claim the name first, and the
+   site's shelf loader would then refuse the whole orb-web load until the clash is resolved.
+
+Shelf apps are a transitional arrangement. They are meant to become ordinary apps, authored
+by the owner under a developer account and published, reviewed and versioned through the
+same door and rules as any other app (orb-os.net ruling 45). Until then, step 5 is what keeps
+their names safe.
 
 `make_factory_apps.py --check` (part of `make check`) holds the committed containers
 to their sources. `--unreleased DIR` writes the `"shelf": false` apps to DIR for a

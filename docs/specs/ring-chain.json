@@ -1,0 +1,25 @@
+{
+  "name": "ring",
+  "repo": "../..",
+  "base": "issue-11",
+  "retries": 2,
+  "steps": [
+    {
+      "name": "ring-1-pure-core",
+      "spec": "docs/specs/ring-1-pure-core.md",
+      "hard": true,
+      "verify": "set -o pipefail; test -z \"$(git diff --name-only issue-11 -- main/display/display.c main/display/orb_edge_arc.c main/main.c main/app apps tools/orb-manager)\" && gcc -std=c11 -Wall -Wextra -Werror -I main/display -c main/display/orb_ring.c -o /dev/null && grep -q 'ORB_RING_BREATHE' main/display/orb_ring.h && grep -q 'ring_blend565' main/display/orb_ring.c && python3 tools/host_ring_test.py | tail -1 | grep -q 'RESULT: pass' && python3 tools/host_ring_test.py --mutations > /tmp/ring1m.log 2>&1 && grep -q 'mutants caught' /tmp/ring1m.log && ! grep -q MISSED /tmp/ring1m.log"
+    },
+    {
+      "name": "ring-2-firmware-sdk",
+      "spec": "docs/specs/ring-2-firmware-sdk.md",
+      "verify": "set -o pipefail; python3 apps/sdk/orbsdk.py binds && grep -q '\"ring_set\"' apps/sdk/binds.json && grep -q '\"ring_clear\"' apps/sdk/binds.json && grep -q 'imp_ring_set' main/app/orb_app_wasm.c && grep -q 'CAP_RING' main/app/orb_svc.h && grep -q '\"ring\"' main/app/orb_app_manifest.c && grep -q 'CAP_RING' main/menu/menu_view.c && grep -q 'orb_edge_arc_shown' main/display/orb_edge_arc.h && grep -q '\"ring\"' main/net/orb_net.c && python3 tools/host_menu_test.py | tail -1 | grep -q 'all host checks pass' && python3 tools/host_svc_test.py && python3 tools/host_orbapp_reader_test.py && python3 tools/host_orbapp_install_test.py && ORB_CLANG=/usr/lib/llvm-21/bin/clang make check-apps && test -z \"$(git diff --name-only issue-11 -- tools/orb-manager)\""
+    },
+    {
+      "name": "ring-3-color-setting",
+      "spec": "docs/specs/ring-3-color-setting.md",
+      "hard": true,
+      "verify": "set -o pipefail; export GOFLAGS=-buildvcs=false PATH=/usr/local/go/bin:$PATH; grep -q 'color' tools/orbapp.py && grep -q '\"color\"' tools/orb-manager/web/tabs.js && grep -q 'ORB_SETUI_COLOR' main/app/orb_setui.c && python3 tools/host_orbapp_test.py | tail -1 | grep -q '0 failed' && python3 tools/host_setui_test.py --mutations | tail -1 | grep -q 'mutants caught' && cd tools/orb-manager && go vet ./... && go test -run 'TestJs|TestUI|TestWebui' -v . 2>&1 | tee /tmp/ring3.log && grep -q -- '--- PASS' /tmp/ring3.log && ! grep -q -- '--- FAIL' /tmp/ring3.log && cd .. && ORB_CLANG=/usr/lib/llvm-21/bin/clang make check-apps"
+    }
+  ]
+}

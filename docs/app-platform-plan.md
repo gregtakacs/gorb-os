@@ -8022,3 +8022,22 @@ gaps closed too, not just the names:
 Press-and-turn in Flights now runs clockwise closer, anticlockwise wider, as radar's zoom
 does (owner, 2026-11-11); it ran the other way because the two ladders are ordered from
 opposite ends. The rule for every app is in app-design-rules: clockwise is closer, more, later.
+
+### 64.6 The pomodoro's owner answers — 2026-11-11
+
+On the pomodoro design's owner questions (`docs/specs/pomodoro-design.md`):
+
+- **A chime volume, as a share of the master.** A setting `0..100 %` of the OS volume: the
+  chime can only be quieter than the master, never louder.
+- **No chime without a theme**, as the design chose.
+- **Waking the glass is a setting.** "Wake the screen at each change", the owner's choice.
+  The OS has no way for an app off the glass to wake a dimmed glass today: `orb_power_request`
+  only holds the glass awake while the app is on it (`svc_power_request`, revoked on leave).
+  So the pomodoro needs the smallest OS addition: a one-shot wake an app may ask for from
+  `orb_service` under cap `power`. It lights the glass for a few seconds, takes nothing from
+  the app on the glass, and respects the OS's quiet hours. It is §55's "wake" without the
+  rest of §55.
+- **The digits keep the theme's ink**, as the design chose.
+- **No kitchen-timer mode**, as the design chose (`focuses = 1` is closest).
+- **Every look has a header row**, New included. The press-and-turn choice is always shown
+  there, with no fallback.

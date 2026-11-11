@@ -80,6 +80,10 @@ header. Two `support@1` features stay blocked under that header and the editor s
 without them: its helmet mount's inline `<script>` (which would need `'unsafe-inline'`) and
 its cross-origin x-import (`connect-src 'self'` stays).
 
+Orb Manager does the same on its editor port (ruling 38): an app whose `editor.json` lists
+`babel@7.29.0` or `support@1` gets `'unsafe-eval'` on its own `<app>.localhost` origin, every
+other app's editor runs without it, and the Themes tab says which apps have it.
+
 ## The SDK
 
 ```

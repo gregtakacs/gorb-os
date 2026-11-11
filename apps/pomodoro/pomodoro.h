@@ -30,7 +30,7 @@
 #define PM_MIN_S      60    /* a turn never goes below a minute                            */
 #define PM_ARC_A    0xE6    /* the arc's base alpha (230)                                  */
 #define PM_TRACK_A  0x33    /* the track: the same colour at 20%                           */
-#define PM_BREATHE_MS 4000  /* ring-1's floor: breathe is slow only                        */
+#define PM_BREATHE_MS 2500  /* the paused breath: rim-design's amendment 2, not a floor     */
 #define PM_FLASH_MS   2000  /* twice a second: one second on, one off                      */
 #define PM_STEP_PCT      4  /* the least fraction move worth a send (thousandths)          */
 #define PM_PACK_MUL      8  /* pm_st = k * PM_PACK_MUL + state                             */
@@ -46,6 +46,9 @@ typedef struct {
     int32_t autostart;      /* 0 wait for a press, 1 chain on                                */
     int32_t ring_on;        /* 0 => the ring is cleared, not invisible                       */
     int32_t opacity;        /* ring_op, 0..100                                               */
+    int32_t dir;            /* ring_dir: 0 clockwise from twelve, 1 anticlockwise (§8)        */
+    int32_t start;          /* ring_start as degrees: 0/90/180/270 clockwise from twelve      */
+    int32_t match;          /* "Match the app" while off the glass: the ORB_RING_MATCH ask     */
     uint32_t col[3];        /* 0xRRGGBB per phase, from the color settings                   */
 } pm_cfg_t;
 
@@ -60,19 +63,28 @@ typedef struct {
 typedef struct { int32_t st_k, len, end, rem; } pm_raw_t;   /* the four hidden settings (§5)  */
 
 /* What the ring should be: orb_ring_t's five values in that order and meaning (the arc's and
- * the track's alpha ride bits 31..24), named plainly so this file never speaks of the SDK.
- * pomodoro-2 copies the five fields across, as ring-1's orb_ring_rec mirrors orb.h. */
+ * the track's alpha ride bits 31..24), plus the two words rim-1 adds and the ask that comes with
+ * one of them, named plainly so this file never speaks of the SDK. pomodoro-2 copies the eight
+ * fields across, as rim-1's orb_ring_rec mirrors orb.h: `dir` is the anticlockwise ask, `start`
+ * the degrees it begins at and `match` the theme ask — which the caller sets only while the app is
+ * off the glass, the way amendment H's colour choice already is. */
 typedef struct {
-    int fraction;           /* 0..1000, clockwise from twelve                                 */
+    int fraction;           /* 0..1000, from twelve in this record's own direction            */
     int effect;             /* pm_ring_effect's answer                                        */
     uint32_t arc;           /* 0xAARRGGBB                                                     */
     uint32_t track;         /* 0xAARRGGBB                                                     */
     int period_ms;          /* 0 for a steady ring                                            */
+    int dir;                /* 0 clockwise from the start, 1 anticlockwise (ORB_RING_CCW)     */
+    int start;              /* degrees clockwise from twelve the arc begins at, folded 0..359  */
+    int match;              /* 1 asks the ring to wear the live theme's overlay colour        */
 } pm_ring_t;
 _Static_assert(offsetof(pm_ring_t, effect) == sizeof(int) &&
                offsetof(pm_ring_t, arc) == 2 * sizeof(int) &&
-               offsetof(pm_ring_t, track) == 3 * sizeof(int),
-               "pm_ring_t is fraction, effect, arc, track, period_ms in that order");
+               offsetof(pm_ring_t, track) == 3 * sizeof(int) &&
+               offsetof(pm_ring_t, dir) == 5 * sizeof(int) &&
+               offsetof(pm_ring_t, start) == 6 * sizeof(int) &&
+               offsetof(pm_ring_t, match) == 7 * sizeof(int),
+               "pm_ring_t is fraction, effect, arc, track, period_ms, dir, start, match in that order");
 
 /* ---- the cycle (§2) ------------------------------------------------------------------ */
 int pm_cycle_len(int focuses);                       /* 2N, with N clamped into 1..12        */

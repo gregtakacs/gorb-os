@@ -465,16 +465,18 @@ ORB_IMPORT("maps_gen")    uint32_t orb_maps_gen(void);
 #define ORB_RING_FLASH    1     /* on/off twice a period: "waiting for you"             */
 #define ORB_RING_BREATHE  2     /* slow in/out: "paused"                               */
 #define ORB_RING_MATCH    0x01u /* byte-1 ask: arc/track take the live theme's overlay colour (§64.9) */
+#define ORB_RING_CCW      0x02u /* byte-1 ask: the arc runs anticlockwise from `start` (rim-design §3) */
+#define ORB_RING_FLAGS_MASK 0x03u /* the bits rim-1 knows; ring_clamp drops the rest                    */
 
 typedef struct {
-    uint16_t fraction;   /* 0..1000, clockwise from twelve; >1000 clamps to 1000        */
+    uint16_t fraction;   /* 0..1000, from twelve in the record's own direction; >1000 clamps to 1000 */
     uint8_t  effect;     /* ORB_RING_STEADY | _FLASH | _BREATHE; other values => STEADY  */
-    uint8_t  match;      /* ORB_RING_MATCH to match the app's theme; 0 otherwise         */
+    uint8_t  flags;      /* ORB_RING_MATCH | ORB_RING_CCW; unknown bits are dropped      */
     uint32_t arc;        /* 0xAARRGGBB — arc alpha in bits 31..24 (0 => the arc draws nothing) */
-    uint32_t track;      /* 0xAARRGGBB — track alpha in bits 31..24 (0 => a bare arc)    */
+    uint32_t track;      /* 0xAARRGGBB — track alpha in bits 31..24 (0 => a bare arc)   */
     uint16_t period_ms;  /* effect period, clamped by the OS; 0 => the OS default        */
-    uint16_t _res1;      /* reserved, 0                                                  */
-} orb_ring_t;            /* 16 bytes, ILP32 LE */
+    uint16_t start;      /* degrees clockwise from twelve, 0..359; the OS wraps the rest */
+} orb_ring_t;            /* 16 bytes, ILP32 LE — offsets 0, 2, 3, 4, 8, 12, 14 */
 _Static_assert(sizeof(orb_ring_t) == 16, "the OS copies this record verbatim");
 
 ORB_IMPORT("ring_set")   int32_t orb_ring_set(const orb_ring_t *r);  /* sig i(i): ESP_OK,

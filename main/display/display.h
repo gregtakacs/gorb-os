@@ -8,6 +8,7 @@
 #include "esp_err.h"
 #include "esp_lcd_types.h"
 #include "sdkconfig.h"   /* CONFIG_ORB_DEBUG_HTTP gates the fx bench seam */
+#include "orb_ring.h"    /* orb_ring_lane_t: the ring's refresh seam below is typed in lanes */
 
 #ifdef __cplusplus
 extern "C" {
@@ -180,6 +181,31 @@ void display_mark_rows_clocked(int32_t y0, int32_t y1);
  * of the frame-start fold the call lands on. LVGL-task only.
  */
 void display_commit_row(int32_t y, bool send);
+
+/* ---- the ring's own refresh (plan §64.11, docs/specs/rim-design.md §5) ----------
+ * A ring-only step does not owe the app's rows: it owes the annulus, as the lanes
+ * ring_lanes() found (rim-2). Those lanes go out INSIDE the flush's own commit — under the same
+ * s_ring_mux, after that commit's bands, inside the blanking window the flush just waited for,
+ * out of the tile ring the flush already owns — because that is the one place on the bus that
+ * has already waited for the edge and holds the write-guard (§5.1). Nothing here is a second
+ * submitter, nothing here writes s_fb (the lanes are read out of it, which is why /fb cannot
+ * see the ring), and both entry points belong to the LVGL task like every other bus writer. */
+
+/** True when the tiled path can carry a lane batch now: the mirror is up, the ring is funded at
+ *  two tiles (a lane reuses the ping-pong buffers, so one tile and no park means no lanes), and
+ *  the copy arc's own rule that the flush already applies. False is the degradation the ring
+ *  service logs once and falls back to display_mark_rows() for (§5.1). */
+bool display_ring_lanes_ready(void);
+
+/** Send `n` lanes (row order, even-aligned) as one batch, taking s_ring_mux itself and waiting
+ *  for a quiet bus first: for a ring step with no flush to ride — the retry the ring service
+ *  makes when a commit did not carry its batch. LVGL task only, and never while the glass is
+ *  held. Answers the windows submitted, 0 when the tiles, the mirror or the bus refused. */
+int display_ring_lanes(const orb_ring_lane_t *lanes, int n);
+
+/** The wall time of the last lane batch, microseconds, for the ring's governor (§6.3). 0 when
+ *  no batch has run since boot. */
+uint32_t display_ring_last_batch_us(void);
 
 /**
  * Hook invoked at flush-commit AFTER every chunk (LVGL-rendered and pushed)

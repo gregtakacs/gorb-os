@@ -25,7 +25,7 @@ import tempfile
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 APP = os.path.join(ROOT, "apps", "pomodoro")
-MIN_CHECKS = 55          # the harness's own count: a check that vanished is not a pass
+MIN_CHECKS = 66          # the harness's own count: a check that vanished is not a pass
 
 # design §3.2's surface, which this step writes word for word.
 FUNCS = ["pm_cycle_len", "pm_phase_at", "pm_focus_at", "pm_next_k", "pm_len_s", "pm_press", "pm_turn",
@@ -60,11 +60,16 @@ def shape(fail, h_src, c_src):
     def num(k):
         m = re.search(r"#define\s+%s\s+(0[xX][0-9a-fA-F]+|\d+)" % k, h_src)
         return int(m.group(1), 0) if m else None
-    fail("the numbers §4 and §7 fix: 60, 0xE6, 0x33, 4000, 2000, 4, 8",
+    # rim-design's amendment 2 moved the paused breath from ring-1's 4000 to the owner's 2500.
+    fail("the numbers §4 and §7 fix: 60, 0xE6, 0x33, 2500, 2000, 4, 8",
          [num(k) for k in ("PM_MIN_S", "PM_ARC_A", "PM_TRACK_A", "PM_BREATHE_MS", "PM_FLASH_MS",
-                           "PM_STEP_PCT", "PM_PACK_MUL")] == [60, 0xE6, 0x33, 4000, 2000, 4, 8])
+                           "PM_STEP_PCT", "PM_PACK_MUL")] == [60, 0xE6, 0x33, 2500, 2000, 4, 8])
     fail("pm_ring_t is orb_ring_t's five values in that order, and says so",
          "offsetof(pm_ring_t, effect)" in h_src and "offsetof(pm_ring_t, track)" in h_src)
+    fail("and the three asks rim-1 adds, still after period_ms",
+         all("offsetof(pm_ring_t, %s)" % f in h_src for f in ("dir", "start", "match")))
+    fail("pm_cfg_t carries the three asks as plain ints (rim-design §8)",
+         all(re.search(r"int32_t\s+%s;" % f, h_src) for f in ("dir", "start", "match")))
     # §6.3's skip is the one rule the ladder's answers cannot tell apart once clamped (both
     # read -1 at k=0), so the guard's position before the clamp is pinned on the text.
     fail("the ladder's -1 skip tests at_start before clamping (§6.3)",
@@ -123,7 +128,12 @@ MUTATIONS = [
     ("    if (s->len <= 0) return s->rem > 0 ? 1000 : 0;", "    if (s->len <= 0) return 0;"),                        # a full arc read as an empty one
     ("    if (f > 1000) f = 1000;", "    if (f > 2000) f = 1000;"),                                                  # a past-full arc
     ("    if (eff < 0 || !c->ring_on || c->opacity <= 0) return 0;", "    if (eff < 0 || !c->ring_on) return 0;"),    # an invisible record owned
-    ("    out->period_ms = eff == 2 ? PM_BREATHE_MS : eff == 1 ? PM_FLASH_MS : 0;", "    out->period_ms = eff == 2 ? PM_FLASH_MS : eff == 1 ? PM_BREATHE_MS : 0;"),  # the periods swapped
+    ("                        .period_ms = eff == 2 ? PM_BREATHE_MS : eff == 1 ? PM_FLASH_MS : 0,", "                        .period_ms = eff == 2 ? PM_FLASH_MS : eff == 1 ? PM_BREATHE_MS : 0,"),  # the periods swapped
+    # rim-1's three asks: each is what ring_moved() compares, so a dropped fill must bite
+    ("                        .dir = c->dir ? 1 : 0,", "                        .dir = 0,"),                                # the anticlockwise ask dropped
+    ("                        .start = ((c->start % 360) + 360) % 360,", "                        .start = 0,"),            # the start ask dropped
+    ("                        .start = ((c->start % 360) + 360) % 360,", "                        .start = c->start,"),      # the fold not applied
+    ("                        .match = c->match ? 1 : 0 };", "                        .match = 1 };"),                      # the theme ask always on
     ("    const uint32_t rgb = c->col[pm_ring_phase(s, c->focuses)] & 0x00FFFFFFu;", "    const uint32_t rgb = c->col[PM_FOCUS] & 0x00FFFFFFu;"),  # every phase ruby
     ("    while (lit[i] && i < cap - 1) { buf[i] = lit[i]; i++; }", "    while (lit[i] && i < cap) { buf[i] = lit[i]; i++; }"),  # a word past the caller's cap
 
@@ -167,6 +177,7 @@ static pm_cfg_t cfg4(int autostart, int op, int ring_on)
     c.len_s[PM_FOCUS] = 1500; c.len_s[PM_SHORT] = 360;  c.len_s[PM_LONG] = 900;
     c.cap_s[PM_FOCUS] = 3600; c.cap_s[PM_SHORT] = 600; c.cap_s[PM_LONG] = 1800;
     c.focuses = 4; c.autostart = autostart; c.ring_on = ring_on; c.opacity = op;
+    c.dir = 0; c.start = 0; c.match = 0;               /* rim-1's three asks, off by default */
     c.col[PM_FOCUS] = 0xBF0A0C; c.col[PM_SHORT] = 0x0A14B4; c.col[PM_LONG] = 0x0AA628;
     return c;
 }
@@ -487,7 +498,33 @@ int main(void)
         ckk(pm_ring_for(&r, &off, &out) == 0, 1, "ring_on 0 clears rather than owns");
         ckk(pm_ring_for(&r, &glass, &out) == 0, 1, "opacity 0 clears rather than an invisible record");
         ckk(pm_ring_for(&(pm_t){PM_PAUSE, 2, 600, 300, 0}, &c, &out) == 1 && out.effect == 2
-            && out.period_ms >= 4000, 1, "PAUSE breathes, slow only");
+            && out.period_ms == PM_BREATHE_MS && PM_BREATHE_MS == 2500, 1,
+            "PAUSE breathes at the owner's 2500 ms, the period named not a range");
+
+        /* ---- rim-1: the three asks cross the pure boundary (§8) -------------------- */
+        pm_cfg_t a3 = cfg4(0, 100, 1);
+        a3.dir = 1; a3.start = 270; a3.match = 1;
+        pm_ring_t o3;
+        pm_t rr = mk(PM_RUN, 0, 1500, 750, 9999);
+        ckk(pm_ring_for(&rr, &a3, &o3) == 1, 1, "an ask does not cost the ring its record");
+        ckk(o3.dir == 1 && o3.start == 270 && o3.match == 1, 1,
+            "dir, start and match come across from the settings as plainly as they went in");
+        a3.dir = 7; a3.match = 3;                       /* the boundary answers 0/1 whatever it is sent */
+        pm_ring_for(&rr, &a3, &o3);
+        ckk(o3.dir == 1 && o3.match == 1, 1, "a truthy dir and match are normalised to the 0/1 the record wants");
+        a3.start = 450;
+        pm_ring_for(&rr, &a3, &o3);
+        ckk(o3.start == 90, 1, "450 folds to 90 here, so the record never sees a start past 359");
+        a3.start = -90;
+        pm_ring_for(&rr, &a3, &o3);
+        ckk(o3.start == 270, 1, "and a negative start wraps the way the OS wraps it");
+        a3.start = 0; a3.dir = 0; a3.match = 0;         /* the shipped case: twelve, clockwise, own colours */
+        pm_ring_for(&rr, &a3, &o3);
+        ckk(o3.dir == 0 && o3.start == 0 && o3.match == 0, 1,
+            "an app that asks nothing gets twelve clockwise in its own colours");
+        ckk(pm_ring_for(&rr, &a3, &o3) == 1 && pm_ring_for(&rr, &a3, &o3) == 1
+            && pm_ring_for(&rr, &off, &o3) == 0, 1,
+            "the asks ride a record the ring owes: they do not change when it is cleared");
         ckk(PM_STEP_PCT == 4 && 3 < PM_STEP_PCT, 1, "PM_STEP_PCT is the send floor: 3 per mille is under it");
     }
 
@@ -547,7 +584,35 @@ def run_c(src, d):
     return int(m.group(1)), int(m.group(2))
 
 
-def verdict(src, d, quiet):
+# The glue (apps/pomodoro/main.c) is not compiled here — it names orb.h and the stage — so rim-1's
+# mapping is pinned on its text instead: the settings reach pm_cfg_t, the record's two words are
+# written, and a wedge move counts as a move. MAIN_MUTATIONS breaks each rule one at a time.
+MAIN = ["apps/pomodoro/main.c"]
+MAIN_RULES = [
+    ("the CCW ask reaches the record", r"rec\.flags\s*=.*ORB_RING_CCW.*ORB_RING_MATCH"),
+    ("the start reaches the record", r"rec\.start\s*=\s*\(uint16_t\)r\.start"),
+    ("a direction or start move re-sends the ring", r"s_sent\.dir[^\n]*s_sent\.start"),
+    ("the theme ask re-sends the ring too", r"s_sent\.match[^\n]*r->match"),
+    ("the settings fill pm_cfg_t's three asks", r"cfg\.dir\s*=.*\n.*cfg\.start\s*=.*\n.*cfg\.match\s*="),
+    ("ring_dir is read as a 0/1", r"s_dir\s*=\s*v\[10\] \? 1 : 0"),
+    ("ring_start is read as o'clock degrees", r"s_start\s*=\s*\(\(v\[11\] % 4\) \+ 4\) % 4 \* 90"),
+]
+MAIN_MUTATIONS = [
+    ("    if (s_sent.dir != r->dir || s_sent.start != r->start) return true;", "    ;"),
+    ("    rec.flags = (uint8_t)((r.dir ? ORB_RING_CCW : 0) | (r.match ? ORB_RING_MATCH : 0));", "    ;"),
+    ("    rec.start = (uint16_t)r.start;", "    ;"),
+    ("    cfg.dir       = s_dir;", "    ;"),
+]
+
+
+def main_rules(fail, m_src):
+    for what, pat in MAIN_RULES:
+        fail("main.c: " + what, bool(re.search(pat, m_src, re.S)))
+    fail("main.c: amendment J's waiting comment is gone with the code that needed it",
+         not re.search(r"amendment J", m_src, re.I))
+
+
+def verdict(src, d, quiet, m_src=None):
     """One round of checks: the C driver's assertions plus the split's shape on the text."""
     fails = []
 
@@ -568,23 +633,32 @@ def verdict(src, d, quiet):
     else:
         fail("the driver produced no CHECKS line", False)
     shape(fail, open(os.path.join(APP, "pomodoro.h")).read(), src)
+    main_rules(fail, m_src if m_src is not None else open(os.path.join(APP, "main.c")).read())
     return bool(fails) or res is None
 
 
 def main():
     src = open(os.path.join(APP, "pomodoro.c")).read()
     with tempfile.TemporaryDirectory() as d:
+        main_src = open(os.path.join(APP, "main.c")).read()
         if "--mutations" in sys.argv:
             caught = 0
+            total = len(MUTATIONS) + len(MAIN_MUTATIONS)
             for a, b in MUTATIONS:
                 if src.count(a) != 1:
                     raise SystemExit("mutation %r applies %d times -- rewrite the suite" % (a[:40], src.count(a)))
-                bit = verdict(src.replace(a, b, 1), d, True)
+                bit = verdict(src.replace(a, b, 1), d, True, main_src)
                 print(("bites " if bit else "MISSED") + "  " + a.strip()[:70])
                 caught += bit
-            print("mutants caught %d/%d" % (caught, len(MUTATIONS)))
-            return 0 if caught == len(MUTATIONS) else 1
-        if verdict(src, d, False):
+            for a, b in MAIN_MUTATIONS:
+                if main_src.count(a) != 1:
+                    raise SystemExit("main.c mutation %r applies %d times -- rewrite the suite" % (a[:40], main_src.count(a)))
+                bit = verdict(src, d, True, main_src.replace(a, b, 1))
+                print(("bites " if bit else "MISSED") + "  main.c: " + a.strip()[:60])
+                caught += bit
+            print("mutants caught %d/%d" % (caught, total))
+            return 0 if caught == total else 1
+        if verdict(src, d, False, main_src):
             return 1
         print("all pomodoro checks pass")
         return 0

@@ -186,6 +186,16 @@ static const struct { const char *id; int32_t dflt; } PM_SET[PM_N_SET] = {
 static int32_t s_val[PM_N_SET];                  /* the fourteen, as last read */
 static bool    s_val_known;
 
+/* "Match the app" (rim-design §8): the away setting's second special is the only one that asks
+ * the record to wear the theme, and only while the app is off the glass — on the glass the face
+ * already wears the theme's colours. A function of its own because the ask follows the glass,
+ * which moves without a settings move: load_settings reads it once, pick_colours re-reads it on
+ * every send. */
+static int match_of(int32_t away)
+{
+    return (away == -2 && !s_visible) ? 1 : 0;
+}
+
 static bool load_settings(void)
 {
     const int32_t cap[3] = { 5400, 1800, 3600 };    /* app.json's maxima, in seconds */
@@ -207,10 +217,13 @@ static bool load_settings(void)
     s_chime_on    = v[5];
     s_chime_vol   = v[6];
     s_wake        = v[7];
-    s_dir         = v[10];
-    s_start       = v[11] * 90;                     /* the face's o'clock, clockwise */
+    s_dir         = v[10] ? 1 : 0;                  /* rim-design §8: the record's CCW ask */
+    s_start       = ((v[11] % 4) + 4) % 4 * 90;     /* the face's o'clock, clockwise from twelve */
     s_col_here    = v[12];
     s_col_away    = v[13];
+    cfg.dir       = s_dir;
+    cfg.start     = s_start;
+    cfg.match     = match_of(v[13]);                  /* "Match the app", away only (§7) */
     s_cfg_gen     = orb_cfg_gen();
     return moved != 0;
 }
@@ -390,10 +403,11 @@ static void head_text(char *b, int n)
 /* ---- the OS ring (§7): one path, from the service ----------------------------------- */
 
 /* Which colour the ring wears (amendment H): the owner's setting for here or for away, and
- * a negative special ("From the look", and "Match the app" until the overlay slice gives the
- * record a flag: §64.9) the theme's own colour for the phase in hand. */
+ * a negative special ("From the look", and "Match the app": §64.9, rim-design §8) the theme's own
+ * colour for the phase in hand. */
 static void pick_colours(void)
 {
+    cfg.match = match_of(s_col_away);
     const int32_t sel = s_visible ? s_col_here : s_col_away;
     for (int i = 0; i < 3; i++) cfg.col[i] = sel >= 0 ? (uint32_t)sel : V.ring_rgb[i];
 }
@@ -406,6 +420,8 @@ static bool ring_moved(const pm_ring_t *r)
     if (!s_sent_valid) return true;
     if (s_sent.effect != r->effect || s_sent.period_ms != r->period_ms) return true;
     if (s_sent.arc != r->arc || s_sent.track != r->track) return true;   /* colour, both alphas */
+    if (s_sent.dir != r->dir || s_sent.start != r->start) return true;   /* the wedge moved (§8) */
+    if (s_sent.match != r->match) return true;                            /* the same ask, answered */
     const int d = s_sent.fraction > r->fraction ? s_sent.fraction - r->fraction
                                                 : r->fraction - s_sent.fraction;
     return d >= PM_STEP_PCT || (r->fraction == 0) != (s_sent.fraction == 0);
@@ -435,8 +451,8 @@ static void ring_send(void)
     rec.arc = r.arc;
     rec.track = r.track;
     rec.period_ms = (uint16_t)r.period_ms;
-    /* s_dir and s_start wait on the record's flags and start (amendment J): this base's
-     * orb_ring_t still reserves both words, so the ring drains clockwise from twelve. */
+    rec.start = (uint16_t)r.start;
+    rec.flags = (uint8_t)((r.dir ? ORB_RING_CCW : 0) | (r.match ? ORB_RING_MATCH : 0));
     if (orb_ring_set(&rec) == ORB_ERR_NOT_ALLOWED) {
         s_ring_retry_ms = up_ms() + PM_REFUSE_RETRY_MS;
         return;

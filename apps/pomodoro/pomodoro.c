@@ -277,11 +277,16 @@ int pm_ring_for(const pm_t *s, const pm_cfg_t *c, pm_ring_t *out)
     const uint32_t rgb = c->col[pm_ring_phase(s, c->focuses)] & 0x00FFFFFFu;
 
     if (eff < 0 || !c->ring_on || c->opacity <= 0) return 0;   /* cleared, not invisible */
-    out->effect = eff;
-    out->fraction = pm_fraction(s);
-    out->arc = ((uint32_t)pm_ring_alpha(PM_ARC_A, c->opacity) << 24) | rgb;
-    out->track = ((uint32_t)pm_ring_alpha(PM_TRACK_A, c->opacity) << 24) | rgb;
-    out->period_ms = eff == 2 ? PM_BREATHE_MS : eff == 1 ? PM_FLASH_MS : 0;
+    /* One write of the whole record: a field the app does not name is zero, and the three asks
+     * rim-1 adds are named here as plainly as the five that were always sent (rim-design §8). */
+    *out = (pm_ring_t){ .fraction = pm_fraction(s),
+                        .effect = eff,
+                        .arc = ((uint32_t)pm_ring_alpha(PM_ARC_A, c->opacity) << 24) | rgb,
+                        .track = ((uint32_t)pm_ring_alpha(PM_TRACK_A, c->opacity) << 24) | rgb,
+                        .period_ms = eff == 2 ? PM_BREATHE_MS : eff == 1 ? PM_FLASH_MS : 0,
+                        .dir = c->dir ? 1 : 0,                      /* the record's CCW ask     */
+                        .start = ((c->start % 360) + 360) % 360,    /* the fold the OS applies  */
+                        .match = c->match ? 1 : 0 };                /* off-glass, by the caller */
     return 1;
 }
 

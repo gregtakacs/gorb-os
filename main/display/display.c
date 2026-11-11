@@ -802,6 +802,212 @@ static esp_err_t ring_refund(void)
  * free the ring while this window is inside it. */
 static int dma_dirty_bands_locked(lv_display_t *disp);
 
+/* ---- rim lanes: the ring's own refresh (docs/specs/rim-design.md §5, rim-3) ------
+ *
+ * A ring step used to cost 463 whole rows because the flush keeps one dirty span per row: the
+ * 10k pixels the ring actually changed were carried by 215k pixels it did not. rim-2 gave the
+ * annulus a cover of even-aligned rectangles (ring_lanes()); this is how they reach the glass.
+ *
+ * One decision shapes everything below: the batch rides the flush's own commit. That is the one
+ * place which has already waited for the TE edge, already holds s_ring_mux, and already has the
+ * tile ring's write-guard in hand, so the lanes go out after the commit's bands, in row order
+ * (the panel scans top to bottom; submitting in scan order is what keeps a tear line honest when
+ * a batch spans an edge), out of the same two internal-DMA tiles, and under the same
+ * s_band_inflight / s_tile_done bookkeeping. A lane is one tile, so it is one transaction and one
+ * trans-done, and the frame's flush_ready still comes from on_color_trans_done.
+ *
+ * The pixels are the mirror's, with orb_ring_disp_stamp() blended into them on the way out --
+ * the same call the tile loop makes, over the same wire-order RGB565, so there is exactly one
+ * blend in the tree and s_fb is never written. A lane whose rows this commit already
+ * sent whole is DROPPED, because those tiles left with the ring already stamped into them at this
+ * step's alpha: covered means sent, and re-sending the same pixels narrow would double the
+ * windows to buy nothing (§5.3).
+ *
+ * Zero new internal RAM, the whole point of reusing the tile ring: no new internal statics (the
+ * two counters here are PSRAM), no new DMA allocations, no new task, and no fallback that needs
+ * one -- when the tiles cannot carry the batch the ring takes display_mark_rows() back. */
+EXT_RAM_BSS_ATTR static uint32_t s_ring_batch_us;   /* the last lane batch's wall time         */
+
+bool display_ring_lanes_ready(void)
+{
+#if USE_DMA_TILES
+    /* Two tiles, a mirror to read, and a ring the card has not taken: exactly what the tile
+     * flush needs, and the same condition its own degradation is built from. A one-buffer ring
+     * cannot prove a lane's buffer free while the next band waits on that same tile, so lanes
+     * are a two-buffer feature, like the copy arc's stamping. */
+    return s_ring_mux && s_coalesce_mode && s_fb && s_tiles_n == 2 && !s_ring_parked;
+#else
+    return false;
+#endif
+}
+
+uint32_t display_ring_last_batch_us(void) { return s_ring_batch_us; }
+
+/** This commit's bands, as a row test: does any one of them cover [y0, y1] whole? */
+static bool band_covers(const int32_t *r0, const int32_t *r1, int bands, int y0, int y1)
+{
+    for (int i = 0; i < bands; i++)
+        if (r0[i] <= y0 && y1 <= r1[i]) return true;
+    return false;
+}
+
+/** A lane the panel may be asked for: even start column and row, even width and height (the
+ *  CO5300 clocks 2 px per cycle on both axes and CASET/RASET are programmed verbatim), inside
+ *  the glass, and small enough for one tile. The geometry guarantees all of it (rim-2 §4.1), so
+ *  a lane that fails here means the cover was corrupted and the honest answer is to lose pixels,
+ *  never to shear a line. Counted and logged: a silent skip is a ring with a hole in it. */
+static bool lane_legal(const orb_ring_lane_t *L)
+{
+    if (!L || L->x0 < 0 || L->y0 < 0 || L->x1 >= SCREEN_WIDTH || L->y1 >= SCREEN_HEIGHT) return false;
+    if (L->x1 < L->x0 || L->y1 < L->y0) return false;
+    if ((L->x0 & 1) || (L->y0 & 1)) return false;
+    if (((L->x1 - L->x0 + 1) & 1) || ((L->y1 - L->y0 + 1) & 1)) return false;
+    const int64_t px = (int64_t)(L->x1 - L->x0 + 1) * (L->y1 - L->y0 + 1);
+    return px * 2 <= (int64_t)s_ring_bytes;
+}
+
+
+/** §5.1's call. LVGL task, s_ring_mux held, inside the commit's blanking window.
+ *  `band_r0`/`band_r1`/`bands` are the row ranges THIS commit already submitted (empty when the
+ *  batch rides no commit's bands at all) and `base_ti` the tile index the band loop stopped at,
+ *  so the retirement proof and s_tile_rend stay continuous across the two halves of the frame.
+ *  `frame` says an LVGL frame is waiting on flush_ready behind these windows: true from the
+ *  commit, false from display_ring_lanes(), which signs for its own batch. Answers the number of
+ *  windows actually submitted. */
+static int send_ring_lanes_locked(const orb_ring_lane_t *lanes, int n,
+                                  const int32_t *band_r0, const int32_t *band_r1, int bands,
+                                  int base_ti, bool frame)
+{
+    if (!lanes || n <= 0 || !s_fb || s_tiles_n != 2 || s_ring_parked) return 0;
+    if (orb_edge_arc_shown()) return 0;                     /* the copy arc wins the rim (§11)  */
+
+    int try_n = 0, bad = 0;
+    for (int i = 0; i < n && i < ORB_RING_LANES_MAX; i++) {
+        if (!lane_legal(&lanes[i]))                                    { bad++; continue; }
+        if (band_covers(band_r0, band_r1, bands, lanes[i].y0, lanes[i].y1)) continue;   /* covered means sent (§5.3) */
+        try_n++;
+    }
+    if (bad)
+        ESP_LOGW(TAG, "rim lanes: %d of %d windows illegal (alignment or size) -- skipped", bad, n);
+    if (try_n == 0) return 0;                               /* covered or refused: nothing went out */
+
+    /* Accounted for BEFORE anything waits: the ISR hands LVGL its buffer back the moment the
+     * count reaches zero with a frame pending, and a commit that still has windows to submit
+     * must never look finished to it. With bands already on the wire the count is a sum; with
+     * none, this batch IS the commit, so it arms what the tile loop would have. */
+    if (bands > 0) {
+        /* The bands are retiring while this adds, and the ISR's s_band_inflight-- is a
+         * read-modify-write too: a decrement lost between this load and store leaves the count
+         * above zero for good, flush_ready never comes and LVGL waits on a frozen panel. The ISR
+         * runs on this task's core (DISPLAY_LCD_CORE), so masking it here for the add is enough. */
+        const UBaseType_t im = portSET_INTERRUPT_MASK_FROM_ISR();
+        s_band_inflight += try_n;
+        portCLEAR_INTERRUPT_MASK_FROM_ISR(im);
+        const int64_t w0 = esp_timer_get_time();
+        while (s_tile_done < (uint32_t)base_ti && esp_timer_get_time() - w0 < 100000) { }
+        if (s_tile_done < (uint32_t)base_ti)
+            ESP_LOGW(TAG, "rim lanes: no trans-done for %d band tiles in 100 ms -- writing over", base_ti);
+    } else {
+        s_tile_done     = 0;
+        s_band_inflight = try_n;
+        if (frame) s_last_pending = true;   /* flush_ready comes from the last lane's trans-done */
+        base_ti = 0;
+    }
+
+    int last_ok[TILE_BUFS];
+    for (int b = 0; b < TILE_BUFS; b++) last_ok[b] = -1;   /* every band retired: both buffers are free */
+    const int nbuf = s_tiles_n;
+    unsigned ti = (unsigned)base_ti;
+    int sent = 0;
+    const int64_t b0 = esp_timer_get_time();
+    for (int i = 0; i < n && i < ORB_RING_LANES_MAX; i++) {
+        const orb_ring_lane_t *L = &lanes[i];
+        if (!lane_legal(L)) continue;
+        if (band_covers(band_r0, band_r1, bands, L->y0, L->y1)) continue;
+        const int w    = L->x1 - L->x0 + 1;
+        const int rows = L->y1 - L->y0 + 1;
+        const int b = (int)(ti % (unsigned)nbuf);
+        if (last_ok[b] >= 0) {                             /* the same write-guard the band loop uses */
+            const int64_t w0 = esp_timer_get_time();
+            while (s_tile_done <= (uint32_t)last_ok[b] && esp_timer_get_time() - w0 < 100000) { }
+        }
+        uint16_t *tb = s_tile[b];
+        /* One row at a time, stride = the lane's width: exactly the pointer arithmetic
+         * orb_ring_disp_stamp()'s `tile + r*w - x0` already assumes, and why a lane narrower
+         * than the glass needs no repack scratch. */
+        for (int r = 0; r < rows; r++)
+            memcpy(tb + (size_t)r * (size_t)w, &FB(L->x0, L->y0 + r), (size_t)w * sizeof(uint16_t));
+        orb_ring_disp_stamp(L->y0, rows, tb, L->x0, w);     /* the shipped blend, over the mirror */
+        s_bench_pix    += (uint64_t)w * (uint32_t)rows;    /* the ring's wire counted like every */
+        s_bench_chunks++;                                   /* other submitter's, for /health   */
+        s_tile_rend[ti & 63u] = (uint16_t)L->y1;            /* the panel-write witness's row     */
+        const esp_err_t e = esp_lcd_panel_draw_bitmap(s_panel, L->x0, L->y0,
+                                                      L->x0 + w, L->y1 + 1, tb);
+        if (e != ESP_OK) {
+            ESP_LOGE(TAG, "rim lane [x%d..%d r%d..%d] draw_bitmap failed: %s",
+                     L->x0, L->x1, L->y0, L->y1, esp_err_to_name(e));
+            /* no callback will come for this one; take it off the count with the ISR masked,
+             * for the same reason as the add above, and finish the frame if it was the last */
+            bool fire = false;
+            const UBaseType_t im = portSET_INTERRUPT_MASK_FROM_ISR();
+            if (s_band_inflight > 0) s_band_inflight--;
+            if (s_band_inflight == 0 && s_last_pending) { s_last_pending = false; fire = true; }
+            portCLEAR_INTERRUPT_MASK_FROM_ISR(im);
+            if (fire && s_lvgl_disp) lv_display_flush_ready(s_lvgl_disp);
+            continue;
+        }
+        last_ok[b] = (int)ti;
+        ti++;
+        sent++;
+    }
+    s_ring_batch_us = (uint32_t)(esp_timer_get_time() - b0);
+    return sent;
+}
+
+/** The ring's turn in this commit (§5.2), s_ring_mux held: ask the glue what it owes, send it,
+ *  and report the windows and the wall time back so the ring can run its own governor. The
+ *  pending set is left in place when the tiles cannot carry it or the copy arc holds the rim, so
+ *  the next commit (or the ring's own retry) sends it rather than losing the step. */
+static int ring_lane_step(const int32_t *r0, const int32_t *r1, int bands, int base_ti, bool frame)
+{
+    if (!display_ring_lanes_ready() || orb_edge_arc_shown()) return 0;
+    const orb_ring_lane_t *lanes = NULL;
+    int i0 = 0, i1 = -1;
+    if (orb_ring_disp_due_span(&lanes, &i0, &i1) <= 0) return 0;
+    const int sent = send_ring_lanes_locked(lanes + i0, i1 - i0 + 1, r0, r1, bands, base_ti, frame);
+    if (sent > 0 || bands > 0) orb_ring_disp_batch(sent, (int)s_ring_batch_us);
+    return sent;
+}
+
+/** The ring's own entry point for a batch with no commit to ride — the retry the ring service
+ *  makes when a step's pending set outlived the flush it was recorded for (a corner invalidate
+ *  LVGL folded into a page it decided had not changed, a card loan that opened between the step
+ *  and the commit). One lock, the same one every submitter takes; a quiet bus first, exactly as
+ *  band_commit_here insists; a blanking window of our own, since nothing else waited for the
+ *  edge for us; and the batch retired before the mutex goes back, so the next commit finds the
+ *  counters as it expects them. Refused while the carousel holds the glass: that frame stamps the
+ *  ring itself. LVGL task only, like every bus writer here. */
+int display_ring_lanes(const orb_ring_lane_t *lanes, int n)
+{
+    if (!lanes || n <= 0 || !display_ring_lanes_ready() || s_glass_held) return 0;
+    xSemaphoreTake(s_ring_mux, portMAX_DELAY);
+    int sent = 0;
+    int64_t t0 = esp_timer_get_time();
+    while ((s_band_inflight > 0 || s_last_pending) && esp_timer_get_time() - t0 < 100000) vTaskDelay(1);
+    if (s_band_inflight > 0 || s_last_pending) {
+        ESP_LOGW(TAG, "rim lanes: bus not quiet in 100 ms -- batch dropped, the ring retries");
+    } else {
+        present_wait();
+        sent = send_ring_lanes_locked(lanes, n, NULL, NULL, 0, 0, false);
+        t0 = esp_timer_get_time();
+        while (s_band_inflight > 0 && esp_timer_get_time() - t0 < 200000) vTaskDelay(1);
+        if (s_band_inflight > 0)
+            ESP_LOGW(TAG, "rim lanes: %d windows still on the wire after 200 ms", (int)s_band_inflight);
+    }
+    xSemaphoreGive(s_ring_mux);
+    return sent;
+}
+
 static int dma_dirty_bands(lv_display_t *disp)
 {
     if (!s_ring_mux) return dma_dirty_bands_locked(disp);   /* pre-init: nothing to guard */
@@ -880,7 +1086,13 @@ static int dma_dirty_bands_locked(lv_display_t *disp)
         for (int i = best + 1; i + 1 < n; i++) { r0[i] = r0[i + 1]; r1[i] = r1[i + 1]; }
         n--;
     }
-    if (n == 0) return 0;
+    if (n == 0) {
+        /* Nothing of ours to send. The ring may still owe the glass a step, and the shortcut
+         * that books an empty frame must not fire with lane windows on the wire (§5.2), so the
+         * lanes are asked first and their count is what this commit reports: non-zero keeps the
+         * caller from calling flush_ready under a batch the ISR still has to retire. */
+        return ring_lane_step(NULL, NULL, 0, 0, true);
+    }
 #if DB_EVEN_BANDS
     /* Even start, even count: r0 down to even, r1 up so the span is even. */
     for (int i = 0; i < n; i++) {
@@ -990,6 +1202,10 @@ static int dma_dirty_bands_locked(lv_display_t *disp)
                 row += rows;
             }
         }
+        /* The ring's own refresh, last into this same window (§5.1): its lanes, in row order,
+         * minus the ones the bands above already carried at this step's alpha. This is the call
+         * that turns a breathe step from 215,758 px of the app's rows into 19,912 px of the rim. */
+        ring_lane_step(r0, r1, n, (int)ti, true);
         return n;
     }
 #endif /* USE_DMA_TILES */
@@ -2181,6 +2397,14 @@ static esp_err_t fx_frame(display_fx_compose_t compose, void *ctx, bool te,
             last_ok[b] = (int)ti;
         }
         ti++;
+    }
+    /* §5.3 from the carousel's side: every slab above left with the ring stamped into it at
+     * this step's alpha, so this asks for the lanes the frame did NOT touch and normally gets 0
+     * windows — the row of §11's table that says the carousel costs the ring nothing extra.
+     * `frame` is false because a bench frame never leaves an LVGL flush waiting (see above). */
+    {
+        const int32_t all0 = 0, all1 = SCREEN_HEIGHT - 1;
+        ring_lane_step(&all0, &all1, 1, (int)ti, false);
     }
     /* Retire everything before returning: the caller's next frame composes
      * into these same buffers. */

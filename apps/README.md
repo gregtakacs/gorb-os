@@ -405,6 +405,9 @@ orb_ring_t r = { .fraction = 620, .effect = ORB_RING_STEADY,
                  .arc = 0xFF0FA36Bu, .track = 0x331A1A22u, .period_ms = 0 };
 orb_ring_set(&r);   // ESP_OK; ESP_ERR_INVALID_ARG for NULL; ESP_ERR_NOT_ALLOWED without the cap
 orb_ring_clear();   // give the rim back
+
+r.start = 270; r.flags = ORB_RING_CCW;      // the same 62%, anticlockwise from three
+orb_ring_set(&r);
 ```
 
 - **The declaration is the consent, and the owner revokes it per app.** `ring` goes in
@@ -416,11 +419,19 @@ orb_ring_clear();   // give the rim back
 - **Colours are `0xAARRGGBB`** (the canvas's convention): the arc's and track's alpha ride
   the top byte, and an alpha of 0 draws nothing. `effect` is `ORB_RING_STEADY`, `_FLASH`
   or `_BREATHE`; the OS clamps the period (breathe is slow only) whatever you ask.
-- **`match` asks the ring to wear the theme.** The record's byte-1 flag (`ORB_RING_MATCH`, `match`)
-  tells the OS to take the arc's and track's RGB from the live theme's overlay colour (§64.9), each
-  keeping its own alpha — a muted band stays muted. Set nothing there (`0`) and the ring keeps the
-  colours you sent. An OS without this slice ignores the byte entirely: it does nothing with it, so
-  the ring simply draws in your own colours.
+- **`flags` is the record's byte-1 ask (rim-design §2).** `ORB_RING_MATCH` (`0x01`) asks the ring to
+  wear the theme: the OS takes the arc's and track's RGB from the live theme's overlay colour
+  (§64.9), each keeping its own alpha — a muted band stays muted. `ORB_RING_CCW` (`0x02`) is the
+  direction, below. Set nothing there (`0`) and the ring keeps the colours you sent. The OS masks the
+  byte to `ORB_RING_FLAGS_MASK` (`0x03`): a bit it does not know is dropped, not honoured. An OS
+  without this slice ignores the byte entirely: it does nothing with it, so the ring simply draws in
+  your own colours.
+- **`ORB_RING_CCW` and `start` say which way the arc runs and where it begins.** `start` is degrees
+  clockwise from twelve (`0` twelve, `90` three, `270` nine); the arc is the wedge from there —
+  `[start, start + fraction·360°)` clockwise, `(start − fraction·360°, start]` anticlockwise — and
+  the track is the rest, so the same fraction drains the other way round the rim. The OS wraps any
+  start into `0..359` (`360` is twelve again, `-45` is 315). Both words are the record's, so an
+  older OS ignores them and draws the twelve-clockwise arc you always got.
 - **The copy arc wins.** While a card copy is running the rim shows the copy arc and your
   ring holds its state; the first frame after the copy stamps your ring again — no work
   for the app, and `/status`'s `ring.on_glass` is false while it waits.

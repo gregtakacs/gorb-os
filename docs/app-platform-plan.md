@@ -6894,7 +6894,7 @@ are not.
 | app | anticlockwise of home | home | clockwise of home | press |
 |---|---|---|---|---|
 | Weather | the five days, tomorrow first | Now | the 24 hours, the next first, on the ring | next place, keeping the position |
-| Flights | the aircraft, farthest first | the plain scope | the aircraft, nearest first, each with its card | next range |
+| Flights | the aircraft, farthest first | the plain scope | the aircraft, nearest first, each with its card | next place (press-and-turn is the range, clockwise closer as radar's zoom, owner 2026-11-11) |
 
 **Precondition: the hourly step is fast.** The owner finds one click on Weather's hourly ring
 frustratingly slow today, and a design built on turning fails if a click is slow. A click
@@ -7945,3 +7945,80 @@ theme for that app most recently added to the card; with none left, its plain fa
 **How** (built on §6.x of theme-cache-plan and the in-place restart, `orb_wasm_restart`):
 an app decides at `orb_init` what its theme gives it, so every theme landing restarts the
 app's engine in place, and every app install loads its module live instead of rebooting.
+
+## 64. The ring, a pomodoro, and the eight looks everywhere — 2026-11-11
+
+Issue #11 (a pomodoro timer, "ideally … an overlay ring"). The owner's rulings, 2026-11-11.
+`docs/app-design-rules.md` is the standing rule book these join; this section is the ledger.
+
+### 64.1 The ring is the OS's, and any app may set it
+
+- **Drawn by the OS over whatever is on the glass**, the way the copy arc is
+  (`main/display/orb_edge_arc.c`, theme-cache-plan "Edge arc"): stamped into each DMA tile as
+  it leaves, never in the mirror, so `/fb` cannot see it. An app never draws it; it only
+  says what the ring should be. That keeps "nothing off the glass" (theme-cache-plan, "Nothing of an app's display runs off
+  the glass"):
+  an app off the glass sets the ring from `orb_service`, which draws nothing itself.
+- **Generic, not the pomodoro's.** One import for every app: a fraction (0..1000, clockwise
+  from twelve), an **arc** colour and opacity, a **track** colour and opacity (opacity 0 = a
+  bare arc), and an **effect**: steady, flash, or breathe, with a period. A clear takes it
+  away. Opacity is a real blend over the glass, not an overwrite.
+- **Breathe is slow only** (owner). Its cost is a band of rows re-sent each step over a live
+  app, so the OS caps it: a long period and a few steps a second, whatever the app asks.
+  Flash changes the ring twice a period and is bounded the same way.
+- **One ring on the glass; the latest caller owns it** (owner). The OS keeps each app's last
+  ring (one small record per installed app) and shows the most recent; when that app clears
+  or is uninstalled, the next most recent shows again.
+- **A cap, `ring`**, declared in app.json like the others: declaring it is the consent (D19),
+  and the owner revokes it per app in the app's Permissions sub-menu (§58.5). A revoked or
+  undeclared app's calls answer a refusal and its ring goes.
+- **The copy arc wins.** While a card copy runs (the dial is frozen, theme-cache-plan "Edge
+  arc"), the copy's progress is the rim; the app's ring returns when it ends.
+- Not on the untiled fallback, like the copy arc. `/status` names the ring's owner and state,
+  since `/fb` cannot show it.
+
+### 64.2 A colour setting
+
+Settings gain a `color` type (§57.2): stored as `0xRRGGBB` in a C9 int; the hub shows a
+colour picker, the dial steps a fixed palette of named colours (and shows a hub-set colour
+outside the palette as "custom"). Opacity needs no new type: an `int` 0..100 with unit "%".
+
+### 64.3 The pomodoro app (`apps/pomodoro`)
+
+- **Phases:** focus, short break, focus, … for N focuses (default 4), then a long break, then
+  again. Settings: focus length (default 25 min), short break (5), long break (15), focuses
+  before the long break (4), start the next phase on its own or wait for a press, a chime at
+  each change (cap `sound`), the ring on or off, its opacity, and a colour for each state.
+- **The knob** (owner): **press** starts, pauses and resumes (and, with a phase over and
+  waiting, starts the next). **Turn** changes the current phase's remaining time, a minute a
+  click (a fast spin, more); it is a value dial (app-design-rules "Two kinds of dial"), so the
+  change stays and nothing returns on idle. **Press-and-turn** moves between phases:
+  clockwise to the next, anticlockwise back to the start of this one (or, at its start, the
+  one before); like radar's zoom it lands on the let-go. **Hold** is the OS's.
+- **The ring** shows the phase draining over any app: a colour per state (focus, short break,
+  long break), paused breathes, a phase over and waiting flashes. Off, it clears.
+- **It runs off the glass**: the countdown lives in `orb_service` against the wall clock, the
+  ring and the chime come from there, and the phase and its end time survive a reboot or an
+  in-place restart (§63).
+- **Its face is a theme** like every app's, with an editor that starts from the eight looks
+  (64.4) and a shelf default (Scope), per the kit (theme-editor-kit-plan).
+
+### 64.4 The eight looks, with nothing borrowed
+
+Weather, radar and flights already start from the same eight looks under one name each
+(flights-map-plan §6 "One look set", radar-plan "all eight looks in every app"). The owner wants the
+gaps closed too, not just the names:
+
+- Weather's Silver and Sectional get **their own icon packs**; today they borrow Brass's
+  (engraved) and Station's (pictogram), against weather-plan ruling 6 ("packs are never
+  shared").
+- Flights gets **Station and Sectional plane families**; it has six families today.
+- The stale old names go (weather Scope's match note "Flights · Modern", rebake_shelf's
+  docstring "Modern"/"Radarscope").
+- The pomodoro starts from all eight.
+
+### 64.5 Flights' zoom turns like radar's
+
+Press-and-turn in Flights now runs clockwise closer, anticlockwise wider, as radar's zoom
+does (owner, 2026-11-11); it ran the other way because the two ladders are ordered from
+opposite ends. The rule for every app is in app-design-rules: clockwise is closer, more, later.

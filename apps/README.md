@@ -222,12 +222,14 @@ Each install slot holds at most 100 KB of container. The shipped apps run 9–26
 ## The knob
 
 The orb has one input, a knob that turns and presses. Every app uses it the same way,
-so someone who has learned one app has learned them all (plan §51):
+so someone who has learned one app has learned them all. The rules in full are
+[docs/app-design-rules.md](../docs/app-design-rules.md); this section is how to follow them.
 
 | Gesture | Means | Who handles it |
 |---|---|---|
 | Turn | move along the app's **one dial** | the app |
 | Press | the app's **one action** | the app |
+| Press-and-turn | the app's **second axis**, if it has one (radar's zoom) | the app, if it exports `orb_push` |
 | Hold | leave the app for the app list | the OS, always |
 
 **Design your app as one dial centred on a home view.** Home is what someone glancing at
@@ -240,13 +242,18 @@ anticlockwise.
 - **Turning never needs a press first.** No modes, no "press to edit, then turn". If the
   app has two things to scrub, it has two sides of the dial.
 - **A press does one thing, always the same thing**, wherever the dial stands: the next
-  place, the next range. Keep the dial's position across it, so the press compares
+  place, start or pause. Keep the dial's position across it, so the press compares
   rather than resets.
 - **The ends stop.** Nothing wraps, so an overshoot never jumps to the other side.
 - **Home is sticky.** A fast spin stops on home, so one flick back from anywhere is home.
 - **Idle goes home.** After 20 s without a turn the app shows home again, and so does
   coming back to the app.
 - **Never use the hold.** It is the way out of every app, and it must always work.
+- **Clockwise is forward**: later, more, next, closer. Radar's dial turns clockwise into
+  the forecast, and its zoom clockwise closer.
+- **A dial that changes a value is a value dial**, not a view: a timer's remaining time.
+  Its change stays, nothing returns on idle, and the ends are the value's own limits. An
+  app has one dial, a view dial or a value dial.
 - **Settings are declared, not drawn.** Anything that is not a dial or its one action is
   a setting in app.json, and the OS draws it ([Settings](#settings)), never the app.
 - **A click must show at once.** The OS draws a frame straight after every knob event, so
@@ -285,6 +292,21 @@ inside them. When what sits at a position can move (Flights re-sorts its aircraf
 poll), keep the selection by identity and set `s_dial.pos` from it before each turn, as
 `apps/flights/main.c` does in `dial_sync()`. `orb_knob_dial` is an OS v1.2.11 import: an
 older OS refuses an app that calls it. The template (`orbsdk.py new`) starts as a dial.
+
+**Press-and-turn.** Export `orb_push` and the OS sends it every click turned while the
+knob is held down, one by one and unaccelerated, instead of to `orb_input`; exporting it is
+the opt-in, with no manifest key. Show the choice as it moves and land it on the let-go,
+`orb_push(0)` (from OS v1.2.27, 400 ms after the knob comes up). A press or a plain turn
+while choosing lands it too. `apps/radar/main.c` (`orb_push`, `zoom_step`) is the model.
+
+```c
+ORB_EXPORT("orb_push") void orb_push(int32_t delta)
+{
+    if (!delta) { choice_lands(); redraw(); return; }    /* let go */
+    s_want = clamp(s_want + delta, 0, N - 1);           /* clockwise: next, closer */
+    redraw();                                           /* show the choice in the header */
+}
+```
 
 ## The ABI
 

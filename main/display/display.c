@@ -23,6 +23,7 @@
 #include "esp_attr.h"           /* EXT_RAM_BSS_ATTR: the bench hold log */
 #include "board_config.h"
 #include "orb_edge_arc.h"     /* the system arc, stamped into the tiles */
+#include "orb_ring.h"         /* the OS ring, the arc's twin on the rim (ring-design §8) */
 
 #include <stdlib.h>
 #include <string.h>
@@ -966,7 +967,8 @@ static int dma_dirty_bands_locked(lv_display_t *disp)
 #else
                 memcpy(tb, &FB(0, row), (size_t)SCREEN_WIDTH * (size_t)rows * 2);
 #endif
-                orb_edge_arc_stamp(row, rows, tb, tx0, tw);   /* over the glass, never in s_fb */
+                if (orb_edge_arc_shown()) orb_edge_arc_stamp(row, rows, tb, tx0, tw);   /* copy wins the rim (ring-design §8) */
+                else                       orb_ring_disp_stamp(row, rows, tb, tx0, tw);  /* the app ring, over the glass, never in s_fb */
                 s_bench_pix    += (uint64_t)tw * (uint32_t)rows;
                 s_bench_chunks++;
                 s_tile_rend[ti & 63u] = (uint16_t)(row + rows - 1);
@@ -2167,7 +2169,8 @@ static esp_err_t fx_frame(display_fx_compose_t compose, void *ctx, bool te,
             memcpy(s_fx_shadow + (size_t)row * SCREEN_WIDTH, s_tile[b],
                    (size_t)rows * SCREEN_WIDTH * 2);
 #endif
-        orb_edge_arc_stamp(row, rows, s_tile[b], 0, SCREEN_WIDTH);   /* after the shadow: pixdiff reads the compose */
+        if (orb_edge_arc_shown()) orb_edge_arc_stamp(row, rows, s_tile[b], 0, SCREEN_WIDTH);   /* copy wins the rim (ring-design §8) */
+        else                       orb_ring_disp_stamp(row, rows, s_tile[b], 0, SCREEN_WIDTH);  /* after the shadow: pixdiff reads the compose */
         s_bench_pix += (uint64_t)SCREEN_WIDTH * (uint32_t)rows;
         s_bench_chunks++;
         if (esp_lcd_panel_draw_bitmap(s_panel, 0, row, SCREEN_WIDTH, row + rows,

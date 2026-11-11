@@ -396,6 +396,10 @@ void idle_dim_app_release(const char *slug)
     g_rel_calls++;
     snprintf(g_rel_slug, sizeof g_rel_slug, "%s", slug ? slug : "");
 }
+/* Revoking the ring cap drops that slot's record (ring-design §5); the shipped hook lives
+ * in orb_ring.c's IDF glue, so the broker's revoke path reaches it as a stub here. */
+int g_ring_drop_slot = -999;
+void orb_ring_drop(int slot) { g_ring_drop_slot = slot; }
 
 /* ---- the theme leaves: the shipped package manager, scripted ---------------- */
 int g_tscan_calls;
@@ -536,8 +540,8 @@ int main(int argc, char **argv)
         CK("home: undeclared app refused, record never read",
            S->home(A, &h) == ESP_ERR_NOT_ALLOWED && S->home(G, &h) == ESP_ERR_NOT_ALLOWED &&
            g_home_reads == 0 && (orb_svc_denied_mask(A) & (1u << CAP_LOCATION)) != 0);
-        CK("home: location is an owner cap, not a free one",
-           !(CAP_FREE_MASK & (1u << CAP_LOCATION)) && CAP_N == 10);
+         CK("home: location is an owner cap, not a free one (CAP_N grew to 11 with ring)",
+            !(CAP_FREE_MASK & (1u << CAP_LOCATION)) && CAP_N == 11);
         g_place_reads = 0;
         CK("place: undeclared app refused, record never read",
            S->place(A, 1, &h) == ESP_ERR_NOT_ALLOWED && S->place(G, 1, &h) == ESP_ERR_NOT_ALLOWED &&
@@ -1096,7 +1100,7 @@ def build_run(td, tag, extra_cflags, arg):
             "-I", td]                          # the IDF-shaped stubs shadow mine
            + ["-I", P("app"), "-I", P("art"), "-I", P("gfx"), "-I", P("."),
               "-I", P("assets"), "-I", P("net"),
-              "-I", P("power"), "-I", P("audio"),
+              "-I", P("power"), "-I", P("audio"), "-I", P("display"),
               "-I", os.path.join(ROOT, "assets")]  # real project headers
            + extra_cflags + [SVC_C, cpath, "-lm", "-o", exe])
     r = subprocess.run(cmd, capture_output=True, text=True)

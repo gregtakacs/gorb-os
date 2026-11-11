@@ -35,6 +35,7 @@
 #include "orb_places.h"       /* and the three places beside it            */
 #include "orb_theme.h"        /* the D18 family: enumerate and request, never bytes */
 #include "idle_dim.h"         /* the power request path — a request, not a write */
+#include "orb_ring.h"         /* §64.1: revoking the ring cap drops the app's record */
 #include "orb_layers.h"       /* P5.5: the layer table the four entries drive */
 #include "orb_sound.h"        /* D39: the engine the sound entries hand off to */
 
@@ -1049,6 +1050,10 @@ esp_err_t orb_svc_set_grant(const orb_app_t *a, orb_cap_t cap, bool on)
          * put the dial down, or the owner's kill switch is a label. Same
          * owner-wins release the DISPLAY choice makes. */
         if (!on && cap == CAP_POWER) idle_dim_app_release(a->slug);
+        /* Revoking the ring cap while the app owns the ring must actually take the ring
+         * off the glass, or the owner's kill switch is a label (ring-design §5). The drop
+         * is keyed by the flash slot (the ring table's key); a card row's -1 is a no-op. */
+        if (!on && cap == CAP_RING) orb_ring_drop(a->flash_slot);
         /* P5.5 notes what it does NOT do here: no layer wipe rides a revoke,
          * because CAP_UI is free (never stored, never revoked), so there is no
          * owner door that closes an app's ink. The rows end at suspend and at

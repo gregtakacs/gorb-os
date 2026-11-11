@@ -430,6 +430,35 @@ ORB_IMPORT("map_project") int32_t  orb_map_project(int32_t h, int32_t lat_e6, in
 ORB_IMPORT("map_close")   void     orb_map_close(int32_t h);
 ORB_IMPORT("maps_gen")    uint32_t orb_maps_gen(void);
 
+/* ---- the ring (cap "ring"; ring-design §2, plan §64.1) ------------------------------ *
+ * The OS ring, over whatever is on the glass and stamped into the DMA tiles as they
+ * leave — never into the mirror, so /fb cannot see it. An app never draws it; it only
+ * says what it should be. One ring: the latest caller owns it; a clear or an uninstall
+ * surfaces the next most recent. Colours reuse the canvas's 0xAARRGGBB (orb.h's ARGB,
+ * the top byte the alpha): alpha 0 draws nothing. The OS clamps the effect and its
+ * period (breathe slow only). The layout is the firmware's orb_ring_rec and must not
+ * drift; orbsdk refuses a module that imports a size the OS does not copy. */
+#define ORB_RING_STEADY   0     /* on while shown; redraws only when the fraction moves */
+#define ORB_RING_FLASH    1     /* on/off twice a period: "waiting for you"             */
+#define ORB_RING_BREATHE  2     /* slow in/out: "paused"                               */
+
+typedef struct {
+    uint16_t fraction;   /* 0..1000, clockwise from twelve; >1000 clamps to 1000        */
+    uint8_t  effect;     /* ORB_RING_STEADY | _FLASH | _BREATHE; other values => STEADY  */
+    uint8_t  _res0;      /* reserved, 0                                                  */
+    uint32_t arc;        /* 0xAARRGGBB — arc alpha in bits 31..24 (0 => the arc draws nothing) */
+    uint32_t track;      /* 0xAARRGGBB — track alpha in bits 31..24 (0 => a bare arc)    */
+    uint16_t period_ms;  /* effect period, clamped by the OS; 0 => the OS default        */
+    uint16_t _res1;      /* reserved, 0                                                  */
+} orb_ring_t;            /* 16 bytes, ILP32 LE */
+_Static_assert(sizeof(orb_ring_t) == 16, "the OS copies this record verbatim");
+
+ORB_IMPORT("ring_set")   int32_t orb_ring_set(const orb_ring_t *r);  /* sig i(i): ESP_OK,
+                                                                        ESP_ERR_INVALID_ARG
+                                                                        for NULL, or the
+                                                                        cap refusal */
+ORB_IMPORT("ring_clear") int32_t orb_ring_clear(void);              /* sig i(): the same */
+
 /* ---- JSON (free): the OS's streaming tokenizer (D51) ----------------------------- *
  * Begin over the landed network body (buf NULL) or a buffer of the app's own (copied,
  * up to 16 KB); each orb_json_next answers one event with the member key it sits

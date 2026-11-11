@@ -57,6 +57,7 @@
 #include "orb_places.h"         /* orb_places_gen, behind orb.places_gen */
 #include "orb_app_blob.h"       /* radar-plan §2.3: kept bodies */
 #include "orb_map.h"            /* radar-plan §2.4: the OS maps */
+#include "orb_ring.h"           /* §64.1 / ring-design: the OS ring, imp_ring_set/_clear */
 #include "orb_map_credit.h"     /* radar-plan §2.4: the first map drawn shows the credit */
 #include "orb_map_raster.h"     /* ORB_MAP_W: a view's raster, drawn onto the live layer */
 #include "esp_timer.h"
@@ -212,6 +213,7 @@ static void slot_release(wasm_slot_t *s)
     orb_app_net_release(slot_index(s));
     orb_blob_free_all(slot_index(s));
     orb_map_release_app(slot_index(s));
+    orb_ring_drop(slot_index(s));   /* the OS ring: an uninstalled app's record goes with it */
     if (s->rt) m3_FreeRuntime(s->rt);
     if (s->env) m3_FreeEnvironment(s->env);
     if (s->code) heap_caps_free(s->code);
@@ -926,7 +928,44 @@ m3ApiRawFunction(imp_sound_play)             /* i32 sound_play(u32 slot, u32 fla
     m3ApiReturn(orb_svc_table()->sound_play(s->app, (uint16_t)slot, flags, delay));
 }
 
-m3ApiRawFunction(imp_sound_stop)             /* void sound_stop(i32 h) */
+/* the ring (cap "ring"; ring-design §2, §5). One record by pointer, like map_open: the
+ * guest's offset is checked before it is copied, so a wild pointer is a C2 trap, never a
+ * read of OS memory. The cap gate answers the SAME refusal the other caps use and drops
+ * this app's row (design §5), so an app that reached past its declaration or whose ring
+ * the owner revoked cannot leave a ring standing. The pure ring_set/ring_clear drive the
+ * glue's PSRAM table directly; the service stamps it, the copy arc winning the rim (§8). */
+m3ApiRawFunction(imp_ring_set)             /* i32 ring_set(const orb_ring_t *r) — 16 B, sig i(i) */
+{
+    m3ApiReturnType(int32_t);
+    CALLER();
+    m3ApiGetArg(uint32_t, r_off);
+    if (!r_off) m3ApiReturn(ESP_ERR_INVALID_ARG);         /* orb_ring_set(NULL): the OS's arg error */
+    const uint8_t *p = m3ApiOffsetToPtr(r_off);
+    m3ApiCheckMem(p, 16);
+    if (!orb_grant_ok(s->app, CAP_RING)) {
+        orb_ring_drop(slot_index(s));
+        m3ApiReturn(ESP_ERR_NOT_ALLOWED);
+    }
+    orb_ring_rec rec;
+    memcpy(&rec, p, sizeof rec);
+    ring_set(orb_ring_tbl, orb_ring_owner, orb_ring_seq, ORB_APP_CAP,
+             slot_index(s), &rec, esp_timer_get_time());
+    m3ApiReturn(ESP_OK);
+}
+
+m3ApiRawFunction(imp_ring_clear)           /* i32 ring_clear(void), sig i() */
+{
+    m3ApiReturnType(int32_t);
+    CALLER();
+    if (!orb_grant_ok(s->app, CAP_RING)) {                /* the refusal drops the record too */
+        orb_ring_drop(slot_index(s));
+        m3ApiReturn(ESP_ERR_NOT_ALLOWED);
+    }
+    ring_clear(orb_ring_tbl, orb_ring_owner, ORB_APP_CAP, slot_index(s));   /* the next surfaces */
+    m3ApiReturn(ESP_OK);
+}
+
+m3ApiRawFunction(imp_sound_stop)           /* void sound_stop(i32 h) */
 {
     CALLER();
     m3ApiGetArg(int32_t, h);
@@ -1874,6 +1913,8 @@ static const wasm_bind_t s_binds[] = {
     { "orb", "armed",         "v(i)",      imp_armed },
     { "orb", "knob_dial",     "v()",       imp_knob_dial },
     { "orb", "sound_play",    "i(iii)",    imp_sound_play },
+    { "orb", "ring_set",      "i(i)",      imp_ring_set },
+    { "orb", "ring_clear",    "i()",       imp_ring_clear },
     { "orb", "sound_stop",    "v(i)",      imp_sound_stop },
     { "orb", "sound_active",  "i(i)",      imp_sound_active },
     { "orb", "home",          "i(i)",      imp_home },
@@ -2589,7 +2630,8 @@ static const char *wasm_opt_value(orb_app_t *app, int idx)
 }
 
 /* The knob edits a row in its own steps: 0..n over min..max for a number, the choices
- * for an enum and a toggle (wrapping), off and on for a multi's item. */
+ * for an enum and a toggle (wrapping), off and on for a multi's item, and the specials
+ * then the palette then "custom" for a colour (§64.2: it never edits raw hex). */
 static bool wasm_opt_edit(orb_app_t *app, int idx, orb_opt_edit_t *e)
 {
     wasm_slot_t *s = slot_of_app(app);
@@ -2605,6 +2647,10 @@ static bool wasm_opt_edit(orb_app_t *app, int idx, orb_opt_edit_t *e)
         const int32_t st = r->step > 0 ? r->step : 1;
         *e = (orb_opt_edit_t){ .min = 0, .max = (r->max - r->min) / st, .value = (v - r->min) / st,
                                .step_max = 10, .wrap = false };
+    } else if (r->type == ORB_SETUI_COLOR) {
+        const int p = orb_setui_color_pos(r, v);
+        *e = (orb_opt_edit_t){ .min = r->min, .max = r->max, .value = p < 0 ? r->max : p,
+                               .step_max = 1, .wrap = true };
     } else {
         *e = (orb_opt_edit_t){ .min = r->min, .max = r->max, .value = v, .step_max = 1, .wrap = true };
     }
@@ -2615,11 +2661,10 @@ static bool wasm_opt_edit(orb_app_t *app, int idx, orb_opt_edit_t *e)
 static int32_t page_store(orb_app_t *app, wasm_slot_t *s, const page_row_t *pr, int32_t v)
 {
     const orb_setui_row_t *r = &app->ui->row[pr->row];
-    if (pr->kind == PG_ITEM) {
-        const int i = page_cfg(s, r);
-        const int32_t cur = i < 0 ? 0 : s->cfg[i].v;
-        return v ? cur | (1 << pr->choice) : cur & ~(1 << pr->choice);
-    }
+    const int i = page_cfg(s, r);
+    const int32_t cur = i < 0 ? 0 : s->cfg[i].v;
+    if (pr->kind == PG_ITEM) return v ? cur | (1 << pr->choice) : cur & ~(1 << pr->choice);
+    if (r->type == ORB_SETUI_COLOR) return orb_setui_color_val(r, v, cur);
     if (r->type == ORB_SETUI_INT || r->type == ORB_SETUI_NUMBER)
         return r->min + v * (r->step > 0 ? r->step : 1);
     return v;

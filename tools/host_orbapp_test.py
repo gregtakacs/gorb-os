@@ -123,7 +123,69 @@ m = re.search(r"#define ORB_CFG_QUOTA_BYTES\s+(\d+)", svc_h)
 check("the quota the writer prices settings against is the gate's",
       bool(m) and int(m.group(1)) == A.CFG_QUOTA_BYTES,
       "lifted %s vs CFG_QUOTA_BYTES %d" % (m.group(1) if m else "?",
-                                           A.CFG_QUOTA_BYTES))
+                                      A.CFG_QUOTA_BYTES))
+
+# ---- §64.2: the color setting type -----------------------------------------
+# A colour is C9's int with a shape on top: 0xRRGGBB, or a negative for one of the app's
+# named specials (amendment 8). Nothing below is a new storage or wire type — the point of
+# the checks is that the writer emits an int row the frozen gate already range-checks, and
+# that the schema entry the dial and the hub draw still says "color".
+COL = dict(id="ring", type="color", label="Ring", default=0x0FA36B)
+_rows, _sch = A.normalize_settings([COL])
+check("a color is a C9 int row over 0..0xFFFFFF",
+      _rows == [("ring", A.SET_TYPES.index("int"), 0, 0xFFFFFF, 0x0FA36B, "")], _rows)
+check("the §57 region names the type the dial draws, so its reader maps it by TYPES[]",
+      b'"type":"color"' in A.pack_schema(_sch), A.pack_schema(_sch)[:80])
+check("the schema's numbers are the gate's, min included",
+      _sch[0]["type"] == "color" and _sch[0]["min"] == 0 and _sch[0]["max"] == 0xFFFFFF
+      and _sch[0]["default"] == 0x0FA36B, _sch[0])
+check("a color shows on both faces unless told otherwise", _sch[0]["show"] == "both", _sch[0])
+check("a hub-only color is dial-hidden like any other hub row",
+      A.normalize_settings([dict(COL, show="hub")])[1][0]["show"] == "hub")
+check("a color costs the four bytes an int costs, quota unchanged",
+      A.cfg_charge(_rows) == 4)
+check("the packed row round-trips as an int with its bounds",
+      A.unpack_settings(A.pack_settings(_rows), 1)[0]["type"] == "int"
+      and A.unpack_settings(A.pack_settings(_rows), 1)[0]["default"] == 0x0FA36B)
+check("the schema region and the wire row agree, which is what check_schema rechecks",
+      A.check_schema(A.pack_schema(_sch), _rows)[0]["type"] == "color")
+check("0x000000 and 0xFFFFFF are inclusive ends of a colour default",
+      A.normalize_settings([dict(COL, default=0)])[0][0][4] == 0
+      and A.normalize_settings([dict(COL, default=0xFFFFFF)])[0][0][4] == 0xFFFFFF)
+# amendment 8: the specials, stored as the negatives they are named by
+SP = dict(COL, specials=["From the look", "Match the app"], default=-1)
+_rows_sp, _sch_sp = A.normalize_settings([SP])
+check("declaring specials moves the gate's min to -n, so an undeclared one never lands",
+      _rows_sp == [("ring", 0, -2, 0xFFFFFF, -1, "")], _rows_sp)
+check("the schema carries the specials' names in order for the dial and the hub",
+      _sch_sp[0]["specials"] == ["From the look", "Match the app"], _sch_sp[0])
+check("a colour default stands beside specials, and reads back as the colour",
+      A.normalize_settings([dict(SP, default=0x2E93E4)])[0][0][4] == 0x2E93E4)
+check("the fourth special is -4, the last one the reader has a slot for",
+      A.normalize_settings([dict(COL, specials=["a", "b", "c", "d"], default=-4)])[0][0][4] == -4)
+for what, bad, wants in [
+    ("a colour with no default", dict(id="ring", type="color", label="Ring"), "needs a default"),
+    ("one past 24 bits", dict(COL, default=0x1000000), "outside 0..0xFFFFFF"),
+    ("a named colour instead of a value", dict(COL, default="red"), "is not a color"),
+    ("a bool default", dict(COL, default=True), "is not a color"),
+    ("a special past what was declared", dict(SP, default=-3), "does not declare"),
+    ("a special the setting does not have at all", dict(COL, default=-1), "does not declare"),
+    ("five specials", dict(COL, specials=["a", "b", "c", "d", "e"]), "1..4 names"),
+    ("no specials in an empty list", dict(COL, specials=[]), "1..4 names"),
+    ("a 24-byte special", dict(COL, specials=["x" * 24]), "23 UTF-8 bytes"),
+    ("a special that is not a string", dict(COL, specials=[{"km": "a"}]), "must be text"),
+    ("specials on an int", dict(id="a", type="int", min=0, max=9, default=1,
+                                specials=["a"]), "only a color"),
+    ("a range on a colour, which the type fixes", dict(COL, min=100), "no min"),
+]:
+    expect_refuse("color: " + what, lambda bad=bad: A.normalize_settings([bad]), wants=wants)
+check("color is in UI_TYPES and rides the int wire, and is NOT in the frozen C9 set",
+      A.UI_TYPES[-1] == "color" and A.UI_WIRE["color"] == "int" and "color" not in A.SET_TYPES)
+check("a color setting is refused by the gate's own table, which stays frozen",
+      A.check_settings([dict(id="ring", type="int", min=0, max=0xFFFFFF, default=0x0FA36B)])
+      == _rows)
+
+
 m = re.search(r"char\s+id\[(\d+)\];.*?char\s+def_str\[(\d+)\];", svc_h, re.S)
 if not m:
     sys.exit("could not lift orb_setting_desc_t's id/def_str widths from orb_svc.h")
@@ -795,6 +857,13 @@ MUTATIONS = [
      "W_TITLE      = W_SLUG      + 1"),
     ("an empty slug parses", "if not h[\"slug\"]:", "if 0:"),
     ("an empty title parses", "if not h[\"title\"]:", "if 0:"),
+    ("a colour past 24 bits is not refused at pack",
+     "elif df > COLOR_MAX:", "elif 0:"),
+    ("a colour may skip its default",
+     "if \"default\" not in s and \"def\" not in s:", "if 0:"),
+    ("a colour's specials do not move its gate range",
+     "w.update(type=\"int\", min=-n_sp, max=COLOR_MAX, default=df)",
+     "w.update(type=\"int\", min=0, max=COLOR_MAX, default=df)"),
 ]
 
 

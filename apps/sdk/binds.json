@@ -56,6 +56,8 @@
   "place_zone": "i(iIi)",
   "places_gen": "i()",
   "power_request": "i(ii)",
+  "ring_clear": "i()",
+  "ring_set": "i(i)",
   "set_beat": "i(i)",
   "sin": "F(F)",
   "sound_active": "i(i)",

@@ -7309,7 +7309,7 @@ hub can render them." There are no apps beyond the shelf's to carry along.
 | field | for | meaning |
 |---|---|---|
 | `id` | all | the NVS key, as before (a-z 0-9 _, ≤ 15) |
-| `type` | all | `int`, `number`, `enum`, `multi`, `toggle`, `text`, `place`, `secret` |
+| `type` | all | `int`, `number`, `enum`, `multi`, `toggle`, `text`, `place`, `secret`, `color` |
 | `label` | all | what the dial and the hub call it (≤ 23 bytes); required |
 | `help` | all | a sentence or two for the hub (≤ 480 bytes) |
 | `links` | all | `[{href, text}]` for the hub, at most 3 |
@@ -7318,11 +7318,16 @@ hub can render them." There are no apps beyond the shelf's to carry along.
 | `step`, `unit` | int, number | the knob's step (default 1) and a suffix ("°", "%", " s") |
 | `decimals` | number | 1..3: stored as an integer times 10^d, shown with that many decimals |
 | `choices` | enum, multi, toggle | the option labels, in value order; a label may instead be `{"km", "mi", "nm"}`, picked by the orb's distance unit (Flights' ranges). A toggle's two are its off and on (default "off", "on") |
-| `default` | enum | an index; multi: a list of indices; toggle: 0 or 1; text, place: a string |
+| `specials` | color | at most 4 names (≤ 23 bytes each) offered before the palette, stored −1, −2, …; the app decides what each means |
+| `default` | enum | an index; multi: a list of indices; toggle: 0 or 1; text, place: a string; color: required, 0..0xFFFFFF or one of its specials as a negative |
 | `host`, `header` | secret | the one host the OS may send it to, and the header it rides (default `x-api-key`) |
 
 The binary gate is unchanged: `number` and `multi` store as C9 `int` (a scaled integer; a
 bitmask of at most 16 choices), `text` and `place` as `string`, and the C9 types stay frozen.
+`color` (§64.2) stores as `int` too — `0xRRGGBB`, or a negative when the owner picked one of the
+app's named specials — so it costs the same four NVS bytes and the gate's `min..max` path already
+range-checks it (`min` is `-len(specials)`, `max` is `0xFFFFFF`). The dial steps the 12-colour
+palette in `orb_setui.c` rather than editing hex; the hub's picker is not palette-restricted.
 
 ### 57.3 The container: FORMAT 4
 

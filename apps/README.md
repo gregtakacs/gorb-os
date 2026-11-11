@@ -41,7 +41,7 @@ my_app/
 |---|---|
 | `slug` | the app's id: lowercase a–z, digits and `_`, at most 23 characters. It names the card file, the settings namespace and the slot |
 | `title` | what the dial shows |
-| `caps` | the owned capabilities the app uses: `power`, `net`, `sd_read`, `themes`, `sound`, `location`. The declaration is the consent (D19): an import the app did not declare answers a refusal, and the owner can revoke any of them on the dial |
+| `caps` | the owned capabilities the app uses: `power`, `net`, `sd_read`, `themes`, `sound`, `location`, `ring`. The declaration is the consent (D19): an import the app did not declare answers a refusal, and the owner can revoke any of them on the dial |
 | `settings` | up to 16, each with a type and a label; the OS draws them on the dial and in Orb Manager ([Settings](#settings)) |
 | `period_ms` | the fastest beat the app may ask for, at least 1000. Leave it out and the app never ticks |
 | `memory_kb` | the module's linear memory, 64 (default) or 128 |
@@ -137,7 +137,7 @@ the knob or in its theme editor. Each entry in `settings`:
 | Field | For | Meaning |
 |---|---|---|
 | `id` | all | the key: a–z, 0–9 and `_`, at most 15 characters |
-| `type` | all | `int`, `number`, `enum`, `multi`, `toggle`, `text`, `place` or `secret` |
+| `type` | all | `int`, `number`, `enum`, `multi`, `toggle`, `text`, `place`, `secret` or `color` |
 | `label` | all | what the dial and the hub call it, at most 23 bytes. Required |
 | `help` | all | a sentence or two for the hub, at most 480 bytes |
 | `links` | all | `[{"href", "text"}]` shown under the help, at most 3 |
@@ -146,7 +146,8 @@ the knob or in its theme editor. Each entry in `settings`:
 | `step`, `unit` | int, number | the knob's step (default 1) and a suffix such as `"°"`, `"%"` or `" s"` |
 | `decimals` | number | 1 to 3: the value is stored as an integer times 10^decimals |
 | `choices` | enum, multi, toggle | the option labels in value order. A label may be `{"km": …, "mi": …, "nm": …}`, picked by the orb's distance unit. A toggle's two are its off and on (default `"off"`, `"on"`) |
-| `default` | all but secret | int and number: a value; enum: an index; multi: a list of indices; toggle: 0 or 1; text and place: a string |
+| `specials` | color | at most 4 names (each at most 23 bytes) the owner may pick instead of a colour, offered first on the dial and as buttons beside the hub's picker. Stored as `-1`, `-2`, … — what each one means is the app's business; the OS only stores it and draws its label |
+| `default` | all but secret | int and number: a value; enum: an index; multi: a list of indices; toggle: 0 or 1; text and place: a string; color: required, a `0xRRGGBB` int `0..0xFFFFFF` or one of its specials as a negative |
 | `host`, `header` | secret | the one host the OS may send it to, and the header it rides (default `x-api-key`) |
 
 How each type reads in the app:
@@ -156,6 +157,12 @@ How each type reads in the app:
 - `text` and `place` with `orb_cfg_get_str`, at most 31 characters. A `place` is
   picked on the hub from the city list or typed as coordinates, and stored
   `Name|lat,lon` with two decimals.
+- `color` with `orb_cfg_get`: stored as the int `0xRRGGBB`, the C9 `int` type and nothing
+  new. The dial steps the OS's fixed 12-colour palette (Ruby, Ember, Amber, Lime,
+  Emerald, Teal, Sky, Sapphire, Indigo, Violet, Magenta, Pearl — an off-palette colour
+  the hub set reads `custom` and stands until you press), the hub picks any colour
+  freely, and a declared special reads back as the negative you stored. A transparency
+  needs no new type either: an `int` `0..100` with `unit: "%"` is an opacity.
 - `secret` never: see [Secrets](#secrets).
 
 On the dial, an app's page lists the settings shown there in manifest order. A press
@@ -326,6 +333,7 @@ ORB_EXPORT("orb_push") void orb_push(int32_t delta)
 | network | `orb_net_request/info/read/header/free`, `orb_net_cred`, `orb_net_get` | `net` |
 | sound | `orb_sound_play/stop/active` | `sound` |
 | location | `orb_home`, `orb_home_gen` | `location` |
+| the ring | `orb_ring_set`, `orb_ring_clear` ([sdk/orb.h](sdk/orb.h), "The ring") | `ring` |
 | units | `orb_units`, `orb_units_gen`, and the `orb_*_from_*` and `orb_*_label` helpers | free (OS v1.2.10) |
 | power | `orb_power_request` | `power` |
 | stage | `orb_stage_*` ([sdk/orb_stage.h](sdk/orb_stage.h)) | free; draws only for the theme's own app |
@@ -382,6 +390,35 @@ Best practice, which the shipped apps follow:
 - **Expect a quick return.** A carousel the owner opens and closes is a suspend
   and a resume a few seconds apart. Keep state across `orb_suspend` (don't free your
   data), so `orb_resume` redraws what you had rather than starting over.
+
+### The ring
+
+The OS ring (`orb_ring_set`, `orb_ring_clear`, cap `ring`) is a thin progress arc the OS
+draws around the rim of the glass, over whatever is on it — the same look as the copy
+arc and the theme rings, and the copy arc's contract: stamped into the DMA tiles as they
+leave, **never into the mirror**, so `/fb` cannot see it and a themed app keeps animating
+under it. The app never draws it; it only says what it should be, so an app off the glass
+can set it from `orb_service` and draw nothing itself.
+
+```c
+orb_ring_t r = { .fraction = 620, .effect = ORB_RING_STEADY,
+                 .arc = 0xFF0FA36Bu, .track = 0x331A1A22u, .period_ms = 0 };
+orb_ring_set(&r);   // ESP_OK; ESP_ERR_INVALID_ARG for NULL; ESP_ERR_NOT_ALLOWED without the cap
+orb_ring_clear();   // give the rim back
+```
+
+- **The declaration is the consent, and the owner revokes it per app.** `ring` goes in
+  `app.json`'s `caps`; a call before the app declared it, or after the owner revoked it on
+  the dial's Permissions page, answers `ESP_ERR_NOT_ALLOWED` and drops that app's record.
+- **One ring, latest caller owns it.** Each app keeps one last record; the OS shows the
+  most recent. `orb_ring_clear` (or an uninstall) surfaces the next most recent, and a
+  clear with nothing owned is a harmless no-op.
+- **Colours are `0xAARRGGBB`** (the canvas's convention): the arc's and track's alpha ride
+  the top byte, and an alpha of 0 draws nothing. `effect` is `ORB_RING_STEADY`, `_FLASH`
+  or `_BREATHE`; the OS clamps the period (breathe is slow only) whatever you ask.
+- **The copy arc wins.** While a card copy is running the rim shows the copy arc and your
+  ring holds its state; the first frame after the copy stamps your ring again — no work
+  for the app, and `/status`'s `ring.on_glass` is false while it waits.
 
 ### Secrets
 

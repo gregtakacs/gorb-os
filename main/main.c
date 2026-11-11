@@ -46,6 +46,7 @@
 #include "orb_theme.h"
 #include "art_bank.h"
 #include "orb_edge_arc.h"
+#include "orb_ring.h"     /* the OS ring's service + boot init, beside the arc's (ring-design §8) */
 
 static const char *TAG = "main";
 
@@ -61,6 +62,7 @@ static void lvgl_task(void *arg)
          * nothing; its decision latency does not depend on this running. */
         idle_dim_render_drain();
         orb_edge_arc_service();        /* the system arc's rows ride this pass's flush */
+        orb_ring_disp_service();       /* the OS ring's rows too; the arc wins while a copy runs */
         const int64_t t_h = esp_timer_get_time();
         uint32_t sleep_ms = lv_timer_handler();
         const int64_t t_s = esp_timer_get_time();
@@ -261,6 +263,9 @@ void app_main(void)
     /* The units (weather-plan §2.1) load beside it for the same reason. */
     orb_units_init();
     orb_rotation_init();     /* §59: the carousel's order, read before the registry walks */
+    /* The OS ring's ownership table, cleared before the first app builds: an app can set
+     * the ring from its own init, and a stale owner row must never show at boot (ring-design §5). */
+    orb_ring_disp_init();
     /* P7.4's rung: the code tier loads after the broker's words are known (a
      * quarantined app must not cost its D27 memory) and before init_all asks each
      * module to build — the wasm module's init answers OK only once its slot

@@ -41,6 +41,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
  && chmod -R a+rX /opt/esp
 ENV IDF_PATH=/opt/esp/esp-idf IDF_TOOLS_PATH=/opt/esp/tools
 
-# tzdata for Python at CI's pin (the zone-rule suites compare against it).
-RUN python3 -m pip install --break-system-packages --no-cache-dir tzdata==2026.5
+# For the system Python the host suites run on: tzdata at CI's pin (the zone-rule suites), and
+# the IDF's NVS generator at the version IDF v5.4 pins (host_layout_carry_test.py emits the real
+# NVS format with it; CI reaches it through export.sh, the suites here run outside it).
+RUN python3 -m pip install --break-system-packages --no-cache-dir tzdata==2026.5 esp-idf-nvs-partition-gen==0.1.9
 

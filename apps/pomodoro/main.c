@@ -249,8 +249,15 @@ static void keys_of(const pm_t *m, int32_t *a, int32_t *b)
 
 /* Only on a state change, never on a beat (§5.1): a running phase writes nothing for its
  * whole 25 minutes, which is why an end second is stored rather than a countdown. */
+/* A running phase restored before the clock synced (every boot: the app starts ~1.4 s in,
+ * SNTP lands ~5 s in). Its stored end is the only record of when it finishes, so it is held
+ * here and never overwritten until the clock can place it; the service finishes the restore. */
+static pm_raw_t s_pending_raw;
+static bool     s_restore_pending;
+
 static void save_if_moved(void)
 {
+    if (s_restore_pending) return;   /* the store still holds the running phase's real end */
     int32_t a, b;
     keys_of(&s, &a, &b);
     if (a == s_key_a && b == s_key_b) return;
@@ -538,6 +545,10 @@ ORB_EXPORT("orb_init") int32_t orb_init(void)
     const int32_t sync = now_s(&t);                        /* read first: §5.2, and no order in a
                                                             * call's arguments */
     pm_restore(&s, &cfg, &raw, (int)sync, t);
+    if (!sync && pm_raw_needs_clock(&raw)) {               /* held as paused until the clock syncs */
+        s_pending_raw = raw;
+        s_restore_pending = true;
+    }
     s_turned_k = raw.st_k ? s.k : -1;                      /* §4: a stored length may be turned */
     ring_send();
     save_if_moved();                    /* a fresh cycle: this write names its length */
@@ -587,6 +598,15 @@ ORB_EXPORT("orb_tick") void orb_tick(uint32_t now)
 ORB_EXPORT("orb_service") void orb_service(void)
 {
     const uint32_t gen = orb_cfg_gen();
+    if (s_restore_pending) {                                /* the clock synced: place the running phase */
+        int64_t t;
+        if (now_s(&t)) {
+            pm_restore(&s, &cfg, &s_pending_raw, 1, t);
+            s_restore_pending = false;
+            s_dirty = true;
+            orb_logf("pomodoro: clock synced, the running phase restored (%d s left)", (int)s.rem);
+        }
+    }
     load_and_restore(gen != s_cfg_gen);
     if (s_limit_ms && up_ms() - s_limit_ms >= PM_LIMIT_SAY_MS) { s_limit_ms = 0; s_dirty = true; }
     if (!s_choosing) {                                  /* the countdown holds while choosing (§6.3) */
@@ -606,6 +626,7 @@ ORB_EXPORT("orb_service") void orb_service(void)
  * is why the gesture ends here rather than being honoured on top of it. */
 ORB_EXPORT("orb_input") void orb_input(int32_t delta, int32_t pressed)
 {
+    if (delta || pressed) s_restore_pending = false;      /* the owner acted on what the glass shows */
     if (s_choosing) {
         s_click_ms = 0;
         choice_step();
@@ -630,6 +651,7 @@ ORB_EXPORT("orb_input") void orb_input(int32_t delta, int32_t pressed)
  * ends stopping inside one cycle. The clicks only show the choice; it lands on the let-go. */
 ORB_EXPORT("orb_push") void orb_push(int32_t delta)
 {
+    s_restore_pending = false;                            /* the owner acted: what the glass shows stands */
     if (!delta) {
         s_click_ms = 0;
         choice_step();

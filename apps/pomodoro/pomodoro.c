@@ -214,6 +214,11 @@ void pm_restore(pm_t *s, const pm_cfg_t *c, const pm_raw_t *raw, int synced, int
     s->end_s = 0;
 }
 
+int pm_raw_needs_clock(const pm_raw_t *raw)
+{
+    return raw && raw->st_k > 0 && raw->st_k % PM_PACK_MUL == PM_RUN;
+}
+
 void pm_store(const pm_t *s, pm_raw_t *raw)
 {
     raw->st_k = (int32_t)s->k * PM_PACK_MUL + s->st;

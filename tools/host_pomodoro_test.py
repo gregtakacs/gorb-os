@@ -31,7 +31,7 @@ MIN_CHECKS = 55          # the harness's own count: a check that vanished is not
 FUNCS = ["pm_cycle_len", "pm_phase_at", "pm_focus_at", "pm_next_k", "pm_len_s", "pm_press", "pm_turn",
          "pm_at_start", "pm_pos_step", "pm_land", "pm_service", "pm_restore", "pm_store", "pm_changed",
          "pm_ring_alpha", "pm_ring_for", "pm_fraction", "pm_ring_effect", "pm_ring_phase",
-         "pm_state_text", "pm_phase_text", "pm_count_text"]
+         "pm_state_text", "pm_phase_text", "pm_count_text", "pm_raw_needs_clock"]
 TYPES = ["pm_cfg_t", "pm_t", "pm_raw_t", "pm_ring_t"]
 CONSTS = ["PM_STOP", "PM_RUN", "PM_PAUSE", "PM_WAIT", "PM_WAITED", "PM_FOCUS", "PM_SHORT", "PM_LONG",
           "PM_EV_NONE", "PM_EV_END", "PM_EV_START", "PM_EV_LIMIT", "PM_MIN_S", "PM_ARC_A", "PM_TRACK_A",
@@ -74,6 +74,7 @@ def shape(fail, h_src, c_src):
 # Each is a behavioural edit to one line of the shipped source. An escaped mutant means the check
 # that names that rule is not watching it.
 MUTATIONS = [
+    ("raw->st_k % PM_PACK_MUL == PM_RUN", "raw->st_k % PM_PACK_MUL == PM_PAUSE"),
     ("    return focuses < PM_N_MIN ? PM_N_MIN : focuses > PM_N_MAX ? PM_N_MAX : focuses;", "    return focuses;"),  # N indexed off the cycle
     ("    if (k == last) return PM_LONG;", "    if (k == last - 1) return PM_LONG;"),                              # the long break a slot early
     ("    return (k & 1) ? PM_SHORT : PM_FOCUS;", "    return (k & 1) ? PM_FOCUS : PM_SHORT;"),
@@ -384,6 +385,15 @@ int main(void)
         pm_restore(&s, &c, &(pm_raw_t){42, 1500, 0, 240}, 0, 1000);
         ckk(s.st == PM_PAUSE && s.rem == 240, 1, "no clock: a stored RUN comes back PAUSE at pm_rem");
         ckk(pm_service(&s, &c, 1001) == PM_EV_NONE, 1, "the held restore does not count down");
+        ckk(pm_raw_needs_clock(&(pm_raw_t){41, 1500, 1010, 900}) == 1, 1,
+            "a stored RUN needs the clock: its end is a wall second (held until sync, Bronze 2026-11-11)");
+        ckk(pm_raw_needs_clock(&(pm_raw_t){42, 1500, 0, 240}) == 0 && pm_raw_needs_clock(&(pm_raw_t){0, 0, 0, 0}) == 0
+            && pm_raw_needs_clock(&(pm_raw_t){27, 360, 0, 0}) == 0 && pm_raw_needs_clock(&(pm_raw_t){8, 360, 0, 0}) == 0, 1,
+            "PAUSE, no key, WAIT and a STOP at k 1 do not need the clock");
+        pm_restore(&s, &c, &(pm_raw_t){41, 1500, 1010, 900}, 0, 1000);
+        ckk(s.st == PM_PAUSE, 1, "no clock: a stored RUN is held as PAUSE (the app keeps the record and finishes on sync)");
+        pm_restore(&s, &c, &(pm_raw_t){41, 1500, 1010, 900}, 1, 1000);
+        ckk(s.st == PM_RUN && s.rem == 10, 1, "the same record restored after the sync runs on, ~10 s left");
         pm_restore(&s, &c, &(pm_raw_t){199, 1500, 0, 900}, 1, 1000);
         ckk(s.st == PM_WAITED && s.k == 7, 1, "a torn pm_st of 199 is clamped, not trusted");
         pm_restore(&s, &c, &(pm_raw_t){10, 900, 0, -500}, 0, 1000);

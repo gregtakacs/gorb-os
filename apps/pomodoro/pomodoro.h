@@ -109,6 +109,9 @@ int  pm_service(pm_t *s, const pm_cfg_t *c, int64_t now_s);
  * clock cannot place comes back PAUSE. Silent whatever it finds — a boundary missed entirely
  * comes back PM_WAITED, never a chime and never the phases it would have led. */
 void pm_restore(pm_t *s, const pm_cfg_t *c, const pm_raw_t *raw, int synced, int64_t now_s);
+/* 1 when the stored state is a running phase: its end is a wall second, so restoring it
+ * needs a synced clock, and until then the caller must hold the record, not overwrite it. */
+int pm_raw_needs_clock(const pm_raw_t *raw);
 void pm_store(const pm_t *s, pm_raw_t *raw);
 int  pm_changed(const pm_raw_t *a, const pm_raw_t *b);   /* 0 => write nothing */
 

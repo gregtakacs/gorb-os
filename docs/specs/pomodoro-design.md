@@ -829,3 +829,13 @@ uint16_t fraction; uint8_t effect; uint8_t flags; uint32_t arc, track; uint16_t 
    - Use the names as they are in `apps/sdk/orb.h` on the base branch.
    - If the base predates the overlay slice, leave `flags` 0 and `start` 0, with a one-line
      comment naming §64.8/§64.9.
+
+## Orchestrator amendments, round 5 (2026-11-11) — the chime slots
+
+K. **Sound slot 0 is not a chime.** The projector refuses a one-shot sound at slot 0, which is the
+   tick loop's (`main/art/orb_clock3.c:1479`, `orb_clock3.h:51`). A pomodoro theme bakes its
+   chimes at slots **1, 2, 3**, and `pm_values_t.chime[]` names them (pomodoro-editor-design §3).
+   So `pomodoro-2-app.md`'s `orb_sound_play(0, 0, 0)` is wrong:
+   - the app plays `chime[phase that ended]`, at the volume amendment 1 (round 1) gives;
+   - a slot of 0, which is the no-values default, means **no chime**: the app does not call
+     `orb_sound_play` at all (owner: no chime without a theme).

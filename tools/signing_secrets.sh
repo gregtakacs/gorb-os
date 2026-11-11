@@ -5,6 +5,9 @@
 #   tools/signing_secrets.sh mac cert.p12 AuthKey_XXXX.p8   # the six Apple ones
 #   tools/signing_secrets.sh check                          # which are set (names only)
 #
+# With SIGNING_SECRETS_DIR set, every mode ends by probing the filed values with Azure and
+# Apple (tools/signing_probe.py): one test signature and one notary key check.
+#
 # Every value is typed at a hidden prompt or read from the file named, so nothing lands
 # in shell history, the terminal or a chat. The .p12 and .p8 go in as single-line base64,
 # which the workflow decodes; base64 -i is macOS's spelling and wraps lines on Linux, so
@@ -102,3 +105,11 @@ for s in AZURE_TENANT_ID AZURE_CLIENT_ID AZURE_CLIENT_SECRET AZURE_SIGNING_ENDPO
 	[ -n "$dir" ] && [ -s "$dir/$s" ] && f="  (filed)"
 	if grep -qx "$s" <<<"$have"; then echo "  set      $s$f"; else echo "  missing  $s$f"; fi
 done
+
+# With the values on file, ask Azure and Apple whether they work (one test signature, one
+# notary key check): a wrong account name or password shows here, not in a release run.
+if [ -n "$dir" ]; then
+	echo
+	echo "probing the filed values with Azure and Apple:"
+	python3 "$(dirname "$0")/signing_probe.py" "$dir"
+fi

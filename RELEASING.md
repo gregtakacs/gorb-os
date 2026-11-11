@@ -162,7 +162,11 @@ Set `SIGNING_SECRETS_ENV=release` for the script below so it writes to the envir
 Azure values at hidden prompts, `mac cert.p12 AuthKey_XXXX.p8` encodes the two files and
 asks for the other four, and `check` lists which are set. GitHub never shows a secret
 again, so with `SIGNING_SECRETS_DIR` set the script also files each value there (one
-owner-only file per secret) and loads it from there next time. Or, in GitHub, go to the repo →
+owner-only file per secret) and loads it from there next time. With the values on file,
+every mode then probes them with the vendors (`tools/signing_probe.py`): one test signature
+from the Azure account and profile, the .p12 opened with its password and matched to the
+identity, and the notary key checked with Apple. A wrong account name shows as a FAIL line
+in seconds; in a release it is a bare 403 from Azure half an hour in. Or, in GitHub, go to the repo →
 Settings → Environments → release → Add environment secret. Or by hand with the
 CLI (`base64 -i` is macOS's spelling; on Linux use `base64 -w0`):
 

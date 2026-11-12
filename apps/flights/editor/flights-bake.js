@@ -162,6 +162,18 @@
   var LOOK_TITLES = { modern: 'Scope', paper: 'Paper', brass: 'Brass', blueprint: 'Blueprint', station: 'Station', celestial: 'Celestial',
     silver: 'Silver', sectional: 'Sectional' };
   var SECTIONAL_BANDS = ['#8A8A8A', '#A0A4AA', '#C2187A', '#D9480F', '#2E7D32', '#2A5DB0', '#1F2A44'];
+  /* §64.16 (owner, 2026-11-12): the plane's colour is its altitude, and each look carries its
+   * own seven (ground, no altitude, < 3k, < 10k, < 20k, < 30k, 30k +) inside its palette rather
+   * than one neon set for all. The order reads the same in every look -- the low bands warm,
+   * the high ones cool -- and each set keeps enough spread to tell the bands apart at 38 px. */
+  var LOOK_BANDS = {
+    modern:    ['#3E5F48', '#6E8F78', '#FFB23C', '#E8E05A', '#A8FF6A', '#3DFF8E', '#9FFFE0'],   // Scope: phosphor, amber low
+    paper:     ['#9A9184', '#B8AE9E', '#B3261E', '#C9731C', '#7A8B2A', '#2E7D5B', '#2F5C8C'],   // Paper: the chart-maker's inks
+    brass:     ['#6B6250', '#8F8670', '#E0603C', '#E0A43C', '#D8CC7A', '#8FB59A', '#4FA38A'],   // Brass: copper, brass, verdigris
+    blueprint: ['#6F8FB8', '#9FB8D8', '#FFD27A', '#FFF1B0', '#F4F8FF', '#A8E4FF', '#6CD0FF'],   // Blueprint: pencil yellow to cyan
+    celestial: ['#6A6390', '#8C84B8', '#FF8A5C', '#FFD27A', '#FFF3C8', '#C9BEFF', '#9FD0FF'],   // Celestial: ember, gold, starlight, ice
+    silver:    ['#6B737D', '#8A929C', '#FF7A6B', '#FFC27A', '#F2F4F7', '#A9C9E8', '#7FC8FF'],   // Silver: a soft red and amber, then steel blues
+  };
   function startInfo(k) {
     var f = A().families[k] || {};
     return { title: LOOK_TITLES[k] || f.title || k, band: f.band || '', single: f.single };
@@ -251,7 +263,7 @@
       name: LOOK_TITLES[fam] || f.title, base: fam,
       scope: scopeOf(bg),
       arm: armOf(f.pair[1], 8),
-      planes: { family: fam, form: 'types', size: a.plane_px, colour: true, bands: a.bands.map(function (b) { return b[1]; }),
+      planes: { family: fam, form: 'types', size: a.plane_px, colour: true, bands: (LOOK_BANDS[fam] || a.bands.map(function (b) { return b[1]; })).slice(),
         ground: 0.6, groundGrey: false, heading: { style: X.heading || 'none', length: 1, colour: '#E8E4FF' }, sel: look.sel, em: '#FF2020', custom: { image: null },
         selStyle: 'ring', selWidth: 2, emStyle: 'ring', emWidth: 2.5, shadow: { on: false, opacity: 0.6, blur: 2.5 },
         dots: { show: 'bands', colour: '#D0D0D0', size: 6 } },

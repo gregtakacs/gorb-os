@@ -154,7 +154,7 @@
       icons: { pack: 'drafted', c: { line: '#F4F8FF', guide: '#DCE9F8', warn: '#FFD27A' } , shade: '3d', shadow: 'strong' } },
     paper: { name: 'Paper', match: 'Flights · Paper',
       plate: { style: 'paper', c0: '#F1EBDA', c1: '#EAE3CF', c2: '#DDD4BC', detail: '#8FB0C6', tick: '#2F5C8C' },
-      words: { num: PLEX, text: PLEX, label: PLEX, caps: false, track: 1, ink: '#14202C', quiet: '#5B5240' },
+      words: { num: PLEX, text: PLEX, label: PLEX, caps: true, track: 2, ink: '#14202C', quiet: '#5B5240' },
       temps: { ramp: ['#2F5C8C', '#1E6B2E', '#B85C00'], rain: '#2F5C8C', track: '#D3C9AE', cap: 'round' },
       icons: { pack: 'folded', c: { ink: '#2F5C8C', inkD: '#1F4066', warm: '#D9822B', warmD: '#B5651A', paper: '#FBF8F0', shade: '#D6CCB2', shadow: '#BFB497', warn: '#B85C00' } , shade: '3d', shadow: 'strong' } },
     celestial: { name: 'Celestial', match: 'Flights · Celestial, Clock · Orbit',

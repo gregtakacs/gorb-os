@@ -1767,7 +1767,7 @@ class Component extends DCLogic {
   thumbOpts(id) {
     const P = WatchEngine.template(id), st0 = this.state;
     try {
-      this.state = { ...st0, dial: id, cfg: { ...(P.cfg || {}) }, train: P.train || 'classic', caseStyle: P.caseStyle || 'polished', caseMetal: P.caseMetal || 'auto', hands: 'auto', handFinish: 'auto' };
+      this.state = { ...st0, dial: id, cfg: { ...(P.cfg || {}) }, train: P.train || 'classic', caseStyle: P.caseStyle || 'polished', caseMetal: P.caseMetal || 'auto', glassStyle: P.glassStyle || 'domed', hands: 'auto', handFinish: 'auto' };
       return { o: this.opts(id), hd: this.handDef(id) };
     } finally { this.state = st0; }
   }
@@ -4396,7 +4396,7 @@ class Component extends DCLogic {
         // a template comes as designed after From scratch (whose no case, glass or light is no choice
         // of the author's to keep); otherwise the author's own case and light ride over
         pick: () => this.setState((st) => (st.scratch ? { dial: id, sel: null, themeName: '', scratch: false, cfg: { ...(E.template(id).cfg || {}) }, train: E.template(id).train || 'classic',
-          caseStyle: E.template(id).caseStyle || 'polished', caseMetal: E.template(id).caseMetal || 'auto', glassStyle: 'domed' } : { dial: id, sel: null, themeName: '', cfg: E.template(id).cfg ? { ...st.cfg, ...E.template(id).cfg } : E.template(st.dial).cfg ? Object.fromEntries(Object.entries(st.cfg).filter(([k]) => !(k in E.template(st.dial).cfg))) : st.cfg, train: E.template(id).train || (E.template(st.dial).train ? 'classic' : st.train), caseMetal: E.template(id).caseMetal || (E.template(st.dial).caseMetal ? 'auto' : st.caseMetal), caseStyle: E.template(id).caseStyle || (E.template(st.dial).caseStyle ? 'polished' : st.caseStyle) })),
+          caseStyle: E.template(id).caseStyle || 'polished', caseMetal: E.template(id).caseMetal || 'auto', glassStyle: E.template(id).glassStyle || 'domed' } : { dial: id, sel: null, themeName: '', cfg: E.template(id).cfg ? { ...st.cfg, ...E.template(id).cfg } : E.template(st.dial).cfg ? Object.fromEntries(Object.entries(st.cfg).filter(([k]) => !(k in E.template(st.dial).cfg))) : st.cfg, train: E.template(id).train || (E.template(st.dial).train ? 'classic' : st.train), caseMetal: E.template(id).caseMetal || (E.template(st.dial).caseMetal ? 'auto' : st.caseMetal), caseStyle: E.template(id).caseStyle || (E.template(st.dial).caseStyle ? 'polished' : st.caseStyle) })),
       })),
       // everything: the design (its parts and their depth), movement, case and light, and the stage's
       // own view of it -- per-part eyes, selection, a drag in flight

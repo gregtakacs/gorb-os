@@ -120,7 +120,7 @@
   const DENSITY = { all: () => true, even: (h) => h % 2 === 0, quarters: (h) => h % 3 === 0, twelve: (h) => h === 0, none: () => false };
   const NUMERALS = { all: 'All twelve', even: 'Even hours', quarters: 'Quarters', twelve: '12 only', none: 'None' };
   const OPENWORK = { none: 'Solid dial', x: 'X bridges', xarch: 'X bridges + arch', cross: 'Cross', star: 'Six spokes', ring: 'Chapter ring only' };
-  const SURFACES = { enamel: 'Enamel', guilloche: 'Sunburst', azure: 'Azurage', matte: 'Grained', metal: 'Silvered metal', carbon: 'Carbon · woven', forged: 'Carbon · forged', wave: 'Waves' };
+  const SURFACES = { enamel: 'Enamel', guilloche: 'Sunburst', azure: 'Azurage', matte: 'Grained', metal: 'Silvered metal', carbon: 'Carbon · woven', forged: 'Carbon · forged', wave: 'Waves', chart: 'Chart paper' };
   const DIAL_COLORS = {
     cream: ['#efe5cb', '#c9b388'], porcelain: ['#f8f4ea', '#e0d9c8'], ivory: ['#f3ead6', '#d8c9a6'], white: ['#fbfaf7', '#e2e0da'], salmon: ['#efc2a4', '#c98b6a'], sky: ['#c9dcea', '#8eaac2'],
     slate: ['#5a636d', '#2b3036'], navy: ['#2a3f66', '#0f1a2e'], forest: ['#2f5243', '#122219'], burgundy: ['#6b2430', '#2c0b11'], charcoal: ['#2c2823', '#0f0d0a'], black: ['#26241f', '#0c0b09'],
@@ -1064,8 +1064,10 @@
       ] } },
     // flights-map-plan §4: the Sectional set's clock, a flight chart made up: chart paper, a
     // blue railway rose, a magenta and a blue airport ring and a magenta reporting point
-    sectional: { name: 'Sectional', blurb: 'Chart paper · blue rose · magenta airport rings · magenta seconds', hands: 'pencil', handFinish: 'royal', caseMetal: 'steel', design: {
-      color: '#eef1e4', aging: 0, stains: 0, dust: 0, comps: [
+    // §64.16 (owner, 2026-11-12): the chart itself, as every other app's Sectional wears it --
+    // the grid, the dashed magenta line and the magenta edge band, and no watch case round it
+    sectional: { name: 'Sectional', blurb: 'Chart paper · blue rose · magenta airport rings · magenta seconds', hands: 'pencil', handFinish: 'royal', caseStyle: 'none', glassStyle: 'none', caseMetal: 'steel', design: {
+      surface: 'chart', color: '#eef1e4', aging: 0, stains: 0, dust: 0, comps: [
         { id: 'c1', type: 'flare', host: 'dial', angle: 0, dist: 64, rot: 0, size: 6, style: 'print', icon: 'text', text: 'SECTIONAL', font: 'barlow', weight: 'bold', spacing: 0.32, color: '#2a5db0' },
         { id: 'c2', type: 'flare', host: 'dial', angle: 305, dist: 82, rot: 0, size: 15, style: 'print', icon: 'ring', color: '#c2187a' },
         { id: 'c3', type: 'flare', host: 'dial', angle: 128, dist: 84, rot: 0, size: 13, style: 'print', icon: 'ring', color: '#2a5db0' },
@@ -2266,6 +2268,23 @@
       [[0, 0], [0.22, 0.12], [0.4, 0], [0.62, 0.1], [0.8, 0], [1, 0.06]].forEach(([p, a]) => bs.addColorStop(p, 'rgba(255,250,235,' + Math.min(0.5, a * T) + ')'));
       ctx.fillStyle = bs; ctx.fillRect(x - r, y - r, 2 * r, 2 * r);
       waveGrooves(ctx, x, y, r, (lw, a, dy) => { ctx.lineWidth = lw; ctx.strokeStyle = (dy ? 'rgba(255,250,235,' : 'rgba(0,0,0,') + Math.min(0.85, a * T) + ')'; }, en.dark ? 0.7 : 0.45, lite * 1.8);
+    }
+    if (s.style === 'chart') {
+      // The Sectional look's chart (§64.16): the same paper the other apps' Sectional wears --
+      // a fine blue grid at their 46 px pitch, a dashed magenta line corner to corner, and the
+      // magenta band a chart shades in from its edge -- scaled from the 466 px glass to this
+      // dial. Flat paper: no shading, no recess.
+      const k = r / 233, pitch = 46 * k;
+      ctx.lineWidth = Math.max(0.6, k); ctx.strokeStyle = 'rgba(62,90,128,0.28)';
+      for (let g = x - r + 40 * k; g < x + r; g += pitch) { ctx.beginPath(); ctx.moveTo(g, y - r); ctx.lineTo(g, y + r); ctx.stroke(); }
+      for (let g = y - r + 40 * k; g < y + r; g += pitch) { ctx.beginPath(); ctx.moveTo(x - r, g); ctx.lineTo(x + r, g); ctx.stroke(); }
+      ctx.save(); ctx.setLineDash([10 * k, 6 * k]); ctx.lineWidth = 2 * k; ctx.strokeStyle = 'rgba(194,24,122,0.45)';
+      ctx.beginPath(); ctx.moveTo(x - 173 * k, y + 167 * k); ctx.lineTo(x + 173 * k, y - 167 * k); ctx.stroke(); ctx.restore();
+      const band = ctx.createRadialGradient(x, y, 196 * k, x, y, r);
+      band.addColorStop(0, 'rgba(194,24,122,0)'); band.addColorStop(0.55, 'rgba(194,24,122,0.10)'); band.addColorStop(1, 'rgba(194,24,122,0.32)');
+      ctx.fillStyle = band; ctx.fillRect(x - r, y - r, 2 * r, 2 * r);
+      ctx.restore();
+      return;
     }
     surfaceShade(ctx, x, y, r);
     if (recess) {

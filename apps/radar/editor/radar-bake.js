@@ -100,7 +100,7 @@
     return d;
   }
   PRESETS.paper = starter('Paper', {
-    forecast: 'hatch', base: 'paper', layout: { caps: false }, words2: { face: 'Playfair Display', nameFace: 'IBM Plex Sans' },
+    forecast: 'hatch', base: 'paper', layout: { caps: true }, words2: { face: 'Playfair Display', nameFace: 'IBM Plex Sans' },
     top: '#f2ead8', foot: '#e3d7bd', scaleEdge: '#f2ead8',
     glass: { ring: '#5a4a36', ringA: 0.25, track: '#5a4a36', trackA: 0.55, forecast: '#b05a20' },
     words: { ink: '#2a2218', forecast: '#a04a18', quiet: '#5a4a36', backing: '#f2ead8', backingA: 0.88 },
@@ -108,8 +108,10 @@
     map: { water: '#a9c7dd', land: '#efe6d2', urban: '#e2d4ba', lake: '#9fc1d9', river: '#7fa7c6', road2: '#d08a4a',
            road1: '#c0503a', state: '#8a7a9a', border: '#6a5a7a', coast: '#6f97b5', city: '#3a3226', airport: '#7a3a2a',
            runway: '#9a8f7a', road3: '#c4b494', road4: '#d2c6aa' },
-    rain: [[10, '#58b858', 0.55], [20, '#2e9e3e', 0.70], [30, '#e8c020', 0.80], [40, '#e07818', 0.88],
-           [50, '#c82818', 0.92], [60, '#a01890', 1.0], [70, '#401060', 1.0]]
+    // §64.16: the light-to-heavy order kept, the colours the look's own inks (watercolour sage,
+    // ochre, sienna, madder) rather than the broadcast ramp
+    rain: [[10, '#9cc49a', 0.55], [20, '#5f9e6a', 0.70], [30, '#d9b24a', 0.80], [40, '#c9782e', 0.88],
+           [50, '#a8442e', 0.92], [60, '#7a3060', 1.0], [70, '#3e2440', 1.0]]
   });
   // Station and Brass as the clock, the tracker and the weather wear them (look parity, owner
   // 2026-11-08): the railway clock's white, black and red, the broadcast rain kept; the brass
@@ -124,11 +126,13 @@
            road1: '#555555', state: '#777777', border: '#111111', coast: '#8aa0b4', city: '#111111', airport: '#e3000f',
            runway: '#777777', road3: '#bcbcbc', road4: '#cfcfcf', look: { airport: 'square', city: 'dot' } },
     width: { state: 1, border: 2 },
-    rain: [[10, '#00b000', 0.70], [20, '#00e000', 0.80], [30, '#ffff00', 0.88], [40, '#ff9000', 0.92],
-           [50, '#ff0000', 0.95], [60, '#ff00ff', 1.0], [70, '#111111', 1.0]]
+    // §64.16: still the broadcast ramp a timetable would print, toned off the neon: the
+    // station's own red at the heavy end and its black at the top
+    rain: [[10, '#5cb85c', 0.70], [20, '#2e9e3e', 0.80], [30, '#f2c500', 0.88], [40, '#ef7d00', 0.92],
+           [50, '#e3000f', 0.95], [60, '#a0006e', 1.0], [70, '#111111', 1.0]]
   });
   PRESETS.vintage = starter('Brass', {
-    forecast: 'hatch', base: 'vintage', layout: { caps: false },
+    forecast: 'hatch', base: 'vintage', layout: { caps: true },
     top: '#2e332e', foot: '#151815', scaleEdge: '#151815',
     glass: { ring: '#c9a24e', ringA: 0.45, track: '#e9ddbf', trackA: 0.7, forecast: '#ff9a3c', rim: '#c9a24e' },
     words: { face: 'Cormorant Garamond', nameFace: 'Cormorant Garamond', ink: '#f2e6c8', forecast: '#ff9a3c', quiet: '#a8946a',
@@ -169,8 +173,9 @@
            road1: '#8e4a6e', state: '#6c6c7a', border: '#4a4a5a', coast: '#4f8fcb', city: '#2b2b2b', airport: '#c2187a',
            runway: '#c2187a', road3: '#c7a6b6', road4: '#d6c2cc', look: { airport: 'ticked', city: 'dot' } },
     dash: { state: 'long', border: 'dashdot' },
-    rain: [[10, '#79c779', 0.55], [20, '#2f9a41', 0.72], [30, '#e07b00', 0.82], [40, '#d9480f', 0.88],
-           [50, '#b3122b', 0.92], [60, '#8e1a8a', 1.0], [70, '#3b0a57', 1.0]]
+    // §64.16: a chart's tints for the light end, then its magenta and its navy for the heavy
+    rain: [[10, '#a8d4a0', 0.55], [20, '#5fae6a', 0.72], [30, '#e8c75a', 0.82], [40, '#d98a3a', 0.88],
+           [50, '#c2187a', 0.92], [60, '#7a1f6a', 1.0], [70, '#1f2a44', 1.0]]
   });
   // flights-map-plan §6 (look parity): Celestial, the night sky's violets and gold, and
   // Silver, polished metal and graphite, as the tracker and the weather wear them
@@ -195,8 +200,9 @@
     map: { water: '#232a33', land: '#2c3138', urban: '#363c44', lake: '#28313c', river: '#7e9cb8', road2: '#8a929c',
            road1: '#c8ced6', state: '#6a727c', border: '#e4e8ec', coast: '#7e9cb8', city: '#f2f4f7', airport: '#7fc8ff',
            runway: '#8a929c', road3: '#5a626c', road4: '#4a525c' },
-    rain: [[10, '#5ab878', 0.6], [20, '#2e9e5e', 0.75], [30, '#e8d040', 0.85], [40, '#e88a30', 0.9],
-           [50, '#d83a3a', 0.94], [60, '#c040c0', 1.0], [70, '#ffffff', 1.0]]
+    // §64.16: steel to white for the ordinary rain, warm only where it turns dangerous
+    rain: [[10, '#7f93a8', 0.6], [20, '#9fb4c8', 0.72], [30, '#c9d6e2', 0.82], [40, '#eef3f8', 0.88],
+           [50, '#ffc27a', 0.94], [60, '#ff7a6b', 1.0], [70, '#ffffff', 1.0]]
   });
   PRESETS.blank = starter('Blank', {
     base: 'blank',

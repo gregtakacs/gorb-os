@@ -74,7 +74,7 @@
     // baked on the classic train: no cage, no carriage row, no seconds indication at all.
     IT.state.cfg = { ...(P.cfg || {}) }; IT.state.train = P.train || 'classic';
     IT.state.caseStyle = P.caseStyle || 'polished'; IT.state.caseMetal = P.caseMetal || 'auto';
-    IT.state.glassStyle = 'domed';
+    IT.state.glassStyle = P.glassStyle || 'domed';
     pump();
     IT.buildMovement();
     if (!await settle()) throw new Error(id + ' never settled (rendering=' + IT.rendering + ' gt=' + IT.gt.length + ' B=' + IT.B + ')');

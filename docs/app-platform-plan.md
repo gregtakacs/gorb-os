@@ -8193,3 +8193,19 @@ On the pomodoro design's owner questions (`docs/specs/pomodoro-design.md`):
 - **The off switch already existed and is now named:** press-and-turn anticlockwise to the end of
   the ladder reads **Reset**; letting go lands the cycle's first focus, stopped, and a stopped
   phase clears the ring.
+
+### 64.16 The looks hold as families across the apps — 2026-11-12
+
+- **A cross-app review** (every look baked in clock, weather, radar, flights and the pomodoro,
+  side by side) found the eight looks mostly coherent, with four breaks. The owner's rulings:
+- **The clock's Sectional is the chart**, as the other apps wear it: a new `chart` dial surface
+  (the 46 px blue grid, the dashed magenta line, the magenta edge band), no case and no glass.
+  The clock otherwise keeps its own watch designs; only Station and Sectional share the eight
+  names, and Station already matched.
+- **A plane's colour is its altitude**, so each look carries its own seven bands inside its
+  palette (flights `LOOK_BANDS`), low bands warm and high ones cool in every look, never bland.
+- **Radar's rain is toned to every look**, not only the dark ones: Paper's inks, Station's
+  toned broadcast ramp, Sectional's chart tints and magenta, Silver's steel to white with a
+  warm core; the light-to-heavy order always reads.
+- **Small lettering is capitals** in every look (radar Paper and Brass, weather Paper).
+- **The pomodoro may differ from the pack at its rim**: the ring is an OS overlay there.

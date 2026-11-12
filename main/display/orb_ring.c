@@ -937,7 +937,10 @@ void orb_ring_status(orb_ring_status_t *out)
 {
     if (!out) return;
     out->owner = NULL; out->fraction = 0; out->effect = "steady"; out->on_glass = false;
+    out->alpha = 0; out->sent = 0; out->grid_ms = 0; out->batch_us = 0; out->batches = 0;
     if (!s_init) return;
+    out->alpha = s_alpha; out->sent = s_alpha_sent; out->grid_ms = s_grid_ms;
+    out->batch_us = (int)display_ring_last_batch_us(); out->batches = s_batch_n;
     orb_ring_rec cur;
     if (!ring_pick(orb_ring_tbl, orb_ring_owner, orb_ring_seq, ORB_APP_CAP, &cur)) return;
     out->owner    = slug_of_slot(pick_slot());

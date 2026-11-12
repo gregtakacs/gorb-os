@@ -132,6 +132,8 @@ MUTATIONS = [
     ("    s->rem = st == PM_PAUSE ? (raw->rem < 0 ? 0 : raw->rem > len ? len : raw->rem) : rem;", "    s->rem = rem;"),  # a paused 0:00 restores at 1:00
     ("        if (s->rem > 0) {\n            s->st = PM_RUN;", "        if (s->rem >= 0) {\n            s->st = PM_RUN;"),  # 0:00 resumes into a chime
     ("        if (s->rem > 0) {\n            s->st = PM_RUN;", "        if (s->rem > 1) {\n            s->st = PM_RUN;"),   # the last second skipped
+    ("    const int waiting = s->st == PM_WAIT || s->st == PM_WAITED;", "    const int waiting = s->st == PM_WAIT;"),   # a chimed phase flashes nothing
+    ("    *out = (pm_ring_t){ .fraction = waiting ? 1000 : pm_fraction(&of_set),", "    *out = (pm_ring_t){ .fraction = waiting ? 0 : pm_fraction(&of_set),"),   # the blank flash back
     ("int pm_at_start(const pm_t *s) { return s->len <= 0 || s->rem >= s->len; }", "int pm_at_start(const pm_t *s) { return s->len <= 0 || s->rem > s->len; }"),  # a fresh phase is not fresh
     ("    if (pos == 0 && at_start && p < 0) p -= 1;", "    if (pos == 0 && !at_start && p < 0) p -= 1;"),           # -1 skipped when it should not be
     ("    const int lo = k > 0 ? -k - 1 : -1;", "    const int lo = k > 0 ? -k : -1;"),                             # one slot off the front of the cycle
@@ -469,6 +471,13 @@ int main(void)
             q = mk(PM_RUN, 0, 1140, 540, 4000);          /* 25:00 set, 10:00 spent, 6:00 turned off */
             ckk(pm_ring_for(&q, &c, &g) && g.fraction == 360, 1,
                 "the ring is left over the setting: 9:00 of 25:00 is 360, whatever was turned");
+            q = mk(PM_WAIT, 0, 1500, 0, 0);
+            ckk(pm_ring_for(&q, &c, &g) && g.fraction == 1000, 1,
+                "a phase that is over flashes the whole ring, not an empty arc on black (owner)");
+            q = mk(PM_WAITED, 1, 360, 0, 0);
+            ckk(pm_ring_for(&q, &c, &g) && g.fraction == 1000, 1, "chimed and waiting: the whole ring too");
+            q = mk(PM_PAUSE, 0, 1500, 0, 0);
+            ckk(pm_ring_for(&q, &c, &g) && g.fraction == 0, 1, "paused at 0:00 the arc is honestly empty");
         }
     }
 
@@ -661,7 +670,7 @@ int main(void)
         c.opacity = 100;
         ckk(pm_ring_phase(&r, 4), PM_FOCUS, "a focus wears the focus colour");
         ckk(pm_ring_for(&(pm_t){PM_WAIT, 1, 360, 0, 0}, &c, &out) == 1 && out.effect == 1
-            && out.period_ms == PM_FLASH_MS && out.fraction == 0, 1, "WAIT: flash at 2000 with an empty arc");
+            && out.period_ms == PM_FLASH_MS && out.fraction == 1000, 1, "WAIT: flash at 2000 over the whole ring");
         pm_ring_for(&(pm_t){PM_WAIT, 1, 360, 0, 0}, &c, &out);
         c.col[PM_SHORT] = 0x1F0A14B4u;               /* a colour setting with an alpha byte */
         pm_ring_for(&(pm_t){PM_WAIT, 1, 360, 0, 0}, &c, &out);

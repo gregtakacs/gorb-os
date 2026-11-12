@@ -1,5 +1,10 @@
 # pomodoro-3: the editor and the eight looks, judged at true size
 
+> **Withdrawn 2026-11-11** in favour of the `pomodoro-editor` chain (`docs/specs/pomodoro-editor-design.md`,
+> `docs/specs/pomodoro-editor-1-kit-sound.md` … `-4-ship.md`). Its furniture, row layout and evidence
+> protocol are folded in there; its chime row is corrected — plan §64.8 moved the sound pane into the kit,
+> and `main/art/orb_clock3.c:1479` refuses a one-shot sound at slot 0, which this file asked for.
+
 ## Goal
 
 The pomodoro's face, as a theme: `apps/pomodoro/editor/` — the bake (`pomodoro-bake.js`), the hosted

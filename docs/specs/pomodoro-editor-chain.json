@@ -1,0 +1,26 @@
+{
+  "name": "pomodoro-editor",
+  "repo": "../..",
+  "base": "delegate/pomodoro-editor-design",
+  "retries": 2,
+  "steps": [
+    {
+      "name": "pomodoro-editor-2-bake",
+      "spec": "docs/specs/pomodoro-editor-2-bake.md",
+      "hard": true,
+      "verify": "set -o pipefail; test -f apps/pomodoro/editor/pomodoro-bake.js -a -f apps/pomodoro/editor/_selftest/bake.html -a -f apps/pomodoro/editor/_selftest/bake_check.py && grep -q 'root.PomodoroBake' apps/pomodoro/editor/pomodoro-bake.js && grep -q roundtrip apps/pomodoro/editor/_selftest/bake_check.py && awk '/STARTERS/{line=line $0} END{exit (line ~ /scope.*paper.*brass.*blueprint.*station.*celestial.*silver.*sectional/ && line !~ /vintage/) ? 0 : 1}' apps/pomodoro/editor/pomodoro-bake.js && ORB_CHROME=$(command -v chromium) POMODORO_BAKE_KEEP=/tmp/pmkeep2 python3 apps/pomodoro/editor/_selftest/bake_check.py && ls /tmp/pmkeep2 | grep -c '\\.orbtheme' && python3 tools/host_pomodoro_test.py && ! git diff --name-only delegate/pomodoro-editor-design | grep -qvE '(apps/pomodoro/editor/|docs/specs/)'"
+    },
+    {
+      "name": "pomodoro-editor-3-editor",
+      "spec": "docs/specs/pomodoro-editor-3-editor.md",
+      "hard": true,
+      "verify": "set -o pipefail; test -f apps/pomodoro/editor/editor.json -a -f apps/pomodoro/editor/pomodoro-editor.js -a -f apps/pomodoro/editor/_fixtures/schema-1.orbdesign && grep -q 'OrbHost.register' apps/pomodoro/editor/pomodoro-editor.js && grep -q '\"schema\": 1' apps/pomodoro/editor/editor.json && grep -q '\"editor\": \"editor\"' apps/pomodoro/app.json && grep -q '\"shelf\": false' apps/pomodoro/app.json && ! grep -qE 'StartSheet|showOpenFilePicker' apps/pomodoro/editor/pomodoro-editor.js && grep -q 'S.Sound' apps/pomodoro/editor/pomodoro-editor.js && python3 apps/sdk/orbsdk.py check-migrations apps/pomodoro && ORB_CLANG=/usr/lib/llvm-21/bin/clang make check-apps && make check-editor && ! git diff --name-only delegate/pomodoro-editor-2-bake | grep -qvE '(apps/pomodoro/editor/|apps/pomodoro/app\\.json|docs/specs/)'"
+    },
+    {
+      "name": "pomodoro-editor-4-ship",
+      "spec": "docs/specs/pomodoro-editor-4-ship.md",
+      "hard": true,
+      "verify": "set -o pipefail; grep -q '\"shelf\": true' apps/pomodoro/app.json && test -f tools/orb-manager/apps/pomodoro.orbapp -a -f tools/orb-manager/themes/pomodoro-scope.orbtheme && ORB_CLANG=/usr/lib/llvm-21/bin/clang python3 tools/make_factory_apps.py --check && python3 -c \"import sys,json;sys.path.insert(0,'tools');import orbbundle as ob;d,w=ob.read_design(open('tools/orb-manager/themes/pomodoro-scope.orbtheme','rb').read());assert w is None and json.loads(d)['appVersion']=='v1.7.0'\" && python3 -c \"import sys;sys.path.insert(0,'tools');import orbbundle as ob;h,secs=ob.read_bundle('tools/orb-manager/themes/pomodoro-scope.orbtheme');els=secs[0]['blob']['elements'];snd=sorted(int(e['slot']) for e in els if int(e['class'])==10);assert snd==[1,2,3],snd\" && python3 tools/rebake_shelf.py --check && grep -q '\\*\\*Pomodoro\\*\\*' docs/user-guide.md && ORB_CLANG=/usr/lib/llvm-21/bin/clang make check-apps && make check-editor && python3 tools/host_pomodoro_test.py --mutations && ! git diff --name-only delegate/pomodoro-editor-3-editor | grep -qvE '(apps/pomodoro/app\\.json|tools/orb-manager/(apps/pomodoro\\.orbapp|themes/pomodoro-scope\\.orbtheme)|tools/rebake_shelf\\.py|docs/user-guide\\.md|docs/specs/)'"
+    }
+  ]
+}

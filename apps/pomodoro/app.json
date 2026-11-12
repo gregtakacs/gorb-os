@@ -48,5 +48,7 @@
     {"id": "pm_end", "type": "int", "label": "End or remaining second", "min": 0, "max": 2147483647,
      "default": 0, "show": "none"}
   ],
-  "shelf": false
+  "shelf": true,
+  "os_min": "v9.9.9",
+  "editor": "editor"
 }

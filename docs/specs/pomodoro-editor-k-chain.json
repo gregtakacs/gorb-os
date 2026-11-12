@@ -1,0 +1,14 @@
+{
+  "name": "pomodoro-editor-k",
+  "repo": "../..",
+  "base": "delegate/pomodoro-editor-design",
+  "retries": 2,
+  "steps": [
+    {
+      "name": "pomodoro-editor-1-kit-sound",
+      "spec": "docs/specs/pomodoro-editor-1-kit-sound.md",
+      "hard": true,
+      "verify": "set -o pipefail; command -v node >/dev/null && grep -q 'synth: synth' tools/orb-manager/web/runtime/baker@1/orbtheme-baker.js && grep -q 'sounds: sounds' tools/orb-manager/web/runtime/baker@1/orbtheme-baker.js && grep -q 'S.Sound = ' tools/orb-manager/web/runtime/studio@1/studio.js && test -f tools/orb-manager/web/runtime/_selftest/headless-soundpane.test.js && cd tools/orb-manager/web/runtime/_selftest && node headless-test.js soundpane && node headless-test.js | tail -4 && cd ../../../../.. && git diff --name-only | grep -vE '(baker@1/orbtheme-baker\\.js|studio@1/studio\\.js|_selftest/headless-soundpane\\.test\\.js|docs/specs/)' | (! grep .)"
+    }
+  ]
+}

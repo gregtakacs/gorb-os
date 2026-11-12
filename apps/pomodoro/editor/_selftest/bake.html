@@ -1,0 +1,109 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Pomodoro bake check</title>
+<!-- Staged by bake_check.py beside the runtime's baker and fonts: bakes every starter and
+     every gate case through pomodoro-bake.js and prints them in #out for the driver:
+       B64 <name> <ms> <base64>   a theme, for the driver to check and (with KEEP) to keep
+       PNG <name> <base64>        a true-size picture, with ?evidence=1
+       WAV <name> <base64>        a chime, plain and brighter, with ?evidence=1
+       FAIL <key> <reason>        a refusal the bake was asked for and must give
+       ERR  <name> <message>      something that went wrong
+     then DONE. -->
+<link rel="stylesheet" href="fonts.css">
+<script src="orbtheme-baker.js"></script>
+<script src="pomodoro-bake.js"></script>
+<pre id="out"></pre>
+<script>
+(async function () {
+  const out = document.getElementById('out'), B = window.PomodoroBake, GB = window.GorbBake;
+  const Q = new URLSearchParams(location.search);
+  const APPV = Q.get('appv') || '', EVID = Q.get('evidence') === '1';
+  const ONLY = (Q.get('only') || '').split(',').filter(Boolean);
+  const say = (s) => { out.textContent += s + '\n'; };
+  const b64 = (u8) => { let s = ''; for (let i = 0; i < u8.length; i += 0x8000) s += String.fromCharCode.apply(null, u8.subarray(i, i + 0x8000)); return btoa(s); };
+  const want = (k) => !ONLY.length || ONLY.indexOf(k) >= 0;
+  const doc = (d) => new TextEncoder().encode(JSON.stringify(Object.assign(
+    { format: 'pm-design', schema: B.SCHEMA, app: 'pomodoro' },
+    APPV ? { appVersion: APPV } : {}, { made: { baker: 3, editor: 1 } }, { design: d })));
+  function wave(n) { const p = new Int16Array(n); for (let i = 0; i < n; i++) p[i] = Math.round(9000 * Math.sin(2 * Math.PI * 660 * i / GB.SOUND_RATE)); return p; }
+  // a wave as a 16-bit mono WAV at the kit's own rate, for the ear to judge
+  const wav = (pcm) => {
+    const n = pcm.length, h = new DataView(new ArrayBuffer(44)), s = new Uint8Array(44 + n * 2);
+    const tag = (o, t) => { for (let i = 0; i < 4; i++) h.setUint8(o + i, t.charCodeAt(i)); };
+    tag(0, 'RIFF'); h.setUint32(4, 36 + n * 2, true); tag(8, 'WAVE'); tag(12, 'fmt ');
+    h.setUint32(16, 16, true); h.setUint16(20, 1, true); h.setUint16(22, 1, true);
+    h.setUint32(24, GB.SOUND_RATE, true); h.setUint32(28, GB.SOUND_RATE * 2, true);
+    h.setUint16(32, 2, true); h.setUint16(34, 16, true); tag(36, 'data'); h.setUint32(40, n * 2, true);
+    s.set(new Uint8Array(pcm.buffer, pcm.byteOffset, n * 2), 44);
+    return s;
+  };
+  // the nine starters, scope first and New last, as the shelf and the start sheet list them
+  const jobs = B.PRESETS.map((n) => [n, () => B.preset(n)]);
+  // the cases bake_check.py asks for by name
+  const V = {
+    'no-parts': () => { const d = B.preset('scope'); B.PARTS.scope.forEach((p) => { d.parts[p] = false; }); return d; },
+    'parts-off': () => { const d = B.preset('brass'); d.parts.plate = false; d.parts.caption = false; return d; },
+    'ring-set': () => { const d = B.preset('paper'); d.ring.focus = '#123456'; d.overlay = '#135c79'; return d; },
+    'big-px': () => { const d = B.preset('sectional'); d.px = 144; return d; },
+    // one design, once with the owner's samples as an Int16Array and once as what a JSON
+    // round trip leaves behind: the two themes must be byte for byte the same
+    'rt-a': () => { const d = B.preset('blueprint'); d.chimes.short = { upload: 1 }; d.uploads = [{ name: 'a', pcm: wave(400) }, { name: 'b', pcm: wave(700) }]; return d; },
+    'rt-b': () => { const d = B.preset('blueprint'); d.chimes.short = { upload: 1 }; d.uploads = JSON.parse(JSON.stringify([{ name: 'a', pcm: Array.from(wave(400)) }, { name: 'b', pcm: Array.from(wave(700)) }])); return d; },
+    'det-a': () => B.preset('celestial'),
+    'det-b': () => B.preset('celestial')
+  };
+  // the refusals §5 and the owner questions ask for, each keyed for the driver to expect
+  const REFUSALS = {
+    'bad-look': () => B.bake(Object.assign(B.preset('scope'), { look: 'vintage' }), {}),
+    'bad-px': () => B.bake(Object.assign(B.preset('scope'), { px: 200 }), {}),
+    'low-px': () => B.bake(Object.assign(B.preset('scope'), { px: 40 }), {}),
+    'bad-chime': () => B.bake(Object.assign(B.preset('scope'), { chimes: { focus: { rec: 'tubes' }, short: { rec: 'tubes' }, long: { rec: 'tubes' } } }), {}),
+    'no-upload': () => B.bake(Object.assign(B.preset('scope'), { chimes: { focus: { upload: 1 }, short: { rec: 'sonar' }, long: { rec: 'sonar' } }, uploads: [] }), {}),
+    'long-upload': () => {
+      const d = B.preset('scope'), n = Math.round(GB.SOUND_RATE * 4.5), p = new Int16Array(n);
+      d.uploads = [{ name: 'too long', pcm: p }];
+      d.chimes = { focus: { upload: 0 }, short: { rec: 'sonar' }, long: { rec: 'sonar' } };
+      return B.bake(d, {});
+    }
+  };
+  const SERIAL = 0x10000001, BAKED = 1700000000;
+  // the round trip's pair is ONE design in two forms, so it is one document too: an
+  // Int16Array and the plain array a JSON round trip leaves must bake the same bytes
+  const RT = ['rt-a', 'rt-b'];
+  const det = (n) => n === 'det-a' || n === 'det-b' || RT.indexOf(n) >= 0;   // pinned clock and serial
+  const rtDoc = doc(V['rt-b']());
+  const docFor = (name, d) => RT.indexOf(name) >= 0 ? rtDoc : doc(d);
+  const png = async (c) => b64(new Uint8Array((await (await new Promise((res) => c.toBlob(res, 'image/png'))).arrayBuffer())));
+  const work = EVID ? jobs : jobs.concat(Object.entries(V));
+  for (const [name, mk] of work) {
+    if (!want(name)) continue;
+    try {
+      const d = mk(), t0 = performance.now(), pin = det(name);
+      const r = await B.bake(d, { design: docFor(name, d), serial: pin ? SERIAL : undefined, bakedS: pin ? BAKED : undefined });
+      if (EVID) {                        // the evidence pass prints pictures and waves only: a
+        const shots = [['focus', {}], ['short', {}], ['long', {}]];                    // DOM with both is 45 MB and got truncated
+        if (Q.get('states') === '1') shots.push(['focus', { choosing: true, choice: 'Focus 3 at its start' }],
+                                                ['focus', { paused: true }], ['focus', { waiting: true, view: 'short' }]);
+        for (const [view, o] of shots)
+          say('PNG ' + name + '-' + view + (o.choosing ? '-choosing' : o.paused ? '-paused' : o.waiting ? '-waiting' : '') + ' ' +
+              await png(await B.picture(d, B.G, Object.assign({ view: view, ring: true }, o))));
+        continue;
+      }
+      say('B64 ' + name + ' ' + Math.round(performance.now() - t0) + ' ' + b64(r.bytes));
+      say('STAT ' + name + ' ' + JSON.stringify({ rows: r.rows, meter: r.meter, cell: r.cell, sounds: r.sounds }));
+    } catch (e) {
+      say('ERR ' + name + ' ' + (e && e.message ? e.message : e));
+    }
+  }
+  for (const [key, go] of Object.entries(REFUSALS)) {
+    if (EVID || !want(key)) continue;
+    try { await go(); say('ERR ' + key + ' the bake took a design it should have refused'); }
+    catch (e) { say('FAIL ' + key + ' ' + (e && e.message ? e.message : e)); }
+  }
+  if (EVID) for (const k of B.CHIME_KEYS) {
+    say('WAV ' + k + ' ' + b64(wav(GB.synth(B.CHIMES[k], { variant: '' }))));
+    say('WAV ' + k + '-brighter ' + b64(wav(GB.synth(B.CHIMES[k], { variant: 'brighter' }))));
+  }
+  say('DONE');
+})();
+</script>

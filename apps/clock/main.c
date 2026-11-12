@@ -550,11 +550,17 @@ static void sound_policy(const tm_t *ti, time_t t, double frac, bool on_glass)
             if (s_snd->loop < 0) s_snd->loop = 0;
             s_snd->loop_anchor = anchor;
         } else {
+            /* Only the sub-second drift is corrected: the loop keeps its place in its own
+             * pattern. A tick loop may be several seconds long (Skeleton's is 8 s), and
+             * re-anchoring on "this second" shifted it by whole seconds -- the mixer saw
+             * seconds of error and snapped, then snapped back on the next wobble: the
+             * double and missing ticks the owner heard (Bronze, 2026-11-12). */
             int64_t d = (anchor - s_snd->loop_anchor) % 1000000;
             if (d < 0) d += 1000000;
-            if (d > 2000 && d < 998000) {
-                orb_stage_snd_reanchor(s_snd->loop, anchor);
-                s_snd->loop_anchor = anchor;
+            if (d >= 500000) d -= 1000000;             /* signed, -0.5 s .. +0.5 s */
+            if (d > 2000 || d < -2000) {
+                s_snd->loop_anchor += d;
+                orb_stage_snd_reanchor(s_snd->loop, s_snd->loop_anchor);
             }
         }
     }

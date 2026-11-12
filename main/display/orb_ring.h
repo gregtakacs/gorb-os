@@ -220,6 +220,11 @@ typedef struct {
     int         fraction; /* the owned record's fraction 0..1000 (0 when unowned)       */
     const char *effect;   /* "steady" | "flash" | "breathe" ("steady" when unowned)     */
     bool        on_glass; /* owned && its effect is on now && the tiled path is live     */
+    int         alpha;    /* the effect alpha the service computed last step (0..255)   */
+    int         sent;     /* the alpha the last batch carried to the glass               */
+    int         grid_ms;  /* the step grid the governor allows now                       */
+    int         batch_us; /* the last lane batch's wall time                             */
+    uint32_t    batches;  /* lane batches sent since boot                                */
 } orb_ring_status_t;
 
 void orb_ring_disp_init(void);              /* boot, before the first app builds (§5)   */

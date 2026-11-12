@@ -69,7 +69,7 @@ void orb_press_drop(int slot);
  * and the press-and-turn all stay the app's. While a claim stands, a plain press is held for
  * ORB_TAP_WINDOW_MS: a second within it is the claimant's, none and it is the app's single
  * press, late by the window. Pure timing, no clock of its own: the caller passes ms. */
-#define ORB_TAP_WINDOW_MS 300
+#define ORB_TAP_WINDOW_MS 450   /* a relaxed hand's double press, event to event (Bronze) */
 enum { ORB_TAP_NONE = 0, ORB_TAP_SINGLE = 1, ORB_TAP_DOUBLE = 2 };
 
 /** A lendable plain press arrived: ORB_TAP_DOUBLE when it completes a pair inside the window

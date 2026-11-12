@@ -226,15 +226,15 @@ def checks(exe, quiet=False):
     ck(lines("I", "C 2 1", "S")[-1] == ["SWALLOW", "0"], "no swallow without hitting the ceiling")
 
     # §64.17: the lent press is a double press; a single press is the app's, late by the window
-    W = 300
+    W = 450   # ORB_TAP_WINDOW_MS
     ls = lines("R", "P 1000", "P 1100")
     ck(ls[1] == ["TAP", "0", "held", "1"], "a first press is held, not lent")
     ck(ls[2] == ["TAP", "2", "held", "0"], "a second inside the window is the pair: the claimant's")
-    ls = lines("R", "P 1000", "U 1299", "U 1300", "U 1400")
+    ls = lines("R", "P 1000", "U %d" % (1000 + W - 1), "U %d" % (1000 + W), "U %d" % (1000 + W + 100))
     ck(ls[2] == ["DUE", "0", "held", "1"], "inside the window the press is still held")
     ck(ls[3] == ["DUE", "1", "held", "0"], "at the window's end it is the app's single press")
     ck(ls[4] == ["DUE", "0", "held", "0"], "and it is delivered once, not again")
-    ls = lines("R", "P 1000", "U 1300", "P 1350")
+    ls = lines("R", "P 1000", "U %d" % (1000 + W), "P %d" % (1000 + W + 50))
     ck(ls[3] == ["TAP", "0", "held", "1"], "a press after a delivered single starts a new pair, never completes the old")
     ls = lines("R", "P 1000", "P %d" % (1000 + W))
     ck(ls[2] == ["TAP", "0", "held", "1"], "a second press at exactly the window is a new first press")
@@ -246,7 +246,7 @@ def checks(exe, quiet=False):
        "a dropped press goes nowhere, not even late")
     ls = lines("R", "P 4294967200", "P 4294967350")
     ck(ls[2] == ["TAP", "2", "held", "0"], "the pair holds across the ms counter's wrap")
-    ls = lines("R", "P 4294967000", "P 4294967100")
+    ls = lines("R", "P %d" % (2**32 - W + 100), "P %d" % (2**32 - W + 200))
     ck(ls[2] == ["TAP", "2", "held", "0"], "and when the window, not the clock, crosses the wrap")
     return fails
 

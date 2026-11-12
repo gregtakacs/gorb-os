@@ -8218,7 +8218,7 @@ On the pomodoro design's owner questions (`docs/specs/pomodoro-design.md`):
   instead, so the three gestures apps claim (press, turn, press-and-turn) never change; the
   single press arriving a little later while the pomodoro runs is an accepted trade.
 - **Ruling:** while a claim stands and its claimant is not on the glass, a bare press is held
-  for `ORB_TAP_WINDOW_MS` (300 ms). A second press inside the window goes to the claimant (the
+  for `ORB_TAP_WINDOW_MS` (450 ms; first 300 ms, too short for a hand on this switch). A second press inside the window goes to the claimant (the
   ring pulses); no second press and the held press reaches the app as its ordinary single
   press. A turn or press-and-turn first delivers a held press, then itself; a hold, a carousel
   or an app switch drops it. With no claim, nothing is delayed. On the claimant's own glass its

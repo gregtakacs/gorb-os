@@ -33,7 +33,7 @@ so someone who has learned one app has learned them all.
 - The one OS exception (§64.13, §64.17): while an app the owner has let borrow the press
   (`orb_press_claim`, cap `press`) holds its claim, a **double press** on any other app is
   the claimant's. The single press, the turn and the press-and-turn all stay the glass app's;
-  only the single press arrives later, by the double-press window (300 ms), and only while a
+  only the single press arrives later, by the double-press window (450 ms), and only while a
   claim stands. The pomodoro uses it to pause, resume or start the next phase from anywhere.
 
 **Press-and-turn** (hold the knob down and turn before the hold fires).

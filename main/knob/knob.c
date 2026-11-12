@@ -100,6 +100,12 @@
  * heavily, and 200 ms is still far faster than anyone deliberately taps it, so
  * one physical click can't become two. (Mirrors orb-os SW_DEBOUNCE_MS.) */
 #define SW_DEBOUNCE_MS 200
+/* §64.17 (owner, Bronze 2026-11-12: "I can't double press"): a new press is accepted once the
+ * previous release has settled (KG_SETTLE_MS open, the rule that already swallows release
+ * bounce) and SW_REPRESS_MS after the previous press edge. The old 200 ms counted from ANY
+ * edge, the release included, so a hand's second press 80-150 ms after letting go was thrown
+ * away before it began. Bounce while down is the same press (kg_down), as before. */
+#define SW_REPRESS_MS 120
 
 /* Hold duration that promotes a hold to a long press. The reference uses 8000 ms
  * (a recovery-reboot guard nobody hits by accident); for an interactive control
@@ -164,6 +170,8 @@ static portMUX_TYPE     s_rot_mux   = portMUX_INITIALIZER_UNLOCKED;
 /* Switch edge bookkeeping, live inside the SW ISR (microseconds from esp_timer
  * so both edges share one IRAM-safe clock). */
 static volatile int64_t s_swLastEdgeUs  = 0;  /* us of the last accepted edge        */
+static volatile int64_t s_swLastPressUs = 0;  /* us of the last accepted press edge  */
+static volatile uint32_t s_swRejected;        /* press edges the debounce refused    */
 
 /* Consumer read-cursor (only ever touched by the single take_delta caller). */
 static int32_t s_lastTakenDetent = 0;
@@ -452,12 +460,16 @@ static void IRAM_ATTR knob_sw_isr(void *arg)
         return;
     }
 
-    /* PRESS (falling): accept only SW_DEBOUNCE_MS after any prior edge, which
-     * rejects both make-bounce and the tail of a just-released switch. */
-    if ((now - s_swLastEdgeUs) < (int64_t)SW_DEBOUNCE_MS * 1000) {
+    /* PRESS (falling): a new press once the last release has settled and SW_REPRESS_MS after
+     * the last press edge (see SW_REPRESS_MS). A close inside the settle never got here:
+     * kg_down answered it as the same press. */
+    if ((now - s_swLastEdgeUs) < (int64_t)KG_SETTLE_MS * 1000 ||
+        (now - s_swLastPressUs) < (int64_t)SW_REPRESS_MS * 1000) {
+        s_swRejected++;
         return;
     }
     s_swLastEdgeUs   = now;
+    s_swLastPressUs  = now;
     if (kg_press(&s_g, now, s_rawPos)) s_pushEndPend = true;
 }
 
@@ -480,6 +492,7 @@ esp_err_t knob_init(void)
     /* Seed the switch debounce clock in the past so the very first press is not
      * swallowed by the min-interval rule against an unset zero. */
     s_swLastEdgeUs = esp_timer_get_time() - ((int64_t)SW_DEBOUNCE_MS * 2000);
+    s_swLastPressUs = s_swLastEdgeUs;
 
     /* Learn the valley — the AB state the detent spring parks the shaft in — by
      * sampling rather than assuming. Nobody is holding the knob at app_main, so this
@@ -697,3 +710,5 @@ uint32_t knob_long_press_ms(void)
 {
     return LONG_PRESS_MS;
 }
+
+uint32_t knob_press_rejected(void) { return s_swRejected; }

@@ -2725,7 +2725,7 @@ static esp_err_t h_status(httpd_req_t *req)
          * dial that is mostly shits is losing edges between the pin and the ISR, which
          * is a wiring or latency fault and no amount of retuning the rule would fix. */
         "\"knob\":{\"raw\":%ld,\"det\":%ld,\"spd10\":%ld,\"span\":%ld,"
-        "\"valley\":%ld,\"ab\":%ld,\"vhits\":%ld,\"shits\":%ld,\"push\":%lu},"
+        "\"valley\":%ld,\"ab\":%ld,\"vhits\":%ld,\"shits\":%ld,\"push\":%lu,\"rej\":%lu},"
         /* The idle dim, in the same shape as the feature's own two questions.
          *
          * since_s counts up to timeout_s and then dimmed goes true, which is the
@@ -2811,6 +2811,7 @@ static esp_err_t h_status(httpd_req_t *req)
         (long)knob_raw_steps_per_detent(), (long)knob_raw_span_max(),
         (long)knob_valley(), (long)knob_ab(),
         (long)knob_valley_hits(), (long)knob_settle_hits(), (unsigned long)knob_push_turns(),
+        (unsigned long)knob_press_rejected(),
         idle_on ? "true" : "false", idle_dark, idle_since_s, idle_timeout_s,
         idle_lit_pct, idle_dim_pct, idle_wakes, idle_worst_mg, idle_worst_dk,
         (unsigned)idle_dim_activity_count(),

@@ -104,6 +104,9 @@ bool knob_take_push_end(void);
 /** True exactly once if the knob was tapped (released under the hold time). */
 bool knob_take_press(void);
 
+/** Press edges the switch debounce refused since boot (/status knob.rej, §64.17). */
+uint32_t knob_press_rejected(void);
+
 /** True exactly once if the knob was held at least the long-press time. */
 bool knob_take_long_press(void);
 

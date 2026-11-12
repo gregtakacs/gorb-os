@@ -228,6 +228,41 @@ def render_blueprint(p, band, uid):
             f'<rect x="-10" y="-10" width="120" height="120" style="fill:{band}" mask="url(#{uid})"/>')
 
 
+# The station's hairline, px in the plane's own box (looks-design §4a): the casing that
+# keeps the edge off the white without modern's OUTLINE_W, which blurs at 38 px.
+STATION_W = 3
+
+
+def render_station(p, band, uid):
+    """Shape and colour: one crisp silhouette in the band colour on the station's white,
+    outlined by a hairline rather than a casing (the under-casing is what softens modern
+    at blip size), and one red home-marker tick at the pivot, the look's single accent."""
+    s = _sil(p)
+    return (f'<g fill="{OUTLINE}" stroke="{OUTLINE}" stroke-width="{STATION_W}" stroke-linejoin="round">{s}</g>'
+            f'<g style="fill:{band}">{s}</g>'
+            f'<rect x="45.4" y="45.4" width="9.2" height="9.2" fill="#E3000F"/>')
+
+
+def render_sectional(p, band, uid):
+    """Shape and colour: a hollow chart symbol, the silhouette's outline only in the band
+    colour, at true size on the cream chart ground. The pale bands (the < 20k yellow, the
+    no-alt and ground greys) vanished there on their own, so the hollow line now carries a
+    navy casing one step wider under it (CASE_W = the band stroke plus OUTLINE_W, as the
+    Modern family's dark casing does) and a light interior fill, so every band reads. The
+    same mask as blueprint's keeps overlaps (wing over fuselage) out of the line. A magenta
+    tick at the pivot is the chart's accent."""
+    s = _sil(p)
+    case = 11 + OUTLINE_W                                   # the casing one step wider than the band stroke
+    return (f'<mask id="{uid}c" maskUnits="userSpaceOnUse" x="-10" y="-10" width="120" height="120">'
+            f'<g fill="#fff" stroke="#fff" stroke-width="{case}" stroke-linejoin="round">{s}</g><g fill="#000">{s}</g></mask>'
+            f'<rect x="-10" y="-10" width="120" height="120" fill="#1F2A44" mask="url(#{uid}c)"/>'
+            f'<g fill="#F4F1E6" fill-opacity="0.85">{s}</g>'
+            f'<mask id="{uid}" maskUnits="userSpaceOnUse" x="-10" y="-10" width="120" height="120">'
+            f'<g fill="#fff" stroke="#fff" stroke-width="11" stroke-linejoin="round">{s}</g><g fill="#000">{s}</g></mask>'
+            f'<rect x="-10" y="-10" width="120" height="120" style="fill:{band}" mask="url(#{uid})"/>'
+            f'<rect x="45" y="47.6" width="10" height="4.8" fill="#C2187A"/>')
+
+
 # The paper dart, seen from above: two wings folded down from a centre crease, the keel
 # showing between them at the tail. One shape for every category, so it spends its
 # budget on folds and light instead.
@@ -395,8 +430,9 @@ def body_ringed(band, u):
     ring = lambda clip: (f'<g transform="rotate(-22 50 50)"><ellipse cx="50" cy="50" rx="42" ry="11" fill="none" stroke="url(#{u}r)" '
                          f'stroke-width="5"{clip}/></g>')
     bands = f'<g clip-path="url(#{u}c)" fill="#A9864C" fill-opacity="0.45"><rect x="20" y="44" width="60" height="3"/><rect x="20" y="53" width="60" height="2.4"/></g>'
+    near = ring(' clip-path="url(#' + u + 'f)"')
     return (f'<defs>{g}{gs}{rg}{_clip(u + "c", r)}</defs>{_halo(band, r)}{ring("")}{ball}{bands}{sh}'
-            f'{ring(f' clip-path="url(#{u}f)"')}')
+            f'{near}')
 
 
 def body_earth(band, u):
@@ -472,6 +508,10 @@ FAMILIES = {
               PAPER_FLEET, render_paper_fleet, '#F2F0EA', []),
     'celestial': ('Celestial', 'Shape and halo: a planet, moon, sun or comet for each category, ringed in the band colour.',
                   CELESTIAL, render_celestial, None, []),
+    'station': ('Station', 'Shape and colour: crisp solid silhouettes on a station\'s white, one red tick.',
+                MODERN, render_station, '#111111', []),
+    'sectional': ('Sectional', 'Shape and colour: hollow chart symbols in chart blue with a magenta tick.',
+                  MODERN, render_sectional, '#2A5DB0', []),
 }
 
 # family -> (what carries it, the one plane, renderer): the family's second form
@@ -488,6 +528,10 @@ SINGLES = {
               PAPER_DART, render_paper),
     'celestial': ('Halo and detail: one blue planet for every category, ringed in the band colour.',
                   SINGLE_PLANET, render_celestial),
+    'station': ('Shape and colour: one crisp airliner for every category, in the band colour with a red tick.',
+                SINGLE_AIRLINER, render_station),
+    'sectional': ('Shape and colour: one airliner for every category, drawn hollow in the band colour with a magenta tick.',
+                  SINGLE_AIRLINER, render_sectional),
 }
 
 
@@ -793,7 +837,8 @@ BACKGROUNDS = {
 
 # What each family is shown with first; every control still mixes freely.
 PAIRS = {'celestial': ('galaxy', 'wedge'), 'modern': ('scope', 'wedge'), 'silver': ('scope', 'needle'),
-         'brass': ('brass', 'pointer'), 'blueprint': ('blueprint', 'drafting'), 'paper': ('chart', 'needle')}
+         'brass': ('brass', 'pointer'), 'blueprint': ('blueprint', 'drafting'), 'paper': ('chart', 'needle'),
+         'station': ('chart', 'needle'), 'sectional': ('chart', 'drafting')}
 
 
 def bg_svg(fn):
@@ -1004,7 +1049,7 @@ code { font: .88em var(--mono); color: var(--ink); }
 <svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs>%SYMBOLS%</defs></svg>
 <main>
   <header style="display:grid;gap:10px">
-    <h1>Flights art, five families</h1>
+    <h1>Flights art, eight families</h1>
     <p class="lede">Plane families, radar arms and backgrounds for the tracker's themes. Each family comes in two forms: a plane per category, or one detailed plane for every category. Picking a family shows it with its own background and arm; every control still mixes freely. Range rings are drawn live, as the app draws them. The traffic is made up.</p>
   </header>
 

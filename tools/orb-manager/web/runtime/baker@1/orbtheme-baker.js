@@ -2240,6 +2240,155 @@
     }
     return out;
   }
+
+  /* pomodoro-editor §64.8: GorbBake.synth — a pure, deterministic renderer from a recipe
+   * table to an Int16Array at SOUND_RATE. No Math.random, no Web Audio, no Date: a chime
+   * is design content, and a bake that drifts re-ships themes nobody changed. The recipe is
+   * the app's own data (built by apps/pomodoro in step 2, not here); this is only the
+   * primitives. The speaker's floor (350 Hz) is enforced here: every generated chime is
+   * high-passed (2nd-order Butterworth, forward then backward — a one-shot, so the clock's
+   * circular seam rule does not apply) and peak-normalised. Ported from the clock's own
+   * apps/clock/editor/sound-engine.js, which §64.8 keeps separate on purpose. */
+  var SYNTH_TAU = 2 * Math.PI, SYNTH_PEAK = 0.92, SYNTH_MAX_S = 4, SYNTH_HP = 350;
+  // a per-event seeded LCG, so noise never touches Math.random
+  function evtNoise(eventIndex) {
+    var a = (0x5eed + eventIndex) >>> 0;
+    return function () { a = (Math.imul(a, 1664525) + 1013904223) >>> 0; return (a >>> 8) / 16777216; };
+  }
+  // one oscillator sample of a given type, phase in cycles
+  function synthOsc(type, ph) {
+    var p = ph - Math.floor(ph);
+    if (type === 'triangle') return 4 * Math.abs(p - 0.5) - 1;
+    if (type === 'square') return p < 0.5 ? 1 : -1;
+    if (type === 'saw') return 2 * p - 1;
+    return Math.sin(SYNTH_TAU * p);
+  }
+  // a 2-pole band-pass (the click's resonator, ported from the clock's engine)
+  function synthBandpass(x, f, q) {
+    var w = SYNTH_TAU * f / SOUND_RATE, al = Math.sin(w) / (2 * (q || 1)), a0 = 1 + al;
+    var b0 = al / a0, b2 = -al / a0, a1 = -2 * Math.cos(w) / a0, a2 = (1 - al) / a0;
+    var y = new Float64Array(x.length), x1 = 0, x2 = 0, y1 = 0, y2 = 0;
+    for (var i = 0; i < x.length; i++) {
+      var o = b0 * x[i] + b2 * x2 - a1 * y1 - a2 * y2;
+      x2 = x1; x1 = x[i]; y2 = y1; y1 = o; y[i] = o;
+    }
+    return y;
+  }
+  function synthTone(ev, n, at) {
+    var out = new Float64Array(n), f = ev.f * at.fmul, type = ev.type || 'sine';
+    var g = ev.gain === undefined ? 1 : ev.gain, tau = ev.decay === undefined ? (ev.dur || n / SOUND_RATE) / 3 : ev.decay;
+    var a = Math.max(1, Math.round((ev.attack === undefined ? 0.004 : ev.attack) * SOUND_RATE));
+    var w = SYNTH_TAU * f / SOUND_RATE;
+    for (var i = 0; i < n; i++) {
+      var t = i / SOUND_RATE;
+      out[i] = g * synthOsc(type, w * i / SYNTH_TAU) * Math.min(1, i / a) * Math.exp(-t / tau);
+    }
+    return out;
+  }
+  function synthBell(ev, n, at) {
+    var out = new Float64Array(n), f = ev.f * at.fmul, g = ev.gain === undefined ? 1 : ev.gain;
+    var rs = ev.ratios && ev.ratios.length ? ev.ratios : [1, 2, 2.76, 5.4, 8.93];
+    var base = ev.decay === undefined ? (ev.dur || n / SOUND_RATE) / 4 : ev.decay;
+    for (var p = 0; p < rs.length; p++) {
+      var fr = f * rs[p];
+      if (fr >= SOUND_RATE * 0.48) continue;            // above the DAC's honest range: not rendered
+      var amp = g / (p + 1), tau = base / (p + 1);       // each partial rings down faster than the last
+      var w = SYNTH_TAU * fr / SOUND_RATE;
+      for (var i = 0; i < n; i++) out[i] += amp * Math.sin(w * i) * Math.exp(-i / SOUND_RATE / tau);
+    }
+    var a = Math.max(1, Math.round((ev.attack === undefined ? 0.002 : ev.attack) * SOUND_RATE));
+    for (var j = 0; j < n; j++) out[j] *= Math.min(1, j / a);
+    return out;
+  }
+  function synthClick(ev, n, at) {
+    var f = (ev.f || 3000) * at.fmul, q = ev.q || 2, g = (ev.gain === undefined ? 1 : ev.gain) * at.gmul;
+    var rnd = evtNoise(at.index), exc = new Float64Array(n);
+    for (var i = 0; i < n; i++) exc[i] = rnd() * 2 - 1;
+    var r = synthBandpass(exc, f, q), out = new Float64Array(n);
+    var tau = ev.decay === undefined ? (ev.dur || n / SOUND_RATE) / 4 : ev.decay;
+    for (var k = 0; k < n; k++) out[k] = g * r[k] * Math.exp(-k / SOUND_RATE / tau);
+    return out;
+  }
+  function synthBeep(ev, n, at) {
+    var out = new Float64Array(n), f = ev.f * at.fmul, g = ev.gain === undefined ? 1 : ev.gain;
+    var edge = Math.max(1, Math.round(0.008 * SOUND_RATE));  // the 8 ms soft edges, not a hard square
+    for (var i = 0; i < n; i++) {
+      var t = i / SOUND_RATE, s = 0;
+      for (var h = 1; h <= 7; h += 2) {
+        if (f * h >= SOUND_RATE * 0.48) break;
+        s += Math.sin(SYNTH_TAU * f * h * t) / h;
+      }
+      out[i] = g * s * Math.min(1, i / edge, (n - i) / edge);
+    }
+    return out;
+  }
+  var SYNTH_KINDS = { tone: synthTone, bell: synthBell, click: synthClick, beep: synthBeep };
+
+  /* GorbBake.synth(rec, o) -> Int16Array at SOUND_RATE. rec={name,label,dur,events,brighter};
+   * o={variant,hp,peak,max_s}. Events are summed; the whole is high-passed, peak-normalised
+   * to `peak` and clipped. Past max_s it throws naming the recipe and the seconds. */
+  function synth(rec, o) {
+    if (!rec || typeof rec !== 'object') throw new Error('a synth recipe that is not an object: a chime is a recipe table of events');
+    var name = rec.name === undefined ? 'unnamed' : String(rec.name);
+    o = o || {};
+    var hp = o.hp === undefined ? SYNTH_HP : +o.hp;
+    var peak = o.peak === undefined ? SYNTH_PEAK : +o.peak;
+    var maxS = o.max_s === undefined ? SYNTH_MAX_S : +o.max_s;
+    var evs = rec.events;
+    if (!Array.isArray(evs) || !evs.length)
+      throw new Error('the ' + name + ' chime carries no events: a chime is at least one event');
+    var fmul = 1, gmul = 1;
+    if (o.variant === 'brighter' && rec.brighter) {
+      fmul = rec.brighter.f_mul === undefined ? 1 : rec.brighter.f_mul;
+      gmul = rec.brighter.gain_mul === undefined ? 1 : rec.brighter.gain_mul;
+      if (Array.isArray(rec.brighter.events)) evs = evs.concat(rec.brighter.events);
+    }
+    var end = 0, durS = +(rec.dur || 0);
+    if (!(durS > 0)) throw new Error('the ' + name + ' chime lasts ' + rec.dur + ' s: a chime lasts more than nothing');
+    for (var i = 0; i < evs.length; i++) {
+      var ev = evs[i];
+      if (!ev || SYNTH_KINDS[ev.kind] === undefined)
+        throw new Error('the ' + name + ' chime has an event of kind ' + JSON.stringify(ev && ev.kind) + ': a recipe event is tone, bell, click or beep');
+      if (!(ev.t >= 0)) throw new Error('the ' + name + ' chime has an event at t=' + ev.t + ': an event starts at zero seconds or later');
+      if (!(ev.dur > 0)) throw new Error('the ' + name + ' chime has an event lasting ' + ev.dur + ' s: a chime\u2019s every event lasts more than nothing');
+      end = Math.max(end, ev.t + ev.dur);
+    }
+    var secs = Math.max(durS, end);
+    if (secs > maxS)
+      throw new Error('the ' + name + ' chime is ' + secs.toFixed(1) + ' s: an app\u2019s chime is at most ' + maxS.toFixed(1) + ' s');
+    var n = Math.max(2, Math.round(secs * SOUND_RATE)), sum = new Float64Array(n);
+    for (var k = 0; k < evs.length; k++) {
+      var e2 = evs[k], at0 = Math.round(e2.t * SOUND_RATE);
+      var len = Math.min(n - at0, Math.round(e2.dur * SOUND_RATE));
+      if (len <= 0) continue;
+      var part = SYNTH_KINDS[e2.kind](e2, len, { fmul: fmul, gmul: gmul, index: k });
+      for (var j = 0; j < len; j++) sum[at0 + j] += part[j];
+    }
+    var mean = 0, x = new Float64Array(n);
+    for (var m = 0; m < n; m++) mean += sum[m];
+    mean /= n;
+    for (var m2 = 0; m2 < n; m2++) x[m2] = sum[m2] - mean;
+    var w = SYNTH_TAU * hp / SOUND_RATE, c = Math.cos(w), al = Math.sin(w) / (2 * Math.SQRT1_2), a0 = 1 + al;
+    var kf = [(1 + c) / 2 / a0, -(1 + c) / a0, (1 + c) / 2 / a0, -2 * c / a0, (1 - al) / a0];
+    function iir(src, rev) {
+      var y = new Float64Array(n), x1 = 0, x2 = 0, y1 = 0, y2 = 0;
+      for (var i3 = 0; i3 < n; i3++) {
+        var idx = rev ? n - 1 - i3 : i3;
+        var o3 = kf[0] * src[idx] + kf[1] * x1 + kf[2] * x2 - kf[3] * y1 - kf[4] * y2;
+        x2 = x1; x1 = src[idx]; y2 = y1; y1 = o3; y[idx] = o3;
+      }
+      return y;
+    }
+    var hp2 = iir(iir(x, false), true), mabs = 0;
+    for (var p2 = 0; p2 < n; p2++) if (Math.abs(hp2[p2]) > mabs) mabs = Math.abs(hp2[p2]);
+    var norm = mabs > 0 ? (peak * 32767) / mabs : 0, out = new Int16Array(n);
+    for (var q2 = 0; q2 < n; q2++) {
+      var v = Math.round(hp2[q2] * norm);
+      out[q2] = v > 32767 ? 32767 : v < -32768 ? -32768 : v;
+    }
+    return out;
+  }
+
   // D42 (theme_schema.SHAPES / ENDS / DIGITS, clk_types.h CLK_SHAPE_* / CLK_END_* /
   // CLK_DIGIT_*): what an AUX row's art is, what it does past its domain, and which
   // digit of its source it reads.
@@ -3022,8 +3171,11 @@
   var IDX_OFF   = [0, 2, 4, 6, 8, 12, 16, 20, 24, 28, 32, 36, 38];
   var IDX_TYPES = ['u16', 'u16', 'u16', 'u16', 'u32', 'u32', 'u32', 'u32',
                    'u32', 'u32', 'u32', 'u16', 'u16'];
-  function packIndex3(recs) {
-    var words = [recs.length, 0];
+  function packIndex3(recs, overlay) {
+    // The head's second word is the theme's overlay colour (design §2): 0x01RRGGBB names one,
+    // 0 names none, and the wrap into the u32 word is orbbundle._u's exact rule so the two
+    // writers land byte for byte. An absent argument is the zero every file already holds.
+    var words = [recs.length, (overlay >>> 0)];
     for (var i = 0; i < recs.length; i++) {
       var row = new Array(IDX_WORDS).fill(0);
       for (var k = 0; k < IDX_ORDER.length; k++) {
@@ -3091,7 +3243,7 @@
    * sum and not the file's shape, and it fires before a byte of art is encoded.
    *
    * o = {name, sections: [{slug, elements, scalars, sprites, art, abi_min, abi_max,
-   * scr_w, scr_h}], serial, bakedMs}. Section keys are orbbundle.write_bundle's own names,
+   * scr_w, scr_h}], serial, bakedMs, overlay}. Section keys are orbbundle.write_bundle's own names,
    * so the vectors a mirror test feeds this function are the vectors it feeds the Python
    * with no translation layer to drift. `art` is a Uint8Array of already-encoded pixels:
    * the baker's plane encoders fill it, and this function looks inside it no further than
@@ -3167,7 +3319,7 @@
     var artCrcAll = anyArt ? crc32(concat(artJoin)) : 0;
     checkBudget3(run, artSize);
 
-    var region = concat([packIndex3(recs)].concat(blobs));
+    var region = concat([packIndex3(recs, o.overlay >>> 0)].concat(blobs));
     // The header stamps the clock's v6 when a v6 section rides along, else v3 (D42):
     // the two stamps a reader takes, never an app section's own forward aim.
     var hdrAbi = GEOM_ABI3;
@@ -3226,9 +3378,15 @@
     for (i = 0; i < len; i++) bytes[i] = (w[W_NAME + (i >> 2)] >>> ((i & 3) * 8)) & 0xFF;
     var name = new TextDecoder('utf-8', { fatal: true }).decode(bytes);   // D28: invalid UTF-8 is damage
     if (!name) throw new Error('theme has no name in its header — re-bake it');
+    // The overlay colour rides the geometry region's second head word (design §2), so it is a
+    // region read and not a header read, and the region's checksum is verifyBundle3's job: what
+    // comes out HERE is the raw word of an unchecked region, which is why the C keeps its own
+    // read inside parse_core after the crc. A region too short to hold the head names no colour.
+    var ov = (w[4] + 8 <= raw.length && w[5] >= 8) ? v.getUint32(w[4] + 4, true) : 0;
     return { fmt: w[1], abi: w[2], hdrSize: w[3], geomOff: w[4], geomSize: w[5], geomCrc: w[6],
              artSize: w[7], artCrc: w[8], nSections: w[9], bakedS: w[10], serial: w[11], bakedMs: w[12],
-             artOff: w[13], name: name, designOff: w[W_DESIGN_OFF], designSize: w[W_DESIGN_SIZE], designCrc: w[W_DESIGN_CRC] };
+             artOff: w[13], name: name, designOff: w[W_DESIGN_OFF], designSize: w[W_DESIGN_SIZE], designCrc: w[W_DESIGN_CRC],
+             overlay: ov };
   }
   /* P7: a theme's design, or why there is none to reopen. Never throws for the design's own
    * faults: the dial is good whatever its design says, so a damaged one is a sentence. */
@@ -3299,7 +3457,12 @@
       prev = b.slug;
       out.push({ rec: r, blob: b, art: a });
     }
-    return { header: h, sections: out };
+    // The overlay colour (§64.9) off the region this function has just checksummed: the
+    // browser leg's dump, which is how the two writers get compared on one word. Raw here —
+    // the tag rule is the device's orb_bundle_overlay()'s, and an editor that wants it applies
+    // the same three-line test to this number.
+    return { header: h, sections: out,
+             overlay: new DataView(region.buffer, region.byteOffset, region.length).getUint32(4, true) };
   }
 
   /* The resolver's per-section ABI test, which is NOT part of the walk above: the
@@ -3492,7 +3655,7 @@
     var o = opts || {};
     var scrW = o.scr_w || SCREEN_W, scrH = o.scr_h || SCREEN_H;
     var bank = { art: new Uint8Array(0), sprites: [], size: 0 };
-    var elems = [], nid = 1, deltas = [];
+    var elems = [], nid = 1, deltas = [], pendingSounds = null;
     function put(bytes, w, h) {
       bank.art = concat([bank.art, bytes]);
       bank.sprites.push({ off: bank.size, size: bytes.length, w: w, h: h });
@@ -3796,8 +3959,86 @@
         out.push(element(Object.assign({}, e, rows[i], { n: nid++, frame0: first.frame0, n_frames: planes.length, delay: 0 })));
       return out;
     }
+    /* D39/§64.8: a theme's sound rows, for ANY app the stage draws (not just the clock).
+     *
+     * THIS MUST RUN BEFORE THE FIRST row(): the planes enter at the head of the bank, so
+     * the plate's own plane offset — which the scheduler paints from directly through the
+     * plate_off scalar (main/gfx/orb_sched.c:163) — is the whole byte count of the sound
+     * region. A bake that forgets plate_off paints PCM as its plate. The order cannot be
+     * asserted from in here (the caller may have written raw bytes but no rows yet), so it
+     * is stated here and proven by the app's own bake_check.py.
+     *
+     * list = [{slot: 1..12, pcm: Int16Array, name}]; o = {pattern: 'none'}. In order:
+     * encode each with soundEncode, put the bytes at the head, remember the count; the
+     * SOUND rows are held back and appended LAST (in finish), so elems[0] stays the plate.
+     * Two slots whose pcm is byte-equal share one plane (one put, two rows naming it).
+     * A repeated slot is refused before the bank moves. finish merges plate_off into the
+     * caller's scalars unless the caller set plate_off itself. */
+    function sounds(list, o) {
+      o = o || {};
+      list = list || [];
+      if (!list.length) return { bytes: 0, rows: 0, enc: [] };   // no sounds: bank untouched, no row, no plate_off
+      var patName = o.pattern || 'none', patIx = HOUR_PATTERNS.indexOf(patName);
+      if (patIx < 0)
+        throw new Error('hour pattern ' + q(String(patName)) + ': a theme\u2019s sounds name ' + HOUR_PATTERNS.join(', '));
+      // refuse a repeated slot, and an out-of-range one, before the bank moves
+      var seen = {};
+      for (var vi = 0; vi < list.length; vi++) {
+        var it = list[vi], slot = it.slot | 0;
+        if (!(it.slot === slot && slot >= 0 && slot < SOUND_SLOTS.length))
+          throw new Error('a sound at slot ' + it.slot + ': a theme declares ' + SOUND_SLOTS.length + ' sound slots');
+        if (seen[slot])
+          throw new Error('two sounds at slot ' + slot + ': a theme carries one waveform per slot');
+        seen[slot] = 1;
+        if (!it.pcm || !(it.pcm.length >= 2))
+          throw new Error('sound slot ' + slot + ' carries ' + (it.pcm ? it.pcm.length : 0) + ' samples: a sound plane is at least two samples');
+      }
+      // sort into slot order so the head layout is stable however the caller lists them
+      var ordered = list.slice().sort(function (a, b) { return (a.slot | 0) - (b.slot | 0); });
+      var placed = [], encOut = [], rows = [], headB = bank.size;
+      var foundPlane = function (pcm) {
+        for (var q = 0; q < placed.length; q++) {
+          var pp = placed[q];
+          if (pp.n === pcm.length) {
+            var same = true;
+            for (var b = 0; b < pcm.length; b++) if (pp.pcm[b] !== pcm[b]) { same = false; break; }
+            if (same) return pp;
+          }
+        }
+        return null;
+      };
+      for (var si = 0; si < ordered.length; si++) {
+        var s = ordered[si], pcm = s.pcm;
+        var plane = foundPlane(pcm), se;
+        if (!plane) {
+          se = soundEncode(pcm);
+          var f = put(se.bytes, pcm.length, 1);
+          plane = { frame0: f, enc: se.enc, n: pcm.length, pcm: pcm };
+          placed.push(plane);
+        }
+        rows.push({ slot: s.slot | 0, frame0: plane.frame0, enc: plane.enc });
+        encOut.push({ slot: s.slot | 0, enc: plane.enc, n: plane.n });
+      }
+      headB = bank.size - headB;
+      pendingSounds = { rows: rows, patIx: patIx, bytes: headB };
+      return { bytes: headB, rows: rows.length, enc: encOut };
+    }
+    function emitSoundRows() {
+      if (!pendingSounds) return;
+      var ps = pendingSounds;
+      for (var i = 0; i < ps.rows.length; i++) {
+        var r = ps.rows[i], rec = blankElement();
+        rec.n = nid++; rec['class'] = CLASS_SOUND; rec.slot = r.slot;
+        rec.frame0 = r.frame0; rec.n_frames = 1; rec.kind = ps.patIx; rec.src = r.enc;
+        rec.flags = 0; rec.vmax = 0; rec.vmin = 0; rec.alpha = 255;
+        elems.push(rec);
+      }
+      pendingSounds = null;
+      return checkClockSounds(elems, bank.sprites, false, 1);
+    }
     function pack(m) {
       return writeBundle3({ name: m.name, serial: m.serial || 0, bakedMs: m.bakedMs || 0, bakedS: m.bakedS || 0, design: m.design || null,
+        overlay: m.overlay || 0,
         sections: [{ slug: m.slug, scr_w: scrW, scr_h: scrH, elements: elems, scalars: m.scalars || {},
                      sprites: bank.sprites, art: bank.art,
                      abi_min: m.abi, abi_max: m.abi }] });
@@ -3808,7 +4049,18 @@
     }
     function finish(m) {
       capCheck();
-      var b = pack(m);
+      // the plate_off merge writes into a copy of the caller's meta, never into their object
+      var meta = Object.assign({}, m || {});
+      if (pendingSounds) {
+        var sBytes = pendingSounds.bytes;
+        meta.scalars = Object.assign({}, meta.scalars || {});
+        var hadOff = meta.scalars.plate_off !== undefined;
+        emitSoundRows();
+        // a bake that forgot plate_off would paint its PCM as its plate (orb_sched.c:163);
+        // honour the caller's own plate_off when it set one, and merge ours otherwise
+        if (!hadOff) meta.scalars.plate_off = sBytes;
+      }
+      var b = pack(meta);
       deltas.forEach(function (d) {
         if (!selfVerify3(d.planes, bank.sprites, d.rec.frame0 | 0, !!(d.rec.flags & EF_DELTA_WRAP)))
           throw new Error('the baked delta bank does not composite back to the frames it was handed: the round trip drifted, and a drifting chain corrupts every later frame — refused, not shipped');
@@ -3823,7 +4075,7 @@
              row: row, rowFrames: rowFrames, font: font,
              rowDelta: function (e, planes, delay, masked, dith) { var r = rowDelta(e, planes, delay, masked, dith); deltas.push({ rec: r, planes: planes }); return r; },
              verifyDelta: selfVerify3, preview: preview, element: element, rowPick: rowPick, pool: pool,
-             pack: pack, capCheck: capCheck, finish: finish };
+             sounds: sounds, pack: pack, capCheck: capCheck, finish: finish };
   }
   function bakeClock3(o) {
     var scrW = o.scr_w || SCREEN_W, scrH = o.scr_h || SCREEN_H;
@@ -4335,7 +4587,8 @@
     // D42: every clock section is v6.
     var secAbi = GEOM_ABI6;
     var pack = function () {
-      return B.pack({ name: o.name, serial: o.serial, bakedMs: o.bakedMs, bakedS: o.bakedS, design: o.design, slug: 'clock', scalars: sc, abi: secAbi });
+      return B.pack({ name: o.name, serial: o.serial, bakedMs: o.bakedMs, bakedS: o.bakedS, design: o.design, slug: 'clock', scalars: sc, abi: secAbi,
+                      overlay: o.overlay || 0 });
     };
     var b = pack();
     if (deltaBank && !selfVerify3(frames, bank.sprites, (elems[0].frame0 | 0),
@@ -5400,6 +5653,7 @@
     zlibFixed: zlibFixed,
     discSpan: discSpan, discPx: discPx, discBytes: discBytes, discPack: discPack, discPackMasked: discPackMasked,
     adpcmEncode: adpcmEncode, adpcmDecode: adpcmDecode, soundEncode: soundEncode, soundBytes: soundBytes,
+    synth: synth, SYNTH_HP: SYNTH_HP, SOUND_RATE: SOUND_RATE,
     checkClockSounds: checkClockSounds
   };
 })(typeof window !== 'undefined' ? window : (typeof globalThis !== 'undefined' ? globalThis : this));

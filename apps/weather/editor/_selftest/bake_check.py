@@ -36,6 +36,12 @@ APPV = open(os.path.join(EDITOR, "..", "version.txt")).read().strip()
 # table sectors and 512 KB of slack. The shelf's other defaults no longer count against it.
 BUDGET = (8 << 20) - (1 << 20) - 2 * 4096 - (512 << 10)
 
+# §64.9 / gate §8.6: the region's second head word is the OS's overlay colour, tagged 0x01.
+OVL_TAG = 0x01000000
+EXPECT_OVL = {"scope": OVL_TAG | 0xFFB23C,               # the Scope preset's phosphor bolt (#FFB23C)
+              "scope-wears-nebula": OVL_TAG | 0xFF8A5C,  # nebula's accent is its 'orange' role (#FF8A5C), not a warn
+              "overlay-set": OVL_TAG | 0x135C79}         # the owner's #135c79, set on the design
+
 
 def stage(stage_dir):
     for src in (os.path.join(HERE, "bake.html"), os.path.join(EDITOR, "weather-bake.js"), os.path.join(EDITOR, "ground.js"),
@@ -60,6 +66,13 @@ def check(name, raw, exe, mapped):
     hdr, secs = ob.read_bundle(path)
     sec = secs[0]
     els = sec["blob"]["elements"]
+    # §64.9 / gate §8.6: the region's second head word is the OS's overlay colour, tagged 0x01;
+    # an untouched design bakes its pack's accent (via the roles table), an owner's setting wins.
+    ov = ob.file_overlay(path)
+    if (ov & 0xFF000000) != OVL_TAG:
+        bad.append("overlay word 0x%08x: no 0x01 colour tag" % ov)
+    if name in EXPECT_OVL and ov != EXPECT_OVL[name]:
+        bad.append("overlay 0x%08x, expected 0x%08x" % (ov, EXPECT_OVL[name]))
     if sec["blob"]["slug"] != "weather":
         bad.append("section slug %r" % sec["blob"]["slug"])
     try:
@@ -139,7 +152,7 @@ def check(name, raw, exe, mapped):
     rc, out, err = H3.run(exe, "--dump3f", path, "weather")
     if rc != 0:
         bad.append("orb_clock3.c refused it: %s" % (out or err).strip()[:200])
-    return bad, len(raw)
+    return bad, len(raw), ov
 
 
 def main():
@@ -164,8 +177,8 @@ def main():
             raw = base64.b64decode(b64)
             if keep:
                 open(os.path.join(keep, name + ".orbtheme"), "wb").write(raw)
-            bad, n = check(name, raw, exe, mapped == "1")
-            print("%s %-20s %8d B %6s ms  %s" % ("ok  " if not bad else "FAIL", name, n, ms, "; ".join(bad)))
+            bad, n, ov = check(name, raw, exe, mapped == "1")
+            print("%s %-20s %8d B %6s ms  ovl=0x%08x  %s" % ("ok  " if not bad else "FAIL", name, n, ms, ov, "; ".join(bad)))
             fails += bool(bad)
     if "DONE" not in dom:
         print("FAIL the page did not finish (virtual time ran out, or it threw)")

@@ -91,7 +91,7 @@ func TestExtractEditorsMatchesWhatTheHubServes(t *testing.T) {
 	// truthful status today is "no-editor". A release that gives it an editor turns this
 	// line into the thing that says so, rather than a mystery in the site's listing.
 	want := []string{"clock.orbapp:ok", "color_picker.orbapp:no-editor",
-		"flights.orbapp:ok", "radar.orbapp:ok", "weather.orbapp:ok"}
+		"flights.orbapp:ok", "pomodoro.orbapp:ok", "radar.orbapp:ok", "weather.orbapp:ok"}
 	if strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Fatalf("rows = %v, want %v", got, want)
 	}

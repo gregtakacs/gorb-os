@@ -137,8 +137,8 @@ int main(int argc, char **argv)
         rdb(stem, slen); stem[slen] = 0;
         rdb(g_digest, 32);
         const uint32_t sw = rd32();
-        uint32_t sbuf[16 * 16];
-        if (sw > 16 * 16) return 3;
+        uint32_t sbuf[ORBAPP_SETTINGS_WORDS * ORBAPP_SETTINGS_MAX];
+        if (sw > ORBAPP_SETTINGS_WORDS * ORBAPP_SETTINGS_MAX) return 3;
         rdb(sbuf, sw * 4);
         const uint32_t n_unpack = rd32();
         /* P5b: one more optional stage after the settings', so an asset vector can
@@ -172,7 +172,7 @@ int main(int argc, char **argv)
             stage(tag, why, reason);
         }
         if (!why && (flags & 4)) {
-            orb_setting_desc_t out[16];
+            orb_setting_desc_t out[ORBAPP_SETTINGS_MAX];
             snprintf(tag, sizeof tag, "case%u.unpack", i);
             why = orbapp_unpack_settings(sbuf, sw, n_unpack, out, reason, sizeof reason);
             stage(tag, why, reason);
@@ -384,7 +384,7 @@ def asset_rows(rows, slug):
 
 def _golden_settings16():
     return [{"id": "s%02d" % i, "type": "int", "min": 0, "max": 5, "default": 2}
-            for i in range(16)]
+            for i in range(orbapp.SETTINGS_MAX)]
 
 
 def vectors_accept(add):
@@ -426,7 +426,7 @@ def vectors_accept(add):
                   " text-only apps declare nothing and must still install"))
     s16 = _golden_settings16()
     g16, b16, _ab = build_hdr(settings=s16)
-    add(Case("golden_16_settings", g16, b16, flags=F_CHECK | F_LAYOUT,
+    add(Case("golden_settings_at_cap", g16, b16, flags=F_CHECK | F_LAYOUT,
              note="the > vs >= cliff at SETTINGS_MAX; catches mutation 3"))
     g0, _, _ab = build_hdr(period=0)
     add(Case("period_zero_vector_only_app", g0, flags=F_CHECK | F_LAYOUT |
@@ -531,7 +531,7 @@ def vectors_refuse(add):
                  hash_calls=1, py=("refuse", msg) if refuse else ("ok", None)))
     # -- the D19 consent word map -------------------------------------------------
     for nm, bits in (("caps_free_bit_time", 0x01), ("caps_free_bit_ui", 0x04),
-                     ("caps_bit_at_cap_n", 0x400), ("caps_bit_above", 0x8000)):
+                     ("caps_bit_at_cap_n", 1 << orbapp.CAP_BITS), ("caps_bit_above", 0x8000)):
         cp = patch(build_hdr()[0][:], orbapp.W_CAPS, bits)
         ok, msg = python_outcome(cp)
         add(Case(nm, cp, flags=F_CHECK, check=msg, hash_calls=0,
@@ -593,7 +593,7 @@ def vectors_refuse(add):
     scrc = patch(scrc, orbapp.W_SCHEMA_CRC, 0xBEEF)
     ok, msg = python_outcome(scrc)
     add(Case("empty_schema_with_crc", scrc, flags=F_CHECK, check=msg, py=("refuse", msg)))
-    n17 = patch(build_hdr()[0][:], orbapp.W_N_SETTINGS, 17)
+    n17 = patch(build_hdr()[0][:], orbapp.W_N_SETTINGS, 19)
     ok, msg = python_outcome(n17)
     add(Case("n_settings_over_the_table", n17, flags=F_CHECK, check=msg,
              py=("refuse", msg)))
@@ -679,10 +679,10 @@ def vectors_refuse(add):
     # -- the settings table on its own --------------------------------------------------
     g, sblob, _ab = build_hdr()
     add(Case("unpack_count_over_table", g, sblob,
-             flags=F_CHECK | F_LAYOUT | F_UNPACK, n_unpack=17,
-             unpack="17 settings; the loader's table holds 16",
+             flags=F_CHECK | F_LAYOUT | F_UNPACK, n_unpack=19,
+             unpack="19 settings; the loader's table holds 18",
              py=("skip", None),
-             note="slot-reader path: the header says 4, the caller lies 17"))
+             note="slot-reader path: the header says 4, the caller lies 19"))
     add(Case("unpack_blob_truncated", g, sblob[:3 * 64],
              flags=F_CHECK | F_LAYOUT | F_UNPACK, n_unpack=4,
              unpack="settings blob is 192 B, short of the 256 B its count claims",
@@ -1083,23 +1083,23 @@ def lint():
     for needle in ("ORBAPP_BEAT_MIN_MS 1000u", "ORBAPP_BEAT_MAX_MS 86400000u",
                    "ORBAPP_GEOM_BYTES_MAX 0x00040000u",
                    "ORBAPP_ART_BYTES_MAX  0x003D0000u",
-                   "ORBAPP_SETTINGS_MAX   16u",
+                   "ORBAPP_SETTINGS_MAX   18u",
                    "ORBAPP_MAGIC      0x00415247u",
-                   '{ "power", "net", "sd_read", "themes", "sound", "location" }'):
+                   '{ "power", "net", "sd_read", "themes", "sound", "location", "ring", "press" }'):
         assert needle in both, "reader drifted from the agreed numbers: " + needle
     assert orbapp.BEAT_MIN_MS == 1000 and orbapp.BEAT_MAX_MS == 86400000
     assert orbapp.GEOM_BYTES_MAX == 0x40000 and orbapp.ART_BYTES_MAX == 0x3D0000
-    assert orbapp.SETTINGS_MAX == 16 and orbapp.MAGIC == 0x00415247
+    assert orbapp.SETTINGS_MAX == 18 and orbapp.MAGIC == 0x00415247
     assert (orbapp.CAP_FREE, orbapp.CAP_OWNER) == \
            (("time", "config", "ui", "art"),
-            ("power", "net", "sd_read", "themes", "sound", "location"))
-    assert orbapp.CAP_BITS == 10
+            ("power", "net", "sd_read", "themes", "sound", "location", "ring", "press"))
+    assert orbapp.CAP_BITS == 12
     # the hand-written reasons, live-verified against the writer's own voice
     try:
-        orbapp.unpack_settings(b"\0" * 64, 17)
-        raise AssertionError("writer accepted 17 settings")
+        orbapp.unpack_settings(b"\0" * 64, 19)
+        raise AssertionError("writer accepted 19 settings")
     except ValueError as e:
-        assert str(e) == "17 settings; the loader's table holds 16", str(e)
+        assert str(e) == "19 settings; the loader's table holds 18", str(e)
     try:
         orbapp.unpack_settings(b"\0" * 192, 4)
         raise AssertionError("writer accepted a short blob")

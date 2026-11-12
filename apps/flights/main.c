@@ -1542,8 +1542,9 @@ ORB_EXPORT("orb_input") void orb_input(int32_t delta, int32_t pressed)
     redraw();
 }
 
-/* Press-and-turn: clockwise the range larger, anticlockwise smaller, the ends stop. Only the
- * header moves until the knob is let go (orb_push(0)), when the choice lands. */
+/* Press-and-turn: clockwise closer, anticlockwise wider, as radar's zoom turns (owner,
+ * 2026-11-11); the ladder is nearest first, so a clockwise click is a step down it. The ends
+ * stop. Only the header moves until the knob is let go (orb_push(0)), when the choice lands. */
 ORB_EXPORT("orb_push") void orb_push(int32_t delta)
 {
     if (!delta) {                                        /* let go: the choice lands */
@@ -1553,7 +1554,7 @@ ORB_EXPORT("orb_push") void orb_push(int32_t delta)
         redraw();
         return;
     }
-    int r = (s_rng_want >= 0 ? s_rng_want : s_set.range) + (int)delta;   /* each click a step */
+    int r = (s_rng_want >= 0 ? s_rng_want : s_set.range) - (int)delta;   /* each click a step */
     if (r < 0) r = 0;
     if (r > N_RANGES - 1) r = N_RANGES - 1;
     s_rng_want = r;

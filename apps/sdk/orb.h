@@ -171,6 +171,11 @@ ORB_IMPORT("knob_dial")  void orb_knob_dial(void);
 
 #define ORB_SOUND_LOOP   0x01u
 #define ORB_SOUND_SECOND 0x02u
+/** A level for one play, 0..100 relative to the orb's own volume, OR'd into flags:
+ *  orb_sound_play(slot, ORB_SOUND_VOL(70), 0). 100 is the master volume and lower is quieter,
+ *  never louder, on the same law as the Sound page and the clock's levels (half a dB a step).
+ *  Without it a sound plays at the master volume (§64.6). */
+#define ORB_SOUND_VOL(pct) ((((uint32_t)((pct) > 100 ? 100 : ((pct) < 0 ? 0 : (pct)))) + 1u) << 8)
 /** Play one of this app's own theme sounds by slot. Answers a handle > 0, or a
  *  negative error (not granted, slot empty, quiet hours). */
 ORB_IMPORT("sound_play")   int32_t orb_sound_play(uint32_t slot, uint32_t flags, uint32_t delay_ms);
@@ -281,6 +286,24 @@ static inline void orb_time_text(char *out, int hour, int min, const orb_units_t
 /* ---- power (cap "power") ------------------------------------------------------- */
 
 ORB_IMPORT("power_request") int32_t orb_power_request(uint32_t timeout_s, int32_t hold);
+
+/** A one-shot wake: light a dimmed glass for a few seconds, from anywhere, without
+ *  taking the glass. The pomodoro's "wake the screen" at a phase end — an app whose
+ *  timer fires while another app shows can still light the dial for a glance, then
+ *  leave it back to whatever was there. Unlike orb_power_request (which only holds
+ *  the glass while the app is ON it, revoked the moment it leaves), this is a nudge:
+ *  it goes through the idle-dim module's own request path, so idle-dim stays the
+ *  policy owner, and it never switches apps, never takes the glass, and never changes
+ *  what is drawn on it. Callable from orb_service on or off the glass, under cap
+ *  `power`. `seconds` is clamped to 3..15 whatever you ask (a floor a glance needs, a
+ *  ceiling on holding a glass you do not own).
+ *
+ *  Answers ESP_OK when the glass is lit or was already lit; ESP_ERR_NOT_ALLOWED
+ *  without the cap, during the OS's quiet hours, or with the display switched off by
+ *  its owner; and ESP_ERR_INVALID_STATE when THIS app woke the glass less than 60 s
+ *  ago — at most one wake a minute per app, so a chatty timer cannot keep the dial up.
+ *  The rate limit is per app and resets when the app leaves the glass. */
+ORB_IMPORT("wake") int32_t orb_wake(uint32_t seconds);
 
 /* ---- network (cap "net") ------------------------------------------------------- *
  * The OS's HTTP and HTTPS client (D51): one request at a time per app, run off the UI
@@ -429,6 +452,57 @@ ORB_IMPORT("map_mark")    int32_t  orb_map_mark(int32_t h, uint32_t i, orb_map_m
 ORB_IMPORT("map_project") int32_t  orb_map_project(int32_t h, int32_t lat_e6, int32_t lon_e6, int32_t *x, int32_t *y);
 ORB_IMPORT("map_close")   void     orb_map_close(int32_t h);
 ORB_IMPORT("maps_gen")    uint32_t orb_maps_gen(void);
+
+/* ---- the ring (cap "ring"; ring-design §2, plan §64.1) ------------------------------ *
+ * The OS ring, over whatever is on the glass and stamped into the DMA tiles as they
+ * leave — never into the mirror, so /fb cannot see it. An app never draws it; it only
+ * says what it should be. One ring: the latest caller owns it; a clear or an uninstall
+ * surfaces the next most recent. Colours reuse the canvas's 0xAARRGGBB (orb.h's ARGB,
+ * the top byte the alpha): alpha 0 draws nothing. The OS clamps the effect and its
+ * period (breathe slow only). The layout is the firmware's orb_ring_rec and must not
+ * drift; orbsdk refuses a module that imports a size the OS does not copy. */
+#define ORB_RING_STEADY   0     /* on while shown; redraws only when the fraction moves */
+#define ORB_RING_FLASH    1     /* on/off twice a period: "waiting for you"             */
+#define ORB_RING_BREATHE  2     /* slow in/out: "paused"                               */
+#define ORB_RING_MATCH    0x01u /* byte-1 ask: arc/track take the live theme's overlay colour (§64.9) */
+#define ORB_RING_CCW      0x02u /* byte-1 ask: the arc runs anticlockwise from `start` (rim-design §3) */
+#define ORB_RING_BACKED   0x04u /* byte-1 ask: the whole rim band is drawn black with the arc on it at
+                                 * full opacity, whatever the alpha byte says (plan §64.12)            */
+#define ORB_RING_FLAGS_MASK 0x07u /* the bits the OS knows; ring_clamp drops the rest                    */
+
+typedef struct {
+    uint16_t fraction;   /* 0..1000, from twelve in the record's own direction; >1000 clamps to 1000 */
+    uint8_t  effect;     /* ORB_RING_STEADY | _FLASH | _BREATHE; other values => STEADY  */
+    uint8_t  flags;      /* ORB_RING_MATCH | _CCW | _BACKED; unknown bits are dropped    */
+    uint32_t arc;        /* 0xAARRGGBB — arc alpha in bits 31..24 (0 => the arc draws nothing) */
+    uint32_t track;      /* 0xAARRGGBB — track alpha in bits 31..24 (0 => a bare arc)   */
+    uint16_t period_ms;  /* effect period, clamped by the OS; 0 => the OS default        */
+    uint16_t start;      /* degrees clockwise from twelve, 0..359; the OS wraps the rest */
+} orb_ring_t;            /* 16 bytes, ILP32 LE — offsets 0, 2, 3, 4, 8, 12, 14 */
+_Static_assert(sizeof(orb_ring_t) == 16, "the OS copies this record verbatim");
+
+ORB_IMPORT("ring_set")   int32_t orb_ring_set(const orb_ring_t *r);  /* sig i(i): ESP_OK,
+                                                                        ESP_ERR_INVALID_ARG
+                                                                        for NULL, or the
+                                                                        cap refusal */
+ORB_IMPORT("ring_clear") int32_t orb_ring_clear(void);              /* sig i(): the same */
+
+/* ---- the lent press (cap "press"; plan §64.13, docs/specs/alerts-design.md §3) --------- *
+ * While a claim stands, a plain press on whatever app is on the glass is queued for the
+ * claimant and that app never sees it; the claimant reads the queue from its orb_service(),
+ * never woken or raised by the lend (turn and press-and-turn stay with the glass app, and a
+ * press that only woke a dimmed face is never lent). Latest caller wins, one claimant at a
+ * time; a re-claim by the current owner keeps its unread queue, so a service may re-assert
+ * the claim every beat. The queue is bounded at 4 unread presses: a fifth is swallowed,
+ * never replayed as a flood when the service wakes. Both answers are 0 for an app that did
+ * not declare the cap (the call records the same refusal any gated import does). */
+#define ORB_PRESS_MAX_LENT 4   /* unread lent presses an app can hold at once (documented) */
+
+ORB_IMPORT("press_claim") int32_t orb_press_claim(int32_t on);  /* sig i(i): 1 when this app
+                                                                  * now holds the claim, 0 when
+                                                                  * it does not (or lacks the cap) */
+ORB_IMPORT("press_lent")  int32_t orb_press_lent(void);         /* sig i(): how many plain presses
+                                                                  * the OS has queued for this app */
 
 /* ---- JSON (free): the OS's streaming tokenizer (D51) ----------------------------- *
  * Begin over the landed network body (buf NULL) or a buffer of the app's own (copied,

@@ -29,6 +29,7 @@
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "esp_heap_caps.h"
+#include "orb_glass.h"        /* the gear canvas is screen working memory: the glass heap (§6.21) */
 #include "display.h"
 #include "orb_app_wasm.h"     /* orb_wasm_bench_us: the app's share of the report second */
 #include "orb_gfx.h"          /* CLK_SCR_W/H, the row marks, the commit band's counters */
@@ -136,7 +137,7 @@ void orb_bg_init(const uint8_t *base)
 void orb_bg_release(void)
 {
     s_plate = NULL;
-    if (s_canvas) { heap_caps_free(s_canvas); s_canvas = NULL; }
+    if (s_canvas) { orb_glass_free(s_canvas); s_canvas = NULL; }
     memset(&s_canvas_dsc, 0, sizeof s_canvas_dsc);
     s_gif_shown = 0;
     s_gif_due = 0;
@@ -443,10 +444,51 @@ void orb_bg_show_plate_frame(int idx)
     lv_obj_invalidate(s_plate);
 }
 
+static bool     s_floor_seeded;        /* (defined with the rung state below) */
+static uint32_t s_canvas_fails;        /* allocations refused since boot (/status) */
+static uint32_t s_canvas_retry_ms;     /* the last retry's tick */
+static uint32_t s_canvas_recovered;    /* retries that brought the gears back */
+
+/* A dial whose bank wants the delta canvas (GIF mode baked), whether or not it has it. */
+static bool canvas_wanted(void)
+{
+    return clk_theme.bg_mode == 1 && clk_theme.gif_frames >= 2 && clk_theme.gif_frames <= CLK_GIF_MAX;
+}
+
+void orb_bg_canvas_state(int *state, uint32_t *fails, uint32_t *recovered)
+{
+    if (state) *state = !canvas_wanted() ? 0 : s_canvas ? 1 : -1;   /* none, held, missing */
+    if (fails) *fails = s_canvas_fails;
+    if (recovered) *recovered = s_canvas_recovered;
+}
+
+/* A dial built without its canvas held the keyframe forever. While it is on the glass, try
+ * again every two seconds; the moment it fits, the plate reads the canvas and the bank plays. */
+static void canvas_retry(uint32_t now)
+{
+    if (!canvas_wanted() || s_canvas || !s_plate) return;
+    if (s_canvas_retry_ms && (uint32_t)(now - s_canvas_retry_ms) < 2000u) return;
+    s_canvas_retry_ms = now;
+    const lv_image_dsc_t *d = orb_bg_gif_canvas_init();
+    if (!d) return;
+    s_gif_shown = 0;
+    s_gif_due = 0;
+    s_floor_seeded = false;                 /* the pick re-reads the bank's own tempo */
+    s_canvas_recovered++;
+    lv_image_set_src(s_plate, d);
+    lv_obj_invalidate(s_plate);
+    ESP_LOGI(TAG, "canvas recovered after %u refused tries: the gears run again", (unsigned)s_canvas_fails);
+}
+
 const lv_image_dsc_t *orb_bg_gif_canvas_init(void)
 {
     const size_t canvas_bytes = (size_t)CLK_SCR_W * CLK_SCR_H * sizeof(uint16_t);
-    s_canvas = heap_caps_malloc(canvas_bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    /* The canvas is the on-glass dial's working memory, so it comes from the glass heap like
+     * every other screen buffer: when the region is short, the apps off the glass give back
+     * their caches first. From the general PSRAM heap it lost to whatever happened to hold
+     * memory at build time, and the gears froze on their keyframe until the next rebuild
+     * (Bronze, 2026-11-12: min_free 347 KB against the canvas's 434 KB). */
+    s_canvas = orb_glass_alloc(canvas_bytes);
     if (s_canvas) {
         if (clk_theme.plate_disc)      /* the keyframe is the plate's first plane: a disc */
             orb_disc_expand(blob() + clk_theme.bg_key_off, s_canvas);
@@ -462,7 +504,8 @@ const lv_image_dsc_t *orb_bg_gif_canvas_init(void)
         s_canvas_dsc.data          = (const uint8_t *)s_canvas;
         return &s_canvas_dsc;
     }
-    ESP_LOGE(TAG, "canvas alloc failed (%u B); background held on keyframe",
+    s_canvas_fails++;
+    ESP_LOGE(TAG, "canvas alloc failed (%u B); background held on keyframe, retrying while on the glass",
              (unsigned)canvas_bytes);
     if (clk_theme.gif_frames > CLK_GIF_MAX)
         ESP_LOGE(TAG, "gif_frames %u exceeds baked max %d; background held still",
@@ -763,6 +806,7 @@ static int sched_dyn_pace10(int base)
     }
     if (now - s_dyn_last_ms >= DYN_HOLD_MS) s_dyn_blip_us = 0;   /* no steps for that long: the plan's own */
     const uint32_t te = display_te_period_us();
+    if (!te) return base;    /* no TE period measured at boot: no scans to count, keep the plan's pace */
     /* Only a step well past a frame of the theme's own pace slows the sweep: on clear skies a
      * step costs about a frame, and pacing to it took London's arm from 15 to 10 fps (owner,
      * 2026-11-09: "does not feel as smooth as it did before"). */
@@ -821,10 +865,17 @@ static uint32_t sched_tick_period_ms(void)
     if (!s_bench_pace10 && s_plan_live && pace10 != (s_dyn_pace10 ? s_dyn_pace10 : s_plan_pace10)) {
         /* §7.8: the present paces to the new beat too */
         display_bench_pace(pace10);
-        ESP_LOGI(TAG, "an app's sweep paced to %u.%u fps (its live layer's steps cost %u ms)",
-                 (unsigned)(10000000u / ((uint32_t)pace10 * display_te_period_us() / 10u) / 10),
-                 (unsigned)(10000000u / ((uint32_t)pace10 * display_te_period_us() / 10u) % 10),
-                 (unsigned)(s_dyn_blip_us / 1000));
+        /* the frame time this beat asks for, in us; 0 when the boot's TE scan measured no
+         * period (or the pace is 0), which divided by zero here and panicked the LVGL task
+         * (Bronze, 2026-11-11) */
+        const uint32_t frame_us = (uint32_t)pace10 * display_te_period_us() / 10u;
+        if (frame_us)
+            ESP_LOGI(TAG, "an app's sweep paced to %u.%u fps (its live layer's steps cost %u ms)",
+                     (unsigned)(10000000u / frame_us / 10), (unsigned)(10000000u / frame_us % 10),
+                     (unsigned)(s_dyn_blip_us / 1000));
+        else
+            ESP_LOGI(TAG, "an app's sweep paced to %u.%u TE periods, none measured (its live layer's steps cost %u ms)",
+                     (unsigned)(pace10 / 10), (unsigned)(pace10 % 10), (unsigned)(s_dyn_blip_us / 1000));
         s_dyn_pace10 = pace10 == s_plan_pace10 ? 0 : pace10;
     }
     if (pace10 && display_te_period_us()) {
@@ -1232,6 +1283,7 @@ static void tick_timer_cb(lv_timer_t *timer)
     if (s_gap_prev_ms && t_start_ms - s_gap_prev_ms > s_gap_max_ms)
         s_gap_max_ms = t_start_ms - s_gap_prev_ms;
     s_gap_prev_ms = t_start_ms;
+    canvas_retry(t_start_ms);
     const int64_t t_work = esp_timer_get_time();
     if (orb_bg_gif_mode()) {
         /* Pace the GIF by its OWN delays: the tick rides the baked GIF delay

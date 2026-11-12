@@ -96,6 +96,10 @@
       out.push(C('Centre', 'ground.top'));
       out.push(C('Rim', 'ground.foot'));
       out.push(K.Nt('', 'Under the map: it shows where the map has no land or sea, and while a map is still being made. The map covers it everywhere else.'));
+      out.push(K.H("The OS's overlay"));
+      out.push(K.Co("The OS's overlay", B.overlayOf(d), function (nv) { upd('overlay', nv); }, '', 'overlay',
+        { noAuto: true, preset: (B.preset(d.base).glass || {}).ring }));
+      out.push(K.Nt('', 'The colour the orb’s own overlays — the ring, the battery, the notices — are drawn in over this look. It starts as the glass ring’s colour; set it to something else to make the OS’s marks stand apart.'));
     } else if (step === 'map') {
       var det = B.detailOf(M);
       out.push(K.H('Detail'));

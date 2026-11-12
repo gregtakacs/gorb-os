@@ -1067,6 +1067,72 @@
   // an OrbTheme.fit verdict as the top bar's dot and the Render panel's badge
   S.fitProps = function (V, tip) { return { dot: V.color, text: V.short, tip: tip || '' }; };
   S.badgeProps = function (V, tip) { return { text: V.text, note: V.note, tip: tip || '', color: V.color, border: V.border, background: V.background }; };
+  /* pomodoro-editor §64.8: the kit's sound pane, offered to any app's editor the way the
+   * colour picker is. Per slot it builds the field rows: a heading, a pick of the app's own
+   * generated recipes (plus `Yours · <file>` once an upload lands, plus `Silent` only where
+   * the slot allows it), a row of Play / Stop chips, an upload row, and a readout of seconds,
+   * samples and the ADPCM bytes the samples will take in the theme. The generation is the
+   * baker's (`GorbBake.synth`), the decoding lives here with the browser, and playback is the
+   * app's (`o.play` / `o.stop`) so the kit itself never opens an AudioContext. Kit is the
+   * object from S.fieldKit(…); o: {recipes, slots, get, set, uploads, upload, play, stop}.
+   * An upload over 4.0 s is refused (the app's `o.upload` says so, naming the seconds), and a
+   * pcm already pinned to full scale is called out — a warning row, never a refusal. */
+  S.Sound = function (Kit, o) {
+    o = o || {};
+    var G = root.GorbBake, SR = (G && G.SOUND_RATE) || 22050;
+    var recipes = list(o.recipes), slots = list(o.slots), uploads = o.uploads || {};
+    var play = o.play || function () {}, stop = o.stop || function () {};
+    var bytesOf = function (pcm) {
+      if (!G || !pcm || pcm.length < 2) return null;
+      try { return G.soundBytes(G.soundEncode(pcm).enc, pcm.length); } catch (e) { return null; }
+    };
+    var peakPinned = function (pcm) {
+      if (!pcm) return false;
+      for (var i = 0; i < pcm.length; i++) if (pcm[i] >= 32767 || pcm[i] <= -32768) return true;
+      return false;
+    };
+    var rows = [];
+    slots.forEach(function (sl) {
+      var key = sl.key, sel = (o.get ? o.get(key) : null) || {}, up = uploads[key];
+      rows.push(Kit.H(sl.label, 'sound:' + key));
+      // the pick: the app's generated recipes, this owner's upload, and silence where allowed
+      var opts = recipes.map(function (r) { return { v: 'rec:' + r.name, label: r.label || r.name }; });
+      if (up) opts.push({ v: 'upload', label: 'Yours · ' + up.name });
+      if (sl.silent) opts.unshift({ v: 'silent', label: 'Silent' });
+      var cur = sel.upload ? 'upload' : sel.rec ? 'rec:' + sel.rec : 'silent';
+      var setSel = function (v) {
+        if (!o.set) return;
+        o.set(key, v === 'silent' ? null : v === 'upload' ? { upload: true } : { rec: String(v).slice(4) });
+      };
+      rows.push(Kit.Sl('Chime', opts.some(function (x) { return x.v === cur; }) ? cur : (opts[0] && opts[0].v) || 'silent', opts, setSel));
+      // what is chosen for this slot, rendered to a pcm: the upload as it is, a recipe through the baker
+      var recipeOf = function (nm) { return recipes.filter(function (r) { return r.name === nm; })[0] || null; };
+      var pcm = null, nm = '';
+      if (sel.upload && up) { pcm = up.pcm; nm = up.name; }
+      else if (sel.rec) {
+        var rr = recipeOf(sel.rec); nm = (rr && (rr.label || rr.name)) || sel.rec;
+        if (rr && G && G.synth) { try { pcm = G.synth(rr, { variant: sel.variant }); } catch (e) { pcm = null; } }
+      }
+      rows.push(Kit.Ch('Play', '', [{ v: 'play', label: '▶ Play' }, { v: 'stop', label: '■ Stop' }], function (v) {
+        if (v === 'stop') stop();
+        else if (v === 'play' && pcm) play(pcm, nm);
+      }));
+      // the owner's own upload
+      rows.push(Kit.Fi('Your own', function (e) {
+        if (o.upload && e && e.target && e.target.files && e.target.files[0]) o.upload(key, e.target.files[0]);
+      }, up ? up.name + ' · ' + (up.pcm.length / SR).toFixed(1) + ' s' : '', 'audio/*'));
+      // the readout: seconds, samples, and the ADPCM bytes the theme will pay for them
+      var rd = 'None';
+      if (pcm) {
+        var secs = pcm.length / SR, by = bytesOf(pcm);
+        rd = secs.toFixed(1) + ' s · ' + pcm.length + ' samples' + (by == null ? '' : ' · ' + by + ' B in the theme');
+      }
+      rows.push(Kit.Rd('In the theme', rd, pcm ? 'The length this chime takes once encoded; a longer sound is room the art cannot use.' : 'Nothing chosen for this slot yet.'));
+      // an upload already at full scale cannot be lifted, only held: a call-out, never a block
+      if (up && peakPinned(up.pcm)) rows.push(Kit.Nt('Headroom', 'This recording reaches full scale: the pane holds it where it is rather than peak-normalising it, so the loudest passages may clip on the glass.'));
+    });
+    return rows;
+  };
   // an OrbTheme.view answer, the calibration and its handlers as Calibrate's props
   S.calProps = function (V, c) {
     return { text: V.text, show: V.showRuler, ruler: { px: V.rulerPx, ticks: V.rulerTicks },

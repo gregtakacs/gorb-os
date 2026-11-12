@@ -55,8 +55,8 @@ Three rules this writer enforces, all of them from `.clinerules:444-458` and
     §4.2 grants them unconditionally, so recording one in the mask would put a
     revocation on the owner's ladder that nothing implements, and would let an
     app's ledger row claim a permission no code consults — the exact complaint
-    D19 made against B3. Only power, net, sd_read, themes and location may be
-    declared.
+    D19 made against B3. Only power, net, sd_read, themes, sound, location and ring may
+    be declared.
   * a half-written file is invisible: `.part` names are refused here, and the
     scan never globs them (§4.1's upload rule).
 
@@ -138,7 +138,7 @@ DEFSTR_MAX = 32                # STRING default bytes, NUL included
 # plausibility bound on art_req — a DECLARED need past the old slot size is a
 # mis-count, not a wish — and the C reader mirrors this number and this rule.
 ART_BYTES_MAX  = 0x003D0000    # 3.81 MB — art_req DECLARATION bound, nothing more
-SETTINGS_MAX   = 16            # the descriptor table the loader is sized for
+SETTINGS_MAX   = 18            # the descriptor table the loader is sized for
 GEOM_BYTES_MAX = 0x00040000    # 256 KB of the app's own records
 
 # P7 (D20/D27): the code region. A `.orbapp` may carry one wasm3 module. Its bytes
@@ -192,16 +192,17 @@ BEAT_MAX_MS = 86400000         # a day; past this the app means "never", and 0
 # this tuple's order ever disagrees: a silent renumber would move every installed
 # app's D19 consent onto a different permission.
 CAP_FREE  = ("time", "config", "ui", "art")     # declarable NEVER
-CAP_OWNER = ("power", "net", "sd_read", "themes", "sound", "location")   # sound: D39, location: flights §6.4; appended
-CAP_BITS  = len(CAP_FREE) + len(CAP_OWNER)      # 10 == CAP_N
+CAP_OWNER = ("power", "net", "sd_read", "themes", "sound", "location", "ring", "press")   # sound: D39, location: flights §6.4, ring: §64.1, press: §64.13; appended
+CAP_BITS  = len(CAP_FREE) + len(CAP_OWNER)      # 12 == CAP_N
 
 # C9's settings types, frozen, in orb_svc.h's orb_set_type_t order: the WIRE types, the
 # gate's. §57's schema types (what the dial and the hub draw) map onto them: number and
 # multi store as int (a scaled integer, a bitmask), text and place as string.
 SET_TYPES = ("int", "enum", "toggle", "string", "secret")   # secret: §43
-UI_TYPES  = ("int", "number", "enum", "multi", "toggle", "text", "place", "secret")
+# color (§64.2): appended last so the seven indices before it hold; it rides the int wire.
+UI_TYPES  = ("int", "number", "enum", "multi", "toggle", "text", "place", "secret", "color")
 UI_WIRE   = {"int": "int", "number": "int", "enum": "enum", "multi": "int", "toggle": "toggle",
-             "text": "string", "place": "string", "secret": "secret"}
+             "text": "string", "place": "string", "secret": "secret", "color": "int"}
 # §57: the schema's own bounds. The dial draws a row as "label:  value" across the
 # glass, so a label and a choice are short; the hub alone shows help and links.
 SCHEMA_MAX   = 6144            # the region's bytes: the normalized JSON
@@ -210,6 +211,8 @@ UNIT_MAX     = 8
 HELP_MAX     = 480
 LINKS_MAX    = 3
 CHOICES_MAX  = 16              # a multi's bitmask fits the int's 16 low bits
+COLOR_MAX    = 0xFFFFFF        # §64.2: a colour is 0xRRGGBB, so 24 bits and no more
+SPECIALS_MAX = 4               # amendment 8: a color's named specials, stored -1 .. -4
 SHOWS        = ("both", "dial", "hub", "none")
 DIST_KEYS    = ("km", "mi", "nm")       # a choice drawn in the orb's distance unit
 HEADER_RE    = re.compile(r"^[A-Za-z0-9-]{1,31}$")
@@ -536,6 +539,9 @@ def normalize_settings(settings):
             ut = "text"                        # the C9 name, read as the schema's
         if ut not in UI_TYPES:
             raise ValueError("setting '%s' type %r is not one of %s" % (sid, ut, ", ".join(UI_TYPES)))
+        if "specials" in s and ut != "color":
+            raise ValueError("setting '%s' declares specials, which only a color setting has: "
+                             "a special is a colour's negative half (§64.2)" % sid)
         e = {"id": sid, "type": ut,
              "label": _utf8(s.get("label", sid if isinstance(sid, str) else ""), LABEL_MAX,
                             "setting '%s' label" % sid)}
@@ -582,6 +588,44 @@ def normalize_settings(settings):
                 e["decimals"] = d
             if "unit" in s:
                 e["unit"] = _utf8(s["unit"], UNIT_MAX + 1, "setting '%s' unit" % sid)
+        elif ut == "color":
+            # §64.2 with amendment 8: the value is 0xRRGGBB in C9's int store, and the app
+            # may name a few specials the owner can pick instead — those are the negative
+            # half of the same int, -1 for the first label, -2 for the second. The gate's
+            # min carries them, so a special the app never declared is out of range and
+            # never reaches NVS. A colour is never a range an app narrows: the dial holds
+            # the 12-name palette (orb_setui.c), the hub's picker holds the whole 24 bits.
+            for k in ("min", "max", "step", "decimals", "unit"):
+                if k in s:
+                    raise ValueError("setting '%s' is a color, which has no %s: the range is "
+                                     "0..0x%X plus its specials, and the dial steps the palette"
+                                     % (sid, k, COLOR_MAX))
+            sp = s.get("specials")
+            n_sp = 0
+            if sp is not None:
+                if not isinstance(sp, list) or not 1 <= len(sp) <= SPECIALS_MAX:
+                    raise ValueError("setting '%s' specials must be a list of 1..%d names, got %r"
+                                     % (sid, SPECIALS_MAX, sp))
+                e["specials"] = [_utf8(x, LABEL_MAX, "setting '%s' special" % sid) for x in sp]
+                n_sp = len(e["specials"])
+            if "default" not in s and "def" not in s:
+                raise ValueError("setting '%s' needs a default: a color has no unset value, "
+                                 "0 is black and a special is -1" % sid)
+            df = s.get("default", s.get("def"))
+            if not isinstance(df, int) or isinstance(df, bool):
+                raise ValueError("setting '%s' default %r is not a color: an integer 0..0x%X, "
+                                 "or one of its specials as -1..-%d"
+                                 % (sid, df, COLOR_MAX, max(n_sp, 1)))
+            if df < 0:
+                if not 1 <= -df <= n_sp:
+                    raise ValueError("setting '%s' defaults to %d, which names a special it "
+                                     "does not declare: it declares %s"
+                                     % (sid, df, "%d (-1..-%d)" % (n_sp, n_sp) if n_sp else "none"))
+            elif df > COLOR_MAX:
+                raise ValueError("setting '%s' defaults to %d, outside 0..0x%X: a color is "
+                                 "24 bits, and the gate would refuse it" % (sid, df, COLOR_MAX))
+            w.update(type="int", min=-n_sp, max=COLOR_MAX, default=df)
+            e.update(min=-n_sp, max=COLOR_MAX, default=df)
         elif ut in ("enum", "multi"):
             ch = s.get("choices")
             if ch is None and ut == "enum":     # a bare range: its values are its labels
@@ -625,7 +669,7 @@ def normalize_settings(settings):
         schema.append(e)
     rows = check_settings(wire)
     for r, e in zip(rows, schema):              # the gate's answer is the schema's numbers
-        if e["type"] in ("int", "number", "enum", "multi", "toggle"):
+        if e["type"] in ("int", "number", "enum", "multi", "toggle", "color"):
             e["min"], e["max"], e["default"] = r[2], r[3], r[4]
         if e["type"] in ("enum", "toggle"):
             e.pop("min", None); e.pop("max", None)

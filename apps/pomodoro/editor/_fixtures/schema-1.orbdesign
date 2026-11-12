@@ -1,0 +1,49 @@
+{
+ "format": "wc-design",
+ "schema": 1,
+ "app": "pomodoro",
+ "appVersion": "v1.7.0",
+ "made": "2026-11-12T00:26:26.650Z",
+ "design": {
+  "name": "Scope",
+  "look": "scope",
+  "groundTop": "#0a1f14",
+  "groundFoot": "#020805",
+  "figInk": "#b4ffd2",
+  "px": 96,
+  "face": "IBM Plex Mono",
+  "bodyFace": "IBM Plex Mono",
+  "quietFace": "IBM Plex Mono",
+  "cap": "T−",
+  "ink": "#b4ffd2",
+  "accent": "#e0b040",
+  "quiet": "#5fbf8a",
+  "parts": {
+   "graticule": true,
+   "scanline": true,
+   "caption": true
+  },
+  "dots": "square",
+  "ring": {
+   "focus": "#4BE38A",
+   "short": "#E0B040",
+   "long": "#5AD1E6"
+  },
+  "overlay": "#4BE38A",
+  "chimes": {
+   "focus": {
+    "rec": "sonar"
+   },
+   "short": {
+    "rec": "sonar",
+    "variant": "brighter"
+   },
+   "long": {
+    "rec": "sonar",
+    "variant": "brighter"
+   }
+  },
+  "uploads": [],
+  "base": "scope"
+ }
+}

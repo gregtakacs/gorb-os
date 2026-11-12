@@ -81,6 +81,22 @@
    "file_band": null,
    "background": "galaxy",
    "arm": "wedge"
+  },
+  "station": {
+   "title": "Station",
+   "band": "Shape and colour: crisp solid silhouettes on a station's white, one red tick.",
+   "single": "Shape and colour: one crisp airliner for every category, in the band colour with a red tick.",
+   "file_band": "#111111",
+   "background": "chart",
+   "arm": "needle"
+  },
+  "sectional": {
+   "title": "Sectional",
+   "band": "Shape and colour: hollow chart symbols in chart blue with a magenta tick.",
+   "single": "Shape and colour: one airliner for every category, drawn hollow in the band colour with a magenta tick.",
+   "file_band": "#2A5DB0",
+   "background": "chart",
+   "arm": "drafting"
   }
  },
  "planes": {
@@ -709,6 +725,218 @@
    "single": {
     "file": "planes/celestial-single.svg",
     "what": "One blue planet for every category",
+    "size": [
+     100,
+     100
+    ],
+    "pivot": [
+     50,
+     50
+    ],
+    "nose": "up"
+   }
+  },
+  "station": {
+   "light": {
+    "file": "planes/station-light.svg",
+    "what": "Light single (A1): high wing, nose prop",
+    "size": [
+     100,
+     100
+    ],
+    "pivot": [
+     50,
+     50
+    ],
+    "nose": "up"
+   },
+   "turboprop": {
+    "file": "planes/station-turboprop.svg",
+    "what": "Turboprop (A2): straight wing, two props",
+    "size": [
+     100,
+     100
+    ],
+    "pivot": [
+     50,
+     50
+    ],
+    "nose": "up"
+   },
+   "bizjet": {
+    "file": "planes/station-bizjet.svg",
+    "what": "Business jet (A2/A3): tail engines, T-tail",
+    "size": [
+     100,
+     100
+    ],
+    "pivot": [
+     50,
+     50
+    ],
+    "nose": "up"
+   },
+   "airliner": {
+    "file": "planes/station-airliner.svg",
+    "what": "Airliner (A3): swept wing, two engines",
+    "size": [
+     100,
+     100
+    ],
+    "pivot": [
+     50,
+     50
+    ],
+    "nose": "up"
+   },
+   "heavy": {
+    "file": "planes/station-heavy.svg",
+    "what": "Heavy (A5): wide body, four engines",
+    "size": [
+     100,
+     100
+    ],
+    "pivot": [
+     50,
+     50
+    ],
+    "nose": "up"
+   },
+   "helicopter": {
+    "file": "planes/station-helicopter.svg",
+    "what": "Rotorcraft (A7): rotor disc, tail boom",
+    "size": [
+     100,
+     100
+    ],
+    "pivot": [
+     50,
+     50
+    ],
+    "nose": "up"
+   },
+   "generic": {
+    "file": "planes/station-generic.svg",
+    "what": "Unknown category: a plain arrowhead",
+    "size": [
+     100,
+     100
+    ],
+    "pivot": [
+     50,
+     50
+    ],
+    "nose": "up"
+   },
+   "single": {
+    "file": "planes/station-single.svg",
+    "what": "One airliner for every category: shaded, flaps and elevators lined",
+    "size": [
+     100,
+     100
+    ],
+    "pivot": [
+     50,
+     50
+    ],
+    "nose": "up"
+   }
+  },
+  "sectional": {
+   "light": {
+    "file": "planes/sectional-light.svg",
+    "what": "Light single (A1): high wing, nose prop",
+    "size": [
+     100,
+     100
+    ],
+    "pivot": [
+     50,
+     50
+    ],
+    "nose": "up"
+   },
+   "turboprop": {
+    "file": "planes/sectional-turboprop.svg",
+    "what": "Turboprop (A2): straight wing, two props",
+    "size": [
+     100,
+     100
+    ],
+    "pivot": [
+     50,
+     50
+    ],
+    "nose": "up"
+   },
+   "bizjet": {
+    "file": "planes/sectional-bizjet.svg",
+    "what": "Business jet (A2/A3): tail engines, T-tail",
+    "size": [
+     100,
+     100
+    ],
+    "pivot": [
+     50,
+     50
+    ],
+    "nose": "up"
+   },
+   "airliner": {
+    "file": "planes/sectional-airliner.svg",
+    "what": "Airliner (A3): swept wing, two engines",
+    "size": [
+     100,
+     100
+    ],
+    "pivot": [
+     50,
+     50
+    ],
+    "nose": "up"
+   },
+   "heavy": {
+    "file": "planes/sectional-heavy.svg",
+    "what": "Heavy (A5): wide body, four engines",
+    "size": [
+     100,
+     100
+    ],
+    "pivot": [
+     50,
+     50
+    ],
+    "nose": "up"
+   },
+   "helicopter": {
+    "file": "planes/sectional-helicopter.svg",
+    "what": "Rotorcraft (A7): rotor disc, tail boom",
+    "size": [
+     100,
+     100
+    ],
+    "pivot": [
+     50,
+     50
+    ],
+    "nose": "up"
+   },
+   "generic": {
+    "file": "planes/sectional-generic.svg",
+    "what": "Unknown category: a plain arrowhead",
+    "size": [
+     100,
+     100
+    ],
+    "pivot": [
+     50,
+     50
+    ],
+    "nose": "up"
+   },
+   "single": {
+    "file": "planes/sectional-single.svg",
+    "what": "One airliner for every category: shaded, flaps and elevators lined",
     "size": [
      100,
      100

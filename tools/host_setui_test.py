@@ -18,6 +18,7 @@ Run:  python3 tools/host_ui_test.py              (rc 0 = pass)
 """
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -27,6 +28,21 @@ ROOT = os.path.dirname(HERE)
 APP = os.path.join(ROOT, "main", "app")
 sys.path.insert(0, HERE)
 import orbapp  # noqa: E402
+
+ORB_SETUI_PALETTE = 12                       # orb_setui.h: the dial's twelve colours
+HUB_TABS = os.path.join(ROOT, "tools", "orb-manager", "web", "tabs.js")
+PALETTE_RE = re.compile(r'\["([A-Za-z]+)", 0x([0-9a-fA-F]{6})\]')
+
+
+def hub_palette():
+    """The hub's copy of the dial's palette, read out of the shipped tabs.js."""
+    with open(HUB_TABS, encoding="utf-8") as f:
+        src = f.read()
+    m = re.search(r"const APS_PALETTE = (\[[\s\S]*?\]);", src)
+    if not m:
+        raise SystemExit("tabs.js carries no APS_PALETTE to mirror: the hub stopped naming the "
+                         "dial's colours, or the table was renamed and this lint must move")
+    return [(name, int(hexs, 16)) for name, hexs in PALETTE_RE.findall(m.group(1))]
 
 SETTINGS = [
     {"id": "range", "type": "enum", "label": "Range",
@@ -43,6 +59,13 @@ SETTINGS = [
     {"id": "place1", "type": "place", "label": "Place 1", "help": "A place on the map."},
     {"id": "key", "type": "secret", "label": "API key", "host": "api.example.com",
      "links": [{"href": "https://example.com/key", "text": "Get one"}]},
+    # §64.2: three colours, the shapes amendment 8 names — a colour default with specials,
+    # an off-palette default the hub set, and a special as the default.
+    {"id": "ring", "type": "color", "label": "Ring", "default": 0x0FA36B,
+     "specials": ["From the look", "Match the app"]},
+    {"id": "edge", "type": "color", "label": "Edge", "default": 0x123456},
+    {"id": "look", "type": "color", "label": "Look", "default": -1, "specials": ["As themed"],
+     "show": "hub"},
 ]
 
 MUTATIONS = [
@@ -54,6 +77,14 @@ MUTATIONS = [
     ("if (q->n_choices < 2) return false;", "if (q->n_choices < 1) return false;"),
     ("else if (!strcmp(t.key, \"step\")) r->step = v > 0 ? v : 1;", "else if (0) ;"),
     ("const char *sp = r->unit[0] && r->unit[0] != '%' &&", "const char *sp = r->unit[0] &&"),
+    # §64.2: the colour row's four rules the checks above read back
+    ('{ 0x0FA36B, "Emerald" }', '{ 0x0FA36B, "Teal" }'),
+    ('snprintf(out, n, "%s", nm ? nm : "custom");', 'snprintf(out, n, "%s", nm ? nm : "");'),
+    ("q->max = q->n_choices + ORB_SETUI_PALETTE;", "q->max = ORB_SETUI_PALETTE;"),
+    ("return p >= 0 ? r->n_choices + p : r->max;", "return p >= 0 ? r->n_choices + p : r->min;"),
+    ("if (pos < r->n_choices) return pos < 0 ? cur : -(pos + 1);",
+     "if (pos <= r->n_choices) return pos < 0 ? cur : -(pos + 1);"),
+    ("if (q->n_choices > ORB_SETUI_SPECIALS) return false;", "if (0) return false;"),
 ]
 
 HARNESS = r"""
@@ -85,6 +116,23 @@ int main(int argc, char **argv)
         char out[40];
         orb_setui_value(ui, &ui->row[atoi(argv[a])], atoi(argv[a + 1]), atoi(argv[a + 2]), out, sizeof out);
         printf("VAL %s\n", out);
+    }
+    for (int i = 0; i < ui->n; i++) {                 /* §64.2: the colour row's walk */
+        const orb_setui_row_t *r = &ui->row[i];
+        if (r->type != ORB_SETUI_COLOR) continue;
+        const int32_t probe[4] = { -1, 0, 0x0FA36B, 0x123456 };
+        for (int p = 0; p < 4; p++) {
+            const int pos = orb_setui_color_pos(r, probe[p]);
+            printf("COLOR %s|%ld|%d|%ld\n", r->id, (long)probe[p], pos,
+                   (long)(pos < 0 ? probe[p] : orb_setui_color_val(r, pos, probe[p])));
+        }
+        for (int pos = r->min; pos <= r->max; pos++) {
+            const int32_t v = orb_setui_color_val(r, pos, 0x123456);
+            char nm[32];
+            orb_setui_value(ui, r, v, 0, nm, sizeof nm);
+            printf("STEP %s|%d|%ld|%s|%d\n", r->id, pos, (long)v, nm,
+                   orb_setui_color_pos(r, v) == pos);
+        }
     }
     char small[12];
     for (int i = 0; i < ui->n; i++)
@@ -126,9 +174,13 @@ def checks(exe, d, quiet=False):
 
     _rows, sch = orbapp.normalize_settings(SETTINGS)
     region = orbapp.pack_schema(sch)
-    out = run(exe, d, region, [0, 1, 1, 2, 25, 0, 1, 0, 0, 3, 210, 0, 4, 90, 0, 5, 5, 0, 6, 0, 0, 2, -5, 0, 5, 0, 0])
+    out = run(exe, d, region, [0, 1, 1, 2, 25, 0, 1, 0, 0, 3, 210, 0, 4, 90, 0, 5, 5, 0, 6, 0, 0, 2, -5, 0, 5, 0, 0,
+                               10, 0x0FA36B, 0, 10, 0x123456, 0, 10, -1, 0, 10, -2, 0, 10, -3, 0,
+                               10, 0, 0, 11, 0x123456, 0, 11, 0, 0, 12, -1, 0])
     rows = [ln[4:].split("|") for ln in out.splitlines() if ln.startswith("ROW ")]
     vals = [ln[4:] for ln in out.splitlines() if ln.startswith("VAL ")]
+    cols = [ln[6:].split("|") for ln in out.splitlines() if ln.startswith("COLOR ")]
+    steps = [ln[5:].split("|") for ln in out.splitlines() if ln.startswith("STEP ")]
     small = [ln[6:] for ln in out.splitlines() if ln.startswith("SMALL ")]
     ck(len(rows) == len(SETTINGS) and [r[0] for r in rows] == [s["id"] for s in SETTINGS],
        "every setting comes back, in the manifest's order")
@@ -145,20 +197,55 @@ def checks(exe, d, quiet=False):
        "a choice per distance unit answers each unit")
     days = next((r for r in rows if r[0] == "days"), [""] * 6)
     ck(days[4:6] == ["0", "31"], "a multi walks its bits: 0..31 for five choices")
-    ck(vals == ["25 mi", "2.5 x", "adsb.lol", "210°", "90%", "Mon, Wed", "hidden", "-0.5 x", "none"],
+    ck(vals == ["25 mi", "2.5 x", "adsb.lol", "210°", "90%", "Mon, Wed", "hidden", "-0.5 x", "none",
+                "Emerald", "custom", "From the look", "Match the app", "custom", "custom",
+                "custom", "custom", "As themed"],
        "values print as the dial shows them: %s" % vals)
+    ck(shows.get("ring") == 3 and shows.get("look") == 2,
+       "a colour shows on the dial and the hub by default; show:\"hub\" is the hub's alone")
     ck(small == ["5 of 5"], "a multi's list that does not fit is its count: %s" % small)
+
+    # ---- §64.2: the colour row ------------------------------------------------
+    ck([c[0] for c in cols] == ["ring"] * 4 + ["edge"] * 4 + ["look"] * 4,
+       "every colour row reports its knob positions for the four probes: %s" % (cols[:1],))
+    want_cols = [
+        ["ring", "-1", "0", "-1"], ["ring", "0", "14", "0"],
+        ["ring", "1024875", "6", "1024875"], ["ring", "1193046", "14", "1193046"],
+        ["edge", "-1", "-1", "-1"], ["edge", "0", "12", "0"],
+        ["edge", "1024875", "4", "1024875"], ["edge", "1193046", "12", "1193046"],
+        ["look", "-1", "0", "-1"], ["look", "0", "13", "0"],
+        ["look", "1024875", "5", "1024875"], ["look", "1193046", "13", "1193046"],
+    ]
+    ck(len(cols) == 12 and cols == want_cols,
+       "a colour's stored value finds its knob position and back: a special it declared, "
+       "black off the palette, Emerald on it, and a hub colour held as custom: %s" % (cols,))
+    ck(all(s[-1] == "1" for s in steps) and len(steps) == 15 + 13 + 14,
+       "every position the dial steps round-trips to itself, on all three rows (%d steps)" % len(steps))
+    ring_steps = [s for s in steps if s[0] == "ring"]
+    ck(len(ring_steps) == 15 and [s[3] for s in ring_steps[:2]] == ["From the look", "Match the app"],
+       "the specials are offered first, by the name the app gave them: %s" % (ring_steps[:3],))
+    ck(len(ring_steps) == 15 and ring_steps[-1][3] == "custom" and ring_steps[-1][1] == "14"
+       and ring_steps[-1][2] == "1193046",
+       "the last position is custom, and pressing it leaves the hub's colour alone: %s" % (ring_steps[-1:],))
+    edge_pal = [(s[3], int(s[2])) for s in steps if s[0] == "edge" and int(s[1]) < ORB_SETUI_PALETTE]
+    ck(len(edge_pal) == ORB_SETUI_PALETTE and edge_pal[0][0] == "Ruby" and edge_pal[-1][0] == "Pearl",
+       "a colour with no specials steps the twelve palette colours in order: %s" % (edge_pal[:2],))
+    hub = hub_palette()
+    ck(hub == edge_pal, "the hub's copy of the palette names the dial's twelve, in its order: "
+                        "%s vs %s" % (hub[:2], edge_pal[:2]))
 
     def refused(doc, what):
         ck(run(exe, d, doc).strip() == "REFUSED", "refused: " + what)
     refused('{"id":"x"}', "not an array")
     refused('[{"id":"x","type":"slider","label":"X"}]', "a type it does not know")
     refused('[{"type":"int","label":"X"}]', "a row with no id")
-    refused(json.dumps([{"id": "s%d" % i, "type": "int", "label": "S"} for i in range(17)]), "seventeen rows")
+    refused(json.dumps([{"id": "s%d" % i, "type": "int", "label": "S"} for i in range(19)]), "nineteen rows")
     refused(json.dumps([{"id": "m", "type": "multi", "label": "M", "choices": ["c%d" % i for i in range(17)]}]),
             "seventeen choices")
     refused('[{"id":"e","type":"enum","label":"E","choices":["one"]}]', "an enum of one choice")
     refused('[{"id":"e","type":"enum","label":"E","choices":[{"km":"a","mi":"b"}]}]', "a unit choice missing nm")
+    refused('[{"id":"c","type":"color","label":"C","specials":["a","b","c","d","e"],"default":0}]',
+            "a colour with five specials")
     return fails
 
 

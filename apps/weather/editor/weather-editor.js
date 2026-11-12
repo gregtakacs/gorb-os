@@ -353,6 +353,10 @@
         fields.push(K.Rg('Dust & scratches', Wv.dust, 0, 1.5, 0.05, function (v) { upP({ dust: +v }); }, Math.round(Wv.dust * 100) + '%'));
       }
       fields.push(K.Nt('', 'The ground is one picture under every screen; the icons and words draw over it.'));
+      fields.push(K.H("The OS's overlay"));
+      fields.push(K.Co("The OS's overlay", B.overlayOf(d), function (nv) { upd('overlay', nv); }, '', 'overlay',
+        { noAuto: true, preset: B.packStart(d.icons.pack)[B.accentKey(d.icons.pack)] }));
+      fields.push(K.Nt('', 'The colour the orb’s own overlays — the ring, the battery, the notices — are drawn in over this look. It starts as the pack’s accent; set it to something else to make the OS’s marks stand apart.'));
     } else if (step === 'icons') {
       var I = d.icons, pk = B.PACKS[I.pack];
       fields.push(K.H('Icon pack'));

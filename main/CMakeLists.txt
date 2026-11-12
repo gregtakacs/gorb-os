@@ -28,12 +28,17 @@ idf_component_register(
         # §59: the carousel's owner order and its rotation; pure decisions, host-tested.
         "app/orb_rotation.c"
         "app/orb_svc.c"
+        # §64.6: the one-shot wake an app may ask for from its service; a pure decision,
+        # host-tested by tools/host_wake_test.py, driven by the thin entry in orb_svc.c.
+        "app/orb_wake.c"
         "display/display.c"
         # C2 (theme-delta plan §6.2): the boot/install overlay — the one painter
         # that runs with LVGL unarmed, on esp_lcd_panel_draw_bitmap alone.
         "display/orb_boot_overlay.c"
         # The system edge arc: a copy's progress round the rim, stamped into the DMA tiles.
         "display/orb_edge_arc.c"
+        # The OS ring any app may set (§64.1): pure core + the LVGL-task glue, stamped like the arc.
+        "display/orb_ring.c"
         # The shell-transition bench (/api/v1/debug/fx): effects painted outside LVGL.
         "display/orb_fx.c"
         "display/orb_strip.c"
@@ -66,6 +71,7 @@ idf_component_register(
         "menu/themes_page.c"
         "menu/theme_strip.c"
         "input/input_router.c"
+        "input/orb_press.c"        # §64.13: the pure lent-press machine, host-proven by tools/host_press_test.py
         "imu/imu.c"
         # D39: the sound engine (I2S + ES8311 + NS4150B and the mixer) and its codec.
         # docs/history/sound-plan.md §4; the clock schedules, this plays.

@@ -17,7 +17,7 @@ check could read them as sizes.
 
   region   file-relative (installed: the region at slot +0x1000 and the banks at
            +0x10000 + art_off — the same dual reading FORMAT 2 documents)
-    +128   index head: n_sections, reserved            (2 words)
+    +128   index head: n_sections, overlay colour    (2 words)
     +136   n records of IDX_WORDS, slug-sorted
     next   blob[0], blob[1], ...  each: counts(4) scalars(26) elements(17*n)
                                   sprites(4*m) slug(padded to words)
@@ -355,16 +355,45 @@ def unpack_blob(blob, abi=GEOM_ABI3):
                         for i, (n, _t) in enumerate(_ot.THEME_FIELDS)}}
 
 
-def pack_index(recs):
-    """The index region: a two-word head, then one fixed record per section."""
-    out = struct.pack("<2I", len(recs), 0)
+def pack_index(recs, overlay=0):
+    """The index region: a two-word head, then one fixed record per section. The
+    head's second word is the theme's overlay colour, 0x01RRGGBB or 0 for none
+    (design §2); the default is the zero every file already holds."""
+    out = struct.pack("<2I", len(recs), _ot._u(overlay))
     for r in recs:
         out += struct.pack(IDX_PACK, *[int(r[f]) for f in IDX_ORDER])
     return out
 
 
+def index_overlay(region):
+    """The index head's second word, raw: the reader helper that never raises
+    about the tag. 0x01RRGGBB names a colour and anything else names none (§64.9)
+    — deciding that is the device's orb_bundle_overlay()'s rule, not this one's,
+    so a build that knows a new tag still reads the word a future writer wrote.
+    A region too short to hold the head answers 0: the readers refuse that file,
+    and the refusal is their sentence, not this helper's business."""
+    if len(region) < 8:
+        return 0
+    return struct.unpack_from("<I", region, 4)[0]
+
+
+def file_overlay(path):
+    """The overlay colour a written container carries, in one call: the read-back
+    the app gates, the shelf check and a bench script all want, and the reason
+    there is one helper rather than three copies of the same four lines. The
+    header is parse_header3's (its own checksum included); the region is sliced
+    the way read_bundle slices it and the word comes back raw, so a caller that
+    also wants the region's checksum to have been verified calls read_bundle."""
+    with open(path, "rb") as f:
+        raw = f.read()
+    h = parse_header3(raw)
+    return index_overlay(raw[h["geom_off"]:h["geom_off"] + h["geom_size"]])
+
+
 def unpack_index(region):
-    """Read the head, and trust it only as far as the region's length agrees."""
+    """Read the head, and trust it only as far as the region's length agrees.
+    The head's second word is the overlay colour (design §2) and this reader
+    still ignores it: its contract is the records, and the word is index_overlay's."""
     n, _rsvd = struct.unpack_from("<2I", region, 0)
     if not 1 <= n <= SECT_MAX:
         raise ValueError("index claims %d sections; a bundle holds 1..%d"
@@ -401,10 +430,14 @@ def pack_header3(name, n_sections, geom_size, geom_crc, art_off, art_size,
     return b"".join(struct.pack("<I", v) for v in hdr)
 
 
-def write_bundle(path, name, sections, serial=0, baked_ms=0, one_section=True, design=b"", baked_s=0):
+def write_bundle(path, name, sections, serial=0, baked_ms=0, one_section=True, design=b"", baked_s=0,
+                 overlay=0):
     """one_section=False is the REJECTION-VECTOR bypass: it lets the fixture generator
     still build the multi-section file the door must refuse. Nothing that handles a
-    theme uses it, and a caller that reaches for it owes a comment saying why."""
+    theme uses it, and a caller that reaches for it owes a comment saying why.
+    `overlay` is the theme's overlay colour (design §2), the index head's second
+    word: 0x01RRGGBB names one and the default 0 names none, which is what every
+    file written before this carries."""
     """Emit one FORMAT 3 `.orbtheme`. `sections` is a list of dicts: slug,
     elements, and optional scalars / sprites / art (bytes). Slug order is
     normalised here — a person reading --inspect should not have to know the
@@ -488,7 +521,7 @@ def write_bundle(path, name, sections, serial=0, baked_ms=0, one_section=True, d
     art_crc_all = zlib.crc32(b"".join(art_blobs)) & 0xFFFFFFFF if any_art else 0
     check_budget(run, art_size)     # the same sums the reader and the device check
 
-    region = bytearray(pack_index(recs))
+    region = bytearray(pack_index(recs, overlay))
     for b in blobs:
         region += b
     geom_crc = zlib.crc32(bytes(region)) & 0xFFFFFFFF

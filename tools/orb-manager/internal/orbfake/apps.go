@@ -59,7 +59,7 @@ const (
 // capNames is orbapp_caps_names's table (orb_app_manifest.c:400) in bit order. The double
 // keeps its own copy for the same reason it keeps its own idOK: sharing the hub's copy
 // would make the two agree by construction instead of by agreement.
-var capNames = [6]string{"power", "net", "sd_read", "themes", "sound", "location"}
+var capNames = [8]string{"power", "net", "sd_read", "themes", "sound", "location", "ring", "press"}
 
 // CardApp is one app the double knows about: the container staged on the card and the
 // flash row it becomes once installed. One struct for both because the firmware walks one

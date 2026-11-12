@@ -143,8 +143,10 @@ const (
 	AppCapThemes   = 1 << 7
 	AppCapSound    = 1 << 8 // D39: the app's own theme sounds, through the OS engine
 	AppCapLocation = 1 << 9 // flight-tracker §6.4: the OS home location
+	AppCapRing     = 1 << 10 // §64.1 / ring-design: the OS ring any app may set (CAP_RING = 10)
+	AppCapPress    = 1 << 11 // §64.13 / alerts-design: a plain press the OS lends (CAP_PRESS = 11)
 
-	appCapOwnerAll = AppCapPower | AppCapNet | AppCapSDRead | AppCapThemes | AppCapSound | AppCapLocation
+	appCapOwnerAll = AppCapPower | AppCapNet | AppCapSDRead | AppCapThemes | AppCapSound | AppCapLocation | AppCapRing | AppCapPress
 )
 
 // AppCapNames is orbapp.CAP_OWNER in orb_cap_t order, so a caps value names itself the
@@ -159,6 +161,8 @@ var AppCapNames = []struct {
 	{AppCapThemes, "themes"},
 	{AppCapSound, "sound"},
 	{AppCapLocation, "location"},
+	{AppCapRing, "ring"},
+	{AppCapPress, "press"},
 }
 
 // AppContainer is one .orbapp's identity: what the hub shows an operator, and the fields
@@ -326,7 +330,7 @@ func ParseApp(body []byte) (*AppContainer, error) {
 	}
 	caps := w(appWCaps)
 	if caps&^appCapOwnerAll != 0 {
-		return nil, fmt.Errorf("orbnet: header caps 0x%X are not a legal declaration — owner caps only (power, net, sd_read, themes, location), and nothing at or above CAP_N",
+		return nil, fmt.Errorf("orbnet: header caps 0x%X are not a legal declaration — owner caps only (power, net, sd_read, themes, sound, location, ring, press), and nothing at or above CAP_N",
 			caps)
 	}
 	// app_id is sha256(slug)'s first four bytes big-endian, and the one cheap defence

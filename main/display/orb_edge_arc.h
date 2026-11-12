@@ -11,6 +11,7 @@
  * bright arc clockwise from twelve over a dim track.
  */
 
+#include <stdbool.h>
 #include <stdint.h>
 
 #ifdef __cplusplus
@@ -28,6 +29,10 @@ void orb_edge_arc_service(void);
 /** display.c, LVGL task: stamp the arc into `rows` rows of a tile in wire order, from glass
  *  row `y0`, columns [x0, x0 + w) of the glass, the tile's stride `w`. */
 void orb_edge_arc_stamp(int32_t y0, int rows, uint16_t *tile, int32_t x0, int32_t w);
+
+/** Is a card copy in progress (the arc is shown, s_shown >= 0)? ring-design §8: the copy
+ *  arc wins the rim while this is true; the display.c rim dispatch reads it every frame. */
+bool orb_edge_arc_shown(void);
 
 #ifdef __cplusplus
 }

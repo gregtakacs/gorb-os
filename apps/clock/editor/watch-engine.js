@@ -120,7 +120,7 @@
   const DENSITY = { all: () => true, even: (h) => h % 2 === 0, quarters: (h) => h % 3 === 0, twelve: (h) => h === 0, none: () => false };
   const NUMERALS = { all: 'All twelve', even: 'Even hours', quarters: 'Quarters', twelve: '12 only', none: 'None' };
   const OPENWORK = { none: 'Solid dial', x: 'X bridges', xarch: 'X bridges + arch', cross: 'Cross', star: 'Six spokes', ring: 'Chapter ring only' };
-  const SURFACES = { enamel: 'Enamel', guilloche: 'Sunburst', azure: 'Azurage', matte: 'Grained', metal: 'Silvered metal', carbon: 'Carbon · woven', forged: 'Carbon · forged', wave: 'Waves' };
+  const SURFACES = { enamel: 'Enamel', guilloche: 'Sunburst', azure: 'Azurage', matte: 'Grained', metal: 'Silvered metal', carbon: 'Carbon · woven', forged: 'Carbon · forged', wave: 'Waves', chart: 'Chart paper' };
   const DIAL_COLORS = {
     cream: ['#efe5cb', '#c9b388'], porcelain: ['#f8f4ea', '#e0d9c8'], ivory: ['#f3ead6', '#d8c9a6'], white: ['#fbfaf7', '#e2e0da'], salmon: ['#efc2a4', '#c98b6a'], sky: ['#c9dcea', '#8eaac2'],
     slate: ['#5a636d', '#2b3036'], navy: ['#2a3f66', '#0f1a2e'], forest: ['#2f5243', '#122219'], burgundy: ['#6b2430', '#2c0b11'], charcoal: ['#2c2823', '#0f0d0a'], black: ['#26241f', '#0c0b09'],
@@ -1064,8 +1064,10 @@
       ] } },
     // flights-map-plan §4: the Sectional set's clock, a flight chart made up: chart paper, a
     // blue railway rose, a magenta and a blue airport ring and a magenta reporting point
-    sectional: { name: 'Sectional', blurb: 'Chart paper · blue rose · magenta airport rings · magenta seconds', hands: 'pencil', handFinish: 'royal', caseMetal: 'steel', design: {
-      color: '#eef1e4', aging: 0, stains: 0, dust: 0, comps: [
+    // §64.16 (owner, 2026-11-12): the chart itself, as every other app's Sectional wears it --
+    // the grid, the dashed magenta line and the magenta edge band, and no watch case round it
+    sectional: { name: 'Sectional', blurb: 'Chart paper · blue rose · magenta airport rings · magenta seconds', hands: 'pencil', handFinish: 'royal', caseStyle: 'none', glassStyle: 'none', caseMetal: 'steel', design: {
+      surface: 'chart', color: '#eef1e4', aging: 0, stains: 0, dust: 0, comps: [
         { id: 'c1', type: 'flare', host: 'dial', angle: 0, dist: 64, rot: 0, size: 6, style: 'print', icon: 'text', text: 'SECTIONAL', font: 'barlow', weight: 'bold', spacing: 0.32, color: '#2a5db0' },
         { id: 'c2', type: 'flare', host: 'dial', angle: 305, dist: 82, rot: 0, size: 15, style: 'print', icon: 'ring', color: '#c2187a' },
         { id: 'c3', type: 'flare', host: 'dial', angle: 128, dist: 84, rot: 0, size: 13, style: 'print', icon: 'ring', color: '#2a5db0' },
@@ -2266,6 +2268,23 @@
       [[0, 0], [0.22, 0.12], [0.4, 0], [0.62, 0.1], [0.8, 0], [1, 0.06]].forEach(([p, a]) => bs.addColorStop(p, 'rgba(255,250,235,' + Math.min(0.5, a * T) + ')'));
       ctx.fillStyle = bs; ctx.fillRect(x - r, y - r, 2 * r, 2 * r);
       waveGrooves(ctx, x, y, r, (lw, a, dy) => { ctx.lineWidth = lw; ctx.strokeStyle = (dy ? 'rgba(255,250,235,' : 'rgba(0,0,0,') + Math.min(0.85, a * T) + ')'; }, en.dark ? 0.7 : 0.45, lite * 1.8);
+    }
+    if (s.style === 'chart') {
+      // The Sectional look's chart (§64.16): the same paper the other apps' Sectional wears --
+      // a fine blue grid at their 46 px pitch, a dashed magenta line corner to corner, and the
+      // magenta band a chart shades in from its edge -- scaled from the 466 px glass to this
+      // dial. Flat paper: no shading, no recess.
+      const k = r / 233, pitch = 46 * k;
+      ctx.lineWidth = Math.max(0.6, k); ctx.strokeStyle = 'rgba(62,90,128,0.28)';
+      for (let g = x - r + 40 * k; g < x + r; g += pitch) { ctx.beginPath(); ctx.moveTo(g, y - r); ctx.lineTo(g, y + r); ctx.stroke(); }
+      for (let g = y - r + 40 * k; g < y + r; g += pitch) { ctx.beginPath(); ctx.moveTo(x - r, g); ctx.lineTo(x + r, g); ctx.stroke(); }
+      ctx.save(); ctx.setLineDash([10 * k, 6 * k]); ctx.lineWidth = 2 * k; ctx.strokeStyle = 'rgba(194,24,122,0.45)';
+      ctx.beginPath(); ctx.moveTo(x - 173 * k, y + 167 * k); ctx.lineTo(x + 173 * k, y - 167 * k); ctx.stroke(); ctx.restore();
+      const band = ctx.createRadialGradient(x, y, 196 * k, x, y, r);
+      band.addColorStop(0, 'rgba(194,24,122,0)'); band.addColorStop(0.55, 'rgba(194,24,122,0.10)'); band.addColorStop(1, 'rgba(194,24,122,0.32)');
+      ctx.fillStyle = band; ctx.fillRect(x - r, y - r, 2 * r, 2 * r);
+      ctx.restore();
+      return;
     }
     surfaceShade(ctx, x, y, r);
     if (recess) {
@@ -5112,6 +5131,7 @@
     ['print', 'numerals', 'numOrient', 'numColor', 'numScale', 'n12Scale', 'nQScale', 'n12Font', 'nQFont', 'n12Color', 'nQColor', 'numStyle', 'plotRim', 'font',
       'perim', 'perimShrink', 'perimColor', 'perimFont', 'perimOrient', 'perimSize', 'perimPos', 'perimRot', 'hv'].forEach((k) => delete d[k]);
     if (!isHex(d.bezelInk)) delete d.bezelInk;
+    if (!isHex(d.overlay)) delete d.overlay;
     if (!d.openwork || d.openwork === 'none') ['openwork', 'owBar', 'owRing', 'owHub', 'owRim', 'owInlay', 'owDepth'].forEach((k) => delete d[k]);
     if (!d.secStyle || d.secStyle === 'classic') delete d.secStyle;
     if (d.noDial !== true) delete d.noDial;   // the dial removed (a part like any other); kept only when true
@@ -5307,12 +5327,28 @@
     return d;
   }
 
+  /* The colour the OS draws its overlays in over this look (§64.9): the owner's, else the first
+   * exposed wheel comp's accent (the engine reads a wheel's accent the same way, and falls back to
+   * #ff2d55 at :1498), else the lume colour, else that same engine constant. A rule, not a table:
+   * a new preset needs no edit here, and one whose art is not an accent is themed the dial's red. */
+  function overlayOf(d) {
+    if (d && isHex(d.overlay)) return d.overlay;
+    const comps = (d && d.comps) || [];
+    for (let i = 0; i < comps.length; i++) {
+      const c = comps[i];
+      if (c && c.type === 'wheel' && c.exposed === true && c.shows !== 'moon' && isHex(c.accent)) return c.accent;
+    }
+    if (d && isHex(d.handLume)) return d.handLume;
+    return '#ff2d55';
+  }
+  function overlayWord(d) { return (0x01000000 | (parseInt(overlayOf(d).slice(1), 16) & 0xFFFFFF)) >>> 0; }
+
   /* The bank depth and the teeth-per-loop constant live in dial-renderer.js; the
    * composer's copy and the packer both read them back through here so no
    * second copy of the number exists to drift. */
   window.WatchEngine = { SIZE: S, PRESETS, SCRATCH, template,
     TEETH_PER_LOOP: window.DialRenderer.TEETH_PER_LOOP,
-    bankFrames: (f) => window.DialRenderer.bankFrames(f), gearTempo: (g) => (Math.abs(g - 7.5) < 0.01 ? 8 : Math.round(g)), LENSES, DIAL_COLORS, COLOR_GROUPS, PLATES, BEZEL, canonDesign, faceFit, SCALE_STYLES, SCALE_GAP, TRACK_OF, FIGURES, scaleFamily, scaleRadius, CAL_DIMS, HAND_DIMS, caseMetalOf: (o) => caseMetal(o), TYPEFACES, OPENWORK, SEC_STYLES, NEW_COMP, TRAINS, HAND_STYLES, HAND_FINISHES, COMP_TYPES, COMP_STYLES, FRAME_COLORS, SHOWS, NUMERALS, SURFACES, COLOR_NAMES, SHAPES, SIZE_RANGE, TURN, CASE_STYLES, CASE_METALS, GLASS_STYLES, HAND_SHOWS, MARKERS, WHEEL_SHOWS, WHEEL_DIGITS, WHEEL_SRC, wheelSpec, CUT_LIES, WHEEL_TICKS, TICK_POS, wheelTicks, WHEEL_RIMS, RIM_POS, wheelRims, WHEEL_FINISHES, INDEX_STYLES, INDEX_SPANS, FACE_SNAPS, normDeg, prime, _holePts: holePts, WHEEL_FORMS, WHEEL_FACES, WHEEL_STYLES, LEGIBLE, LEGIBLE_PX, legible, PANEL, MM_PER_PX, pxMm, REAL_CSS, REAL_Z, RULER_MM, realCss, rulerPx, screenInch, handParts, caseLayer, glassLayer, movement, face, compose, composeLayers, topLayer, liveSeq, faceReach, punchHoles, drawCage, handPreview, moonPhase, cycleDate, previewDate, PREVIEW_MOON, isHex, fmtDate, features, aimAngle, trainAngle, tune, wb: whiteBalance, wbData, FONT_NAME, FONTS, FLARE_ICONS, IMAGES,
+    bankFrames: (f) => window.DialRenderer.bankFrames(f), gearTempo: (g) => (Math.abs(g - 7.5) < 0.01 ? 8 : Math.round(g)), LENSES, DIAL_COLORS, COLOR_GROUPS, PLATES, BEZEL, canonDesign, overlayOf, overlayWord, faceFit, SCALE_STYLES, SCALE_GAP, TRACK_OF, FIGURES, scaleFamily, scaleRadius, CAL_DIMS, HAND_DIMS, caseMetalOf: (o) => caseMetal(o), TYPEFACES, OPENWORK, SEC_STYLES, NEW_COMP, TRAINS, HAND_STYLES, HAND_FINISHES, COMP_TYPES, COMP_STYLES, FRAME_COLORS, SHOWS, NUMERALS, SURFACES, COLOR_NAMES, SHAPES, SIZE_RANGE, TURN, CASE_STYLES, CASE_METALS, GLASS_STYLES, HAND_SHOWS, MARKERS, WHEEL_SHOWS, WHEEL_DIGITS, WHEEL_SRC, wheelSpec, CUT_LIES, WHEEL_TICKS, TICK_POS, wheelTicks, WHEEL_RIMS, RIM_POS, wheelRims, WHEEL_FINISHES, INDEX_STYLES, INDEX_SPANS, FACE_SNAPS, normDeg, prime, _holePts: holePts, WHEEL_FORMS, WHEEL_FACES, WHEEL_STYLES, LEGIBLE, LEGIBLE_PX, legible, PANEL, MM_PER_PX, pxMm, REAL_CSS, REAL_Z, RULER_MM, realCss, rulerPx, screenInch, handParts, caseLayer, glassLayer, movement, face, compose, composeLayers, topLayer, liveSeq, faceReach, punchHoles, drawCage, handPreview, moonPhase, cycleDate, previewDate, PREVIEW_MOON, isHex, fmtDate, features, aimAngle, trainAngle, tune, wb: whiteBalance, wbData, FONT_NAME, FONTS, FLARE_ICONS, IMAGES,
     // uploaded art: the registry the composer persists, and the two draw helpers
     // (drawAsset for a placed backdrop, handSpriteAsset for a sprite-backed hand)
     assetFromFile, assetGet, assetReady, assetKnown, assetFits, assetBytes, assetDump, assetRestore, assetDrop, assetClear,

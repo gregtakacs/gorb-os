@@ -57,6 +57,8 @@
 #include "orb_places.h"         /* orb_places_gen, behind orb.places_gen */
 #include "orb_app_blob.h"       /* radar-plan §2.3: kept bodies */
 #include "orb_map.h"            /* radar-plan §2.4: the OS maps */
+#include "orb_ring.h"           /* §64.1 / ring-design: the OS ring, imp_ring_set/_clear */
+#include "orb_press.h"          /* §64.13 / alerts-design: the OS lends a plain press, imp_press_claim/_lent */
 #include "orb_map_credit.h"     /* radar-plan §2.4: the first map drawn shows the credit */
 #include "orb_map_raster.h"     /* ORB_MAP_W: a view's raster, drawn onto the live layer */
 #include "esp_timer.h"
@@ -170,9 +172,14 @@ typedef struct {
     struct cfg_ent *cfg;         /* the settings mirror, one per declared setting */
     uint32_t       cfg_seen;     /* the broker's cfg_gen the mirror was read at */
     uint32_t       cfg_local;    /* moves on every mirror change: orb.cfg_gen */
-    uint32_t       cfg_pending;  /* writes posted to the worker, not yet landed */
-    bool           cfg_stale;    /* a posted write was refused: re-read at next call */
+    uint32_t       cfg_pending;  /* a flush job posted to the worker, not yet finished */
+    uint32_t       cfg_dirty;    /* settings written in the mirror, not yet stored (bit = index) */
+    bool           cfg_stale;    /* the broker refused a write: re-read at next call */
     bool           stage;        /* the live theme is this app's: it owns the stage */
+    uint32_t       wake_ms;      /* §64.6: this app's last orb_wake uptime stamp, 0 = never;
+                                  * the once-a-minute rate limit. Reset with the rest of the
+                                  * row in slot_release, so a wake does not survive an
+                                  * uninstall and a restarted app gets a fresh minute. */
     uint8_t       *icon;         /* §61: the app's icon (orb.icon), deflated disc, PSRAM */
     uint32_t       icon_n;
     uint16_t       icon_side;
@@ -212,10 +219,23 @@ static void slot_release(wasm_slot_t *s)
     orb_app_net_release(slot_index(s));
     orb_blob_free_all(slot_index(s));
     orb_map_release_app(slot_index(s));
+    orb_ring_drop(slot_index(s));   /* the OS ring: an uninstalled app's record goes with it */
+    orb_press_drop(slot_index(s));  /* §64.13: its lent-press claim, and queued presses, go too */
+    /* §64.6: no explicit wake drop — the memset below zeroes s->wake_ms, so an app that
+     * leaves and comes back has a fresh minute and its last wake is not held against it. */
     if (s->rt) m3_FreeRuntime(s->rt);
     if (s->env) m3_FreeEnvironment(s->env);
     if (s->code) heap_caps_free(s->code);
-    if (s->cfg) heap_caps_free(s->cfg);
+    /* A settings flush in flight reads s->cfg: let it finish (it is the worker's one job and a
+     * few NVS writes), and leak the mirror rather than free it under a flush that overran. */
+    __atomic_store_n(&s->cfg_dirty, 0u, __ATOMIC_RELEASE);
+    for (int w = 0; w < 50 && __atomic_load_n(&s->cfg_pending, __ATOMIC_ACQUIRE) && !orb_jobs_on_worker(); w++)
+        vTaskDelay(pdMS_TO_TICKS(10));
+    if (s->cfg) {
+        if (__atomic_load_n(&s->cfg_pending, __ATOMIC_ACQUIRE))
+            ESP_LOGW(TAG, "a settings flush outlived its app's release: its mirror is kept");
+        else heap_caps_free(s->cfg);
+    }
     if (s->icon) heap_caps_free(s->icon);
     memset(s, 0, sizeof *s);
 }
@@ -443,10 +463,18 @@ static void mirror_load(wasm_slot_t *s)
     s->cfg_local++;
 }
 
+static void cfg_flush_kick(wasm_slot_t *s);
+
 static void mirror_sync(wasm_slot_t *s)
 {
     if (s->app) orb_svc_grants_warm(s->app);   /* the grant word is NVS too */
-    if (!s->app || __atomic_load_n(&s->cfg_pending, __ATOMIC_ACQUIRE)) return;
+    if (!s->app) return;
+    /* Writes the worker could not take yet are retried here, before every guest call; and the
+     * mirror is never re-read over them, or the store's older value would come back as if the
+     * owner had set it (the pomodoro's turn reverting, Bronze 2026-11-11). */
+    if (__atomic_load_n(&s->cfg_dirty, __ATOMIC_ACQUIRE)) cfg_flush_kick(s);
+    if (__atomic_load_n(&s->cfg_pending, __ATOMIC_ACQUIRE) ||
+        __atomic_load_n(&s->cfg_dirty, __ATOMIC_ACQUIRE)) return;
     if (!s->cfg || s->cfg_stale || orb_svc_cfg_gen(s->app) != s->cfg_seen) mirror_load(s);
 }
 
@@ -462,42 +490,60 @@ static int mirror_find(const wasm_slot_t *s, const char *id, bool want_str)
     return -1;
 }
 
-typedef struct {
-    wasm_slot_t *s;
-    int          idx;
-    bool         is_str;
-    int32_t      v;
-    char         str[32];
-} cfg_job_t;
+/* A guest's setting writes reach the store through one flush job at a time. The jobs worker
+ * takes a single job (orb_jobs_post refuses while one is queued or running), so a write per
+ * job lost the second of every pair an app wrote back to back -- and then re-read the store
+ * over it. Now a write marks its setting dirty in the mirror and kicks a flush; a flush that
+ * cannot be posted yet stays dirty and is kicked again from mirror_sync, before the app's next
+ * call. The flush stores each dirty setting's mirror value as it is when the job runs: a write
+ * landing mid-flush sets its bit again, so the last value always reaches the store. */
+typedef struct { wasm_slot_t *s; } cfg_job_t;
 
 static void cfg_job(void *arg)
 {
-    const cfg_job_t *j = arg;
-    wasm_slot_t *s = j->s;
-    if (s->app && j->idx < s->app->n_settings) {
-        const char *id = s->app->settings[j->idx].id;
-        const esp_err_t e = j->is_str ? orb_svc_table()->cfg_set_str(s->app, id, j->str)
-                                      : orb_svc_table()->cfg_set(s->app, id, j->v);
+    wasm_slot_t *s = ((const cfg_job_t *)arg)->s;
+    const uint32_t m = __atomic_exchange_n(&s->cfg_dirty, 0u, __ATOMIC_ACQ_REL);
+    for (int i = 0; s->app && s->cfg && i < s->app->n_settings && i < 32; i++) {
+        if (!(m & (1u << i))) continue;
+        const orb_setting_desc_t *d = &s->app->settings[i];
+        esp_err_t e;
+        if (d->type == ORB_SET_STRING) {
+            char str[sizeof s->cfg[i].str];
+            memcpy(str, s->cfg[i].str, sizeof str);
+            str[sizeof str - 1] = 0;
+            e = orb_svc_table()->cfg_set_str(s->app, d->id, str);
+        } else {
+            e = orb_svc_table()->cfg_set(s->app, d->id, s->cfg[i].v);
+        }
         if (e != ESP_OK) {
             ESP_LOGW(TAG, "\"%s\" setting \"%s\" was not stored: %s",
-                     s->app->slug, id, esp_err_to_name(e));
-            s->cfg_stale = true;
+                     s->app->slug, d->id, esp_err_to_name(e));
+            s->cfg_stale = true;          /* the broker's refusal: its value is the truth */
         }
     }
-    __atomic_sub_fetch(&s->cfg_pending, 1, __ATOMIC_RELEASE);
+    __atomic_store_n(&s->cfg_pending, 0u, __ATOMIC_RELEASE);
 }
 
+/* Post a flush unless one is already on its way; a busy worker leaves the bits for later. */
+static void cfg_flush_kick(wasm_slot_t *s)
+{
+    uint32_t idle = 0u;
+    if (!__atomic_compare_exchange_n(&s->cfg_pending, &idle, 1u, false,
+                                     __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) return;
+    cfg_job_t j = { .s = s };
+    if (orb_jobs_post(cfg_job, &j, sizeof j) != ESP_OK)
+        __atomic_store_n(&s->cfg_pending, 0u, __ATOMIC_RELEASE);   /* retried from mirror_sync */
+}
+
+/* The mirror already holds the new value; this only gets it stored. Never refused for a busy
+ * worker: the write is kept and lands on a later flush. */
 static esp_err_t mirror_post(wasm_slot_t *s, int idx, bool is_str, int32_t v, const char *str)
 {
-    cfg_job_t j = { .s = s, .idx = idx, .is_str = is_str, .v = v };
-    if (is_str) snprintf(j.str, sizeof j.str, "%s", str);
-    __atomic_add_fetch(&s->cfg_pending, 1, __ATOMIC_ACQ_REL);
-    const esp_err_t e = orb_jobs_post(cfg_job, &j, sizeof j);
-    if (e != ESP_OK) {
-        __atomic_sub_fetch(&s->cfg_pending, 1, __ATOMIC_RELEASE);
-        s->cfg_stale = true;
-    }
-    return e;
+    (void)is_str; (void)v; (void)str;
+    if (idx < 0 || idx >= 32) return ESP_ERR_INVALID_ARG;
+    __atomic_or_fetch(&s->cfg_dirty, 1u << idx, __ATOMIC_ACQ_REL);
+    cfg_flush_kick(s);
+    return ESP_OK;
 }
 
 /* ---- the broker, guest -> OS ---------------------------------------------
@@ -926,7 +972,73 @@ m3ApiRawFunction(imp_sound_play)             /* i32 sound_play(u32 slot, u32 fla
     m3ApiReturn(orb_svc_table()->sound_play(s->app, (uint16_t)slot, flags, delay));
 }
 
-m3ApiRawFunction(imp_sound_stop)             /* void sound_stop(i32 h) */
+/* the ring (cap "ring"; ring-design §2, §5). One record by pointer, like map_open: the
+ * guest's offset is checked before it is copied, so a wild pointer is a C2 trap, never a
+ * read of OS memory. The cap gate answers the SAME refusal the other caps use and drops
+ * this app's row (design §5), so an app that reached past its declaration or whose ring
+ * the owner revoked cannot leave a ring standing. The pure ring_set/ring_clear drive the
+ * glue's PSRAM table directly; the service stamps it, the copy arc winning the rim (§8). */
+m3ApiRawFunction(imp_ring_set)             /* i32 ring_set(const orb_ring_t *r) — 16 B, sig i(i) */
+{
+    m3ApiReturnType(int32_t);
+    CALLER();
+    m3ApiGetArg(uint32_t, r_off);
+    if (!r_off) m3ApiReturn(ESP_ERR_INVALID_ARG);         /* orb_ring_set(NULL): the OS's arg error */
+    const uint8_t *p = m3ApiOffsetToPtr(r_off);
+    m3ApiCheckMem(p, 16);
+    if (!orb_grant_ok(s->app, CAP_RING)) {
+        orb_ring_drop(slot_index(s));
+        m3ApiReturn(ESP_ERR_NOT_ALLOWED);
+    }
+    orb_ring_rec rec;
+    memcpy(&rec, p, sizeof rec);
+    ring_set(orb_ring_tbl, orb_ring_owner, orb_ring_seq, ORB_APP_CAP,
+             slot_index(s), &rec, esp_timer_get_time());
+    m3ApiReturn(ESP_OK);
+}
+
+m3ApiRawFunction(imp_ring_clear)           /* i32 ring_clear(void), sig i() */
+{
+    m3ApiReturnType(int32_t);
+    CALLER();
+    if (!orb_grant_ok(s->app, CAP_RING)) {                /* the refusal drops the record too */
+        orb_ring_drop(slot_index(s));
+        m3ApiReturn(ESP_ERR_NOT_ALLOWED);
+    }
+    ring_clear(orb_ring_tbl, orb_ring_owner, ORB_APP_CAP, slot_index(s));   /* the next surfaces */
+    m3ApiReturn(ESP_OK);
+}
+
+/* the lent press (cap "press"; plan §64.13, alerts-design §3.1). A guest that did not
+ * declare the cap gets the SAME refusal every gated import answers — orb_grant_ok records
+ * it, and this app's claim (should it ever have held one) is dropped so a stripped cap
+ * leaves no standing lend — and returns 0, exactly as the design rules. A claimant reads
+ * its queue from orb_service: orb_press_claim(on) asserts or releases the claim, and the
+ * polled orb_press_lent() answers how many plain presses the OS has queued for it. */
+m3ApiRawFunction(imp_press_claim)           /* i32 press_claim(int32_t on), sig i(i) */
+{
+    m3ApiReturnType(int32_t);
+    CALLER();
+    m3ApiGetArg(int32_t, on);
+    if (!orb_grant_ok(s->app, CAP_PRESS)) {                 /* the refusal drops the claim too */
+        orb_press_drop(slot_index(s));
+        m3ApiReturn(0);
+    }
+    m3ApiReturn(orb_press_claim(slot_index(s), on ? 1 : 0));
+}
+
+m3ApiRawFunction(imp_press_lent)            /* i32 press_lent(void), sig i() */
+{
+    m3ApiReturnType(int32_t);
+    CALLER();
+    if (!orb_grant_ok(s->app, CAP_PRESS)) {
+        orb_press_drop(slot_index(s));
+        m3ApiReturn(0);
+    }
+    m3ApiReturn(orb_press_lent(slot_index(s)));
+}
+
+m3ApiRawFunction(imp_sound_stop)           /* void sound_stop(i32 h) */
 {
     CALLER();
     m3ApiGetArg(int32_t, h);
@@ -1055,6 +1167,23 @@ m3ApiRawFunction(imp_power_request)          /* i32 power_request(u32 timeout_s,
     m3ApiGetArg(uint32_t, timeout_s);
     m3ApiGetArg(int32_t, hold);
     m3ApiReturn(orb_svc_table()->power_request(s->app, timeout_s, hold != 0));
+}
+
+/* §64.6 orb_wake: a one-shot wake of a dimmed glass, an app off the glass lighting it
+ * for a glance. The clock is the same uptime-ms count idle_dim decides on; the
+ * once-a-minute record is the row's own wake_ms, stamped here (never in the broker) and
+ * only when the ask lights the glass, so a refusal — no cap, quiet hours, the owner's
+ * display off, or too soon — leaves the minute untouched and the next ask is judged
+ * against the last wake that actually happened. slot_release zeroes it with the row. */
+m3ApiRawFunction(imp_wake)                   /* i32 wake(u32 seconds) */
+{
+    m3ApiReturnType(int32_t);
+    CALLER();
+    m3ApiGetArg(uint32_t, seconds);
+    const uint32_t now = (uint32_t)(esp_timer_get_time() / 1000);
+    const esp_err_t e = orb_svc_table()->wake(s->app, seconds, now, s->wake_ms);
+    if (e == ESP_OK) s->wake_ms = now;
+    m3ApiReturn(e);
 }
 
 /* network: CAP_NET, the broker's own gate word (the broker's http_get entry is the
@@ -1874,6 +2003,10 @@ static const wasm_bind_t s_binds[] = {
     { "orb", "armed",         "v(i)",      imp_armed },
     { "orb", "knob_dial",     "v()",       imp_knob_dial },
     { "orb", "sound_play",    "i(iii)",    imp_sound_play },
+    { "orb", "ring_set",      "i(i)",      imp_ring_set },
+    { "orb", "ring_clear",    "i()",       imp_ring_clear },
+    { "orb", "press_claim",   "i(i)",      imp_press_claim },   /* §64.13: claim/release the lent press */
+    { "orb", "press_lent",    "i()",       imp_press_lent },    /* §64.13: how many presses the OS queued */
     { "orb", "sound_stop",    "v(i)",      imp_sound_stop },
     { "orb", "sound_active",  "i(i)",      imp_sound_active },
     { "orb", "home",          "i(i)",      imp_home },
@@ -1899,6 +2032,7 @@ static const wasm_bind_t s_binds[] = {
     { "orb", "units_gen",     "i()",       imp_units_gen },
     { "orb", "units_pressure", "i()",      imp_units_pressure },
     { "orb", "power_request", "i(ii)",     imp_power_request },
+    { "orb", "wake",          "i(i)",      imp_wake },
     { "orb", "net_request",   "i(iiiiii)", imp_net_request },
     { "orb", "net_header",    "i(iii)",    imp_net_header },
     { "orb", "json_begin",    "i(ii)",     imp_json_begin },
@@ -2084,6 +2218,7 @@ static bool wasm_call(wasm_slot_t *s, int entry, const void *argv[], uint32_t ar
         snprintf(why, sizeof why, "%s: %s", s_entries[entry].export_name, r);
         m3_ResetErrorInfo(s->rt);
         orb_svc_note_fault(s->app, why);
+        orb_press_drop(slot_index(s));   /* §64.13: a trapped claimant loses its lent presses now */
         if (s->app && orb_svc_faulted(s->app)) {
             ESP_LOGE(TAG, "\"%s\" failed twice — engine state released until reinstall",
                      s->app->slug);
@@ -2589,7 +2724,8 @@ static const char *wasm_opt_value(orb_app_t *app, int idx)
 }
 
 /* The knob edits a row in its own steps: 0..n over min..max for a number, the choices
- * for an enum and a toggle (wrapping), off and on for a multi's item. */
+ * for an enum and a toggle (wrapping), off and on for a multi's item, and the specials
+ * then the palette then "custom" for a colour (§64.2: it never edits raw hex). */
 static bool wasm_opt_edit(orb_app_t *app, int idx, orb_opt_edit_t *e)
 {
     wasm_slot_t *s = slot_of_app(app);
@@ -2605,6 +2741,10 @@ static bool wasm_opt_edit(orb_app_t *app, int idx, orb_opt_edit_t *e)
         const int32_t st = r->step > 0 ? r->step : 1;
         *e = (orb_opt_edit_t){ .min = 0, .max = (r->max - r->min) / st, .value = (v - r->min) / st,
                                .step_max = 10, .wrap = false };
+    } else if (r->type == ORB_SETUI_COLOR) {
+        const int p = orb_setui_color_pos(r, v);
+        *e = (orb_opt_edit_t){ .min = r->min, .max = r->max, .value = p < 0 ? r->max : p,
+                               .step_max = 1, .wrap = true };
     } else {
         *e = (orb_opt_edit_t){ .min = r->min, .max = r->max, .value = v, .step_max = 1, .wrap = true };
     }
@@ -2615,11 +2755,10 @@ static bool wasm_opt_edit(orb_app_t *app, int idx, orb_opt_edit_t *e)
 static int32_t page_store(orb_app_t *app, wasm_slot_t *s, const page_row_t *pr, int32_t v)
 {
     const orb_setui_row_t *r = &app->ui->row[pr->row];
-    if (pr->kind == PG_ITEM) {
-        const int i = page_cfg(s, r);
-        const int32_t cur = i < 0 ? 0 : s->cfg[i].v;
-        return v ? cur | (1 << pr->choice) : cur & ~(1 << pr->choice);
-    }
+    const int i = page_cfg(s, r);
+    const int32_t cur = i < 0 ? 0 : s->cfg[i].v;
+    if (pr->kind == PG_ITEM) return v ? cur | (1 << pr->choice) : cur & ~(1 << pr->choice);
+    if (r->type == ORB_SETUI_COLOR) return orb_setui_color_val(r, v, cur);
     if (r->type == ORB_SETUI_INT || r->type == ORB_SETUI_NUMBER)
         return r->min + v * (r->step > 0 ? r->step : 1);
     return v;

@@ -404,7 +404,33 @@ ok(!('tourbillon_n' in B.verifyBundle3(B.bakeClock3({ name: 'x', plate: PL,
 refuses(() => B.bakeClock3({ name: 'x', plate: PL, shadows: [SK] }),
         'no hand there', 'a shadow with no hand under it is refused, not silently drawn');
 refuses(() => B.bank3([{ rgba: mkPlane(4, 4), w: 4, h: 5 }]), 'RGBA',
-        'a plane whose bytes do not match its own extent is refused before an offset is spent');
+         'a plane whose bytes do not match its own extent is refused before an offset is spent');
+
+// ---- 7a. the overlay colour (§64.9): the region's second head word --------------
+// The OS draws its own overlays (the ring, the battery, the notices) in this one colour, and it
+// rides the geometry region's second head word — the tag 0x01 names a colour, anything else names
+// none (deciding that is the device's orb_bundle_overlay()'s rule, not a writer's). The editor's
+// bake hands a concrete word for every theme; this pins that the browser's writer lays it, its
+// reader reads it back, and the clock's own bakeClock3 forwards it to the head.
+{
+  const OVL = (0x01135c79) >>> 0;   // the owner's #135c79
+  const back = B.verifyBundle3(B.writeBundle3(Object.assign({}, model, { overlay: OVL })).bytes);
+  ok(back.overlay === OVL, 'an overlay colour round-trips through the browser writer and reader',
+     '0x' + (back.overlay >>> 0).toString(16));
+  // an untouched container still carries the zero every existing file holds
+  ok(B.verifyBundle3(js).overlay === 0, 'a bundle written without one reads back as none (§64.9)',
+     '0x' + (B.verifyBundle3(js).overlay >>> 0).toString(16));
+  // a non-colour tag rides the word unchanged: the reader carries, it does not decide (§8.3)
+  const BAD = (0x02ff0000) >>> 0;
+  const bad = B.verifyBundle3(B.writeBundle3(Object.assign({}, model, { overlay: BAD })).bytes);
+  ok(bad.overlay === BAD, 'a bad tag is stored raw, not refused or zeroed (absence is the device\u2019s call)',
+     '0x' + (bad.overlay >>> 0).toString(16));
+  // and the clock's own bake forwards it into the head, so a baked watch carries the accent (§8.6)
+  const cbk = B.verifyBundle3(B.bakeClock3({ name: 'Ovl', plate: PL, hands: [HK], order: [0], overlay: OVL }).bytes);
+  ok(cbk.overlay === OVL, 'bakeClock3 forwards the overlay word onto the region head',
+     '0x' + (cbk.overlay >>> 0).toString(16));
+}
+
 
 // ---- 7b. the §31 keyframe plate bank: N whole-panel planes under one row ----
 // The bake's claim is the dialect's own: one row, planes contiguous behind the

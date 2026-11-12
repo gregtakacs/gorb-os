@@ -63,6 +63,7 @@
 #include "display.h"            /* display_lvgl_passes: the store waits out a render before it unmaps */
 #include "freertos/task.h"      /* vTaskDelay: the park wait rides ticks, not a spin */
 #include "mbedtls/sha256.h"  /* theme_id(): sha256 over "slug/name" -> the card filename */
+#include "orb_ring.h"            /* the ring holder keeps its display art (§64.15) */
 
 static const char *TAG = "orb_theme";
 
@@ -487,6 +488,7 @@ static void use_no_art(void)
     s_geo.n_bank     = 0;
     s_geo.art_size   = 0;
     s_geo.blob_off   = 0;
+    s_geo.overlay    = 0;   /* §64.9: the compiled-in pair names no overlay colour */
     s_geo.from_container = false;
     s_geo.name[0] = '\0';
     if (s_snd) s_snd->n = 0;
@@ -529,6 +531,14 @@ const char *orb_theme_source(void)         { return s_source; }
 
 /* D50: the app the live theme belongs to (its one section's slug), "" when none. */
 const char *orb_theme_live_slug(void)      { return s_live_sec ? s_live_sec->slug : ""; }
+
+/* §64.9 / overlay-design §4: the live theme's overlay colour. One static read — not the flash,
+ * not the region (adopt_bundle3 frees it) — masked again here so an unassigned tag can never
+ * reach a caller as a colour, and 0 unless the geo came from a container, not the pair. */
+uint32_t orb_theme_overlay(void)
+{
+    return s_geo.from_container ? s_geo.overlay : 0;
+}
 /* The residency verdict the boot ladder reached: an adopted, drawable theme whose
  * geometry is published. Not the same question as art_bank_ready() — that answers
  * only whether a span is mapped, and a mapped span whose clock projection refused
@@ -885,6 +895,16 @@ static void order_touch(const char *slug)
     strlcpy(s_cache.order[s_cache.n_order++], slug, sizeof s_cache.order[0]);
     s_cache_dirty = true;
     if (esp_timer_get_time() - s_cache_saved_us >= ORDER_SAVE_US) cache_save();
+}
+
+/* §64.15 (owner, 2026-11-11): the app holding the OS ring keeps its display art, as the app on
+ * the glass does: a running pomodoro is one turn away and must not come back plain. NULL when
+ * no app holds the ring. */
+static const char *ring_keep(void)
+{
+    orb_ring_status_t r;
+    orb_ring_status(&r);
+    return r.owner;
 }
 
 /* The order as orb_pool_evictions takes it: least recent first. */
@@ -2778,7 +2798,7 @@ esp_err_t orb_theme_install_bundle(const char *id, char *why, size_t whysz)
                 ? orb_pool_evictions_kind(s_pool, slug, ORB_POOL_DISPLAY,
                                           orb_pool_round(entry_size) + v_need -
                                           (old_v >= 0 && v_need ? s_pool->e[old_v].size : 0),
-                                          ord, nord, NULL, &mask)
+                                          ord, nord, ring_keep(), &mask)
                 : ORB_POOL_ERR_ARG;
         if (f) {
             char sent[96];
@@ -2848,7 +2868,7 @@ esp_err_t orb_theme_install_bundle(const char *id, char *why, size_t whysz)
     char gone[ORB_POOL_ENTRIES][ORB_POOL_SLUG_MAX];
     uint32_t ngone = 0;
     const int pr = orb_pool_reserve(&s_pool_io, s_pool, &s_pool_which, slug, ORB_POOL_DISPLAY,
-                                    entry_size, ord, nord, NULL, pg, gone, &ngone);
+                                    entry_size, ord, nord, ring_keep(), pg, gone, &ngone);
     previews_sync(slug, gone, ngone);
     uint32_t art_crc = 0;
     esp_err_t e = pr ? ESP_FAIL : ESP_OK;
@@ -3020,6 +3040,11 @@ static esp_err_t adopt_bundle3(const orb_bundle3_hdr_t *h, const uint32_t *raw,
         return ESP_ERR_INVALID_CRC;
     }
     const orb_bundle_sec_t *sec = sole_sec(&b);
+    /* §64.9: read the overlay colour now, while the parse's copy is still live. The region is
+     * freed before the s_geo fill below ("the parse's copy dies with the map", :3060), so the
+     * word has to be copied out to a scalar here — the same reason values_off is an offset.
+     * orb_bundle_overlay already masks: 0 when the theme names none, else 0x01RRGGBB. */
+    const uint32_t overlay = orb_bundle_overlay(&b);
     if (!sec) {
         /* Not damage — an empty bundle. The row's sentence says so, because "the
          * file I stored is not on the wall" without a reason is what an owner reads
@@ -3128,6 +3153,7 @@ static esp_err_t adopt_bundle3(const orb_bundle3_hdr_t *h, const uint32_t *raw,
     s_geo.values_off = io.out_values_off;     /* radar-plan §2.11 */
     s_geo.values_len = io.out_values_len;
     s_geo.values_ver = io.out_values_ver;
+    s_geo.overlay = overlay;                  /* §64.9: the colour the parse carried, copied out */
     s_geo.from_container = true;
     /* The §16 line the owner reads after every install: what the projection
      * actually put on the dial, from the table the bundle carried. A carriage

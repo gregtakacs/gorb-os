@@ -220,7 +220,7 @@ ART_JUNK = 0x003D0001          # over the OLD slot cap; install_decide must not
 N_SLOTS = 8                    # APPS_N_SLOTS == ORB_APP_CAP
 STR_WORST = 32                 # sizeof orb_setting_desc_t.def_str
 NUM_WORST = 4                  # one nvs_set_u32
-SETTINGS_MAX = 16              # ORBAPP_SETTINGS_MAX
+SETTINGS_MAX = 18              # ORBAPP_SETTINGS_MAX
 
 # A refusal is checked by the fragment of its sentence that names WHICH gate fired
 # (the wording itself belongs to the reader mirror, not to this decision).

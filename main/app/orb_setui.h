@@ -14,14 +14,20 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define ORB_SETUI_MAX       16      /* ORBAPP_SETTINGS_MAX: one row per declared setting */
+#define ORB_SETUI_MAX       18      /* ORBAPP_SETTINGS_MAX: one row per declared setting */
 #define ORB_SETUI_CHOICES   16      /* orbapp.py CHOICES_MAX: a multi's bitmask fits 16 bits */
 #define ORB_SETUI_LABEL     24      /* orbapp.py LABEL_MAX: bytes, NUL included */
 #define ORB_SETUI_UNIT       9      /* orbapp.py UNIT_MAX + NUL */
 
 /* orbapp.py UI_TYPES, in that order. */
 enum { ORB_SETUI_INT = 0, ORB_SETUI_NUMBER, ORB_SETUI_ENUM, ORB_SETUI_MULTI, ORB_SETUI_TOGGLE,
-       ORB_SETUI_TEXT, ORB_SETUI_PLACE, ORB_SETUI_SECRET, ORB_SETUI_TYPES };
+       ORB_SETUI_TEXT, ORB_SETUI_PLACE, ORB_SETUI_SECRET, ORB_SETUI_COLOR, ORB_SETUI_TYPES };
+
+/* §64.2 (ring-design §9): the dial's colour palette, and the most specials an app may
+ * name for a colour setting (ring-design amendment 8). A colour is stored 0xRRGGBB; a
+ * special is the int -1 for the first name, -2 for the second. */
+#define ORB_SETUI_PALETTE  12
+#define ORB_SETUI_SPECIALS  4
 
 /* Where a setting shows: orbapp.py SHOWS as bits (both = dial | hub, none = 0). */
 enum { ORB_SETUI_DIAL = 1, ORB_SETUI_HUB = 2 };
@@ -33,10 +39,12 @@ typedef struct {
     uint8_t  type;                   /* ORB_SETUI_* */
     uint8_t  show;                   /* ORB_SETUI_DIAL | ORB_SETUI_HUB */
     uint8_t  decimals;               /* number: the value is stored times 10^decimals */
-    uint8_t  n_choices;              /* enum, multi, toggle */
-    int32_t  min, max, step;         /* int, number: the stored range and the knob's step */
+    uint8_t  n_choices;              /* enum, multi, toggle; color: its specials (≤ 4) */
+    int32_t  min, max, step;         /* int, number: the stored range and the knob's step.
+                                      * color, like enum/multi: the KNOB's positions, 0..max */
     /* each choice's label for the orb's distance unit (km, mi, nm), as offsets + 1 into
-     * the pool; a plain choice names one label three times */
+     * the pool; a plain choice names one label three times. A color setting declares no
+     * choices, so its pool slots hold its specials' names in order (-1 is the first). */
     uint16_t choice[ORB_SETUI_CHOICES][3];
 } orb_setui_row_t;
 
@@ -60,6 +68,28 @@ bool orb_setui_parse(const char *json, size_t len, orb_setui_t *ui);
 const char *orb_setui_choice(const orb_setui_t *ui, const orb_setui_row_t *r, int i, int dist);
 
 /** A stored value as the dial and the hub show it: "1.5 x", "25 mi", "on", "Mon, Wed",
- *  "2 of 5". Text kinds (text, place, secret) are not drawn here and answer "". */
+ *  "2 of 5". A colour answers its palette name, one of the setting's own specials, or
+ *  "custom" for a hub-set colour off the palette. Text kinds (text, place, secret) are
+ *  not drawn here and answer "". */
 void orb_setui_value(const orb_setui_t *ui, const orb_setui_row_t *r, int32_t v, int dist,
                   char *out, size_t n);
+
+/** The dial's palette (§9.1), in the order the knob steps it. Name "" / rgb 0 past the
+ *  end; `orb_setui_palette_find` answers the index of an exact colour, -1 for none. */
+const char *orb_setui_palette_name(int i);
+uint32_t orb_setui_palette_rgb(int i);
+int orb_setui_palette_find(uint32_t rgb);
+
+/** A colour setting's special i (0-based, the stored value -1 - i) as its app names it;
+ *  "?" out of range. */
+const char *orb_setui_special(const orb_setui_t *ui, const orb_setui_row_t *r, int i);
+
+/** The knob's position for a stored colour: its specials first (0 .. n-1), then the
+ *  palette (n .. n+11), then the off-palette "custom" slot (r->max), which a hub-set
+ *  colour starts on and stays on until a press moves it. -1 for a value no position
+ *  holds (a special past the setting's own). */
+int orb_setui_color_pos(const orb_setui_row_t *r, int32_t v);
+
+/** A knob position back to the value the table stores. The "custom" position keeps
+ *  `cur` as it is, so turning onto it and pressing changes nothing. */
+int32_t orb_setui_color_val(const orb_setui_row_t *r, int pos, int32_t cur);

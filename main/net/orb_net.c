@@ -97,6 +97,7 @@ static uint8_t s_ap_last_mac[6];    /* DIAGNOSTIC: the client we are watching */
 #include "orb_mdns.h"  /* the _orb._tcp advertisement the hub browses for */
 #include "orb_map_raster.h" /* /api/v1/debug/map_bench, radar-plan R0 */
 #include "orb_glass.h"      /* /status: the glass region (§6.21) */
+#include "orb_ring.h"       /* /status: the OS ring's owner, fraction, effect, on_glass (§64.1) */
 
 static const char *TAG = "orb_net";
 
@@ -2558,14 +2559,14 @@ static esp_err_t h_status(httpd_req_t *req)
             if (!a) continue;           /* P4a: the span is positional — a free card
                                          * slot answers NULL and the next slot is a
                                          * different app, not the end of the list */
-            char grants[64];
+            char grants[80];
             int goff = 0;
             grants[0] = '\0';
-            char declared[64];
+            char declared[80];
             int doff = 0;
             declared[0] = '\0';
             static const orb_cap_t OC[] = { CAP_POWER, CAP_NET, CAP_SD_READ,
-                                            CAP_THEMES, CAP_SOUND, CAP_LOCATION };
+                                            CAP_THEMES, CAP_SOUND, CAP_LOCATION, CAP_RING, CAP_PRESS };
             _Static_assert(sizeof OC / sizeof OC[0] == CAP_N - CAP_POWER,
                            "the ledger names every owner cap");
             const uint32_t gm = orb_svc_grants(a);
@@ -2651,6 +2652,14 @@ static esp_err_t h_status(httpd_req_t *req)
     heap_caps_get_info(&dma_info, MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA);
     uint32_t sd_dma_free, sd_dma_min, sd_dma_falls;   /* the card's own DMA arena */
     orb_sd_dma_stats(&sd_dma_free, &sd_dma_min, &sd_dma_falls);
+    /* The OS ring's state, read live so the ledger names its owner and says whether it
+     * is actually on the glass this instant (ring-design §8). /fb reads the mirror and so
+     * still cannot see it — the ring, like the copy arc, is stamped only into the tiles. */
+    orb_ring_status_t rstat;
+    orb_ring_status(&rstat);
+    int cv_state = 0;
+    uint32_t cv_fails = 0, cv_rec = 0;
+    orb_bg_canvas_state(&cv_state, &cv_fails, &cv_rec);
     const int n = snprintf(json, sizeof(json),
         "{\"state\":\"%s\",\"ip\":\"%s\",\"mac\":\"%s\",\"rssi\":%d,\"fw\":\"%s\",\"idf\":\"%s\","
         "\"heap_internal\":%u,\"heap_internal_largest\":%u,\"heap_psram\":%u,"
@@ -2662,6 +2671,17 @@ static esp_err_t h_status(httpd_req_t *req)
         "\"psram\":{\"largest\":%u,\"free_blocks\":%u,\"used_blocks\":%u,\"min_free\":%u},"
         /* §6.21: the glass buffers' own region; fallbacks counts asks it could not meet */
         "\"glass\":{\"size\":%u,\"free\":%u,\"largest\":%u,\"fallbacks\":%u,\"tiles\":%d},"
+        /* §64.1: the OS ring any app may set. The status gains a "ring" object, in the
+         * shape "ring":{"owner":"slug","fraction":N,"effect":"steady|flash|breathe",
+         * "on_glass":bool}: owner names the latest caller (null when none), fraction is
+         * its latest fraction, effect the record's, and on_glass true only when a record
+         * is owned, its effect is on this instant, and the tiled path is live (the
+         * untiled fallback funds no rim). /fb reads the mirror and so cannot see it. */
+        "\"ring\":{\"owner\":\"%s\",\"fraction\":%d,\"effect\":\"%s\",\"on_glass\":%s},"
+        /* The dial's gear canvas (the delta bank's working memory, on the glass heap): "held",
+         * "missing" (the keyframe is shown and a retry runs every 2 s while on the glass) or
+         * "none" for a dial that wants none; refusals since boot and retries that recovered. */
+        "\"canvas\":{\"state\":\"%s\",\"fails\":%u,\"recovered\":%u},"
         /* §43: the deepest the wasm apps' shared native stack has run, in bytes of
          * its ORB_WASM_NATIVE_STACK. The interpreter's depth is measured, not assumed. */
         "\"wasm_stack_peak\":%u,"
@@ -2749,6 +2769,9 @@ static esp_err_t h_status(httpd_req_t *req)
         (unsigned)ps_info.allocated_blocks, (unsigned)ps_info.minimum_free_bytes,
         (unsigned)gl.size, (unsigned)gl.free, (unsigned)gl.largest, (unsigned)gl.fallbacks,
         display_tiles(),
+        rstat.owner ? rstat.owner : "null", rstat.fraction, rstat.effect,
+        rstat.on_glass ? "true" : "false",
+        cv_state > 0 ? "held" : cv_state < 0 ? "missing" : "none", (unsigned)cv_fails, (unsigned)cv_rec,
         (unsigned)orb_wasm_stack_peak(),
         (unsigned)orb_wasm_budget_slips(),
         (unsigned)lvm_total, (unsigned)lvm_free, (unsigned)lvm_biggest, (unsigned)lvm_peak,

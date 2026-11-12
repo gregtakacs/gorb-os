@@ -41,8 +41,8 @@ my_app/
 |---|---|
 | `slug` | the app's id: lowercase a–z, digits and `_`, at most 23 characters. It names the card file, the settings namespace and the slot |
 | `title` | what the dial shows |
-| `caps` | the owned capabilities the app uses: `power`, `net`, `sd_read`, `themes`, `sound`, `location`. The declaration is the consent (D19): an import the app did not declare answers a refusal, and the owner can revoke any of them on the dial |
-| `settings` | up to 16, each with a type and a label; the OS draws them on the dial and in Orb Manager ([Settings](#settings)) |
+| `caps` | the owned capabilities the app uses: `power`, `net`, `sd_read`, `themes`, `sound`, `location`, `ring`, `press`. The declaration is the consent (D19): an import the app did not declare answers a refusal, and the owner can revoke any of them on the dial |
+| `settings` | up to 18, each with a type and a label; the OS draws them on the dial and in Orb Manager ([Settings](#settings)) |
 | `period_ms` | the fastest beat the app may ask for, at least 1000. Leave it out and the app never ticks |
 | `memory_kb` | the module's linear memory, 64 (default) or 128 |
 | `shelf` | in this repo only: `true` puts the app on the hub's shelf; `false` builds and checks it but keeps it off |
@@ -163,7 +163,7 @@ the knob or in its theme editor. Each entry in `settings`:
 | Field | For | Meaning |
 |---|---|---|
 | `id` | all | the key: a–z, 0–9 and `_`, at most 15 characters |
-| `type` | all | `int`, `number`, `enum`, `multi`, `toggle`, `text`, `place` or `secret` |
+| `type` | all | `int`, `number`, `enum`, `multi`, `toggle`, `text`, `place`, `secret` or `color` |
 | `label` | all | what the dial and the hub call it, at most 23 bytes. Required |
 | `help` | all | a sentence or two for the hub, at most 480 bytes |
 | `links` | all | `[{"href", "text"}]` shown under the help, at most 3 |
@@ -172,7 +172,8 @@ the knob or in its theme editor. Each entry in `settings`:
 | `step`, `unit` | int, number | the knob's step (default 1) and a suffix such as `"°"`, `"%"` or `" s"` |
 | `decimals` | number | 1 to 3: the value is stored as an integer times 10^decimals |
 | `choices` | enum, multi, toggle | the option labels in value order. A label may be `{"km": …, "mi": …, "nm": …}`, picked by the orb's distance unit. A toggle's two are its off and on (default `"off"`, `"on"`) |
-| `default` | all but secret | int and number: a value; enum: an index; multi: a list of indices; toggle: 0 or 1; text and place: a string |
+| `specials` | color | at most 4 names (each at most 23 bytes) the owner may pick instead of a colour, offered first on the dial and as buttons beside the hub's picker. Stored as `-1`, `-2`, … — what each one means is the app's business; the OS only stores it and draws its label |
+| `default` | all but secret | int and number: a value; enum: an index; multi: a list of indices; toggle: 0 or 1; text and place: a string; color: required, a `0xRRGGBB` int `0..0xFFFFFF` or one of its specials as a negative |
 | `host`, `header` | secret | the one host the OS may send it to, and the header it rides (default `x-api-key`) |
 
 How each type reads in the app:
@@ -182,6 +183,12 @@ How each type reads in the app:
 - `text` and `place` with `orb_cfg_get_str`, at most 31 characters. A `place` is
   picked on the hub from the city list or typed as coordinates, and stored
   `Name|lat,lon` with two decimals.
+- `color` with `orb_cfg_get`: stored as the int `0xRRGGBB`, the C9 `int` type and nothing
+  new. The dial steps the OS's fixed 12-colour palette (Ruby, Ember, Amber, Lime,
+  Emerald, Teal, Sky, Sapphire, Indigo, Violet, Magenta, Pearl — an off-palette colour
+  the hub set reads `custom` and stands until you press), the hub picks any colour
+  freely, and a declared special reads back as the negative you stored. A transparency
+  needs no new type either: an `int` `0..100` with `unit: "%"` is an opacity.
 - `secret` never: see [Secrets](#secrets).
 
 On the dial, an app's page lists the settings shown there in manifest order. A press
@@ -260,12 +267,14 @@ Each install slot holds at most 100 KB of container. The shipped apps run 9–26
 ## The knob
 
 The orb has one input, a knob that turns and presses. Every app uses it the same way,
-so someone who has learned one app has learned them all (plan §51):
+so someone who has learned one app has learned them all. The rules in full are
+[docs/app-design-rules.md](../docs/app-design-rules.md); this section is how to follow them.
 
 | Gesture | Means | Who handles it |
 |---|---|---|
 | Turn | move along the app's **one dial** | the app |
 | Press | the app's **one action** | the app |
+| Press-and-turn | the app's **second axis**, if it has one (radar's zoom) | the app, if it exports `orb_push` |
 | Hold | leave the app for the app list | the OS, always |
 
 **Design your app as one dial centred on a home view.** Home is what someone glancing at
@@ -278,13 +287,18 @@ anticlockwise.
 - **Turning never needs a press first.** No modes, no "press to edit, then turn". If the
   app has two things to scrub, it has two sides of the dial.
 - **A press does one thing, always the same thing**, wherever the dial stands: the next
-  place, the next range. Keep the dial's position across it, so the press compares
+  place, start or pause. Keep the dial's position across it, so the press compares
   rather than resets.
 - **The ends stop.** Nothing wraps, so an overshoot never jumps to the other side.
 - **Home is sticky.** A fast spin stops on home, so one flick back from anywhere is home.
 - **Idle goes home.** After 20 s without a turn the app shows home again, and so does
   coming back to the app.
 - **Never use the hold.** It is the way out of every app, and it must always work.
+- **Clockwise is forward**: later, more, next, closer. Radar's dial turns clockwise into
+  the forecast, and its zoom clockwise closer.
+- **A dial that changes a value is a value dial**, not a view: a timer's remaining time.
+  Its change stays, nothing returns on idle, and the ends are the value's own limits. An
+  app has one dial, a view dial or a value dial.
 - **Settings are declared, not drawn.** Anything that is not a dial or its one action is
   a setting in app.json, and the OS draws it ([Settings](#settings)), never the app.
 - **A click must show at once.** The OS draws a frame straight after every knob event, so
@@ -324,6 +338,21 @@ poll), keep the selection by identity and set `s_dial.pos` from it before each t
 `apps/flights/main.c` does in `dial_sync()`. `orb_knob_dial` is an OS v1.2.11 import: an
 older OS refuses an app that calls it. The template (`orbsdk.py new`) starts as a dial.
 
+**Press-and-turn.** Export `orb_push` and the OS sends it every click turned while the
+knob is held down, one by one and unaccelerated, instead of to `orb_input`; exporting it is
+the opt-in, with no manifest key. Show the choice as it moves and land it on the let-go,
+`orb_push(0)` (from OS v1.2.27, 400 ms after the knob comes up). A press or a plain turn
+while choosing lands it too. `apps/radar/main.c` (`orb_push`, `zoom_step`) is the model.
+
+```c
+ORB_EXPORT("orb_push") void orb_push(int32_t delta)
+{
+    if (!delta) { choice_lands(); redraw(); return; }    /* let go */
+    s_want = clamp(s_want + delta, 0, N - 1);           /* clockwise: next, closer */
+    redraw();                                           /* show the choice in the header */
+}
+```
+
 ## The ABI
 
 [sdk/orb.h](sdk/orb.h) documents every call. In short:
@@ -342,8 +371,10 @@ older OS refuses an app that calls it. The template (`orbsdk.py new`) starts as 
 | network | `orb_net_request/info/read/header/free`, `orb_net_cred`, `orb_net_get` | `net` |
 | sound | `orb_sound_play/stop/active` | `sound` |
 | location | `orb_home`, `orb_home_gen` | `location` |
+| the ring | `orb_ring_set`, `orb_ring_clear` ([sdk/orb.h](sdk/orb.h), "The ring") | `ring` |
+| the lent press | `orb_press_claim`, `orb_press_lent` ([sdk/orb.h](sdk/orb.h), "The lent press") | `press` |
 | units | `orb_units`, `orb_units_gen`, and the `orb_*_from_*` and `orb_*_label` helpers | free (OS v1.2.10) |
-| power | `orb_power_request` | `power` |
+| power | `orb_power_request`, `orb_wake` ([sdk/orb.h](sdk/orb.h), "Waking the glass") | `power` |
 | stage | `orb_stage_*` ([sdk/orb_stage.h](sdk/orb_stage.h)) | free; draws only for the theme's own app |
 
 Strings cross the boundary as NUL-terminated pointers into the app's own memory,
@@ -398,6 +429,102 @@ Best practice, which the shipped apps follow:
 - **Expect a quick return.** A carousel the owner opens and closes is a suspend
   and a resume a few seconds apart. Keep state across `orb_suspend` (don't free your
   data), so `orb_resume` redraws what you had rather than starting over.
+
+### The ring
+
+The OS ring (`orb_ring_set`, `orb_ring_clear`, cap `ring`) is a thin progress arc the OS
+draws around the rim of the glass, over whatever is on it — the same look as the copy
+arc and the theme rings, and the copy arc's contract: stamped into the DMA tiles as they
+leave, **never into the mirror**, so `/fb` cannot see it and a themed app keeps animating
+under it. The app never draws it; it only says what it should be, so an app off the glass
+can set it from `orb_service` and draw nothing itself.
+
+```c
+orb_ring_t r = { .fraction = 620, .effect = ORB_RING_STEADY,
+                 .arc = 0xFF0FA36Bu, .track = 0x331A1A22u, .period_ms = 0 };
+orb_ring_set(&r);   // ESP_OK; ESP_ERR_INVALID_ARG for NULL; ESP_ERR_NOT_ALLOWED without the cap
+orb_ring_clear();   // give the rim back
+
+r.start = 270; r.flags = ORB_RING_CCW;      // the same 62%, anticlockwise from three
+orb_ring_set(&r);
+```
+
+- **The declaration is the consent, and the owner revokes it per app.** `ring` goes in
+  `app.json`'s `caps`; a call before the app declared it, or after the owner revoked it on
+  the dial's Permissions page, answers `ESP_ERR_NOT_ALLOWED` and drops that app's record.
+- **One ring, latest caller owns it.** Each app keeps one last record; the OS shows the
+  most recent. `orb_ring_clear` (or an uninstall) surfaces the next most recent, and a
+  clear with nothing owned is a harmless no-op.
+- **Colours are `0xAARRGGBB`** (the canvas's convention): the arc's and track's alpha ride
+  the top byte, and an alpha of 0 draws nothing. `effect` is `ORB_RING_STEADY`, `_FLASH`
+  or `_BREATHE`; the OS clamps the period (breathe is slow only) whatever you ask.
+- **`flags` is the record's byte-1 ask (rim-design §2).** `ORB_RING_MATCH` (`0x01`) asks the ring to
+  wear the theme: the OS takes the arc's and track's RGB from the live theme's overlay colour
+  (§64.9), each keeping its own alpha — a muted band stays muted. `ORB_RING_CCW` (`0x02`) is the
+  direction, below. `ORB_RING_BACKED` (`0x04`) is the alert backing, below. Set nothing there (`0`)
+  and the ring keeps the colours you sent. The OS masks the
+  byte to `ORB_RING_FLAGS_MASK` (`0x07`): a bit it does not know is dropped, not honoured. An OS
+  without this slice ignores the byte entirely: it does nothing with it, so the ring simply draws in
+  your own colours.
+- **`ORB_RING_BACKED` paints the whole rim band, and the opacity byte does not apply (plan §64.12).**
+  A breathing or flashing arc blended over a busy app at the ring's own opacity is lost, so an alert
+  that must be seen backs itself: the OS draws the entire band black and the arc on top of it at full
+  opacity, whatever the arc's and track's alpha bytes say. Breathe fades the colour toward black (to a
+  floor, never into the app beneath), flash switches between the colour and the black band. The lanes
+  already cover the whole band, so a backed ring costs no extra pixels. Backed is legal with any
+  effect; a solid backed record is just a black band under your arc. A record without the bit is drawn
+  exactly as before.
+- **`ORB_RING_CCW` and `start` say which way the arc runs and where it begins.** `start` is degrees
+  clockwise from twelve (`0` twelve, `90` three, `270` nine); the arc is the wedge from there —
+  `[start, start + fraction·360°)` clockwise, `(start − fraction·360°, start]` anticlockwise — and
+  the track is the rest, so the same fraction drains the other way round the rim. The OS wraps any
+  start into `0..359` (`360` is twelve again, `-45` is 315). Both words are the record's, so an
+  older OS ignores them and draws the twelve-clockwise arc you always got.
+- **The copy arc wins.** While a card copy is running the rim shows the copy arc and your
+  ring holds its state; the first frame after the copy stamps your ring again — no work
+  for the app, and `/status`'s `ring.on_glass` is false while it waits.
+
+### The lent press
+
+While one app holds the claim (`orb_press_claim(1)`, cap `press`), the OS **lends it a plain
+press** — the tap that would otherwise arm or act on whatever is on the glass right now. A
+press the OS spends on the claimant is queued and never reaches the app under your finger, so
+a background app (a timer, a tracker) can count taps without stealing the face you are looking
+at. Only a bare tap is lent: a turn, a press-and-turn and a hold stay exactly where they were,
+and a press that only woke a dimmed or dark glass is never lent. The claim is best-effort and
+last-writer-wins — one claimant at a time, and re-claiming on your own beat keeps the queue you
+have not read. Your `orb_service()` polls `orb_press_lent()` for how many are waiting and takes
+them one at a time. The queue is bounded at `ORB_PRESS_MAX_LENT` (4): the fifth unread press is
+swallowed, never replayed as a flood when you finally wake, so a claimant that sleeps through a
+burst sees four, not a backlog. The OS confirms a lent press by pulsing **your own ring** for a
+beat (cap `ring`; a claimant with no ring gets no pulse). Release the claim with
+`orb_press_claim(0)` — and lose it automatically on a fault, an uninstall, or the owner
+revoking `press` on the dial.
+
+```c
+int32_t orb_press_claim(int32_t on);   // 1 when this app now holds the claim (0 without the cap)
+int32_t orb_press_lent(void);          // how many plain presses the OS has queued (0 without the cap)
+```
+
+### Waking the glass
+
+`orb_wake` (cap `power`) is a one-shot wake: an app **off the glass** lights a dimmed
+face for a few seconds — the pomodoro's "wake the screen" at a phase end, so a timer
+that fires while another app shows still gets a glance. It is not a hold
+(`orb_power_request` only holds the glass while the app is *on* it, revoked the moment
+it leaves): `orb_wake` goes through the idle-dim module's own request path, so idle-dim
+stays the policy owner, and it never switches apps, never takes the glass, and never
+changes what is drawn on it. `seconds` is clamped to **3..15** whatever you ask. It
+answers `ESP_OK` when the glass is lit (or already was); `ESP_ERR_NOT_ALLOWED` without
+the cap, during the OS's **quiet hours**, or with the display switched off by its owner;
+and `ESP_ERR_INVALID_STATE` when *this app* woke the glass **less than 60 s ago** — at
+most one wake a minute per app, and that minute is per app and resets when the app
+leaves the glass. Callable from `orb_service` on or off the glass.
+
+```c
+orb_wake(8);   // light the glass for 8 s (clamped 3..15). ESP_OK | ESP_ERR_NOT_ALLOWED
+               // (no cap / quiet hours / display off) | ESP_ERR_INVALID_STATE (< 60 s)
+```
 
 ### Secrets
 

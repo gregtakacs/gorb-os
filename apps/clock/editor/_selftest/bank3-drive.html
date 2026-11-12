@@ -74,7 +74,7 @@
     // baked on the classic train: no cage, no carriage row, no seconds indication at all.
     IT.state.cfg = { ...(P.cfg || {}) }; IT.state.train = P.train || 'classic';
     IT.state.caseStyle = P.caseStyle || 'polished'; IT.state.caseMetal = P.caseMetal || 'auto';
-    IT.state.glassStyle = 'domed';
+    IT.state.glassStyle = P.glassStyle || 'domed';
     pump();
     IT.buildMovement();
     if (!await settle()) throw new Error(id + ' never settled (rendering=' + IT.rendering + ' gt=' + IT.gt.length + ' B=' + IT.B + ')');
@@ -158,6 +158,14 @@
     if (ORDER) {
       await reDrive('order', (d1) => { d1.order = ORDER.split(',').map((s) => s.trim()).filter(Boolean); });
       say('order ' + ORDER);
+    }
+    // ?overlay=#rrggbb (§64.9): put the owner's OS-overlay colour on the mounted design, so a
+    // shelf bake carries that colour instead of the look's accent. canonDesign keeps it only as a
+    // hex, so the driver's bake and the editor's bake agree on what a half-typed value means.
+    const OVL = QP.get('overlay');
+    if (OVL) {
+      await reDrive('overlay', (d1) => { d1.overlay = OVL; });
+      say('overlay ' + OVL);
     }
     // ?strip=<type>: take every part of that type off the design first (strip=hand: a dial with no hands)
     const STRIP = QP.get('strip');

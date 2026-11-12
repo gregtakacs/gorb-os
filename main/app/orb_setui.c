@@ -7,9 +7,58 @@
 #include "orb_json.h"
 
 static const char *const TYPES[ORB_SETUI_TYPES] = {
-    "int", "number", "enum", "multi", "toggle", "text", "place", "secret",
+    "int", "number", "enum", "multi", "toggle", "text", "place", "secret", "color",
 };
 static const char *const DIST[3] = { "km", "mi", "nm" };
+
+/* §9.1: the twelve colours the dial steps, in that order, one name each. The single
+ * source of truth for the palette — the hub copies these names as text (tabs.js), and
+ * host_setui_test.py pins the two tables against each other. An app's colour setting
+ * stores whichever of these its owner picked, as the int itself. */
+static const struct { uint32_t rgb; const char *name; } s_palette[ORB_SETUI_PALETTE] = {
+    { 0xD62828, "Ruby" },     { 0xF77F00, "Ember" },    { 0xFFC300, "Amber" },
+    { 0x80B918, "Lime" },     { 0x0FA36B, "Emerald" },  { 0x0FBFB1, "Teal" },
+    { 0x2E93E4, "Sky" },      { 0x2D5BD0, "Sapphire" }, { 0x5B4BFF, "Indigo" },
+    { 0x9B43E0, "Violet" },   { 0xD93B8E, "Magenta" },  { 0xEDEDF3, "Pearl" },
+};
+
+const char *orb_setui_palette_name(int i)
+{
+    return (i >= 0 && i < ORB_SETUI_PALETTE) ? s_palette[i].name : "";
+}
+
+uint32_t orb_setui_palette_rgb(int i)
+{
+    return (i >= 0 && i < ORB_SETUI_PALETTE) ? s_palette[i].rgb : 0;
+}
+
+int orb_setui_palette_find(uint32_t rgb)
+{
+    for (int i = 0; i < ORB_SETUI_PALETTE; i++) if (s_palette[i].rgb == rgb) return i;
+    return -1;
+}
+
+const char *orb_setui_special(const orb_setui_t *ui, const orb_setui_row_t *r, int i)
+{
+    return orb_setui_choice(ui, r, i, 0);
+}
+
+int orb_setui_color_pos(const orb_setui_row_t *r, int32_t v)
+{
+    if (v < 0) {                                  /* a special it declared, -(v + 1) 0-based */
+        const int i = -(v + 1);
+        return i < r->n_choices ? i : -1;
+    }
+    const int p = orb_setui_palette_find((uint32_t)v);
+    return p >= 0 ? r->n_choices + p : r->max;                  /* else the custom slot */
+}
+
+int32_t orb_setui_color_val(const orb_setui_row_t *r, int pos, int32_t cur)
+{
+    if (pos < r->n_choices) return pos < 0 ? cur : -(pos + 1);
+    if (pos < r->n_choices + ORB_SETUI_PALETTE) return (int32_t)orb_setui_palette_rgb(pos - r->n_choices);
+    return cur;                                   /* "custom": the hub's value stands */
+}
 
 size_t orb_setui_bytes(size_t json_len)
 {
@@ -62,8 +111,9 @@ bool orb_setui_parse(const char *json, size_t len, orb_setui_t *ui)
             continue;
         }
         if (!r || t.depth != 2) continue;
-        if (k == ORB_JSON_ARR && !strcmp(t.key, "choices")) {
-            /* strings, or {"km", "mi", "nm"} objects, each a choice */
+        if (k == ORB_JSON_ARR && (!strcmp(t.key, "choices") || !strcmp(t.key, "specials"))) {
+            /* strings, or {"km", "mi", "nm"} objects, each a choice. A color setting
+             * carries no choices: the same slots hold its specials' names, in order. */
             for (;;) {
                 const int32_t c = orb_json_next(&j, &t);
                 if (c == ORB_JSON_ARR_END && t.depth == 2) break;
@@ -123,6 +173,12 @@ bool orb_setui_parse(const char *json, size_t len, orb_setui_t *ui)
             if (!q->n_choices) return false;
             q->min = 0;
             q->max = (int32_t)((1u << q->n_choices) - 1u);
+        } else if (q->type == ORB_SETUI_COLOR) {
+            /* the knob's positions, not the stored range: the specials the app named,
+             * then the twelve palette colours, then "custom" for what the hub set */
+            if (q->n_choices > ORB_SETUI_SPECIALS) return false;
+            q->min = 0;
+            q->max = q->n_choices + ORB_SETUI_PALETTE;
         }
     }
     return true;
@@ -157,6 +213,16 @@ void orb_setui_value(const orb_setui_t *ui, const orb_setui_row_t *r, int32_t v,
     case ORB_SETUI_TOGGLE:
         snprintf(out, n, "%s", orb_setui_choice(ui, r, v, dist));
         break;
+    case ORB_SETUI_COLOR: {
+        const char *nm = NULL;
+        if (v < 0) nm = (-v - 1) < r->n_choices ? orb_setui_special(ui, r, -v - 1) : NULL;
+        else {
+            const int p = orb_setui_palette_find((uint32_t)v);
+            if (p >= 0) nm = s_palette[p].name;
+        }
+        snprintf(out, n, "%s", nm ? nm : "custom");            /* §9: never raw hex here */
+        break;
+    }
     case ORB_SETUI_MULTI: {
         int on = 0;
         for (int i = 0; i < r->n_choices; i++) on += (v >> i) & 1;

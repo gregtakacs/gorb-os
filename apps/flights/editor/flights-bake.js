@@ -65,7 +65,7 @@
 
   /* ---- the design (schema 2) and the presets: the five families, each on its ground ---- */
   var SCHEMA = 2;
-  var PRESETS = ['modern', 'silver', 'brass', 'blueprint', 'paper', 'celestial'];
+  var PRESETS = ['modern', 'silver', 'brass', 'blueprint', 'paper', 'celestial', 'station', 'sectional'];
   // each ground's own scope: the old art's numbers, now the design's
   var SCOPES = {
     scope: { ground: 'scope', face: '#0E2A1A', detail: '#1C4A2E', grid: true,
@@ -153,22 +153,48 @@
     silver: { frame: 'silver' }, brass: { frame: 'brass' }, blueprint: { frame: 'drafting' }, paper: { frame: 'chart' },
     celestial: { frame: 'pill', heading: 'trail', arm: { kind: 'line', colour: '#C9BEFF', tailColour: '#8C7BFF', tail: 28, halo: 4 } },
   };
-  // the starts beyond the plane families: Sectional (flights-map-plan §4) flies the Modern
-  // silhouettes in a flight chart's inks
+  // the starts beyond the plane families: Sectional (flights-map-plan §4) on a flight chart's
+  // ground, Station (flights-map-plan §6) on the railway clock's white, each now with its own
+  // plane family in the art
   // one name per look in every app (owner, 2026-11-08), in the radar's and the weather's order;
   // Station joins the tracker for parity (flights-map-plan §6)
   var STARTS = ['modern', 'paper', 'brass', 'blueprint', 'station', 'celestial', 'silver', 'sectional'];
   var LOOK_TITLES = { modern: 'Scope', paper: 'Paper', brass: 'Brass', blueprint: 'Blueprint', station: 'Station', celestial: 'Celestial',
     silver: 'Silver', sectional: 'Sectional' };
-  var START_INFO = { sectional: { band: 'Flat silhouettes in a flight chart’s inks on chart paper: magenta, blue and yellow.' },
-    station: { band: 'The railway clock’s look: black silhouettes on white, a red arm.' } };
   var SECTIONAL_BANDS = ['#8A8A8A', '#A0A4AA', '#C2187A', '#D9480F', '#2E7D32', '#2A5DB0', '#1F2A44'];
+  /* §64.16 (owner, 2026-11-12): the plane's colour is its altitude, and each look carries its
+   * own seven (ground, no altitude, < 3k, < 10k, < 20k, < 30k, 30k +) inside its palette rather
+   * than one neon set for all. The order reads the same in every look -- the low bands warm,
+   * the high ones cool -- and each set keeps enough spread to tell the bands apart at 38 px. */
+  var LOOK_BANDS = {
+    modern:    ['#3E5F48', '#6E8F78', '#FFB23C', '#E8E05A', '#A8FF6A', '#3DFF8E', '#9FFFE0'],   // Scope: phosphor, amber low
+    paper:     ['#9A9184', '#B8AE9E', '#B3261E', '#C9731C', '#7A8B2A', '#2E7D5B', '#2F5C8C'],   // Paper: the chart-maker's inks
+    brass:     ['#6B6250', '#8F8670', '#E0603C', '#E0A43C', '#D8CC7A', '#8FB59A', '#4FA38A'],   // Brass: copper, brass, verdigris
+    blueprint: ['#6F8FB8', '#9FB8D8', '#FFD27A', '#FFF1B0', '#F4F8FF', '#A8E4FF', '#6CD0FF'],   // Blueprint: pencil yellow to cyan
+    celestial: ['#6A6390', '#8C84B8', '#FF8A5C', '#FFD27A', '#FFF3C8', '#C9BEFF', '#9FD0FF'],   // Celestial: ember, gold, starlight, ice
+    silver:    ['#6B737D', '#8A929C', '#FF7A6B', '#FFC27A', '#F2F4F7', '#A9C9E8', '#7FC8FF'],   // Silver: a soft red and amber, then steel blues
+  };
   function startInfo(k) {
-    var f = A().families[k] || {}, x = START_INFO[k] || {};
-    return { title: LOOK_TITLES[k] || f.title || k, band: x.band || f.band || '', single: f.single };
+    var f = A().families[k] || {};
+    return { title: LOOK_TITLES[k] || f.title || k, band: f.band || '', single: f.single };
   }
   var clone = function (o) { return JSON.parse(JSON.stringify(o)); };
   function scopeOf(ground) { return clone(SCOPES[ground] || SCOPES.scope); }
+
+  // the colour the OS draws its overlays in over this look (§64.9): the owner's, else the design's
+  // own word accent (live, so an owner's earlier change to it moves the default), else that ground's
+  // preset accent. Fallback the scope green #39FF14.
+  var OVL_HEX = /^#[0-9a-f]{6}$/i;
+  function overlayOf(d) {
+    if (d && OVL_HEX.test(d.overlay)) return d.overlay;
+    var a = d && d.words && d.words.accent;
+    if (OVL_HEX.test(a)) return a;
+    var g = (d && d.scope && d.scope.ground) || 'scope';
+    a = WORDS[g] && WORDS[g].accent;
+    return OVL_HEX.test(a) ? a : '#39FF14';
+  }
+  // the container's word (§2): the tag 0x01 names a colour, and only overlayOf answers the string
+  function overlayWord(d) { return (0x01000000 | (parseInt(overlayOf(d).slice(1), 16) & 0xFFFFFF)) >>> 0; }
   function armOf(kind, period) { return Object.assign({ kind: kind, period: period || 8, length: 1 }, clone(ARM_LOOKS[kind] || ARM_LOOKS.wedge)); }
   // the blank start (§12.9): every part present, in plain greys on a plain ground, so nothing
   // is a family's look to work against; its own values are what the colour rows offer back
@@ -198,7 +224,7 @@
     d.scope = scopeOf('sectional'); d.scope.image = null;
     d.arm = Object.assign(armOf('line', 8), { colour: '#C2187A', tailColour: '#C2187A', lead: '#C2187A', tail: 18, halo: 0,
       shadow: { on: false, opacity: 0.6, blur: 2.5 }, layer: 'under', length: 1 });
-    Object.assign(d.planes, { family: 'modern', colour: true, bands: SECTIONAL_BANDS.slice(), ground: 0.7, groundGrey: false,
+    Object.assign(d.planes, { family: 'sectional', colour: true, bands: SECTIONAL_BANDS.slice(), ground: 0.7, groundGrey: false,
       sel: '#1F2A44', em: '#E00000', selStyle: 'ring', emStyle: 'double', dots: { show: 'bands', colour: '#1F2A44', size: 6 },
       shadow: { on: true, opacity: 0.35, blur: 1.5 } });
     d.words = clone(WORDS.sectional);
@@ -219,7 +245,7 @@
       home: { colour: '#E3000F', size: 4 } };
     d.arm = Object.assign(armOf('line', 8), { colour: '#E3000F', tailColour: '#E3000F', lead: '#E3000F', tail: 0, halo: 0,
       shadow: { on: false, opacity: 0.6, blur: 2.5 }, layer: 'under', length: 1 });
-    Object.assign(d.planes, { family: 'modern', colour: true, bands: ['#8A8A8A', '#B0B0B0', '#E3000F', '#D9480F', '#2E7D32', '#1F4E8C', '#111111'],
+    Object.assign(d.planes, { family: 'station', colour: true, bands: ['#8A8A8A', '#B0B0B0', '#E3000F', '#D9480F', '#2E7D32', '#1F4E8C', '#111111'],
       ground: 0.7, groundGrey: false, sel: '#111111', em: '#E3000F', dots: { show: 'bands', colour: '#111111', size: 6 } });
     d.words = { face: 'Jost', size: 18, body: '#111111', accent: '#E3000F', accent2: null, quiet: '#555555', warning: '#E3000F' };
     d.frames = { style: 'square', edge: 1.5, pad: 8, fill: '#FFFFFF', opacity: 0.94, line: '#111111', image: null, corner: 4,
@@ -237,7 +263,7 @@
       name: LOOK_TITLES[fam] || f.title, base: fam,
       scope: scopeOf(bg),
       arm: armOf(f.pair[1], 8),
-      planes: { family: fam, form: 'types', size: a.plane_px, colour: true, bands: a.bands.map(function (b) { return b[1]; }),
+      planes: { family: fam, form: 'types', size: a.plane_px, colour: true, bands: (LOOK_BANDS[fam] || a.bands.map(function (b) { return b[1]; })).slice(),
         ground: 0.6, groundGrey: false, heading: { style: X.heading || 'none', length: 1, colour: '#E8E4FF' }, sel: look.sel, em: '#FF2020', custom: { image: null },
         selStyle: 'ring', selWidth: 2, emStyle: 'ring', emWidth: 2.5, shadow: { on: false, opacity: 0.6, blur: 2.5 },
         dots: { show: 'bands', colour: '#D0D0D0', size: 6 } },
@@ -1024,6 +1050,7 @@
     // the bake time rides the header (word 10) so the hub can tell a newer copy from an older one;
     // it is not content, so the serial above stays the design's own
     var out = S.finish({ name: d.name || 'Flights', slug: 'flights', serial: o.serial || serialOf(d, o.design), abi: GB.GEOM_ABI6, design: o.design || null,
+                         overlay: overlayWord(d),
                          bakedS: o.bakedS != null ? o.bakedS : Math.floor(Date.now() / 1000) });
     return { bytes: out.bytes, meter: out.meter, est: out.est, rows: S.elements.length };
   }
@@ -1070,7 +1097,7 @@
     PLANE_ROWS: PLANE_ROWS, SWEEP_FPS: SWEEP_FPS, PILL_SLOT: PILL_SLOT, pillCanvas: pillCanvas, CARD_SLOT: CARD_SLOT, CARD_CLEAR_SLOT: CARD_CLEAR_SLOT,
     DOT_SLOTS: DOT_SLOTS, DOTS: DOTS, dotFrames: dotFrames, dotBox: dotBox,
     FRAME_STYLES: FRAME_STYLES, MARKS: MARKS, HEADINGS: HEADINGS, serialOf: serialOf, GRID_W: GRID_W,
-    preset: preset, upgrade1: upgrade1, complete: complete, pictureFit: pictureFit, panelCanvas: panelCanvas, planeBox: planeBox, markers: markers, scopeOf: scopeOf, armOf: armOf, bake: bake, thumb: thumb, period: period,
+    preset: preset, upgrade1: upgrade1, complete: complete, pictureFit: pictureFit, panelCanvas: panelCanvas, planeBox: planeBox, markers: markers, scopeOf: scopeOf, armOf: armOf, bake: bake, thumb: thumb, period: period, overlayOf: overlayOf, overlayWord: overlayWord,
     // the preview draws from the same parts
     planeSvg: planeSvg, planeFrames: planeFrames, planePx: planePx, arm: arm, markerSvg: markerSvg, panelSvg: panelSvg, layout: layout, sizes: sizes,
     plateCanvas: plateCanvas, rast: rast, font: font, svgImage: svgImage, image: image, shade: shade,

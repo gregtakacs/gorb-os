@@ -550,11 +550,28 @@ static void sound_policy(const tm_t *ti, time_t t, double frac, bool on_glass)
             if (s_snd->loop < 0) s_snd->loop = 0;
             s_snd->loop_anchor = anchor;
         } else {
+            /* Only the sub-second drift is corrected: the loop keeps its place in its own
+             * pattern. A tick loop may be several seconds long (Skeleton's is 8 s), and
+             * re-anchoring on "this second" shifted it by whole seconds -- the mixer saw
+             * seconds of error and snapped, then snapped back on the next wobble: the
+             * double and missing ticks the owner heard (Bronze, 2026-11-12). */
             int64_t d = (anchor - s_snd->loop_anchor) % 1000000;
             if (d < 0) d += 1000000;
-            if (d > 2000 && d < 998000) {
-                orb_stage_snd_reanchor(s_snd->loop, anchor);
-                s_snd->loop_anchor = anchor;
+            if (d >= 500000) d -= 1000000;             /* signed, -0.5 s .. +0.5 s */
+            /* A one-frame glitch is not drift: the stage's wall fraction is now and then a
+             * frame stale (156 ms on Skeleton's 6 fps), and following it re-anchored the loop
+             * there and back, two snaps a beat (Bronze, 2026-11-12). Only a deviation that
+             * holds, same sign, for three frames moves the anchor, and then by at most 20 ms
+             * a frame, under the mixer's 50 ms snap, so it slews in silence. */
+            static int s_drift_n;
+            if (d > 2000 || d < -2000) {
+                s_drift_n = (s_drift_n > 0) == (d > 0) ? s_drift_n + (d > 0 ? 1 : -1) : (d > 0 ? 1 : -1);
+                if (s_drift_n >= 3 || s_drift_n <= -3) {
+                    s_snd->loop_anchor += d > 20000 ? 20000 : d < -20000 ? -20000 : d;
+                    orb_stage_snd_reanchor(s_snd->loop, s_snd->loop_anchor);
+                }
+            } else {
+                s_drift_n = 0;
             }
         }
     }

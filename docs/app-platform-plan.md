@@ -6894,7 +6894,7 @@ are not.
 | app | anticlockwise of home | home | clockwise of home | press |
 |---|---|---|---|---|
 | Weather | the five days, tomorrow first | Now | the 24 hours, the next first, on the ring | next place, keeping the position |
-| Flights | the aircraft, farthest first | the plain scope | the aircraft, nearest first, each with its card | next range |
+| Flights | the aircraft, farthest first | the plain scope | the aircraft, nearest first, each with its card | next place (press-and-turn is the range, clockwise closer as radar's zoom, owner 2026-11-11) |
 
 **Precondition: the hourly step is fast.** The owner finds one click on Weather's hourly ring
 frustratingly slow today, and a design built on turning fails if a click is slow. A click
@@ -7309,7 +7309,7 @@ hub can render them." There are no apps beyond the shelf's to carry along.
 | field | for | meaning |
 |---|---|---|
 | `id` | all | the NVS key, as before (a-z 0-9 _, ≤ 15) |
-| `type` | all | `int`, `number`, `enum`, `multi`, `toggle`, `text`, `place`, `secret` |
+| `type` | all | `int`, `number`, `enum`, `multi`, `toggle`, `text`, `place`, `secret`, `color` |
 | `label` | all | what the dial and the hub call it (≤ 23 bytes); required |
 | `help` | all | a sentence or two for the hub (≤ 480 bytes) |
 | `links` | all | `[{href, text}]` for the hub, at most 3 |
@@ -7318,11 +7318,16 @@ hub can render them." There are no apps beyond the shelf's to carry along.
 | `step`, `unit` | int, number | the knob's step (default 1) and a suffix ("°", "%", " s") |
 | `decimals` | number | 1..3: stored as an integer times 10^d, shown with that many decimals |
 | `choices` | enum, multi, toggle | the option labels, in value order; a label may instead be `{"km", "mi", "nm"}`, picked by the orb's distance unit (Flights' ranges). A toggle's two are its off and on (default "off", "on") |
-| `default` | enum | an index; multi: a list of indices; toggle: 0 or 1; text, place: a string |
+| `specials` | color | at most 4 names (≤ 23 bytes each) offered before the palette, stored −1, −2, …; the app decides what each means |
+| `default` | enum | an index; multi: a list of indices; toggle: 0 or 1; text, place: a string; color: required, 0..0xFFFFFF or one of its specials as a negative |
 | `host`, `header` | secret | the one host the OS may send it to, and the header it rides (default `x-api-key`) |
 
 The binary gate is unchanged: `number` and `multi` store as C9 `int` (a scaled integer; a
 bitmask of at most 16 choices), `text` and `place` as `string`, and the C9 types stay frozen.
+`color` (§64.2) stores as `int` too — `0xRRGGBB`, or a negative when the owner picked one of the
+app's named specials — so it costs the same four NVS bytes and the gate's `min..max` path already
+range-checks it (`min` is `-len(specials)`, `max` is `0xFFFFFF`). The dial steps the 12-colour
+palette in `orb_setui.c` rather than editing hex; the hub's picker is not palette-restricted.
 
 ### 57.3 The container: FORMAT 4
 
@@ -7945,3 +7950,262 @@ theme for that app most recently added to the card; with none left, its plain fa
 **How** (built on §6.x of theme-cache-plan and the in-place restart, `orb_wasm_restart`):
 an app decides at `orb_init` what its theme gives it, so every theme landing restarts the
 app's engine in place, and every app install loads its module live instead of rebooting.
+
+## 64. The ring, a pomodoro, and the eight looks everywhere — 2026-11-11
+
+Issue #11 (a pomodoro timer, "ideally … an overlay ring"). The owner's rulings, 2026-11-11.
+`docs/app-design-rules.md` is the standing rule book these join; this section is the ledger.
+
+### 64.1 The ring is the OS's, and any app may set it
+
+- **Drawn by the OS over whatever is on the glass**, the way the copy arc is
+  (`main/display/orb_edge_arc.c`, theme-cache-plan "Edge arc"): stamped into each DMA tile as
+  it leaves, never in the mirror, so `/fb` cannot see it. An app never draws it; it only
+  says what the ring should be. That keeps "nothing off the glass" (theme-cache-plan, "Nothing of an app's display runs off
+  the glass"):
+  an app off the glass sets the ring from `orb_service`, which draws nothing itself.
+- **Generic, not the pomodoro's.** One import for every app: a fraction (0..1000, clockwise
+  from twelve), an **arc** colour and opacity, a **track** colour and opacity (opacity 0 = a
+  bare arc), and an **effect**: steady, flash, or breathe, with a period. A clear takes it
+  away. Opacity is a real blend over the glass, not an overwrite.
+- **Breathe is slow only** (owner). Its cost is a band of rows re-sent each step over a live
+  app, so the OS caps it: a long period and a few steps a second, whatever the app asks.
+  Flash changes the ring twice a period and is bounded the same way.
+- **One ring on the glass; the latest caller owns it** (owner). The OS keeps each app's last
+  ring (one small record per installed app) and shows the most recent; when that app clears
+  or is uninstalled, the next most recent shows again.
+- **A cap, `ring`**, declared in app.json like the others: declaring it is the consent (D19),
+  and the owner revokes it per app in the app's Permissions sub-menu (§58.5). A revoked or
+  undeclared app's calls answer a refusal and its ring goes.
+- **The copy arc wins.** While a card copy runs (the dial is frozen, theme-cache-plan "Edge
+  arc"), the copy's progress is the rim; the app's ring returns when it ends.
+- Not on the untiled fallback, like the copy arc. `/status` names the ring's owner and state,
+  since `/fb` cannot show it.
+
+### 64.2 A colour setting
+
+Settings gain a `color` type (§57.2): stored as `0xRRGGBB` in a C9 int; the hub shows a
+colour picker, the dial steps a fixed palette of named colours (and shows a hub-set colour
+outside the palette as "custom"). Opacity needs no new type: an `int` 0..100 with unit "%".
+
+### 64.3 The pomodoro app (`apps/pomodoro`)
+
+- **Phases:** focus, short break, focus, … for N focuses (default 4), then a long break, then
+  again. Settings: focus length (default 25 min), short break (5), long break (15), focuses
+  before the long break (4), start the next phase on its own or wait for a press, a chime at
+  each change (cap `sound`), the ring on or off, its opacity, and a colour for each state.
+- **The knob** (owner): **press** starts, pauses and resumes (and, with a phase over and
+  waiting, starts the next). **Turn** changes the current phase's remaining time, a minute a
+  click (a fast spin, more); it is a value dial (app-design-rules "Two kinds of dial"), so the
+  change stays and nothing returns on idle. **Press-and-turn** moves between phases:
+  clockwise to the next, anticlockwise back to the start of this one (or, at its start, the
+  one before); like radar's zoom it lands on the let-go. **Hold** is the OS's.
+- **The ring** shows the phase draining over any app: a colour per state (focus, short break,
+  long break), paused breathes, a phase over and waiting flashes. Off, it clears.
+- **It runs off the glass**: the countdown lives in `orb_service` against the wall clock, the
+  ring and the chime come from there, and the phase and its end time survive a reboot or an
+  in-place restart (§63).
+- **Its face is a theme** like every app's, with an editor that starts from the eight looks
+  (64.4) and a shelf default (Scope), per the kit (theme-editor-kit-plan).
+
+### 64.4 The eight looks, with nothing borrowed
+
+Weather, radar and flights already start from the same eight looks under one name each
+(flights-map-plan §6 "One look set", radar-plan "all eight looks in every app"). The owner wants the
+gaps closed too, not just the names:
+
+- Weather's Silver and Sectional get **their own icon packs**; today they borrow Brass's
+  (engraved) and Station's (pictogram), against weather-plan ruling 6 ("packs are never
+  shared").
+- Flights gets **Station and Sectional plane families**; it has six families today.
+- The stale old names go (weather Scope's match note "Flights · Modern", rebake_shelf's
+  docstring "Modern"/"Radarscope").
+- The pomodoro starts from all eight.
+
+### 64.5 Flights' zoom turns like radar's
+
+Press-and-turn in Flights now runs clockwise closer, anticlockwise wider, as radar's zoom
+does (owner, 2026-11-11); it ran the other way because the two ladders are ordered from
+opposite ends. The rule for every app is in app-design-rules: clockwise is closer, more, later.
+
+### 64.6 The pomodoro's owner answers — 2026-11-11
+
+On the pomodoro design's owner questions (`docs/specs/pomodoro-design.md`):
+
+- **A chime volume, as a share of the master.** A setting `0..100 %` of the OS volume: the
+  chime can only be quieter than the master, never louder.
+- **No chime without a theme**, as the design chose.
+- **Waking the glass is a setting.** "Wake the screen at each change", the owner's choice.
+  The OS has no way for an app off the glass to wake a dimmed glass today: `orb_power_request`
+  only holds the glass awake while the app is on it (`svc_power_request`, revoked on leave).
+  So the pomodoro needs the smallest OS addition: a one-shot wake an app may ask for from
+  `orb_service` under cap `power`. It lights the glass for a few seconds, takes nothing from
+  the app on the glass, and respects the OS's quiet hours. It is §55's "wake" without the
+  rest of §55.
+- **The digits keep the theme's ink**, as the design chose.
+- **No kitchen-timer mode**, as the design chose (`focuses = 1` is closest).
+- **Every look has a header row**, New included. The press-and-turn choice is always shown
+  there, with no fallback.
+
+### 64.7 Colours are the theme's; the ring gains a direction and a start — 2026-11-11
+
+- **Ring colours are theme bakes, not settings** (owner). The pomodoro's per-phase ring colours
+  are baked by its editor into the theme's values (`orb_stage_values`, radar-plan §2.11), like
+  every other colour an app draws. So §64.2's `color` setting type has no user and is
+  withdrawn: it is not built.
+- **The ring takes a direction and a start** (owner): clockwise or anticlockwise, and the angle
+  on the rim where the arc begins (default twelve o'clock, clockwise). They ride the ring
+  record's reserved bytes, so the API keeps one call.
+- **The pomodoro's looks are redesigned by Claude, not the worker** (owner): each look is a
+  timer from its world, not a clock; no scale that names minutes the ring does not keep; digits
+  of one width, so the time never shifts; furniture kept inside the rim, so the OS ring stands
+  alone at the edge.
+- **Design and audiovisual work stays with Claude** unless the owner asks for it to be
+  delegated (looks, art, icons, colour, type, sound). The local worker builds the plumbing.
+
+### 64.8 The pomodoro's chimes: generated, and the owner's own — 2026-11-11
+
+- **Ring opacity stays a setting** (owner).
+- **Several chimes, each made by a sound generator**, the way the clock's editor makes its
+  voices (`apps/clock/editor/sound-engine.js`: synthesized in code, so the editor carries the
+  recipe rather than WAVs). The first batch is generated. Each look has its own chime, and an
+  author can pick any of them.
+- **An owner's upload is a choice too**: a short sound file the editor converts to the theme's
+  format (ADPCM, §52), as the clock's upload already does.
+- **Both ride in the theme**, as every theme sound does (cap `sound`). They play at the chime
+  volume, a share of the master (§64.6), and stay above 350 Hz, because the speaker is a 2 W
+  micro speaker.
+- Apps are atomic, so the pomodoro does not borrow the clock's engine. **The generator and the
+  upload live in the shared editor kit** (owner), like the colour picker: one sound pane in the
+  kit that any app's editor can offer, with the generated voices and the owner's upload. The
+  pomodoro is its first user. The clock keeps its own engine until it is moved onto the kit as
+  a separate job.
+- **The ring's direction and start are pomodoro settings** (owner): `ring_dir`, an enum
+  (clockwise, anticlockwise; default clockwise), and `ring_start`, an enum (top, right, bottom,
+  left, i.e. twelve, three, six and nine o'clock; default top). With ring on/off and opacity,
+  the visible settings number 12, and the hidden state fits in the remaining 4 of the loader's 16.
+
+### 64.9 The owner overrides the ring colour; every theme gets an overlay colour — 2026-11-11
+
+- **The ring colour can be overridden** (owner), separately on the pomodoro's own glass and
+  over other apps. That makes two pomodoro settings of the `color` type with named specials
+  (§64.7's withdrawal is reversed: the type is built, with specials):
+  - `ring_col_here`: From the look (default), or a colour;
+  - `ring_col_away`: From the look (default), Match the app, or a colour.
+  
+  A chosen colour is one colour for every phase; the effect (steady, breathe, flash) still
+  tells the state.
+- **Every theme carries an overlay colour** (owner): the colour the OS draws its overlays in
+  over that app. Each app's editor sets it with the kit's colour picker, and each look's default
+  is its own accent. The OS reads it from the theme the app on the glass wears. "Match the app"
+  draws the ring in it, and the copy arc and later §55's blips may use it too. **Every themed
+  app**: the clock, radar, weather, flights and the pomodoro. A theme without one (baked before
+  this) falls back to the overlay's own colour.
+- **Visuals are decided, so implementation is delegated** (owner).
+  `docs/specs/pomodoro-looks.md` and its working sketch `docs/specs/pomodoro-looks-preview.html`
+  (the furniture drawn in canvas, the chime recipes in WebAudio) are the reference the editor and
+  the kit sound pane are built to.
+
+### 64.10 The pomodoro's turn, found on Bronze — 2026-11-11
+
+- **A running phase's turn keeps the seconds; a stopped one's drops them first** (owner).
+  Running, a click adds or takes a minute (12:34 → 13:34). Stopped, paused or waiting, the
+  seconds go first, then the minute moves (12:34 → 13:00, or 11:00): a time being set reads in
+  whole minutes.
+- **While press-and-turn moves, the face shows the phase the let-go would land on**: its time,
+  name and dots, not only the header (owner). The ring stays on the live state until the let-go.
+
+### 64.11 Rim lanes: the ring sends only itself — 2026-11-11
+
+- **The owner found the slow breathe poor** (steppy at the 2 Hz grid, slow at the 4 s floor).
+  The cost was never the ring's 10k pixels but the rows they sit in: the flush keeps one dirty
+  span per row, and a ring has a sliver at both ends of nearly every row, so a ring step re-sent
+  ~216k pixels.
+- **Ruling: rim lanes.** A ring-only refresh sends the band itself as narrow windows (left and
+  right slabs, short spans across the top and bottom), blended from the mirror, aligned to the
+  CO5300's even-column rule, timed into a blanking window. Breathe, flash and the draining arc
+  then step at up to ~25 Hz. "Slow breathe only" (§64.1) is relaxed accordingly: the period floor
+  becomes a design number of the slice, measured on Bronze.
+- **The ring's direction and start** (§64.8) ride in the same slice. The overlay slice left the
+  record's `match` byte and `_r1` as they were (its amendment 1 was not built), so `flags`
+  (MATCH 0x01, CCW 0x02) and `start` land with the lanes' new stamp geometry.
+
+### 64.12 The ring's alerts are opaque on black — 2026-11-11
+
+- **The owner, on Bronze:** a breathing or flashing ring blended over a busy app at the ring's
+  opacity "is lost". An alert must be seen.
+- **Ruling: a backed ring.** A ring record may ask for a black track (`flags` BACKED 0x04): the
+  whole rim band is drawn black, and the arc on it at full opacity, whatever the opacity byte
+  says. Breathe then fades the colour toward black and back (never into the app beneath), and
+  flash switches between the colour and black. The lanes already cover the whole band, so a
+  backed ring costs no extra pixels.
+- **The pomodoro backs its alerts only:** flash (a phase ended, waiting for a press) and breathe
+  (paused). The running drain keeps the owner's `ring_op`, so it stays quiet over other apps.
+- **Measured before the change (Bronze, v1.7.0+3bddfb6):** radar 16 fps with no ring, 17-18 fps
+  with the ring flashing (+0.7 M px/s); the clock's own face draws at 6 fps with or without it,
+  the same on the pre-lanes firmware.
+
+### 64.13 A press anywhere can go to the timer — 2026-11-11
+
+- **The owner:** leaving an app to reach the pomodoro just to start the next phase is a chore;
+  let the press reach the timer from any app, as an option.
+- **Ruling: the OS lends the press.** An app may claim the knob press while it is off the glass
+  (`orb_press_claim(on)`, under a new cap `press`, declared in app.json and shown on the
+  Permissions page like any other). While a claim stands, a press on whatever app is on the glass
+  goes to the claimant instead, read by its `orb_service` (services take no events today, so
+  the slice designs the delivery, e.g. a polled `orb_press_lent()` count), and that app never
+  sees it. Turn and press-and-turn stay with the app on the glass, and hold stays the OS's. One
+  claimant at a time, latest caller wins, as with the ring (§64.1); a claimant uninstalled or
+  faulted loses its claim. The OS confirms a lent press with a short pulse of the claimant's
+  ring, so the press is seen to have gone somewhere.
+- **The pomodoro's setting `press_any`** (Off / When it's calling / Whenever it runs, default
+  When it's calling): calling = a phase has ended and the ring flashes for a press, which then
+  starts the next phase; whenever it runs = also while a phase runs or is paused, where the
+  press pauses and resumes. The pomodoro claims and drops the press as its state moves; on its
+  own glass it handles the press as it always has.
+- **This bends the knob rule that the press is the app's** (app-design-rules.md § The knob): the
+  rule now names the one exception, an app the owner has let borrow it.
+
+### 64.14 A turn never passes the setting — 2026-11-11
+
+- **The owner, on Bronze:** with a 5:00 short break, a turn reached 30:00 (the setting's own
+  maximum), and the ring rescaled oddly past 5:00; paused, a turn to 30:00 "messes up the ring";
+  running at 1:48 a turn down stopped at 1:00 where 0:48 was meant.
+- **Ruling (as amended the same day): a turn can always bring the time left back to the
+  phase's setting, however much has run, and never past it.** The ring is left over the setting,
+  so its full circle is always the setting and it never rescales. Running, a turn keeps the
+  seconds (1:45 -> 0:45). Stopped, paused or over, it snaps to the whole minute in the turn's
+  direction (1:48 -> 1:00 or 2:00; 12:34 -> 12:00 or 13:00). **Down runs to 0:00 and stops there,
+  paused** (1:45 -> 0:45 -> 0:00), and can be turned back up from there. A press at 0:00 starts
+  the next phase at once, with no chime and no wait: the owner is driving it. A paused 0:00
+  survives a restart. A clamp never moves the time against the knob. A phase that is over,
+  turned up, has that time again and waits paused for the press. (Withdrawn the same day: spent +
+  left never past the setting, and a minute's floor.)
+- This replaces §64.10's turn ceiling (the setting's maximum).
+
+### 64.15 The ring holder keeps its theme; the ladder's end is Reset — 2026-11-11
+
+- **The owner:** a running pomodoro should not let its theme be evicted; and there seemed to be no
+  way to turn the pomodoro off, its ring always showing.
+- **Ruling: the app holding the OS ring keeps its display art**, as the app on the glass does
+  (any ring holder, not only the pomodoro): the pool's display reservations pass it as `keep`.
+  Voice banks were never evicted, so chimes were never at risk.
+- **The off switch already existed and is now named:** press-and-turn anticlockwise to the end of
+  the ladder reads **Reset**; letting go lands the cycle's first focus, stopped, and a stopped
+  phase clears the ring.
+
+### 64.16 The looks hold as families across the apps — 2026-11-12
+
+- **A cross-app review** (every look baked in clock, weather, radar, flights and the pomodoro,
+  side by side) found the eight looks mostly coherent, with four breaks. The owner's rulings:
+- **The clock's Sectional is the chart**, as the other apps wear it: a new `chart` dial surface
+  (the 46 px blue grid, the dashed magenta line, the magenta edge band), no case and no glass.
+  The clock otherwise keeps its own watch designs; only Station and Sectional share the eight
+  names, and Station already matched.
+- **A plane's colour is its altitude**, so each look carries its own seven bands inside its
+  palette (flights `LOOK_BANDS`), low bands warm and high ones cool in every look, never bland.
+- **Radar's rain is toned to every look**, not only the dark ones: Paper's inks, Station's
+  toned broadcast ramp, Sectional's chart tints and magenta, Silver's steel to white with a
+  warm core; the light-to-heavy order always reads.
+- **Small lettering is capitals** in every look (radar Paper and Brass, weather Paper).
+- **The pomodoro may differ from the pack at its rim**: the ring is an OS overlay there.

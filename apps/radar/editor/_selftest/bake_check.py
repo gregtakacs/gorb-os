@@ -38,6 +38,12 @@ VALUES_B = 64 + 16 + 16 + 4 + 4 + 1024 + 16 + 16 + 16 + 16    # radar.h rd_value
 # table sectors and 512 KB of slack. The shelf's other defaults no longer count against it.
 BUDGET = (8 << 20) - (1 << 20) - 2 * 4096 - (512 << 10)
 
+# §64.9 / gate §8.6: the region's second head word is the OS's overlay colour, tagged 0x01.
+# A design that sets nothing bakes its look's accent; one that sets it bakes the owner's.
+OVL_TAG = 0x01000000
+EXPECT_OVL = {"scope": OVL_TAG | 0x3DDC84,            # the Scope preset's glass ring, #3ddc84
+              "overlay-set": OVL_TAG | 0x135C79}       # the owner's #135c79, set on the design
+
 
 def stage(stage_dir):
     for src in (os.path.join(HERE, "bake.html"), os.path.join(EDITOR, "radar-bake.js"), os.path.join(RUNTIME, "maps@1", "orbmap.js"),
@@ -58,6 +64,13 @@ def check(name, raw, exe):
     hdr, secs = ob.read_bundle(path)
     sec = secs[0]
     els = sec["blob"]["elements"]
+    # the overlay colour (§64.9), read back through the region read_bundle just checksummed.
+    # read_bundle has verified the checksums; take the word the way the app's gate does.
+    ov = ob.file_overlay(path)
+    if (ov & 0xFF000000) != OVL_TAG:
+        bad.append("overlay word 0x%08x: no 0x01 colour tag" % ov)
+    if name in EXPECT_OVL and ov != EXPECT_OVL[name]:
+        bad.append("overlay 0x%08x, expected 0x%08x" % (ov, EXPECT_OVL[name]))
     if sec["blob"]["slug"] != "radar":
         bad.append("section slug %r" % sec["blob"]["slug"])
     try:
@@ -102,7 +115,7 @@ def check(name, raw, exe):
     rc, out, err = H3.run(exe, "--dump3f", path, "radar")
     if rc != 0:
         bad.append("orb_clock3.c refused it: %s" % (out or err).strip()[:200])
-    return bad, len(raw)
+    return bad, len(raw), ov
 
 
 def main():
@@ -127,8 +140,8 @@ def main():
             raw = base64.b64decode(b64)
             if keep:
                 open(os.path.join(keep, name + ".orbtheme"), "wb").write(raw)
-            bad, n = check(name, raw, exe)
-            print("%s %-12s %8d B %6s ms  %s" % ("ok  " if not bad else "FAIL", name, n, ms, "; ".join(bad)))
+            bad, n, ov = check(name, raw, exe)
+            print("%s %-12s %8d B %6s ms  ovl=0x%08x  %s" % ("ok  " if not bad else "FAIL", name, n, ms, ov, "; ".join(bad)))
             fails += bool(bad)
     if "DONE" not in dom:
         print("FAIL the page did not finish (virtual time ran out, or it threw)")

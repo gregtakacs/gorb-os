@@ -1767,7 +1767,7 @@ class Component extends DCLogic {
   thumbOpts(id) {
     const P = WatchEngine.template(id), st0 = this.state;
     try {
-      this.state = { ...st0, dial: id, cfg: { ...(P.cfg || {}) }, train: P.train || 'classic', caseStyle: P.caseStyle || 'polished', caseMetal: P.caseMetal || 'auto', hands: 'auto', handFinish: 'auto' };
+      this.state = { ...st0, dial: id, cfg: { ...(P.cfg || {}) }, train: P.train || 'classic', caseStyle: P.caseStyle || 'polished', caseMetal: P.caseMetal || 'auto', glassStyle: P.glassStyle || 'domed', hands: 'auto', handFinish: 'auto' };
       return { o: this.opts(id), hd: this.handDef(id) };
     } finally { this.state = st0; }
   }
@@ -2670,7 +2670,7 @@ class Component extends DCLogic {
       if (!hr.hands.length && !auxRows.length && !wheelRows.length) return { none: true };   // nothing moves: nothing to price
       const blank = new Uint8Array(466 * 466 * 4);
       for (let i = 3; i < blank.length; i += 4) blank[i] = 255;
-      const opts = { name: 'live', serial: 0, bakedMs: 0, plate: { rgba: blank, w: 466, h: 466 }, hands: hr.hands,
+      const opts = { name: 'live', serial: 0, bakedMs: 0, overlay: WatchEngine.overlayWord(D), plate: { rgba: blank, w: 466, h: 466 }, hands: hr.hands,
                      order: hr.hands.map((h) => h.slot), secShadowSmooth: +c.shSmooth === 1 };
       if (hr.shadows.length) { opts.shadows = hr.shadows; opts.scalars = { shadow_on: 1, shadow_dx: hr.sdx, shadow_dy: hr.sdy }; }
       if (auxRows.length) opts.aux = auxRows;
@@ -2882,7 +2882,7 @@ class Component extends DCLogic {
     // actually shipped, computed here (deterministic, so an unchanged dial re-bakes to
     // the same serial and stays a quiet no-op). Set below, once the carriage planes are
     // on opts; see serialContent3.
-    const opts = { name: nm, serial: 0,
+    const opts = { name: nm, serial: 0, overlay: WatchEngine.overlayWord(Dm),
                    // clock_view draws order[i] VERBATIM as the hand-slot id (no +1:
                    // that was FORMAT 2's show-table dialect; bake_clock.py writes raw ids too).
                    bakedMs: Date.now(), bakedS: Math.floor(Date.now() / 1000), plate, hands, order: hands.map((h) => h.slot),
@@ -4098,6 +4098,12 @@ class Component extends DCLogic {
       if (surf === 'carbon') fields.push(Rg('Weave angle', +D.weaveAngle || 0, 0, 90, 1, ud('weaveAngle'), (+D.weaveAngle || 0) + '°'));
       if (surf === 'carbon' || surf === 'forged') { const wsv = D.weaveScale == null ? 1 : +D.weaveScale; fields.push(Rg(surf === 'carbon' ? 'Weave size' : 'Flake size', wsv, 0.4, 3, 0.05, ud('weaveScale'), wsv.toFixed(2) + '×')); }
       if (surf !== 'enamel') fields.push(Rg('Texture', D.texture == null ? 1 : +D.texture, 0, 2.5, 0.05, ud('texture'), (D.texture == null ? 1 : +D.texture).toFixed(2) + '×'));
+      // the colour the OS draws its own overlays in over this watch (§64.9): its accent by default
+      { const oq = Object.assign({}, D); delete oq.overlay; const oacc = E.overlayOf(oq);
+        fields.push(H("The OS's overlay"),
+          Co('Colour', E.overlayOf(D), ud('overlay'), null, 'dial', { noAuto: true, preset: oacc }),
+          Nt('', 'The colour the orb’s own overlays — the ring, the battery, the notices — are drawn in over this watch. It starts as the dial’s accent (its first exposed wheel, else the lume); set it to something else to make the OS’s marks stand apart.'));
+      }
       /* Two backdrop slots, one control set each.
        *   bg -- painted at the plate slot, under the geartrain, so it reads through an
        *        openwork dial and every aperture.
@@ -4390,7 +4396,7 @@ class Component extends DCLogic {
         // a template comes as designed after From scratch (whose no case, glass or light is no choice
         // of the author's to keep); otherwise the author's own case and light ride over
         pick: () => this.setState((st) => (st.scratch ? { dial: id, sel: null, themeName: '', scratch: false, cfg: { ...(E.template(id).cfg || {}) }, train: E.template(id).train || 'classic',
-          caseStyle: E.template(id).caseStyle || 'polished', caseMetal: E.template(id).caseMetal || 'auto', glassStyle: 'domed' } : { dial: id, sel: null, themeName: '', cfg: E.template(id).cfg ? { ...st.cfg, ...E.template(id).cfg } : E.template(st.dial).cfg ? Object.fromEntries(Object.entries(st.cfg).filter(([k]) => !(k in E.template(st.dial).cfg))) : st.cfg, train: E.template(id).train || (E.template(st.dial).train ? 'classic' : st.train), caseMetal: E.template(id).caseMetal || (E.template(st.dial).caseMetal ? 'auto' : st.caseMetal), caseStyle: E.template(id).caseStyle || (E.template(st.dial).caseStyle ? 'polished' : st.caseStyle) })),
+          caseStyle: E.template(id).caseStyle || 'polished', caseMetal: E.template(id).caseMetal || 'auto', glassStyle: E.template(id).glassStyle || 'domed' } : { dial: id, sel: null, themeName: '', cfg: E.template(id).cfg ? { ...st.cfg, ...E.template(id).cfg } : E.template(st.dial).cfg ? Object.fromEntries(Object.entries(st.cfg).filter(([k]) => !(k in E.template(st.dial).cfg))) : st.cfg, train: E.template(id).train || (E.template(st.dial).train ? 'classic' : st.train), caseMetal: E.template(id).caseMetal || (E.template(st.dial).caseMetal ? 'auto' : st.caseMetal), caseStyle: E.template(id).caseStyle || (E.template(st.dial).caseStyle ? 'polished' : st.caseStyle) })),
       })),
       // everything: the design (its parts and their depth), movement, case and light, and the stage's
       // own view of it -- per-part eyes, selection, a drag in flight

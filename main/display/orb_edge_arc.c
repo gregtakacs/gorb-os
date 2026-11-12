@@ -33,6 +33,13 @@ void orb_edge_arc_set(int permille)
     s_want = (int16_t)(permille < 0 ? -1 : permille > 1000 ? 1000 : permille);
 }
 
+/* A card copy is in progress (ring-design §8): the display.c rim dispatch reads this every
+ * frame and lets the arc own the rim while it holds. LVGL task, where s_shown is written. */
+bool orb_edge_arc_shown(void)
+{
+    return s_shown >= 0;
+}
+
 /* The glass rows the ring covers between two figures, both ends included. */
 static void mark_segment(int p0, int p1)
 {

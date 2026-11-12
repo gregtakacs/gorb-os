@@ -114,6 +114,10 @@ typedef struct {
      * version. The app reads them through orb_stage_values. */
     uint32_t       values_off, values_len;
     uint16_t       values_ver;
+    /* §64.9 / overlay-design §4: the theme's overlay colour as the parse found it,
+     * 0x01RRGGBB or 0 when the theme names none. A scalar copied out of the region
+     * before it is freed, exactly as values_off is an offset and not a pointer. */
+    uint32_t       overlay;
 } orb_theme_geo_t;
 
 /* The five accessors orb_stage.c reads through — clk_theme, clk_bg_rects,
@@ -307,6 +311,11 @@ bool orb_preview_inflate_into(const uint8_t *z, uint32_t n, uint16_t side, uint8
 const char *orb_theme_source(void);
 /** D50: the slug of the app the live theme belongs to, "" when no theme is live. */
 const char *orb_theme_live_slug(void);
+
+/* The live theme's overlay colour (§64.9, docs/specs/overlay-design.md §4): 0x01RRGGBB, or 0 when
+ * the theme names none — a theme baked before this, the compiled-in pair, or no theme at all.
+ * Callable from the LVGL task: it reads a scalar the bind wrote before the theme went live. */
+uint32_t orb_theme_overlay(void);
 /* theme-pool-plan P4: whether `slug` has a theme in the pool, and making it the one the
  * paint path reads (its tables projected, its banks mapped) for the stage to build on. */
 bool        orb_theme_has(const char *slug);

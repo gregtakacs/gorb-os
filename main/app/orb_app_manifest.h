@@ -76,7 +76,7 @@ extern "C" {
 #define ORBAPP_ID_MAX      16u   /* settings id bytes; NVS key limit is 15+NUL */
 #define ORBAPP_DEFSTR_MAX  32u
 
-#define ORBAPP_SETTINGS_MAX   16u
+#define ORBAPP_SETTINGS_MAX   18u
 #define ORBAPP_SCHEMA_MAX     6144u  /* §57: the settings schema region, its JSON's bytes */
 #define ORBAPP_EDITOR_MAX     0x200000u  /* D37: 2 MiB of editor, and no more. The
                                           * cap is the owner's ruling, and it is a

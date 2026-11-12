@@ -1,0 +1,26 @@
+{
+  "name": "rim",
+  "repo": "../..",
+  "base": "delegate/rim-design",
+  "retries": 2,
+  "steps": [
+    {
+      "name": "rim-1-flags-start",
+      "spec": "docs/specs/rim-1-flags-start.md",
+      "hard": true,
+      "verify": "set -o pipefail; gcc -std=c11 -Wall -Wextra -Werror -I main/display -c main/display/orb_ring.c -o /dev/null && grep -qE 'define ORB_RING_CCW[[:space:]]+0x02u' main/display/orb_ring.h && grep -qE 'define ORB_RING_MATCH[[:space:]]+0x01u' main/display/orb_ring.h && grep -qE 'define ORB_RING_FLAGS_MASK[[:space:]]+0x03u' main/display/orb_ring.h && grep -q 'uint16_t start' main/display/orb_ring.h && grep -q 'uint16_t start' apps/sdk/orb.h && grep -q 'start_deg' main/display/orb_ring.h && grep -q 'start_deg' main/display/orb_ring.c && ! grep -qi 'amendment J' apps/pomodoro/main.c && grep -q 'pm_ring_for' apps/pomodoro/pomodoro.c && grep -q '\\.start' apps/pomodoro/pomodoro.c && python3 tools/host_ring_test.py 2>&1 | tail -3 | grep -q 'RESULT: pass' && python3 tools/host_ring_test.py --mutations > /tmp/rim1m.log 2>&1 && grep -qE 'mutants caught ([0-9]+)/\\1' /tmp/rim1m.log && ! grep -q MISSED /tmp/rim1m.log && python3 tools/host_pomodoro_test.py --mutations > /tmp/rim1p.log 2>&1 && grep -qE 'mutants caught ([0-9]+)/\\1' /tmp/rim1p.log && ! grep -q MISSED /tmp/rim1p.log && ORB_CLANG=/usr/lib/llvm-21/bin/clang make check-apps > /tmp/rim1a.log 2>&1 && ORB_CLANG=/usr/lib/llvm-21/bin/clang python3 apps/sdk/orbsdk.py build apps/pomodoro > /tmp/rim1b.log 2>&1 && test -z \"$(git diff --name-only delegate/rim-design -- main/display/display.c main/display/display.h main/display/orb_edge_arc.c main/app main/net tools/orb-manager)\" && make check-sandbox"
+    },
+    {
+      "name": "rim-2-lane-geometry",
+      "spec": "docs/specs/rim-2-lane-geometry.md",
+      "hard": true,
+      "verify": "set -o pipefail; gcc -std=c11 -Wall -Wextra -Werror -I main/display -c main/display/orb_ring.c -o /dev/null && grep -q 'ring_lanes(orb_ring_lane_t' main/display/orb_ring.c && grep -q 'ring_lanes(orb_ring_lane_t' main/display/orb_ring.h && grep -q 'ring_lanes_in' main/display/orb_ring.c && grep -qE 'define ORB_RING_LANES_MAX[[:space:]]+64' main/display/orb_ring.h && grep -qE 'define ORB_RING_LANE_ROWS_MAX[[:space:]]+64' main/display/orb_ring.h && grep -qE 'define ORB_RING_LANE_EXTRA_MAX[[:space:]]+384' main/display/orb_ring.h && grep -qE 'define ORB_RING_LANE_MAX_PX[[:space:]]+1024' main/display/orb_ring.h && grep -q '19912' tools/host_ring_test.py && grep -q '9908' tools/host_ring_test.py && python3 tools/host_ring_test.py 2>&1 | tail -3 | grep -q 'RESULT: pass' && python3 tools/host_ring_test.py --mutations > /tmp/rim2m.log 2>&1 && grep -qE 'mutants caught ([0-9]+)/\\1' /tmp/rim2m.log && ! grep -q MISSED /tmp/rim2m.log && ORB_CLANG=/usr/lib/llvm-21/bin/clang make check-apps > /tmp/rim2a.log 2>&1 && test -z \"$(git diff --name-only delegate/rim-design -- main/display/display.c main/display/display.h apps main/app main/net tools/orb-manager)\" && make check-sandbox"
+    },
+    {
+      "name": "rim-3-ring-refresh",
+      "spec": "docs/specs/rim-3-ring-refresh.md",
+      "hard": true,
+      "verify": "set -o pipefail; gcc -std=c11 -Wall -Wextra -Werror -I main/display -c main/display/orb_ring.c -o /dev/null && grep -qE 'define ORB_RING_STEP_MS[[:space:]]+40' main/display/orb_ring.h && grep -qE 'define ORB_RING_BREATHE_MIN_MS[[:space:]]+1500' main/display/orb_ring.h && grep -qE 'define ORB_RING_FLASH_MIN_MS[[:space:]]+400' main/display/orb_ring.h && grep -qE 'define ORB_RING_STEP_ALPHA[[:space:]]+8' main/display/orb_ring.h && grep -qE 'define ORB_RING_STEP_MAX_MS[[:space:]]+400' main/display/orb_ring.h && grep -q 'ring_alpha_moved' main/display/orb_ring.c && grep -q 'ring_next_step_ms' main/display/orb_ring.c && grep -q 'send_ring_lanes_locked' main/display/display.c && grep -q 'display_ring_lanes' main/display/display.h && grep -q 'display_ring_lanes' main/display/orb_ring.c && grep -q 'orb_ring_disp_stamp' main/display/display.c && ! grep -q 'ring_blend565' main/display/display.c && test -z \"$(git diff --name-only delegate/rim-design -- main/CMakeLists.txt apps main/app tools/host_pomodoro_test.py tools/orb-manager)\" && python3 tools/host_ring_test.py 2>&1 | tail -3 | grep -q 'RESULT: pass' && python3 tools/host_ring_test.py --mutations > /tmp/rim3m.log 2>&1 && grep -qE 'mutants caught ([0-9]+)/\\1' /tmp/rim3m.log && ! grep -q MISSED /tmp/rim3m.log && python3 tools/host_pomodoro_test.py --mutations > /tmp/rim3p.log 2>&1 && grep -qE 'mutants caught ([0-9]+)/\\1' /tmp/rim3p.log && ! grep -q MISSED /tmp/rim3p.log && ORB_CLANG=/usr/lib/llvm-21/bin/clang make check-apps > /tmp/rim3a.log 2>&1 && make check-sandbox"
+    }
+  ]
+}

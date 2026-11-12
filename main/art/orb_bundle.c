@@ -432,6 +432,7 @@ static const char *parse_core(const orb_bundle3_hdr_t *h, const uint8_t *file,
 
     memset(b, 0, sizeof *b);
     b->region = region; b->region_size = region_size; b->n_sections = n;
+    b->overlay = b32(region + 4);   /* §64.9: 0x01RRGGBB names a colour, anything else none */
 
     /* The art region, bounded the way the host reader bounds its slice, and
      * walked sector by sector like write_bundle() laid it: a stored bank
@@ -614,6 +615,11 @@ const char *orb_bundle_rebase(orb_bundle_t *b, orb_bundle3_hdr_t *h, uint8_t *re
     h->art_off  = new_art_off;
     h->geom_crc = esp_rom_crc32_le(0, region, h->geom_size);
     return NULL;
+}
+
+uint32_t orb_bundle_overlay(const orb_bundle_t *b)
+{
+    return (b->overlay & 0xFF000000u) == 0x01000000u ? b->overlay : 0u;
 }
 
 const orb_bundle_sec_t *orb_bundle_find(const orb_bundle_t *b,

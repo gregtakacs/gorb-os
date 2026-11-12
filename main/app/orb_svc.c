@@ -35,6 +35,9 @@
 #include "orb_places.h"       /* and the three places beside it            */
 #include "orb_theme.h"        /* the D18 family: enumerate and request, never bytes */
 #include "idle_dim.h"         /* the power request path — a request, not a write */
+#include "orb_wake.h"         /* §64.6: the pure one-shot-wake decision */
+#include "orb_ring.h"         /* §64.1: revoking the ring cap drops the app's record */
+#include "orb_press.h"        /* §64.13: revoking the press cap, and a fault, drop the lent-press claim */
 #include "orb_layers.h"       /* P5.5: the layer table the four entries drive */
 #include "orb_sound.h"        /* D39: the engine the sound entries hand off to */
 
@@ -528,6 +531,22 @@ static esp_err_t svc_power_request(orb_app_t *a, uint32_t timeout_s, bool hold)
     return idle_dim_app_request(a->slug, timeout_s, hold);
 }
 
+/* §64.6: a one-shot wake. The cap gate is the broker's, the decision is orb_wake.c's
+ * pure function (quiet hours, the owner's DISPLAY truth, the once-a-minute rate limit,
+ * the 3..15 clamp), and on the one verdict that lights the glass the wake is applied
+ * through idle_dim's OWN request path — a short window, no hold — so idle_dim remains
+ * the policy owner of the face and what is on it is untouched. The rate-limit record
+ * lives in the caller's wasm slot and is advanced by the import only when this returns
+ * ESP_OK; here the ask is refused (never recorded) on anything else. */
+static esp_err_t svc_wake(orb_app_t *a, uint32_t seconds, uint32_t now_ms, uint32_t last_wake_ms)
+{
+    SVC(a, POWER);
+    orb_wake_decision_t d = orb_wake_decide(now_ms, last_wake_ms, seconds,
+                                            orb_sound_quiet_now(), !idle_dim_enabled());
+    if (d.verdict != ORB_WAKE_OK) return (esp_err_t)d.verdict;
+    return idle_dim_app_request(a->slug, d.seconds, false);
+}
+
 static esp_err_t svc_http_get(orb_app_t *a, const char *url, orb_buf_t *out)
 {
     SVC(a, NET);
@@ -825,6 +844,7 @@ static const orb_svc_t S_TABLE = {
     .tz_label      = svc_tz_label,
     .tz_offset     = svc_tz_offset,
     .power_request = svc_power_request,
+    .wake          = svc_wake,
     .cfg_get       = svc_cfg_get,
     .cfg_set       = svc_cfg_set,
     .cfg_get_str   = svc_cfg_get_str,
@@ -856,9 +876,13 @@ const orb_svc_t *orb_svc_table(void) { return &S_TABLE; }
 
 const char *orb_svc_cap_name(orb_cap_t cap)
 {
-    static const char *const N[CAP_N] = {
-        "time", "config", "ui", "art", "power", "net", "sd_read", "themes", "sound", "location"
+    /* Unsized, and held to CAP_N below: a sized table let CAP_RING (§64.1) land with no name,
+     * a NULL that /status's ledger handed snprintf("%s") and the httpd faulted on. */
+    static const char *const N[] = {
+        "time", "config", "ui", "art", "power", "net", "sd_read", "themes", "sound", "location",
+        "ring", "press"
     };
+    _Static_assert(sizeof N / sizeof N[0] == CAP_N, "every cap has a name");
     return (unsigned)cap < CAP_N ? N[cap] : "?";
 }
 
@@ -1049,6 +1073,14 @@ esp_err_t orb_svc_set_grant(const orb_app_t *a, orb_cap_t cap, bool on)
          * put the dial down, or the owner's kill switch is a label. Same
          * owner-wins release the DISPLAY choice makes. */
         if (!on && cap == CAP_POWER) idle_dim_app_release(a->slug);
+        /* Revoking the ring cap while the app owns the ring must actually take the ring
+         * off the glass, or the owner's kill switch is a label (ring-design §5). The drop
+         * is keyed by the flash slot (the ring table's key); a card row's -1 is a no-op. */
+        if (!on && cap == CAP_RING) orb_ring_drop(a->flash_slot);
+        /* §64.13: revoking the press cap while the app holds the lent-press claim has
+         * to actually take the lend away, or the owner's kill switch is a label — same
+         * door as the ring's. Keyed by the flash slot; a card row's -1 is a no-op. */
+        if (!on && cap == CAP_PRESS) orb_press_drop(a->flash_slot);
         /* P5.5 notes what it does NOT do here: no layer wipe rides a revoke,
          * because CAP_UI is free (never stored, never revoked), so there is no
          * owner door that closes an app's ink. The rows end at suspend and at
@@ -1307,6 +1339,9 @@ void orb_svc_note_fault(const orb_app_t *a, const char *why)
 {
     const int slot = orb_app_index_of(a);
     if (slot >= 0) note_fault_slot(slot, why);
+    /* §64.13: a faulted app loses its lent-press claim with the fault, so a trapped
+     * service's unread presses die with it instead of reaching a later row (§3.4). */
+    if (a) orb_press_drop(a->flash_slot);
 }
 
 uint32_t orb_svc_fault_count(const orb_app_t *a)

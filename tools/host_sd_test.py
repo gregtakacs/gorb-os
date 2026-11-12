@@ -994,7 +994,7 @@ def install_lint():
         # theme-cache-plan C4: the pool reserves by eviction, least recently worn first
         # theme-cache-plan §4.1: the target is the free pages orb_pool_reserve answers, and
         # nothing in the store writes the page list but that call
-        rsv = body.find("entry_size, ord, nord, NULL, pg, gone, &ngone);")
+        rsv = body.find("entry_size, ord, nord, ring_keep(), pg, gone, &ngone);")   # §64.15: the ring holder kept
         sets = _re.findall(r"\bpg\s*=[^=]", body)
         writes = _re.findall(r"\bpg->(?:off\[[^\]]*\]|n)\s*[-+]?=[^=]", body)
         if rsv < 0 or len(sets) != 1 or writes:

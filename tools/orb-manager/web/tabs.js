@@ -1236,8 +1236,22 @@ function numText(s, v) {
   const sp = u && u !== "%" && u !== "°" ? " " : "";
   return (d ? (v / Math.pow(10, d)).toFixed(d) : String(v)) + sp + u;
 }
+// §64.2: the dial's twelve colours, copied name-for-name and value-for-value from the
+// one table in main/app/orb_setui.c (host_setui_test.py pins the two against each other).
+// The hub's picker is NOT palette-restricted — the chip only says what a stored colour
+// is: one of these names, one of the app's own specials, or "custom".
+const APS_PALETTE = [["Ruby", 0xd62828], ["Ember", 0xf77f00], ["Amber", 0xffc300],
+  ["Lime", 0x80b918], ["Emerald", 0x0fa36b], ["Teal", 0x0fbfb1], ["Sky", 0x2e93e4],
+  ["Sapphire", 0x2d5bd0], ["Indigo", 0x5b4bff], ["Violet", 0x9b43e0],
+  ["Magenta", 0xd93b8e], ["Pearl", 0xededf3]];
+const pad6 = (v) => Math.max(0, Math.min(0xffffff, v | 0)).toString(16).padStart(6, "0");
+// a special is stored -1 for the first name the app declared, -2 for the second
+const colorSpecial = (s, v) => ((s && s.specials) || []).slice(0, 4)[-v - 1] || "custom";
+const colorName = (s, v) => (v < 0 ? colorSpecial(s, v)
+  : (APS_PALETTE.filter((p) => p[1] === v)[0] || ["custom"])[0]);
 function valueText(s, v, dist) {
   if (s.type === "int" || s.type === "number") return numText(s, v);
+  if (s.type === "color") return v < 0 ? colorSpecial(s, v) : "#" + pad6(v);
   if (s.type === "enum" || s.type === "toggle") return choiceText((s.choices || [])[v], dist) || String(v);
   if (s.type === "multi") {
     const on = (s.choices || []).filter((_c, i) => (v >> i) & 1).map((c) => choiceText(c, dist));
@@ -1321,6 +1335,38 @@ function valueRow(app, s, value, dist) {
       form.appendChild(lab);
     });
     form.appendChild(msg);
+  } else if (s.type === "color") {
+    // the whole 24 bits are the owner's to pick; the dial's palette is a chip, not a cage
+    const pick = document.createElement("input");
+    pick.type = "color";
+    pick.setAttribute("aria-label", s.label);
+    pick.title = "Pick any colour; the dial steps its palette and shows \"custom\" for one off it";
+    pick.style.width = "3.6em";
+    pick.style.height = "2.1em";
+    pick.style.padding = "2px";
+    const chip = document.createElement("span");
+    chip.className = "hint";
+    const seg = document.createElement("span");
+    seg.className = "seg";
+    const btns = (Array.isArray(s.specials) ? s.specials.slice(0, 4) : []).map((c, i) => {
+      const b = document.createElement("button");
+      b.type = "button"; b.className = "ghost"; b.textContent = String(c);
+      b.onclick = () => { if (now !== -(i + 1)) write(-(i + 1)).then(mark); };
+      seg.appendChild(b);
+      return b;
+    });
+    const mark = () => {
+      pick.value = "#" + pad6(now);
+      chip.textContent = colorName(s, now);
+      btns.forEach((b, i) => b.classList.toggle("on", now === -(i + 1)));
+    };
+    pick.onchange = () => {
+      const v = parseInt(pick.value.substring(1), 16);
+      if (!isFinite(v) || v < 0 || v > 0xffffff) { mark(); return; }
+      write(v).then(mark);
+    };
+    mark();
+    form.append(pick, seg, chip, msg);
   }
   box.appendChild(form);
   show();

@@ -2816,3 +2816,36 @@ func TestSafariIsWarnedAboutEditors(t *testing.T) {
 		}
 	}
 }
+
+// §64.2 (ring-3): a `color` setting is a C9 int on the wire and a colour on the face. The
+// App settings page must therefore offer a picker (any 0xRRGGBB, the hub is not
+// palette-restricted), print the stored int as #rrggbb, name it when it is one of the
+// dial's twelve palette colours and say "custom" when it is not, and offer the app's own
+// named specials beside the picker. There is no JavaScript engine here, so this is the
+// same text gate the rest of this suite uses for a face: the branch, its save path, and
+// the palette copied name-for-name from orb_setui.c — which host_setui_test.py mirrors.
+func TestAppSettingsColourPickerIsWiredInTheFace(t *testing.T) {
+	tabs := readWebFile(t, "tabs.js")
+	// The branch, its two writes (a colour and a special), the hex it prints, the chip it
+	// names, the four-special cap, and the palette's first and last entry in that order.
+	for _, want := range []string{
+		`s.type === "color"`,
+		`return v < 0 ? colorSpecial(s, v) : "#" + pad6(v)`,
+		`pick.type = "color"`,
+		`pick.value = "#" + pad6(now)`,
+		`write(v).then(mark)`,
+		`write(-(i + 1)).then(mark)`,
+		`chip.textContent = colorName(s, now)`,
+		`s.specials.slice(0, 4)`,
+		`["Ruby", 0xd62828]`,
+		`["Pearl", 0xededf3]`,
+		`"custom"`,
+	} {
+		if !strings.Contains(tabs, want) {
+			t.Errorf(`tabs.js lost %q: the App settings face no longer draws a colour row`, want)
+		}
+	}
+	if n := strings.Count(tabs, `", 0x`); n != 12 {
+		t.Errorf("the hub copies %d palette colours and the dial steps 12 (ring-design §9.1)", n)
+	}
+}

@@ -57,9 +57,14 @@ void pm_press(pm_t *s, const pm_cfg_t *c)
         s->end_s = 0;
         break;
     case PM_PAUSE:                              /* resume the kept seconds, end_s re-anchored */
-        s->st = PM_RUN;
-        s->end_s = 0;
-        break;
+        if (s->rem > 0) {
+            s->st = PM_RUN;
+            s->end_s = 0;
+            break;
+        }
+        /* paused at 0:00 (a turn ran it down, §64.14): the owner is driving, so the next phase
+         * starts at once, with no chime and no wait (owner, Bronze 2026-11-11) */
+        /* fall through */
     default:                                    /* WAIT, WAITED: the next phase, fresh */
         s->k = (int16_t)pm_next_k(s->k, c->focuses);
         s->len = pm_len_s(c, pm_phase_at(s->k, c->focuses));

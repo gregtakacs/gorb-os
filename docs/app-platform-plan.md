@@ -8176,7 +8176,8 @@ On the pomodoro design's owner questions (`docs/specs/pomodoro-design.md`):
   so its full circle is always the setting and it never rescales. Running, a turn keeps the
   seconds (1:45 -> 0:45). Stopped, paused or over, it snaps to the whole minute in the turn's
   direction (1:48 -> 1:00 or 2:00; 12:34 -> 12:00 or 13:00). **Down runs to 0:00 and stops there,
-  paused** (1:45 -> 0:45 -> 0:00); the press resumes it into its end and chime. A paused 0:00
+  paused** (1:45 -> 0:45 -> 0:00), and can be turned back up from there. A press at 0:00 starts
+  the next phase at once, with no chime and no wait: the owner is driving it. A paused 0:00
   survives a restart. A clamp never moves the time against the knob. A phase that is over,
   turned up, has that time again and waits paused for the press. (Withdrawn the same day: spent +
   left never past the setting, and a minute's floor.)

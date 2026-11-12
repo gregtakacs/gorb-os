@@ -109,6 +109,8 @@ MUTATIONS = [
     ("    if ((delta < 0 && want > s->rem) || (delta > 0 && want < s->rem)) return PM_EV_LIMIT;", ""),          # a clamp turns against the knob
     (".len = pm_len_s(c, pm_ring_phase(s, c->focuses)),", ".len = s->len,"),                                   # the ring rescales on a turn
     ("    s->rem = st == PM_PAUSE ? (raw->rem < 0 ? 0 : raw->rem > len ? len : raw->rem) : rem;", "    s->rem = rem;"),  # a paused 0:00 restores at 1:00
+    ("        if (s->rem > 0) {\n            s->st = PM_RUN;", "        if (s->rem >= 0) {\n            s->st = PM_RUN;"),  # 0:00 resumes into a chime
+    ("        if (s->rem > 0) {\n            s->st = PM_RUN;", "        if (s->rem > 1) {\n            s->st = PM_RUN;"),   # the last second skipped
     ("int pm_at_start(const pm_t *s) { return s->len <= 0 || s->rem >= s->len; }", "int pm_at_start(const pm_t *s) { return s->len <= 0 || s->rem > s->len; }"),  # a fresh phase is not fresh
     ("    if (pos == 0 && at_start && p < 0) p -= 1;", "    if (pos == 0 && !at_start && p < 0) p -= 1;"),           # -1 skipped when it should not be
     ("    const int lo = k > 0 ? -k - 1 : -1;", "    const int lo = k > 0 ? -k : -1;"),                             # one slot off the front of the cycle
@@ -332,6 +334,13 @@ int main(void)
             "and 0:48 turned down runs to 0:00 and stops there, paused (owner)");
         ckk(pm_turn(&q, &c, -1, 4952) == PM_EV_LIMIT && q.rem == 0, 1, "and 0:00 turned down stays");
         ckk(pm_turn(&q, &c, 1, 4952) == PM_EV_NONE && q.rem == 60 && q.st == PM_PAUSE, 1, "a click up from 0:00 is 1:00, still paused");
+        q = mk(PM_PAUSE, 0, 1500, 0, 0);
+        pm_press(&q, &c);
+        ckk(q.st == PM_RUN && q.k == 1 && q.rem == 360 && q.len == 360, 1,
+            "paused at 0:00, a press starts the next phase at once (no chime, no wait)");
+        q = mk(PM_PAUSE, 0, 1500, 1, 0);
+        pm_press(&q, &c);
+        ckk(q.st == PM_RUN && q.k == 0 && q.rem == 1, 1, "paused at 0:01, a press resumes the same phase");
         q = mk(PM_RUN, 0, 1000, 754, 4000);
         ckk(pm_turn(&q, &c, 1, 5000) == PM_EV_NONE && q.rem == 814, 1, "running keeps the seconds: 12:34 then a click is 13:34");
         q = mk(PM_PAUSE, 0, 900, 108, 0);

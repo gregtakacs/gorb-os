@@ -664,11 +664,12 @@ ORB_EXPORT("orb_input") void orb_input(int32_t delta, int32_t pressed)
         choice_step();
         return;
     }
-    const int was_st = s.st;
+    const int was_st = s.st, was_k = s.k;
     if (pressed) {
         pm_press(&s, &cfg);
-        if (was_st == PM_WAIT || was_st == PM_WAITED) s_turned_k = -1;  /* a new phase takes its
-                                                                          * setting, §4 */
+        if (s.k != was_k || was_st == PM_WAIT || was_st == PM_WAITED)
+            s_turned_k = -1;             /* a new phase takes its setting, §4 (from waiting, or
+                                          * from a pause at 0:00, §64.14) */
     }
     if (delta) {
         if (pm_turn(&s, &cfg, (int)delta, wall()) & PM_EV_LIMIT) s_limit_ms = up_ms();

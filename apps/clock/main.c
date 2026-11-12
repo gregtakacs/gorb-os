@@ -558,9 +558,20 @@ static void sound_policy(const tm_t *ti, time_t t, double frac, bool on_glass)
             int64_t d = (anchor - s_snd->loop_anchor) % 1000000;
             if (d < 0) d += 1000000;
             if (d >= 500000) d -= 1000000;             /* signed, -0.5 s .. +0.5 s */
+            /* A one-frame glitch is not drift: the stage's wall fraction is now and then a
+             * frame stale (156 ms on Skeleton's 6 fps), and following it re-anchored the loop
+             * there and back, two snaps a beat (Bronze, 2026-11-12). Only a deviation that
+             * holds, same sign, for three frames moves the anchor, and then by at most 20 ms
+             * a frame, under the mixer's 50 ms snap, so it slews in silence. */
+            static int s_drift_n;
             if (d > 2000 || d < -2000) {
-                s_snd->loop_anchor += d;
-                orb_stage_snd_reanchor(s_snd->loop, s_snd->loop_anchor);
+                s_drift_n = (s_drift_n > 0) == (d > 0) ? s_drift_n + (d > 0 ? 1 : -1) : (d > 0 ? 1 : -1);
+                if (s_drift_n >= 3 || s_drift_n <= -3) {
+                    s_snd->loop_anchor += d > 20000 ? 20000 : d < -20000 ? -20000 : d;
+                    orb_stage_snd_reanchor(s_snd->loop, s_snd->loop_anchor);
+                }
+            } else {
+                s_drift_n = 0;
             }
         }
     }

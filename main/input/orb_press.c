@@ -156,3 +156,39 @@ void orb_press_drop(int slot)
                                                     * the claimant: a stale row is never handed on */
     }
 }
+
+
+/* ---- §64.17: the double press -------------------------------------------------------- */
+
+EXT_RAM_BSS_ATTR static int      s_tap_held;     /* a lendable press is held, waiting for its pair */
+EXT_RAM_BSS_ATTR static uint32_t s_tap_t0;       /* when it arrived, ms */
+
+int orb_tap_press(uint32_t now_ms)
+{
+    if (s_tap_held && (uint32_t)(now_ms - s_tap_t0) < ORB_TAP_WINDOW_MS) {
+        s_tap_held = 0;
+        return ORB_TAP_DOUBLE;                     /* the pair: the claimant's */
+    }
+    s_tap_held = 1;                                /* the first of a possible pair: held */
+    s_tap_t0 = now_ms;
+    return ORB_TAP_NONE;
+}
+
+int orb_tap_due(uint32_t now_ms)
+{
+    if (!s_tap_held || (uint32_t)(now_ms - s_tap_t0) < ORB_TAP_WINDOW_MS) return ORB_TAP_NONE;
+    s_tap_held = 0;
+    return ORB_TAP_SINGLE;                         /* no pair came: the app's single press */
+}
+
+int orb_tap_cancel(void)
+{
+    if (!s_tap_held) return ORB_TAP_NONE;
+    s_tap_held = 0;
+    return ORB_TAP_SINGLE;
+}
+
+void orb_tap_drop(void) { s_tap_held = 0; }
+
+int orb_tap_pending(void) { return s_tap_held; }
+

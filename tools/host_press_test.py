@@ -48,6 +48,20 @@ MUTATIONS = [
     # the cold PSRAM image must not read slot 0 as a claimant
     ("        s_owner = -1;\n        for (int i = 0; i < ORB_APP_CAP; i++) s_count[i] = 0;",
      "        for (int i = 0; i < ORB_APP_CAP; i++) s_count[i] = 0;"),
+    # §64.17 the double press
+    ("    if (s_tap_held && (uint32_t)(now_ms - s_tap_t0) < ORB_TAP_WINDOW_MS) {",
+     "    if (s_tap_held) {"),                                                          # a pair with no window
+    ("    if (s_tap_held && (uint32_t)(now_ms - s_tap_t0) < ORB_TAP_WINDOW_MS) {",
+     "    if (s_tap_held && (uint32_t)(now_ms - s_tap_t0) <= ORB_TAP_WINDOW_MS) {"),    # the edge counted twice
+    ("    if (!s_tap_held || (uint32_t)(now_ms - s_tap_t0) < ORB_TAP_WINDOW_MS) return ORB_TAP_NONE;\n    s_tap_held = 0;",
+     "    if (!s_tap_held || (uint32_t)(now_ms - s_tap_t0) < ORB_TAP_WINDOW_MS) return ORB_TAP_NONE;\n    ;"),  # delivered forever
+    ("    if (!s_tap_held || (uint32_t)(now_ms - s_tap_t0) < ORB_TAP_WINDOW_MS) return ORB_TAP_NONE;",
+     "    if ((uint32_t)(now_ms - s_tap_t0) < ORB_TAP_WINDOW_MS) return ORB_TAP_NONE;"),  # a single from nothing
+    ("    if (!s_tap_held) return ORB_TAP_NONE;\n    s_tap_held = 0;\n    return ORB_TAP_SINGLE;",
+     "    s_tap_held = 0;\n    return ORB_TAP_SINGLE;"),                                  # a cancel invents a press
+    ("void orb_tap_drop(void) { s_tap_held = 0; }", "void orb_tap_drop(void) { }"),          # a dropped press lands late
+    ("    if (s_tap_held && (uint32_t)(now_ms - s_tap_t0) < ORB_TAP_WINDOW_MS) {\n        s_tap_held = 0;",
+     "    if (s_tap_held && now_ms < s_tap_t0 + ORB_TAP_WINDOW_MS) {\n        s_tap_held = 0;"),  # the wrap breaks the pair
 ]
 # NOTE: the clears that run on a steal, a non-owner take and a drop are behaviourally
 # equivalent through the public reads alone — a slot can only become owner through a
@@ -95,6 +109,17 @@ int main(int argc, char **argv)
             printf("DROP slot %d own %d\n", slot, orb_press_owner());
         } else if (o[0] == 'S') {
             printf("SWALLOW %d\n", orb_press_swallowed());
+        } else if (o[0] == 'P') {            /* §64.17: a lendable press at ms */
+            unsigned ms = (unsigned)strtoul(argv[++i], NULL, 10);
+            int r = orb_tap_press(ms); printf("TAP %d held %d\n", r, orb_tap_pending());
+        } else if (o[0] == 'U') {            /* the held press's fate at ms */
+            unsigned ms = (unsigned)strtoul(argv[++i], NULL, 10);
+            int r = orb_tap_due(ms); printf("DUE %d held %d\n", r, orb_tap_pending());
+        } else if (o[0] == 'X') {
+            int r = orb_tap_cancel(); printf("CANCEL %d held %d\n", r, orb_tap_pending());
+        } else if (o[0] == 'R') {
+            orb_tap_drop();
+            printf("DROPTAP held %d\n", orb_tap_pending());
         }
     }
     return 0;
@@ -200,6 +225,29 @@ def checks(exe, quiet=False):
        "three presses lent, three taken, the fourth empty — repeated presses replay like physical ones")
     ck(lines("I", "C 2 1", "S")[-1] == ["SWALLOW", "0"], "no swallow without hitting the ceiling")
 
+    # §64.17: the lent press is a double press; a single press is the app's, late by the window
+    W = 300
+    ls = lines("R", "P 1000", "P 1100")
+    ck(ls[1] == ["TAP", "0", "held", "1"], "a first press is held, not lent")
+    ck(ls[2] == ["TAP", "2", "held", "0"], "a second inside the window is the pair: the claimant's")
+    ls = lines("R", "P 1000", "U 1299", "U 1300", "U 1400")
+    ck(ls[2] == ["DUE", "0", "held", "1"], "inside the window the press is still held")
+    ck(ls[3] == ["DUE", "1", "held", "0"], "at the window's end it is the app's single press")
+    ck(ls[4] == ["DUE", "0", "held", "0"], "and it is delivered once, not again")
+    ls = lines("R", "P 1000", "U 1300", "P 1350")
+    ck(ls[3] == ["TAP", "0", "held", "1"], "a press after a delivered single starts a new pair, never completes the old")
+    ls = lines("R", "P 1000", "P %d" % (1000 + W))
+    ck(ls[2] == ["TAP", "0", "held", "1"], "a second press at exactly the window is a new first press")
+    ls = lines("R", "P 1000", "X", "X")
+    ck(ls[2] == ["CANCEL", "1", "held", "0"], "another gesture delivers the held press first")
+    ck(ls[3] == ["CANCEL", "0", "held", "0"], "and with nothing held a cancel delivers nothing")
+    ls = lines("R", "P 1000", "R", "U 2000")
+    ck(ls[2] == ["DROPTAP", "held", "0"] and ls[3] == ["DUE", "0", "held", "0"],
+       "a dropped press goes nowhere, not even late")
+    ls = lines("R", "P 4294967200", "P 4294967350")
+    ck(ls[2] == ["TAP", "2", "held", "0"], "the pair holds across the ms counter's wrap")
+    ls = lines("R", "P 4294967000", "P 4294967100")
+    ck(ls[2] == ["TAP", "2", "held", "0"], "and when the window, not the clock, crosses the wrap")
     return fails
 
 

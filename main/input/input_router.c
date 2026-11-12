@@ -573,8 +573,8 @@ static void poll_timer_cb(lv_timer_t *timer)
         lpress = false;
     }
     if (lpress) {
-        orb_tap_drop();                      /* §64.17: a hold leaves; the held press goes nowhere */
         open_switcher(0);                    /* §51: out of the app, onto the app list */
+        orb_tap_drop();                      /* §64.17: a hold leaves; the held press goes nowhere */
         return;
     }
 

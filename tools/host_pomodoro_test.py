@@ -319,6 +319,14 @@ int main(void)
             "in RUN a long turn back moves len with rem: the elapsed 600 s stay gone");
         q = mk(PM_STOP, 0, 60, 60, 0);
         ckk(pm_turn(&q, &s60, -1, 5000) == PM_EV_LIMIT && q.rem == PM_MIN_S, 1, "under a cap of 60 the floor still holds");
+        q = mk(PM_RUN, 0, 1500, 45, 4000);
+        ckk(pm_turn(&q, &c, -1, 4955) == PM_EV_LIMIT && q.rem == 45 && q.len == 1500 && q.end_s == 4000, 1,
+            "running with 0:45 left, a click down stays at 0:45 and says so: the floor never lengthens a turn back");
+        q = mk(PM_PAUSE, 0, 1500, 45, 0);
+        ckk(pm_turn(&q, &c, -2, 5000) == PM_EV_LIMIT && q.rem == 45 && q.st == PM_PAUSE, 1,
+            "paused at 0:45, a turn down leaves it be");
+        q = mk(PM_RUN, 0, 1500, 45, 4000);
+        ckk(pm_turn(&q, &c, 1, 4955) == PM_EV_NONE && q.rem == 105, 1, "and a click up from 0:45 is 1:45");
         ckk(pm_turn(&r, &c, 1, 5000) == PM_EV_NONE && r.rem == 960 && r.len == 1560, 1,
             "in RUN the elapsed arc is kept: len grows with rem");
         ckk(r.end_s == 5960, 1, "and the end moves to now + the new rem");

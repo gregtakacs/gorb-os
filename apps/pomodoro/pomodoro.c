@@ -84,6 +84,10 @@ int pm_turn(pm_t *s, const pm_cfg_t *c, int delta, int64_t now_s)
     want = (s->st == PM_RUN ? s->rem : s->rem / 60 * 60) + delta * 60;
     if (want > cap) { want = cap; lim = 1; }     /* the setting's own max, not its value */
     if (want < PM_MIN_S) { want = PM_MIN_S; lim = 1; }   /* never 0: that reads as finished */
+    /* The floor never lengthens a turn back: 0:45 turned down stays 0:45 rather than jumping up
+     * to 1:00 (owner, Bronze 2026-11-11); the click only reports the limit. (A turn up over a
+     * cap the owner lowered still lands on the cap, as the cap tests say.) */
+    if (delta < 0 && want > s->rem) return PM_EV_LIMIT;
     if (s->st == PM_RUN) {
         s->len += want - s->rem;                 /* the elapsed arc is never rewound */
         if (s->len < want) s->len = want;        /* and the denominator never trails rem */

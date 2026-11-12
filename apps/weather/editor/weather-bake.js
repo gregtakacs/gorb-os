@@ -412,6 +412,26 @@
         bolt: function (ox, oy, u) { return [S(tx(BOLT, ox, oy, u), { fill: P5, stroke: W5, sw: 1.7 * u })]; },
         fog: function (ls, u) { return ls.slice(0, 3).map(function (l) { return S(ln(l[0], l[1], l[2], l[1]), { stroke: K5, sw: 2, cap: 'butt' }); }); },
       };
+      // The small day icons (36 px) are their own drawing, not the big one shrunk (owner,
+      // 2026-11-12, after the true-size sheet): at that size a hairline outline round a paper
+      // fill reads as nothing on the paper ground, and dots, slashes and tiny stars blur into
+      // one. Solid navy bodies, and three precipitation marks that differ in shape and size.
+      var big = pk;
+      var small = {
+        sun: function (x, y, R, u) { var t = ''; for (var i = 0; i < 8; i++) t += rad(1.12 * R, 1.62 * R, i * 45, x, y); return [S(circ(x, y, R), { fill: P5, stroke: K5, sw: 2.4 }), S(t, { stroke: K5, sw: 2.2, cap: 'butt' }), S(circ(x, y, 0.5 * R), { fill: A5 })]; },
+        moon: function (x, y, R, u) { return [S(crescent(x, y, R), { fill: K5 }), S(circ(x + 1.18 * R, y - 0.86 * R, Math.max(2.2 * u, 1.6)), { fill: A5 })]; },
+        cloud: function (cl, u) { return [S(cl.d, { fill: K5, stroke: K5, sw: 1.2 })]; },
+        rain: function (x, y, u) { return [S(ln(x + 3 * u, y - 9 * u, x - 3 * u, y + 9 * u), { stroke: K5, sw: 2.4, cap: 'butt' })]; },
+        drizzle: function (x, y, u) { return [S(circ(x, y, 2.3), { fill: K5 })]; },
+        snow: function (x, y, u) { return [S(tx(STAR4, x, y, 3.6 / 8), { fill: K5, stroke: K5, sw: 0.6 })]; },
+        bolt: function (ox, oy, u) { return [S(tx(BOLT, ox, oy, u), { fill: A5, stroke: P5, sw: 1.6 })]; },
+        fog: big.fog,
+      };
+      pk = {};
+      Object.keys(big).forEach(function (k) {
+        pk[k] = function () { var u = k === 'fog' || k === 'cloud' ? arguments[1] : k === 'bolt' || k === 'rain' || k === 'drizzle' || k === 'snow' ? arguments[2] : arguments[3];
+          return (u < 0.5 ? small : big)[k].apply(null, arguments); };
+      });
     } else {
       var K = c.ink, Rd = c.red;
       pk = {

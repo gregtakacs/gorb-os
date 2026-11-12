@@ -8159,6 +8159,7 @@ On the pomodoro design's owner questions (`docs/specs/pomodoro-design.md`):
   faulted loses its claim. The OS confirms a lent press with a short pulse of the claimant's
   ring, so the press is seen to have gone somewhere.
 - **The pomodoro's setting `press_any`** (Off / When it's calling / Whenever it runs, default
+  Whenever it runs, by the owner's ruling of 2026-11-12 after using it on Bronze; first ruled
   When it's calling): calling = a phase has ended and the ring flashes for a press, which then
   starts the next phase; whenever it runs = also while a phase runs or is paused, where the
   press pauses and resumes. The pomodoro claims and drops the press as its state moves; on its

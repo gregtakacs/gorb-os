@@ -48,7 +48,7 @@
     {"id": "pm_end", "type": "int", "label": "End or remaining second", "min": 0, "max": 2147483647,
      "default": 0, "show": "none"},
     {"id": "press_any", "type": "enum", "label": "Borrow the press",
-     "choices": ["Off", "When it's calling", "Whenever it runs"], "default": 1,
+     "choices": ["Off", "When it's calling", "Whenever it runs"], "default": 2,
      "help": "Start the next phase by tapping whatever is on the glass. Off keeps every press for the app you are looking at. When it's calling borrows one only while a phase has ended and waits for you. Whenever it runs borrows it through a focus or a break too, and the running drain's ring keeps the opacity you set for it. A tap that only woke the screen is never borrowed, and the ring pulses once when a press does come here."}
   ],
   "shelf": true,

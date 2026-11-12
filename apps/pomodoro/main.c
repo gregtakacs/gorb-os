@@ -187,7 +187,7 @@ static const struct { const char *id; int32_t dflt; } PM_SET[PM_N_SET] = {
     { "focuses", 4 },        { "autostart", 0 },      { "chime", 1 },
     { "chime_vol", 70 },     { "wake", 1 },           { "ring_on", 1 },
     { "ring_op", 85 },       { "ring_dir", 0 },       { "ring_start", 0 },
-    { "ring_col_here", -1 }, { "ring_col_away", -1 }, { "press_any", PM_PRESS_CALL },
+    { "ring_col_here", -1 }, { "ring_col_away", -1 }, { "press_any", PM_PRESS_EVERY },
 };
 static int32_t s_val[PM_N_SET];                  /* the fifteen, as last read */
 static bool    s_val_known;

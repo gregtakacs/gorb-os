@@ -785,7 +785,7 @@ def manifest(fail):
     pa = sets[-1]
     fail("press_any is an enum of Off, When it's calling, Whenever it runs, in that order",
          pa["type"] == "enum" and pa["choices"] == ["Off", "When it's calling", "Whenever it runs"])
-    fail("and defaults to When it's calling, the design's answer", pa.get("default") == 1)
+    fail("and defaults to Whenever it runs, the owner's answer (2026-11-12)", pa.get("default") == 2)
     fail("press_any speaks in the pomodoro's own voice, within the schema's help cap",
          isinstance(pa.get("help"), str) and 80 <= len(pa["help"].encode()) <= orbapp.HELP_MAX)
     fail("every label still fits the dial's %d bytes" % orbapp.LABEL_MAX,
@@ -802,8 +802,8 @@ def manifest(fail):
     fail("packed and read back, they are the same seventeen in the same order",
          [r["id"] for r in back] == ids)
     w = [r for r in back if r["id"] == "press_any"][0]
-    fail("press_any crosses the wire as an enum the gate range-checks 0..2, default 1",
-         w["type"] == "enum" and w["min"] == 0 and w["max"] == 2 and w["default"] == 1)
+    fail("press_any crosses the wire as an enum the gate range-checks 0..2, default 2",
+         w["type"] == "enum" and w["min"] == 0 and w["max"] == 2 and w["default"] == 2)
     # the cap is step 2's work and this step's dependency: check_settings is the gate the writer
     # refuses at, so the margin (18, not 17) is pinned rather than assumed, and nothing here was
     # dropped or renamed to squeeze into a table that is still full.
@@ -852,7 +852,7 @@ MAIN_RULES = [
     # alerts-3 §64.13: the service is the only place the borrow lives — it asks, it spends what
     # the OS queued, and it puts a spent queue back. Each of those three is a rule of its own.
     ("the loader's table holds the fifteen the owner edits", r"#define PM_N_SET 15\b"),
-    ("press_any is read with the manifest's own default", r"\{ \"press_any\", PM_PRESS_CALL \}"),
+    ("press_any is read with the manifest's own default", r"\{ \"press_any\", PM_PRESS_EVERY \}"),
     ("press_any reaches pm_cfg_t at the index the loader reads", r"cfg\.press_any\s*=\s*v\[14\];"),
     ("the queue is read before anything else, so a spent pass cannot miss a lend",
      r"const int queued = orb_press_lent\(\);[\s\S]{0,400}for \(int i = 0; i < queued"),
@@ -911,7 +911,7 @@ MAIN_MUTATIONS = [
     ("    const int queued = orb_press_lent();", "    const int queued = 0;"),                  # the queue never read at all
     ("    press_pass();", "    ;"),                                                             # the borrow gone from the pass
     ("    cfg.press_any = v[14];", "    ;"),                                                    # the setting never reaches the machine
-    ('{ "press_any", PM_PRESS_CALL }', '{ "press_any", PM_PRESS_OFF }'),                        # a key that has never been set reads Off
+    ('{ "press_any", PM_PRESS_EVERY }', '{ "press_any", PM_PRESS_CALL }'),                      # a key never set reads the old default
     ("#define PM_N_SET 15", "#define PM_N_SET 14"),                                             # the fifteenth left out of the read
 ]
 

@@ -1,0 +1,25 @@
+{
+  "name": "looks",
+  "repo": "../..",
+  "base": "delegate/looks-design",
+  "retries": 2,
+  "steps": [
+    {
+      "name": "looks-1-weather-packs",
+      "spec": "docs/specs/looks-1-weather-packs.md",
+      "hard": true,
+      "verify": "set -o pipefail; export PATH=/home/greg/.local/share/nodeenv-gorb/bin:$PATH; export ORB_CLANG=/usr/lib/llvm-21/bin/clang; node --check apps/weather/editor/weather-bake.js && node --check apps/weather/editor/weather-editor.js && grep -q \"guilloche: { title: 'Guilloch\u00e9'\" apps/weather/editor/weather-bake.js && grep -q \"charted: { title: 'Charted'\" apps/weather/editor/weather-bake.js && grep -q \"pack: 'guilloche'\" apps/weather/editor/weather-bake.js && grep -q \"pack: 'charted'\" apps/weather/editor/weather-bake.js && ! grep -q \"Flights \u00b7 Modern\" apps/weather/editor/weather-bake.js && ! grep -q \"pack: 'engraved', c: { metal: '#C8CED6'\" apps/weather/editor/weather-bake.js && ! grep -q \"pack: 'pictogram', c: { ink: '#1F2A44'\" apps/weather/editor/weather-bake.js && for p in phosphor engraved drafted folded nebula pictogram; do grep -q \"pack: '$p'\" apps/weather/editor/weather-bake.js || exit 1; done && test \"$(cat apps/weather/version.txt)\" = v1.7.2 && python3 apps/weather/editor/_selftest/bake_check.py > /tmp/wx-bake.txt 2>&1 && tail -1 /tmp/wx-bake.txt && grep -qE '0 failed' /tmp/wx-bake.txt && ! grep -q '^FAIL ' /tmp/wx-bake.txt && make check-apps"
+    },
+    {
+      "name": "looks-2-flights-families",
+      "spec": "docs/specs/looks-2-flights-families.md",
+      "hard": true,
+      "verify": "set -o pipefail; export PATH=/home/greg/.local/share/nodeenv-gorb/bin:$PATH; export ORB_CLANG=/usr/lib/llvm-21/bin/clang; node --check apps/flights/editor/flights-bake.js && node --check apps/flights/editor/flights-art.js && python3 -c \"import ast;ast.parse(open('apps/flights/art/make_art.py').read())\" && grep -q \"'station': ('Station'\" apps/flights/art/make_art.py && grep -q \"'sectional': ('Sectional'\" apps/flights/art/make_art.py && grep -q 'def render_station' apps/flights/art/make_art.py && grep -q 'def render_sectional' apps/flights/art/make_art.py && python3 apps/flights/art/make_art.py && ls apps/flights/art/planes/station-single.svg apps/flights/art/planes/sectional-single.svg && grep -q '\"station\"' apps/flights/art/art.json && grep -q '\"sectional\"' apps/flights/art/art.json && grep -q \"family: 'station'\" apps/flights/editor/flights-bake.js && grep -q \"family: 'sectional'\" apps/flights/editor/flights-bake.js && grep -q \"'sectional'\\]\" apps/flights/editor/flights-bake.js && test -z \"$(git diff --name-only -- apps/flights/art/planes | grep -Ev '/(station|sectional)-')\" && test \"$(cat apps/flights/version.txt)\" = v1.7.2 && python3 apps/flights/editor/_selftest/bake_check.py > /tmp/fl-bake.txt 2>&1 && tail -1 /tmp/fl-bake.txt && grep -qE '0 failed' /tmp/fl-bake.txt && ! grep -q '^FAIL ' /tmp/fl-bake.txt && make check-apps"
+    },
+    {
+      "name": "looks-3-names-and-shipping",
+      "spec": "docs/specs/looks-3-names-and-shipping.md",
+      "verify": "set -o pipefail; export PATH=/home/greg/.local/share/nodeenv-gorb/bin:$PATH; export ORB_CLANG=/usr/lib/llvm-21/bin/clang; ! grep -qE 'Modern for flights|Radarscope' tools/rebake_shelf.py && ! grep -q 'Flights \u00b7 Modern' apps/weather/editor/weather-bake.js && python3 tools/rebake_shelf.py --check && grep -q \"pack: 'guilloche'\" apps/weather/editor/weather-bake.js && grep -q \"pack: 'charted'\" apps/weather/editor/weather-bake.js && grep -q \"\\\"station\\\"\" apps/flights/art/art.json && grep -q \"\\\"sectional\\\"\" apps/flights/art/art.json && python3 apps/weather/editor/_selftest/bake_check.py > /tmp/wx3.txt 2>&1 && grep -qE '0 failed' /tmp/wx3.txt && ! grep -q '^FAIL ' /tmp/wx3.txt && python3 apps/flights/editor/_selftest/bake_check.py > /tmp/fl3.txt 2>&1 && grep -qE '0 failed' /tmp/fl3.txt && ! grep -q '^FAIL ' /tmp/fl3.txt && make check-apps && make check-editor"
+    }
+  ]
+}

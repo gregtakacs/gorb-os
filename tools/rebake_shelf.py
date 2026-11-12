@@ -2,9 +2,9 @@
 """rebake_shelf.py — keep each app's shipped default theme baked by the app's own version.
 
 The hub ships one default theme per themeable app (tools/orb-manager/themes/): Skeleton for
-the clock, Modern for flights, Scope for the weather, Radarscope for the radar. Every bump of an app's version.txt re-bakes its default with
+the clock, Scope for the weather, flights and the radar. Every bump of an app's version.txt re-bakes its default with
 that release's editor (owner, 2026-11-05), so the shelf never offers a theme "made with" an
-older editor than the app it themes. A stale shelf copy is how Modern read "made with v1.2.4"
+older editor than the app it themes. A stale shelf copy is how flights' Scope read "made with v1.2.4"
 beside flights v1.2.6 and offered an Update that changed nothing.
 
     python3 tools/rebake_shelf.py            # re-bake every stale default (any Chrome/Chromium)
@@ -15,7 +15,7 @@ beside flights v1.2.6 and offered an Update that changed nothing.
 The bakes are the apps' own headless drivers, so a shelf theme is the bytes the editor's
 Send would make: the clock's through _selftest/bank3-drive.html (with the editor's sound
 engine, D39), flights' through _selftest/bake_check.py. Each new copy passes its gate before
-it replaces the old one: make_default_theme.py's for Skeleton, bake_check.py's for Modern.
+it replaces the old one: make_default_theme.py's for Skeleton, bake_check.py's for flights.
 """
 import base64
 import json
@@ -104,7 +104,7 @@ def bake_clock(v):
 
 def bake_flights(v):
     """Every flights theme through bake_check.py (which stamps flights' version.txt and gates
-    each one), keeping Modern."""
+    each one), keeping flights' Scope."""
     with tempfile.TemporaryDirectory(prefix="rebake.") as keep:
         return _bake_flights(v, keep)
 

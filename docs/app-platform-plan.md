@@ -8165,3 +8165,17 @@ On the pomodoro design's owner questions (`docs/specs/pomodoro-design.md`):
   own glass it handles the press as it always has.
 - **This bends the knob rule that the press is the app's** (app-design-rules.md § The knob): the
   rule now names the one exception, an app the owner has let borrow it.
+
+### 64.14 A turn never passes the setting — 2026-11-11
+
+- **The owner, on Bronze:** with a 5:00 short break, a turn reached 30:00 (the setting's own
+  maximum), and the ring rescaled oddly past 5:00; paused, a turn to 30:00 "messes up the ring";
+  running at 1:48 a turn down stopped at 1:00 where 0:48 was meant.
+- **Ruling: the time spent plus the time left never passes the phase's setting**, so the ring's
+  full circle is always the setting and never rescales (the ring is left over setting). A turn up
+  stops at the setting less what is spent: minutes turned off come back, no more. Running, a
+  turn keeps the seconds and stops short of 0 (1:48 -> 0:48; 0:48 down stays). Stopped or paused
+  it drops the seconds and keeps a minute's floor (1:48 -> 1:00 or 2:00). A clamp never moves the
+  time against the knob (0:45 turned down stays 0:45). A phase that is over (waiting, chimed) has
+  spent its setting: a turn there only reports the limit; press starts the next phase.
+- This replaces §64.10's turn ceiling (the setting's maximum) and its "a turn ends the waiting".

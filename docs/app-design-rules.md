@@ -56,7 +56,8 @@ previous, wider.
 - Weather turns clockwise into the coming hours, anticlockwise into the days.
 - Radar turns clockwise into the forecast, anticlockwise into the past.
 - Radar's and flights' press-and-turn zoom clockwise closer.
-- The pomodoro's turn adds time clockwise, and its press-and-turn goes to the next phase
+- The pomodoro's turn takes time off anticlockwise and gives it back clockwise, never past the
+  phase's setting (§64.14); its press-and-turn goes to the next phase
   clockwise.
 
 The sign comes from the knob as it is: `delta > 0` is clockwise, and no screen negates it.

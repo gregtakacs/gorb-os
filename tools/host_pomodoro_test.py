@@ -79,8 +79,6 @@ def shape(fail, h_src, c_src):
 # Each is a behavioural edit to one line of the shipped source. An escaped mutant means the check
 # that names that rule is not watching it.
 MUTATIONS = [
-    ("(s->st == PM_RUN ? s->rem : s->rem / 60 * 60)", "(s->rem)"),
-    ("(s->st == PM_RUN ? s->rem : s->rem / 60 * 60)", "(s->rem / 60 * 60)"),
     ("    if (rem > len) rem = len;", "    if (rem > len) len = rem;"),
     ("        s->len = s->rem = len;", "        s->len = s->rem = rem;"),
     ("raw->st_k % PM_PACK_MUL == PM_RUN", "raw->st_k % PM_PACK_MUL == PM_PAUSE"),
@@ -95,13 +93,18 @@ MUTATIONS = [
     ("        if (s->len < PM_MIN_S) s->len = pm_len_s(c, pm_phase_at(s->k, c->focuses));", "        s->len = pm_len_s(c, PM_FOCUS);"),  # a press over the turned length
     ("        s->k = (int16_t)pm_next_k(s->k, c->focuses);\n        s->len", "        s->len"),                     # the press never moves on
     ("        s->len = pm_len_s(c, pm_phase_at(s->k, c->focuses));\n        s->rem = s->len;\n        s->st = PM_RUN;", "        s->len = pm_len_s(c, PM_FOCUS);\n        s->rem = s->len;\n        s->st = PM_RUN;"),  # the next phase at the focus's length
-    ("    want = (s->st == PM_RUN ? s->rem : s->rem / 60 * 60) + delta * 60;", "    want = s->rem + delta * 30;"),                                         # a click is not a minute
-    ("    if (want > cap) { want = cap; lim = 1; }", "    if (want > cap) { want = cap; }"),                        # the stop never reported
-    ("    if (want > cap) { want = cap; lim = 1; }", "    if (want > cap + 60) { want = cap; lim = 1; }"),          # the ceiling leaks a click
-    ("    if (want < PM_MIN_S) { want = PM_MIN_S; lim = 1; }", "    if (want < PM_MIN_S) { want = 0; lim = 1; }"),  # turned to zero
-    ("        s->len += want - s->rem;", "        s->len = want;"),                                                  # the elapsed arc rewound
-    ("        s->end_s = now_s + want;", "        s->end_s = now_s;"),                                               # the turn leaves the end
-    ("        if (s->st == PM_WAIT || s->st == PM_WAITED) s->st = PM_PAUSE;", "        if (s->st == PM_WAIT) s->st = PM_PAUSE;"),  # a chimed phase stays chimed
+    # §64.14's turn: spent + left never passes the setting
+    ("        want = s->rem + delta * 60;", "        want = s->rem / 60 * 60 + delta * 60;"),                          # running drops its seconds
+    ("        want = s->rem / 60 * 60 + delta * 60;", "        want = s->rem + delta * 60;"),                          # paused keeps its seconds
+    ("        want = s->rem + delta * 60;", "        want = s->rem + delta * 30;"),                                    # a click is not a minute
+    ("        if (want > room) { want = room; lim = 1; }\n        if (want <= 0)", "        if (want > room + 60) { want = room; lim = 1; }\n        if (want <= 0)"),  # the ceiling leaks a click
+    ("        if (want <= 0) return PM_EV_LIMIT;", "        if (want < 0) want = 0;"),                              # turned to zero
+    ("    const int room = set - spent > 0 ? set - spent : 0;", "    const int room = set;"),                     # the spent part forgotten
+    ("    else s->len += want - s->rem;", "    else s->len = want;"),                                             # the spent arc rewound
+    ("    s->end_s = s->st == PM_RUN ? now_s + want : 0;", "    s->end_s = s->st == PM_RUN ? now_s : 0;"),       # the turn leaves the end
+    ("    if (s->st == PM_WAIT || s->st == PM_WAITED || room <= 0) return PM_EV_LIMIT;", "    if (s->st == PM_WAIT || room <= 0) return PM_EV_LIMIT;"),  # a chimed phase turned
+    ("    if ((delta < 0 && want > s->rem) || (delta > 0 && want < s->rem)) return PM_EV_LIMIT;", ""),          # a clamp turns against the knob
+    (".len = pm_len_s(c, pm_ring_phase(s, c->focuses)),", ".len = s->len,"),                                   # the ring rescales on a turn
     ("int pm_at_start(const pm_t *s) { return s->len <= 0 || s->rem >= s->len; }", "int pm_at_start(const pm_t *s) { return s->len <= 0 || s->rem > s->len; }"),  # a fresh phase is not fresh
     ("    if (pos == 0 && at_start && p < 0) p -= 1;", "    if (pos == 0 && !at_start && p < 0) p -= 1;"),           # -1 skipped when it should not be
     ("    const int lo = k > 0 ? -k - 1 : -1;", "    const int lo = k > 0 ? -k : -1;"),                             # one slot off the front of the cycle
@@ -288,65 +291,78 @@ int main(void)
     /* ---- turn (design §6.2) ---- */
     {
         pm_cfg_t c = cfg4(0, 100, 1);
-        pm_cfg_t s25 = cfg4(0, 100, 1);
-        pm_cfg_t s60 = cfg4(0, 100, 1);
         pm_t s = mk(PM_STOP, 0, 900, 900, 0);
         pm_t w = mk(PM_STOP, 0, 600, 600, 0), r = mk(PM_RUN, 0, 1500, 900, 4000), q;
-        s25.cap_s[PM_FOCUS] = 90;
-        s60.cap_s[PM_FOCUS] = 60;
-        ckk(pm_turn(&s, &c, 1, 5000), PM_EV_NONE, "one clockwise click asks under the cap");
-        ckk(s.rem, 960, "a click is 60 seconds");
-        ckk(s.len, 960, "STOP: the length follows the turn");
-        ckk(pm_turn(&s, &c, -1, 5000), PM_EV_NONE, "a back click asks under the floor");
-        ckk(s.rem, 900, "and 60 seconds the other way too");
-        ckk(pm_turn(&w, &s25, 1, 5000) == PM_EV_LIMIT && w.rem == 90 && w.len == 90, 1,
-            "the ceiling is cap_s, not the setting: a click past a cap of 90 stops at 90");
-        ckk(pm_turn(&w, &s25, 1, 5000) == PM_EV_LIMIT && w.rem == 90, 1, "a click at the cap reports the limit");
+        /* §64.14: spent + left never passes the setting (focus 25:00 here); the ring's full
+         * circle is the setting. */
+        s = mk(PM_STOP, 0, 900, 900, 0);
+        ckk(pm_turn(&s, &c, 1, 5000) == PM_EV_NONE && s.rem == 960 && s.len == 960, 1,
+            "stopped at 15:00, a click up is 16:00 and the length follows");
+        ckk(pm_turn(&s, &c, -1, 5000) == PM_EV_NONE && s.rem == 900, 1, "and a click back is 15:00");
         w = mk(PM_STOP, 0, 1500, 1500, 0);
-        ckk(pm_turn(&w, &c, 6, 5000) == PM_EV_NONE && w.rem == 1860 && w.len == 1860, 1,
-            "the ceiling is the setting's cap, not its value: 25 turns past 30 while len_s stays 25");
-        ckk(pm_turn(&w, &c, 30, 5000) == PM_EV_LIMIT && w.rem == 3600 && w.len == 3600, 1,
-            "and 60 min is the cap: the ask over it stops at it and reports");
-        w = mk(PM_STOP, 0, 90, 90, 0);
-        ckk(pm_turn(&w, &s25, 3, 5000) == PM_EV_LIMIT && w.rem == 90 && w.len == 90, 1, "a wild ask is the cap and the limit both");
-        ckk(pm_turn(&w, &c, -1, 5000) == PM_EV_LIMIT && w.rem == PM_MIN_S && w.len == PM_MIN_S, 1,
-            "a click under a cap of 90 lands on the floor and says so");
+        ckk(pm_turn(&w, &c, 1, 5000) == PM_EV_LIMIT && w.rem == 1500 && w.len == 1500, 1,
+            "stopped at the setting, a click up stays at 25:00 and reports the limit");
+        w = mk(PM_STOP, 0, 1440, 1440, 0);
+        ckk(pm_turn(&w, &c, 5, 5000) == PM_EV_LIMIT && w.rem == 1500, 1, "a wild ask up stops at the setting");
         q = mk(PM_STOP, 0, 600, 600, 0);
         pm_turn(&q, &c, -9, 5000);
-        ckk(q.rem == PM_MIN_S && q.len == PM_MIN_S, 1, "the floor is PM_MIN_S, never 0: nine clicks down sit on it");
+        ckk(q.rem == PM_MIN_S && q.len == PM_MIN_S, 1, "stopped, the floor is a minute: nine clicks down sit on it");
+        r = mk(PM_RUN, 0, 1500, 900, 4000);
+        ckk(pm_turn(&r, &c, 1, 5000) == PM_EV_LIMIT && r.rem == 900 && r.len == 1500, 1,
+            "running at its full setting (10:00 spent, 15:00 left), a click up has no room and says so");
+        r = mk(PM_RUN, 0, 1200, 900, 4000);              /* 5:00 spent, 5:00 turned off earlier */
+        ckk(pm_turn(&r, &c, 1, 5000) == PM_EV_NONE && r.rem == 960 && r.len == 1260, 1,
+            "with minutes turned off, a click up brings one back, the spent part kept");
+        ckk(r.end_s == 5960, 1, "and the end moves to now + the new rem");
+        ckk(pm_turn(&r, &c, 9, 5000) == PM_EV_LIMIT && r.rem == 1200 && r.len == 1500, 1,
+            "a turn up stops where spent + left is the setting: 5:00 spent leaves room for 20:00");
         q = mk(PM_RUN, 0, 1500, 900, 4000);
         ckk(pm_turn(&q, &c, -6, 5000) == PM_EV_NONE && q.rem == 540 && q.len == 1140, 1,
-            "in RUN a long turn back moves len with rem: the elapsed 600 s stay gone");
-        q = mk(PM_STOP, 0, 60, 60, 0);
-        ckk(pm_turn(&q, &s60, -1, 5000) == PM_EV_LIMIT && q.rem == PM_MIN_S, 1, "under a cap of 60 the floor still holds");
-        q = mk(PM_RUN, 0, 1500, 45, 4000);
-        ckk(pm_turn(&q, &c, -1, 4955) == PM_EV_LIMIT && q.rem == 45 && q.len == 1500 && q.end_s == 4000, 1,
-            "running with 0:45 left, a click down stays at 0:45 and says so: the floor never lengthens a turn back");
+            "in RUN a turn back takes minutes off; the 10:00 spent stay spent");
+        ckk(pm_turn(&q, &c, 6, 5000) == PM_EV_NONE && q.rem == 900 && q.len == 1500, 1,
+            "and the minutes turned off come back, up to the setting");
+        q = mk(PM_RUN, 0, 1500, 108, 4000);
+        ckk(pm_turn(&q, &c, -1, 4892) == PM_EV_NONE && q.rem == 48, 1, "running keeps the seconds: 1:48 then a click down is 0:48");
+        ckk(pm_turn(&q, &c, -1, 4952) == PM_EV_LIMIT && q.rem == 48 && q.end_s == 4892 + 48, 1,
+            "and 0:48 turned down stays: a turn never takes a phase to 0");
+        q = mk(PM_RUN, 0, 1000, 754, 4000);
+        ckk(pm_turn(&q, &c, 1, 5000) == PM_EV_NONE && q.rem == 814, 1, "running keeps the seconds: 12:34 then a click is 13:34");
+        q = mk(PM_PAUSE, 0, 900, 108, 0);
+        ckk(pm_turn(&q, &c, -1, 5000) == PM_EV_LIMIT && q.rem == 60, 1,
+            "paused at 1:48, a click down is 1:00, the floor, and says so (owner)");
+        q = mk(PM_PAUSE, 0, 900, 108, 0);
+        ckk(pm_turn(&q, &c, 1, 5000) == PM_EV_NONE && q.rem == 120, 1, "and a click up is 2:00");
+        q = mk(PM_PAUSE, 0, 1000, 754, 0);
+        ckk(pm_turn(&q, &c, 1, 5000) == PM_EV_NONE && q.rem == 780 && q.len == 1026, 1,
+            "paused at 12:34, a click up drops the seconds first: 13:00, the spent part kept");
         q = mk(PM_PAUSE, 0, 1500, 45, 0);
         ckk(pm_turn(&q, &c, -2, 5000) == PM_EV_LIMIT && q.rem == 45 && q.st == PM_PAUSE, 1,
             "paused at 0:45, a turn down leaves it be");
-        q = mk(PM_RUN, 0, 1500, 45, 4000);
-        ckk(pm_turn(&q, &c, 1, 4955) == PM_EV_NONE && q.rem == 105, 1, "and a click up from 0:45 is 1:45");
-        ckk(pm_turn(&r, &c, 1, 5000) == PM_EV_NONE && r.rem == 960 && r.len == 1560, 1,
-            "in RUN the elapsed arc is kept: len grows with rem");
-        ckk(r.end_s == 5960, 1, "and the end moves to now + the new rem");
-        ckk(pm_fraction(&r) == 615 && pm_fraction(&r) >= 600, 1, "the fraction never goes back up on a lengthen");
-        q = mk(PM_PAUSE, 0, 1500, 754, 0);
-        ckk(pm_turn(&q, &c, 1, 5000) == PM_EV_NONE && q.rem == 780, 1, "paused at 12:34, a click up drops the seconds first: 13:00 (owner)");
-        q = mk(PM_PAUSE, 0, 1500, 754, 0);
-        ckk(pm_turn(&q, &c, -1, 5000) == PM_EV_NONE && q.rem == 660, 1, "and a click down from 12:34 is 11:00");
-        q = mk(PM_STOP, 0, 754, 754, 0);
-        ckk(pm_turn(&q, &c, 1, 5000) == PM_EV_NONE && q.rem == 780 && q.len == 780, 1, "stopped likewise: 12:34 then a click is 13:00");
-        q = mk(PM_RUN, 0, 1500, 754, 4000);
-        ckk(pm_turn(&q, &c, 1, 5000) == PM_EV_NONE && q.rem == 814, 1, "running keeps the seconds: 12:34 then a click is 13:34");
-        q = mk(PM_PAUSE, 0, 1500, 45, 0);
-        ckk(pm_turn(&q, &c, 1, 5000) == PM_EV_NONE && q.rem == 60, 1, "paused at 0:45, a click up is 1:00");
+        q = mk(PM_PAUSE, 0, 900, 45, 0);
+        ckk(pm_turn(&q, &c, 1, 5000) == PM_EV_NONE && q.rem == 60, 1, "paused at 0:45 with room, a click up is 1:00");
+        q = mk(PM_PAUSE, 0, 1500, 30, 0);
+        ckk(pm_turn(&q, &c, 1, 5000) == PM_EV_LIMIT && q.rem == 30, 1,
+            "paused with 24:30 spent of 25:00, the room is 0:30: a click up stays");
         q = mk(PM_WAIT, 1, 360, 0, 0);
-        pm_turn(&q, &c, 1, 5000);
-        ckk(q.st, PM_PAUSE, "a turn over a waiting phase ends the waiting");
+        ckk(pm_turn(&q, &c, 1, 5000) == PM_EV_LIMIT && q.st == PM_WAIT && q.rem == 0, 1,
+            "a phase that is over has spent its setting: a turn only reports the limit");
         q = mk(PM_WAITED, 1, 900, 0, 0);
-        pm_turn(&q, &c, 1, 5000);
-        ckk(q.st, PM_PAUSE, "a turn over an already-chimed phase ends the waiting too");
+        ckk(pm_turn(&q, &c, -1, 5000) == PM_EV_LIMIT && q.st == PM_WAITED, 1, "already chimed, likewise");
+        q = mk(PM_WAITED, 1, 240, 0, 0);                   /* a short break turned down to 4:00 */
+        ckk(pm_turn(&q, &c, 1, 5000) == PM_EV_LIMIT && q.st == PM_WAITED && q.rem == 0, 1,
+            "a chimed phase that was turned short still takes no turn: it is over, not paused");
+        q = mk(PM_PAUSE, 0, 900, 45, 0);
+        ckk(pm_turn(&q, &c, -1, 5000) == PM_EV_LIMIT && q.rem == 45, 1,
+            "paused at 0:45 with room to spare, a click down still never lifts it to the 1:00 floor");
+        q = mk(PM_STOP, 0, 1800, 1800, 0);                 /* set at 30:00, then the setting went to 25:00 */
+        ckk(pm_turn(&q, &c, 1, 5000) == PM_EV_LIMIT && q.rem == 1800, 1,
+            "over a setting lowered under it, a click up never shortens the time");
+        {
+            pm_ring_t g;
+            q = mk(PM_RUN, 0, 1140, 540, 4000);          /* 25:00 set, 10:00 spent, 6:00 turned off */
+            ckk(pm_ring_for(&q, &c, &g) && g.fraction == 360, 1,
+                "the ring is left over the setting: 9:00 of 25:00 is 360, whatever was turned");
+        }
     }
 
     /* ---- the ladder (design §6.3) ---- */

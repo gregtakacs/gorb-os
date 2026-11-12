@@ -72,33 +72,38 @@ void pm_press(pm_t *s, const pm_cfg_t *c)
 
 int pm_turn(pm_t *s, const pm_cfg_t *c, int delta, int64_t now_s)
 {
-    const int cap = c->cap_s[pm_ring_phase(s, c->focuses)];
+    /* §64.14 (owner, Bronze 2026-11-11): the time spent plus the time left never passes the
+     * phase's setting, so the ring's full circle is always the setting and never rescales. A
+     * turn up stops at the setting less what is spent (minutes turned off come back, no more);
+     * running, a turn keeps the seconds and stops short of 0 (1:48 -> 0:48); stopped or paused
+     * it drops the seconds and keeps a minute's floor (1:48 -> 1:00 or 2:00). A phase that is
+     * over has spent its whole setting: a turn there only reports the limit. */
+    const int set = pm_len_s(c, pm_ring_phase(s, c->focuses));
+    int spent = s->st == PM_STOP ? 0 : s->len - s->rem;
     int want, lim = 0;
 
     if (delta == 0) return PM_EV_NONE;
     if (delta > 90) delta = 90;                  /* a wild ask cannot overflow the seconds */
     if (delta < -90) delta = -90;
-    /* Running, a turn moves whole minutes and keeps the seconds (12:34 -> 13:34). Stopped,
-     * paused or waiting, it drops the seconds first, then moves (12:34 -> 13:00 or 11:00): a
-     * time being set reads in whole minutes (owner, 2026-11-11). */
-    want = (s->st == PM_RUN ? s->rem : s->rem / 60 * 60) + delta * 60;
-    if (want > cap) { want = cap; lim = 1; }     /* the setting's own max, not its value */
-    if (want < PM_MIN_S) { want = PM_MIN_S; lim = 1; }   /* never 0: that reads as finished */
-    /* The floor never lengthens a turn back: 0:45 turned down stays 0:45 rather than jumping up
-     * to 1:00 (owner, Bronze 2026-11-11); the click only reports the limit. (A turn up over a
-     * cap the owner lowered still lands on the cap, as the cap tests say.) */
-    if (delta < 0 && want > s->rem) return PM_EV_LIMIT;
+    if (spent < 0) spent = 0;
+    const int room = set - spent > 0 ? set - spent : 0;
+    if (s->st == PM_WAIT || s->st == PM_WAITED || room <= 0) return PM_EV_LIMIT;
     if (s->st == PM_RUN) {
-        s->len += want - s->rem;                 /* the elapsed arc is never rewound */
-        if (s->len < want) s->len = want;        /* and the denominator never trails rem */
-        s->rem = want;
-        s->end_s = now_s + want;
+        want = s->rem + delta * 60;
+        if (want > room) { want = room; lim = 1; }
+        if (want <= 0) return PM_EV_LIMIT;       /* never to 0 by a turn: that reads as finished */
     } else {
-        if (s->st == PM_WAIT || s->st == PM_WAITED) s->st = PM_PAUSE;   /* the waiting ends */
-        s->len = want;                           /* STOP and PAUSE: the length is the turn */
-        s->rem = want;
-        s->end_s = 0;
+        want = s->rem / 60 * 60 + delta * 60;
+        if (want > room) { want = room; lim = 1; }
+        if (want < PM_MIN_S) { want = PM_MIN_S < room ? PM_MIN_S : room; lim = 1; }
     }
+    /* a clamp never moves the time against the turn (0:45 turned down stays 0:45) */
+    if ((delta < 0 && want > s->rem) || (delta > 0 && want < s->rem)) return PM_EV_LIMIT;
+    if (want == s->rem) return lim ? PM_EV_LIMIT : PM_EV_NONE;
+    if (s->st == PM_STOP) s->len = want;         /* nothing spent: the length is the turn */
+    else s->len += want - s->rem;                /* the spent part is never rewound */
+    s->rem = want;
+    s->end_s = s->st == PM_RUN ? now_s + want : 0;
     return lim ? PM_EV_LIMIT : PM_EV_NONE;
 }
 
@@ -283,7 +288,10 @@ int pm_ring_for(const pm_t *s, const pm_cfg_t *c, pm_ring_t *out)
     if (eff < 0 || !c->ring_on || c->opacity <= 0) return 0;   /* cleared, not invisible */
     /* One write of the whole record: a field the app does not name is zero, and the three asks
      * rim-1 adds are named here as plainly as the five that were always sent (rim-design §8). */
-    *out = (pm_ring_t){ .fraction = pm_fraction(s),
+    /* §64.14: the full circle is the phase's setting, so a turn never rescales the ring */
+    const pm_t of_set = { .k = s->k, .st = s->st, .len = pm_len_s(c, pm_ring_phase(s, c->focuses)),
+                          .rem = s->rem, .end_s = s->end_s };
+    *out = (pm_ring_t){ .fraction = pm_fraction(&of_set),
                         .effect = eff,
                         .arc = ((uint32_t)pm_ring_alpha(PM_ARC_A, c->opacity) << 24) | rgb,
                         .track = ((uint32_t)pm_ring_alpha(PM_TRACK_A, c->opacity) << 24) | rgb,

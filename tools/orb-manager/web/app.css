@@ -328,6 +328,11 @@ body:has(.mask:not([hidden])){overflow:hidden}
    app leaves nothing to choose, so the only honest control beside it is the one that
    authors: a button that re-reads the list already on screen reads as a door. */
 .subtabs .tablabel{align-self:center;padding:4px 10px;font-size:.95em;font-weight:600;opacity:.65}
+/* Ruling 38's line on the Themes face: the open app's editor either runs with
+   'unsafe-eval' or does not. Muted like the single-app label it sits beside; the
+   allowed state carries the warning tint, because that allowance is the loud one. */
+.appswitch .edeval{align-self:center;margin-left:auto;padding:4px 10px;font-size:.85em;opacity:.7;cursor:help}
+.appswitch .edeval.on{color:var(--warn);opacity:1;font-weight:600}
 .tzlist{display:flex;flex-direction:column;gap:2px;max-height:16em;overflow:auto;margin:6px 0}
 .tzlist[hidden]{display:none}
 .tzrow{display:block;text-align:left;background:none;border:1px solid var(--line);color:var(--fg);
@@ -387,6 +392,16 @@ body:has(.mask:not([hidden])){overflow:hidden}
 .tag.upd{background:var(--warn);border-color:var(--warn)!important;color:#1a1300!important;font-weight:700}
 button.upd{background:var(--warn);border-color:var(--warn);color:#1a1300;font-weight:700}
 button.upd:hover{border-color:#fff}
+/* A1 §7.4: ruling 18's one alarm. One banner above the app rows, shown only when the dial
+   runs a version the store lists withdrawn; the amber press inside it is the row's own
+   Update, and the banner itself says what happened and why and removes nothing. */
+#mn-site-withdrawn{border:1px solid var(--danger);border-radius:8px;background:#2a1416;padding:9px 12px;margin:6px 0}
+#mn-site-withdrawn .wrow{display:flex;gap:12px;align-items:center;flex-wrap:wrap;color:#f2a0a6}
+#mn-site-withdrawn .wrow+.wrow{margin-top:6px}
+#mn-site-withdrawn .wrow>b{color:#ffb4b4;white-space:nowrap}
+#mn-site-apps h4{margin:14px 0 6px}
+.site-store{align-items:start}
+.site-store .tinfo .hint{color:var(--mut)}
 @media (max-width:1100px){
   .themelist li.trow,.arow{grid-template-columns:44px minmax(0,1fr)}
   .arow{grid-template-columns:minmax(0,1fr)}
@@ -428,6 +443,21 @@ button.upd:hover{border-color:#fff}
 #mn-site-designs li.trow{grid-template-columns:minmax(0,1fr) auto}
 #mn-site-designs li.trow>.tinfo{grid-column:1}
 #mn-site-designs li.trow>.acts{grid-column:2}
+/* H4 step 3: the upload dialog. The panel rides the page mask exactly as .flashpanel does —
+   .mask centers it, so this rule positions nothing itself and carries no z-index of its own.
+   Rows wrap because a clash answer is a sentence with three buttons after it, and [hidden] is
+   not decoration: .row's own display:flex beats the UA rule, the trap #mn-site-row steps
+   around above. The two answer lines claim a line of their own inside those rows. */
+.uppanel{width:min(560px,calc(100vw - 40px));max-height:calc(100vh - 40px);overflow:auto;background:var(--card);
+  border:1px solid var(--line);border-radius:12px;padding:18px 20px;box-shadow:0 8px 30px #0009;
+  display:flex;flex-direction:column}
+.uppanel h3{margin:0 0 6px;font-size:16px}
+.uppanel .row{flex-wrap:wrap;margin:10px 0}
+.uppanel .row[hidden]{display:none}
+.uppanel .row .hint{flex:1 1 100%;min-width:0}
+.uppanel p{margin:10px 0}
+.uppanel .upask{margin-left:14px;border-left:2px solid var(--line);padding-left:12px}
+.uppanel #up-newname{min-width:0}
 /* §59: the app list is the carousel (owner, 2026-11-08): a grip to drag by, the rotation's
    checkbox while rotation is on, then the row as before. Rows off the dial keep both cells,
    empty, so the columns line up down the list. */

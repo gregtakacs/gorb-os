@@ -154,7 +154,10 @@ type siteBundle struct {
 	SharedName string
 	Name       string
 	Handle     string
-	Raw        []byte
+	// Schema is the design schema the bundle names, or 0 when it names none: A1 §7.5 looks it
+	// up in the store's readers to say which app version the theme needs.
+	Schema int
+	Raw    []byte
 }
 
 // checkBundle reads the site's answer as the design bundle §8.4 describes and checks the
@@ -217,6 +220,9 @@ func checkBundle(raw []byte, id string) (*siteBundle, error) {
 	}
 	b.Name, _ = siteJSONString(obj["name"])
 	b.Handle, _ = siteJSONString(obj["handle"])
+	if sc, err := siteJSONNumber(obj["schema"]); err == nil && sc >= 1 && sc <= 1<<20 && sc == float64(int64(sc)) {
+		b.Schema = int(sc)
+	}
 	return b, nil
 }
 
@@ -600,7 +606,12 @@ func removeThemeOrigin(themePath string) error {
 // resolveAnswer is what the site says about one design an imported theme came from. The
 // fields are the minimum G3 needs to draw a row, and slice H3 owns the whole response:
 // §7.4's point-3 name-based lookup and any handle history live in the site's own handler,
-// so this client sends the record it holds and reads back at most these four keys.
+// so this client sends the record it holds and reads back at most these keys.
+//
+// Gone and NotYet are the two ways the site says nothing about the design, and they are
+// not the same sentence: Gone is the site's own answer that the design is no longer
+// shared, and NotYet is a site that has no resolve door to answer at — which the hub
+// reports as information and keeps checking.
 type resolveAnswer struct {
 	Resolved   bool
 	DesignID   string
@@ -608,13 +619,22 @@ type resolveAnswer struct {
 	SharedName string
 	Version    int
 	Gone       bool
+	NotYet     bool
 }
 
 // resolveOrigin asks the site a theme came from for that design's CURRENT version and
 // CURRENT shared name (§7.4). A 404 or a 410 is not a transport failure and is not
-// reported as one: it is the design "no longer shared", which the list answers with a
-// row of its own. Anything else — unreachable, sign-in page, HTTP 500 — is an error, and
-// the row that could not be checked says so rather than claiming up to date.
+// reported as one, and it is not taken for news about the design either: only a body that
+// says so in its own JSON (§7.4's Gone answer, the one H3 will serve) is Gone. Any other
+// not-found — a generic 404 page, a router's `{"error":"not found"}`, an empty body — is
+// a site that cannot answer this question yet, which is NotYet: the row says so, nothing
+// is recorded, and the next check asks again. Anything else — unreachable, sign-in page,
+// HTTP 500 — is an error, and the row that could not be checked says so rather than
+// claiming up to date.
+//
+// H2's credential rides along on exactly one condition: this hub holds a live link to the
+// very site being asked, which is the site that minted the token. Every other origin is
+// asked anonymously, as the paste door has always been.
 func (s *Server) resolveOrigin(ctx context.Context, o *ThemeOrigin) (*resolveAnswer, error) {
 	if o == nil || o.Site == "" || o.DesignID == "" {
 		return nil, errors.New("this theme has no origin to resolve")
@@ -634,13 +654,24 @@ func (s *Server) resolveOrigin(ctx context.Context, o *ThemeOrigin) (*resolveAns
 	}
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("User-Agent", "orb-manager/"+version)
+	if bearer := s.siteBearerFor(o.Site); bearer != "" {
+		req.Header.Set("Authorization", "Bearer "+bearer)
+	}
 	resp, err := s.siteHTTP().Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("could not reach %s: %v", siteHost(o.Site), err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusGone {
-		return &resolveAnswer{Gone: true}, nil
+		// The body is read to a ceiling rather than drained: the whole Gone answer is a
+		// short JSON object, and a site with no resolve door answers with a page that is
+		// nothing but words. A body that cannot be read is no answer either, which is the
+		// same NotYet as a body that does not say it.
+		b, _ := io.ReadAll(io.LimitReader(resp.Body, resolveAnswerBodyMax))
+		if resolveSaysGone(resp.Header.Get("Content-Type"), b) {
+			return &resolveAnswer{Gone: true}, nil
+		}
+		return &resolveAnswer{NotYet: true}, nil
 	}
 	if resp.StatusCode >= 300 && resp.StatusCode < 400 {
 		return nil, fmt.Errorf("%s sent a sign-in page instead of an answer: the site isn’t open to Orb Manager yet", siteHost(o.Site))
@@ -654,7 +685,7 @@ func (s *Server) resolveOrigin(ctx context.Context, o *ThemeOrigin) (*resolveAns
 		Version    int    `json:"version"`
 		SharedName string `json:"sharedName"`
 	}
-	b, err := io.ReadAll(io.LimitReader(resp.Body, 8192))
+	b, err := io.ReadAll(io.LimitReader(resp.Body, resolveAnswerBodyMax))
 	if err != nil {
 		return nil, fmt.Errorf("could not read %s's answer: %v", siteHost(o.Site), err)
 	}
@@ -666,6 +697,30 @@ func (s *Server) resolveOrigin(ctx context.Context, o *ThemeOrigin) (*resolveAns
 	}
 	return &resolveAnswer{Resolved: true, DesignID: body.DesignID, App: body.App,
 		SharedName: body.SharedName, Version: body.Version}, nil
+}
+
+// resolveAnswerBodyMax bounds what a resolve answer is read to, whichever status carried
+// it. A design's current version and name, and the one word that says a design is retired,
+// are all short JSON; megabytes under a 404 are a page and nothing else.
+const resolveAnswerBodyMax = 8192
+
+// resolveSaysGone is §7.4's Gone answer and the only thing read as one: a not-found whose
+// Content-Type is application/json and whose body is a JSON object carrying "gone" true,
+// e.g. {"gone":true}. A page, an empty body, JSON that says anything else, and a body that
+// is not a JSON object all answer a different question than this one, which is the site
+// not having the door yet rather than the design having gone away. Anything other than a
+// plain true — "true", 1, a null — is not a true either.
+func resolveSaysGone(contentType string, body []byte) bool {
+	if !strings.EqualFold(strings.TrimSpace(strings.Split(contentType, ";")[0]), "application/json") {
+		return false
+	}
+	var ans struct {
+		Gone *bool `json:"gone"`
+	}
+	if json.Unmarshal(body, &ans) != nil || ans.Gone == nil {
+		return false
+	}
+	return *ans.Gone
 }
 
 // --- the doors ----------------------------------------------------------------------
@@ -782,7 +837,7 @@ func (s *Server) handleSiteImport(w http.ResponseWriter, r *http.Request) {
 	log.Printf("site import: %s %s v%d -> %q", site, id, b.Version, b.SharedName)
 	s.jsonOK(w, map[string]any{
 		"ticket": ticket, "site": site, "id": id, "version": b.Version,
-		"app": b.App, "name": b.Name, "sharedName": b.SharedName, "handle": b.Handle,
+		"app": b.App, "name": b.Name, "sharedName": b.SharedName, "handle": b.Handle, "schema": b.Schema,
 	})
 }
 

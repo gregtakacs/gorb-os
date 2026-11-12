@@ -155,9 +155,11 @@ try {
     catch (e) { msg2 = String((e && e.message) || e); }
     note(msg2 === 'an SVG in it is ' + Math.ceil(BIG.length / 1024) + " KB, and a design's SVGs can be at most 256 KB",
       '6f. an SVG over 256 KB is refused with its own weight', msg2);
-    note(OrbStudio.checkSvg(SVG) === null && OrbStudio.checkSvg(HANDLER) === "an SVG in it holds an event handler, which a design's SVGs can't (no scripts, external links or entities)"
-      && OrbStudio.checkSvg(LINKED) === "an SVG in it holds an outside link, which a design's SVGs can't (no scripts, external links or entities)" && OrbStudio.checkSvg('hello') === "an image in it says it is an SVG but isn't one",
-      '6g. OrbStudio.checkSvg reads the four files the same way fitPicture does', 'the sentences the one checker gives');
+    note(OrbStudio.checkSvg(SVG) === null && OrbStudio.checkSvg(HANDLER).rule === 'svg_event_attr'
+      && OrbStudio.checkSvg(HANDLER).message === "an SVG in it holds an event handler, which a design's SVGs can't (no scripts, external links or entities)"
+      && OrbStudio.checkSvg(LINKED).rule === 'svg_link' && OrbStudio.checkSvg(LINKED).message === "an SVG in it holds an outside link, which a design's SVGs can't (no scripts, external links or entities)"
+      && OrbStudio.checkSvg('hello').rule === 'svg_not_well_formed' && OrbStudio.checkSvg('hello').message === "an SVG in it holds XML that does not parse, which a design's SVGs can't (no scripts, external links or entities)",
+      '6g. OrbStudio.checkSvg reads the four files the same way fitPicture does, rule id and sentence', JSON.stringify(OrbStudio.checkSvg(HANDLER)));
     // the WebP contract has two halves. A WebP source is read and, when the caller asks for a
     // type, re-encoded: this browser will encode a small WebP, so that half is always checked.
     // Scaling a big one down needs a 3000 x 2000 WebP, and this Chromium never answers a toBlob
@@ -180,6 +182,17 @@ try {
     try { await F(new File([new TextEncoder().encode('this is a text file, not a picture')], 'x.png', { type: 'image/png' })); }
     catch (e) { msg = String((e && e.message) || e); }
     note(msg === 'That file is not a picture this browser can read', '8. a text file named x.png is refused', msg);
+    // fu2-2 (ruling 35, as amended): under 10 bytes no raster can state a size, so the
+    // picker refuses such a file before reading it — and a 10-byte one still gets read,
+    // so the floor is the floor and not a new over-eager rejection.
+    msg = 'no rejection at all';
+    try { await F(new File([new TextEncoder().encode('PNG!')], 'tiny.png', { type: 'image/png' })); }
+    catch (e) { msg = String((e && e.message) || e); }
+    note(msg === 'That file is not a picture this browser can read', '8a. a 4-byte file named tiny.png is refused before it is read', msg);
+    msg = 'no rejection at all';
+    try { await F(new File([new TextEncoder().encode('0123456789')], 'ten.png', { type: 'image/png' })); }
+    catch (e) { msg = String((e && e.message) || e); }
+    note(msg === 'That file is not a picture this browser can read', '8b. a 10-byte file is read and refused as unreadable, not by the floor', msg);
     const E = window.WatchEngine;
     if (!E || !E.assetFromFile) note(false, '9. the clock engine loaded', 'no window.WatchEngine.assetFromFile on the page');
     else {

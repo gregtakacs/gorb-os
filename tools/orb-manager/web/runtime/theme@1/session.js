@@ -388,6 +388,114 @@
       if (fold) return 'a design called \u201c' + fold.name + '\u201d is already in the ' + api.slug() + ' library on this hub, under another spelling of its name';
       return null;
     };
+    /* fu2-4: the basic-character rule is newer than some names the library already holds, and
+     * such an entry is the owner's own design: saving it must not dead-end on the refusal above.
+     * The studio offers a rename instead — pre-filled with the nearest name the rule accepts,
+     * computed here from the old name and this app's library — and the save posts through the
+     * normal checked door under the new name. The hub's rule does not move. */
+    var NAME_FALLBACK = 'design';              // the app's default name, when folding leaves nothing
+    var NAME_TRIES = 1000;                     // the site's remix bound (library.ts REMIX_NAME_TRIES)
+    var NAME_MAX = 64;                         // designs.go's designName bound, in runes
+    var nameCut = function (s) { var a = Array.from(s); return a.length > NAME_MAX ? a.slice(0, NAME_MAX).join('') : s; };
+    var nameTrim = function (s) { return s.replace(/ {2,}/g, ' ').replace(/^[ .]+/, '').replace(/[ .]+$/, ''); };
+    // the hub's rule turned around: the basic name closest to the one the owner chose — accents
+    // folded where a basic letter stands behind them, separators as word boundaries, everything
+    // else dropped — then the remix suffix, case-insensitively, until the library does not hold it
+    var nameFold = function (s) {
+      s = String(s == null ? '' : s);
+      try { s = s.normalize('NFD').replace(/[\u0300-\u036f]/g, ''); } catch (e) { /* no normalize: the filter drops what it cannot fold */ }
+      return nameTrim(s.replace(/[\/\\:*?"<>|\s]+/g, ' ').replace(/[^A-Za-z0-9 ._-]/g, ''));
+    };
+    var nameUnique = function (base) {
+      var held = function (n) { return lib.some(function (x) { return String(x.name).toLowerCase() === n.toLowerCase(); }); };
+      var cand = base;
+      for (var k = 2; held(cand) && k <= NAME_TRIES; k++) {
+        cand = Array.from(base).slice(0, Math.max(0, NAME_MAX - String(k).length - 1)).join('').replace(/[ .]+$/, '') + ' ' + k;
+      }
+      return cand;
+    };
+    api.renameSuggest = function (oldName) {
+      var cand = nameUnique(nameCut(nameFold(oldName) || NAME_FALLBACK));
+      // always valid and never empty, in the hub's own words: a suggestion that is not, once
+      // (the cap bound with a thousand names held) retries from the fallback, and the prompt
+      // refuses the accept whatever it is
+      if (api.checkName(cand)) cand = nameUnique(NAME_FALLBACK);
+      return cand;
+    };
+    // one prompt at a time: a second Save while one stands waits on the first, not a second sheet
+    var renameOpen = null;
+    api.renamePrompt = function (o) {
+      if (renameOpen) return renameOpen;
+      var p = typeof host.renamePrompt === 'function'
+        ? Promise.resolve(host.renamePrompt(o))
+        : domRenamePrompt(o);
+      var settled = p.then(function (v) { if (renameOpen === settled) renameOpen = null; return v; },
+                            function (e) { if (renameOpen === settled) renameOpen = null; throw e; });
+      renameOpen = settled;
+      return settled;
+    };
+    // the sheet, in the studio's own modal classes. The refusal sentence stands in the body with
+    // the suggestion in the field; an edit the rule refuses says so in the field's own words and
+    // keeps the sheet open. Enter accepts, Escape and a click outside cancel.
+    function domRenamePrompt(o) {
+      return new Promise(function (res) {
+        var d = root && root.document;
+        if (!d || !d.createElement) { res(null); return; }
+        var done = function (v) { d.removeEventListener('keydown', onKey, true); if (box.parentNode) box.parentNode.removeChild(box); res(v); };
+        var onKey = function (ev) {
+          if (ev.key === 'Escape') { ev.preventDefault(); done(null); }
+          else if (ev.key === 'Enter') { ev.preventDefault(); accept(); }
+        };
+        var accept = function () {
+          var v = inp.value.trim();
+          var why = api.checkName(v);
+          if (why) { note.textContent = why; note.style.color = '#f85149'; btn.disabled = true; return; }
+          done(v);
+        };
+        var box = d.createElement('div');
+        box.className = 'st-modal st-rename';
+        box.setAttribute('role', 'dialog');
+        box.setAttribute('aria-modal', 'true');
+        box.setAttribute('aria-label', 'Rename to save');
+        var card = d.createElement('div');
+        var title = d.createElement('div');
+        title.className = 'st-mtitle';
+        title.textContent = 'Rename to save';
+        var body = d.createElement('div');
+        body.className = 'st-mbody';
+        body.textContent = '\u201c' + o.from + '\u201d is already in the library, so it keeps its name there — but ' + NAME_CHARS + '. Save this design under a new name:';
+        var inp = d.createElement('input');
+        inp.type = 'text';
+        inp.setAttribute('aria-label', 'New design name');
+        // no stylesheet rule is borrowed from the studio here: the sheet is the session's own,
+        // so it carries its own frame, in the studio's colours (the .st-num tokens, bigger)
+        inp.style.cssText = 'width:100%;box-sizing:border-box;margin-top:12px;padding:7px 9px;font:13px var(--mono);' +
+          'background:var(--well);color:var(--fg);border:1px solid var(--line);border-radius:6px';
+        inp.value = o.suggest;
+        var note = d.createElement('div');
+        note.className = 'st-hint';
+        var foot = d.createElement('div');
+        foot.className = 'st-mfoot';
+        var cancel = d.createElement('button');
+        cancel.textContent = 'Cancel';
+        cancel.onclick = function () { done(null); };
+        var btn = d.createElement('button');
+        btn.className = 'ui-primary';
+        btn.textContent = 'Rename and save';
+        btn.onclick = accept;
+        var sync = function () { btn.disabled = !!api.checkName(inp.value.trim()); note.textContent = ''; note.style.color = ''; };
+        inp.oninput = sync;
+        foot.appendChild(cancel); foot.appendChild(btn);
+        card.appendChild(title); card.appendChild(body); card.appendChild(inp); card.appendChild(note); card.appendChild(foot);
+        box.appendChild(card);
+        box.onclick = function (ev) { if (ev.target === box) done(null); };
+        d.addEventListener('keydown', onKey, true);
+        d.body.appendChild(box);
+        sync();
+        inp.focus();
+        if (inp.select) inp.select();
+      });
+    }
     // entry: {name, doc, ...anything the app lists by}. A draft under a theme's name sits beside
     // it as that theme's unsent changes; under a draft's name it replaces it.
     // quiet (Send to orb's first step): no line unless it fails, so the send's own lines stand
@@ -396,6 +504,21 @@
     var saveEntry = async function (entry, quiet, asNew) {
       if (!api.hubOrb()) { if (!quiet) say('Not saved: ' + offHub); return false; }
       var bad = api.checkName(entry.name);
+      if (bad === NAME_CHARS && api.libraryEntry(entry.name) && !quiet) {
+        // fu2-4: this name is the design's own, older than the rule — a rename sheet, not a dead
+        // end. Quiet (Send to orb's first step) keeps the old silent refusal: a send does not
+        // stop behind a modal. The renamed save is a Save As, whatever this session opened from.
+        var to = await api.renamePrompt({ from: entry.name, suggest: api.renameSuggest(entry.name) });
+        if (to == null) { say('Rename cancelled — nothing saved'); return false; }
+        to = String(to).trim();
+        if (!to || to === entry.name) { if (!quiet) say('Not saved: ' + bad); return false; }
+        if (!await saveEntry(Object.assign({}, entry, { name: to }), false, true)) return false;
+        var held = api.libraryEntry(to);
+        say('Renamed to \u201c' + to + '\u201d and saved' + (held && held.state === 'changed'
+          ? OrbTheme.hostText(' as unsent changes to its theme — Send to orb bakes them in', ' as unsent changes to its theme — Download .orbtheme bakes them in')
+          : ' as a draft'));
+        return true;
+      }
       if (bad) { if (!quiet) say('Not saved: ' + bad); return false; }
       try { await saveDraft(entry.name, entry.doc, extrasOf(entry), asNew); }
       catch (e) {

@@ -146,6 +146,10 @@ type Server struct {
 	// siteTickets holds the bundles that door fetched and no bake has kept yet — the
 	// one-time imports /api/site/bundle and /api/site/keep work from. See siteimport.go.
 	siteTickets siteTicketStore
+	// siteCatalogue is the store read GET /api/site/apps serves: one held copy and when it
+	// was fetched, so the face's reads share a dial and an unreachable site still has an
+	// answer. Memory only — a hub never persists a catalogue it can no longer confirm. appstore.go.
+	siteCatalogue siteCatalogueCache
 	// siteAttempt is the connect in flight (sitelink.go): the one loopback listener that
 	// exists between the press and the death of an attempt, and not one second longer.
 	// nil means no connect is open. siteLinkMu guards it and the whole-and-rename writes
@@ -1371,6 +1375,8 @@ func (s *Server) routes(mux *http.ServeMux) {
 	// editor's bake. The app side of this lives in the Themes tab, not here.
 	if !s.siteHidden {
 		s.routesSiteImport(mux)
+		// A1 §7.1: the store read, the same door as the import's site surface.
+		s.routesAppStore(mux)
 		// H2 §5: the press that starts a connect and the one question of its status.
 		s.routesSiteLink(mux)
 		// §7.6 G3: the site release check's cached verdict, read-only, for the Updates list.

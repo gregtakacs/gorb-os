@@ -51,7 +51,7 @@ func applyHub(t *testing.T, to string, worn bool) (*Server, *orbfake.Orb, string
 	// bytes differ from v1's on purpose: an update that shipped the same file would prove
 	// nothing about which bake landed on which card.
 	u.bundle = func() []byte {
-		return goodBundle(t, siteDesignID, 2, "clock", to, []byte("art v2"))
+		return goodBundle(t, siteDesignID, 2, "clock", to, pngArt(9, 9, artSeed("art v2")))
 	}
 	return s, orb, ip, u, old
 }
@@ -418,6 +418,43 @@ func TestApplyUpdateGoneRowRefuses(t *testing.T) {
 	}
 	if _, err := os.Stat(old); err != nil {
 		t.Errorf("the shelf copy went away with the refusal: %v", err)
+	}
+}
+
+// TestApplyUpdateNotYetRefuses is fu2-6's apply half: a site that cannot answer the resolve
+// question is not a reason to write anything. The press is refused, in a sentence that names
+// the site that could not answer, and the theme, its sidecar and the state file are the
+// bytes they were — so the next check asks again and a later press can still succeed.
+func TestApplyUpdateNotYetRefuses(t *testing.T) {
+	s, orb, _, u, old := applyHub(t, "Aurora Fields", true)
+	u.answerPlain(http.StatusNotFound, "text/html; charset=utf-8", "<html>404 Not Found</html>")
+	bakeOK := s.themeBake
+	s.themeBake = func(_ []byte, _ string) ([]byte, error) {
+		t.Error("a site that could not answer was fetched and baked anyway")
+		return nil, errors.New("unreachable")
+	}
+	want := "Aurora: " + siteHost(u.url()) + " can’t check for updates yet"
+	if msg := applyErr(t, applyOnce(t, s, map[string]any{"kind": "theme", "key": siteDesignID})); msg != want {
+		t.Errorf("the not-yet refusal = %q, want %q", msg, want)
+	}
+	if callFind(orb.Calls(), "POST /api/v1/sd") >= 0 {
+		t.Errorf("a refused apply touched a card: %v", orb.Calls())
+	}
+	if _, err := os.Stat(old); err != nil {
+		t.Errorf("the shelf copy went away with the refusal: %v", err)
+	}
+	if readThemeOrigin(old) == nil {
+		t.Error("the origin sidecar went away with an answer that said nothing about the design")
+	}
+	if c := stateChoices(t, s); len(c) != 0 {
+		t.Errorf("a not-yet refusal recorded a choice: %v", c)
+	}
+	// The row is still checkable: the same press against a site that has built the door
+	// since updates the theme, which is what "keeps checking" has to mean.
+	s.themeBake = bakeOK
+	u.answer(http.StatusOK)
+	if env := applyOnce(t, s, map[string]any{"kind": "theme", "key": siteDesignID}); env["ok"] != true {
+		t.Errorf("the apply the not-yet answer had refused is now refused again: %v", env)
 	}
 }
 

@@ -160,6 +160,11 @@ func TestSiteLinkNamesOneDesignOnOneSite(t *testing.T) {
 		{"https://orb-os.net/t/" + siteDesignID + "?utm=share#copy", "https://orb-os.net", siteDesignID},
 		{"orb.takacsfamily.com/t/" + siteDesignID, "https://orb.takacsfamily.com", siteDesignID},
 		{"HTTPS://ORB-OS.NET/t/" + siteDesignID, "https://orb-os.net", siteDesignID},
+		// fu2-3 (ruling 35, as amended 2026-11-11): the site's other public name is the
+		// same site to this door, canonicalised and kept https-only exactly as its apex.
+		{"https://www.orb-os.net/t/" + siteDesignID, "https://www.orb-os.net", siteDesignID},
+		{"www.orb-os.net/t/" + siteDesignID, "https://www.orb-os.net", siteDesignID},
+		{"HTTPS://WWW.Orb-OS.NET/t/" + siteDesignID, "https://www.orb-os.net", siteDesignID},
 		{"http://127.0.0.1:8080/t/" + siteDesignID, "http://127.0.0.1:8080", siteDesignID},
 		{"http://localhost/t/" + siteDesignID, "http://localhost", siteDesignID},
 		{"http://[::1]:8080/t/" + siteDesignID, "http://[::1]:8080", siteDesignID},
@@ -192,6 +197,45 @@ func TestSiteLinkNamesOneDesignOnOneSite(t *testing.T) {
 	if _, _, err := parseSiteLink("http://orb-os.net/t/" + siteDesignID); err == nil ||
 		err.Error() != "the link must start with https://" {
 		t.Errorf("a remote http link = %v, want the https sentence", err)
+	}
+	if _, _, err := parseSiteLink("http://www.orb-os.net/t/" + siteDesignID); err == nil ||
+		err.Error() != "the link must start with https://" {
+		t.Errorf("a remote http link under the site's www name = %v, want the https sentence", err)
+	}
+}
+
+// TestSiteImportGateOpensBothNamesOfTheSite: fu2-3 (ruling 35, as amended 2026-11-11).
+// orb-os.net and www.orb-os.net are the two public names of the one site the hub imports
+// from, so both clear the gate and reach the fetch; any other subdomain of the domain is
+// refused by the gate itself, and the refusal costs the hub no request at all. The client
+// here is a transport that answers from memory and remembers the host it was asked for:
+// the gate is what is under test, and a dialled name is the evidence it opened.
+func TestSiteImportGateOpensBothNamesOfTheSite(t *testing.T) {
+	t.Setenv("GORB_SITE", "")
+	s, _, _ := libHub(t)
+	var dials []string
+	s.siteClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		dials = append(dials, r.URL.Host)
+		w := httptest.NewRecorder()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(goodBundle(t, siteDesignID, 3, "clock", "Skeleton by @greg"))
+		return w.Result(), nil
+	})}
+	for _, site := range []string{"https://orb-os.net", "https://www.orb-os.net"} {
+		ticketOf(t, siteImport(t, s, site+"/t/"+siteDesignID))
+	}
+	if want := []string{"orb-os.net", "www.orb-os.net"}; !slices.Equal(dials, want) {
+		t.Errorf("the gate opened for %v, want exactly %v", dials, want)
+	}
+	want := "Orb Manager imports themes only from orb.takacsfamily.com and orb-os.net/www.orb-os.net, not from api.orb-os.net"
+	if got := importErr(t, s, "https://api.orb-os.net/t/"+siteDesignID); got != want {
+		t.Errorf("import of a refused subdomain = %q, want %q", got, want)
+	}
+	if n := len(dials); n != 2 {
+		t.Errorf("a refused paste dialled %d times, want the gate to have stopped it at 2", n)
+	}
+	if n := len(s.tickets().live); n != 2 {
+		t.Errorf("%d imports held, want the two the gate opened", n)
 	}
 }
 
@@ -486,7 +530,7 @@ func shelfNames(t *testing.T, dir string) []string {
 func TestSiteKeepFilesTheThemeAndRecordsWhereItCameFrom(t *testing.T) {
 	s, _, root := libHub(t)
 	srv, _ := siteServer(t, func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write(goodBundle(t, siteDesignID, 4, "clock", "Skeleton by @greg", []byte("art")))
+		_, _ = w.Write(goodBundle(t, siteDesignID, 4, "clock", "Skeleton by @greg", pngArt(9, 9, 1)))
 	})
 	tk := ticketOf(t, siteImport(t, s, siteTestLink(srv, siteDesignID)))
 	bake := withDesign(orbfake.Container("Skeleton by @greg"), string(designDoc("Skeleton by @greg", "v1.2.30", 1)))
@@ -834,7 +878,7 @@ func TestSiteDoorShutWithoutTheFlag(t *testing.T) {
 	if env := designCall(t, s, http.MethodGet, "/api/library", nil); env["data"].(map[string]any)["site"] != false {
 		t.Errorf("a shut hub's library says site = %v, want false", env["data"].(map[string]any)["site"])
 	}
-	for _, p := range []string{"/api/site/import", "/api/site/bundle", "/api/site/keep"} {
+	for _, p := range []string{"/api/site/import", "/api/site/bundle", "/api/site/keep", "/api/site/apps/add"} {
 		if rec := rawCall(t, s, http.MethodPost, p, []byte(`{}`)); rec.Code != http.StatusNotFound {
 			t.Errorf("POST %s on a shut hub = %d, want 404", p, rec.Code)
 		}
@@ -853,6 +897,8 @@ func TestSiteDoorShutWithoutTheFlag(t *testing.T) {
 		{http.MethodGet, "/api/site/link-status"},
 		{http.MethodGet, "/api/site/designs"},
 		{http.MethodPost, "/api/site/disconnect"},
+		{http.MethodPost, "/api/site/upload"},
+		{http.MethodGet, "/api/site/local-designs"},
 	} {
 		if rec := rawCall(t, s, c.method, c.path, nil); rec.Code != http.StatusNotFound {
 			t.Errorf("%s %s on a shut hub = %d, want 404", c.method, c.path, rec.Code)
@@ -875,6 +921,11 @@ func TestSiteDoorShutWithoutTheFlag(t *testing.T) {
 		if rec := rawCall(t, s, http.MethodGet, p, nil); rec.Code != http.StatusNotFound {
 			t.Errorf("GET %s on a shut hub = %d, want 404", p, rec.Code)
 		}
+	}
+	// A1 §7.1: the store read rides behind the same door. With -site off there is no
+	// /api/site/apps, and the shut hub above has dialed the site zero times.
+	if rec := rawCall(t, s, http.MethodGet, "/api/site/apps", nil); rec.Code != http.StatusNotFound {
+		t.Errorf("GET /api/site/apps on a shut hub = %d, want 404", rec.Code)
 	}
 	if b := blockOfLine(t, readWebFile(t, "index.html"), `id="mn-updates"`); !strings.Contains(b, "hidden") {
 		t.Error("#mn-updates is not hidden in the markup, so a shut hub shows an Updates list it can't read")
@@ -903,6 +954,22 @@ func TestSiteDoorShutWithoutTheFlag(t *testing.T) {
 	}
 	if !strings.Contains(app, `const site = data.site === true;`) {
 		t.Error("loadLibThemes no longer reads the library's site word before showing the door")
+	}
+	// A1 §7.4: the Get-apps section and the withdrawn banner ship hidden inside the Apps
+	// card, and the face reads the catalogue only behind the library's site word — so a
+	// shut hub's Apps tab shows no store furniture and its page asks /api/site/apps zero
+	// times (the GET above already took the 404 the reader turns into siteAppsDoorShut).
+	tabsJS := readWebFile(t, "tabs.js")
+	for _, id := range []string{"mn-site-apps", "mn-site-withdrawn", "mn-site-apps-state"} {
+		if b := blockOfLine(t, page, `id="`+id+`"`); !strings.Contains(b, "hidden") {
+			t.Errorf("#%s is not hidden in markup, so a shut hub would show store furniture it cannot fill", id)
+		}
+	}
+	if !strings.Contains(tabsJS, `return !!(libCache && libCache.site === true && !siteAppsDoorShut);`) {
+		t.Error("the Apps face's store door does not wait for the library's site word")
+	}
+	if !strings.Contains(tabsJS, `if (typeof siteApps === "function" && siteStoreOpen() && siteAppsCache === null) {`) {
+		t.Error("loadApps dials the catalogue without asking whether the site door is open")
 	}
 }
 
@@ -938,7 +1005,7 @@ func TestResolveOriginReadsTheAnswerAndTheGone(t *testing.T) {
 	}
 
 	for _, code := range []int{http.StatusNotFound, http.StatusGone} {
-		gone, _ := siteServer(t, func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(code) })
+		gone, _ := siteServer(t, func(w http.ResponseWriter, r *http.Request) { resolveGoneBody(w, code) })
 		orig.Site = strings.ToLower(gone.URL)
 		ans, err := s.resolveOrigin(ctx, orig)
 		if err != nil {
@@ -963,6 +1030,182 @@ func TestResolveOriginReadsTheAnswerAndTheGone(t *testing.T) {
 	if _, err := s.resolveOrigin(ctx, nil); err == nil {
 		t.Error("no origin resolved")
 	}
+}
+
+// TestResolveOriginGateOpensTheSitesWwwName: fu2-3 (ruling 35, as amended 2026-11-11). An
+// origin sidecar written under the site's www name is the same site the apex names, so the
+// update check asks it; a sidecar naming any other subdomain is refused by the same gate in
+// the same sentence, and the refusal costs no request. The transport answers from memory and
+// records the host it was asked for, so "no socket opened" is a count, not a hope.
+func TestResolveOriginGateOpensTheSitesWwwName(t *testing.T) {
+	t.Setenv("GORB_SITE", "")
+	s := newHub()
+	var dials []string
+	s.siteClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		dials = append(dials, r.URL.Host)
+		w := httptest.NewRecorder()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"designId":"` + siteDesignID + `","app":"clock","version":9,"sharedName":"Night dial by @greg","handle":"greg"}`))
+		return w.Result(), nil
+	})}
+	for _, site := range []string{"https://orb-os.net", "https://www.orb-os.net"} {
+		ans, err := s.resolveOrigin(context.Background(), &ThemeOrigin{Site: site, DesignID: siteDesignID, Version: 3})
+		if err != nil {
+			t.Errorf("resolveOrigin(%q): %v", site, err)
+			continue
+		}
+		if !ans.Resolved || ans.Version != 9 {
+			t.Errorf("resolveOrigin(%q) = %+v, want the answer the site gave", site, ans)
+		}
+	}
+	if want := []string{"orb-os.net", "www.orb-os.net"}; !slices.Equal(dials, want) {
+		t.Errorf("the gate opened for %v, want exactly %v", dials, want)
+	}
+	want := "Orb Manager imports themes only from orb.takacsfamily.com and orb-os.net/www.orb-os.net, not from www.orb-os.net.evil.example"
+	if _, err := s.resolveOrigin(context.Background(), &ThemeOrigin{
+		Site: "https://www.orb-os.net.evil.example", DesignID: siteDesignID, Version: 3,
+	}); err == nil || err.Error() != want {
+		t.Errorf("a look-alike origin = %v, want %q", err, want)
+	}
+	if n := len(dials); n != 2 {
+		t.Errorf("a refused origin sidecar dialled %d times, want the gate to have stopped it at 2", n)
+	}
+}
+
+// TestResolveSendsBearerOnlyToItsSite is H2's rule on the door fu2-6 asks more often than
+// the import did: the link's bearer rides on a resolve to exactly the site that minted it,
+// and on no other. An owner's credential is never carried to a host another theme came
+// from, and a dead link is not sent anywhere either.
+func TestResolveSendsBearerOnlyToItsSite(t *testing.T) {
+	answers := func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"designId":"` + siteDesignID +
+			`","app":"clock","version":9,"sharedName":"Night dial by @greg"}`))
+	}
+	// linkedHub is a hub holding a link to exactly one site, written by the hub's own
+	// writer so the test reads the credential the way every door reads it.
+	linkedHub := func(t *testing.T, site string) (*Server, string) {
+		t.Helper()
+		s := newHub()
+		s.statePath = filepath.Join(t.TempDir(), "state.json")
+		t.Setenv("GORB_SITE", site)
+		tok := hubRandom(32)
+		if err := s.saveSiteLink(&siteLink{Token: tok, Site: siteReleaseBase(), LinkedAt: 1730000000, Handle: "greg"}); err != nil {
+			t.Fatalf("saveSiteLink: %v", err)
+		}
+		return s, tok
+	}
+	asked := func(t *testing.T, s *Server, site string) (*resolveAnswer, error) {
+		t.Helper()
+		return s.resolveOrigin(context.Background(), &ThemeOrigin{
+			Site: strings.ToLower(site), DesignID: siteDesignID, Version: 3,
+		})
+	}
+
+	t.Run("the site that minted the token is the only one it is sent to", func(t *testing.T) {
+		a, aAsks := siteServer(t, answers)
+		b, bAsks := siteServer(t, answers)
+		s, tok := linkedHub(t, a.URL)
+		if ans, err := asked(t, s, a.URL); err != nil || ans == nil || !ans.Resolved {
+			t.Fatalf("the resolve to the linked site: %v %+v", err, ans)
+		}
+		if len(*aAsks) != 1 {
+			t.Fatalf("the linked site saw %d requests, want one", len(*aAsks))
+		}
+		if got := (*aAsks)[0].head.Get("Authorization"); got != "Bearer "+tok {
+			t.Errorf("a resolve to the site that minted the token carried %q, want its bearer", got)
+		}
+		if ans, err := asked(t, s, b.URL); err != nil || ans == nil || !ans.Resolved {
+			t.Fatalf("the resolve to another allowed site: %v %+v", err, ans)
+		}
+		if len(*bAsks) != 1 {
+			t.Fatalf("the other site saw %d requests, want one", len(*bAsks))
+		}
+		if got := (*bAsks)[0].head.Get("Authorization"); got != "" {
+			t.Errorf("a resolve to a site that minted nothing carried %q, want no Authorization header at all", got)
+		}
+	})
+
+	t.Run("a link that is gone or not live sends nothing anywhere", func(t *testing.T) {
+		a, asks := siteServer(t, answers)
+		s, _ := linkedHub(t, a.URL)
+		if err := s.saveSiteLink(&siteLink{Site: siteReleaseBase(), Handle: "greg", LinkedAt: 1, Disconnected: true}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := asked(t, s, a.URL); err != nil {
+			t.Fatalf("a resolve facing a disconnected link: %v", err)
+		}
+		if len(*asks) != 1 {
+			t.Fatalf("the site saw %d requests, want one", len(*asks))
+		}
+		if got := (*asks)[0].head.Get("Authorization"); got != "" {
+			t.Errorf("a hub that has been told the link is dead carried %q to it", got)
+		}
+		bare := newHub()
+		bare.statePath = filepath.Join(t.TempDir(), "state.json")
+		if _, err := asked(t, bare, a.URL); err != nil {
+			t.Fatalf("a hub with no link at all: %v", err)
+		}
+		if got := (*asks)[1].head.Get("Authorization"); got != "" {
+			t.Errorf("a hub with no credential carried %q", got)
+		}
+	})
+
+	// The production shape, with the site stood in by a transport: a hub linked to
+	// orb-os.net asks orb-os.net with its bearer, and a hub linked to a bench site asks
+	// orb-os.net as anonymously as the paste door always did.
+	siteStoodIn := func(s *Server, seen *http.Header, body string) {
+		s.siteClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+			*seen = r.Header.Clone()
+			rec := httptest.NewRecorder()
+			rec.Header().Set("Content-Type", "application/json")
+			_, _ = rec.Write([]byte(body))
+			return rec.Result(), nil
+		})}
+	}
+	t.Run("orb-os.net is the site this hub is linked to", func(t *testing.T) {
+		s, tok := linkedHub(t, "https://"+orbOSNet)
+		var seen http.Header
+		siteStoodIn(s, &seen, `{"designId":"`+siteDesignID+`","app":"clock","version":9}`)
+		if ans, err := asked(t, s, "https://"+orbOSNet); err != nil || ans == nil || !ans.Resolved {
+			t.Fatalf("the resolve to orb-os.net: %v %+v", err, ans)
+		}
+		if got := seen.Get("Authorization"); got != "Bearer "+tok {
+			t.Errorf("a resolve to the orb-os.net this hub is linked to carried %q, want its bearer", got)
+		}
+	})
+	t.Run("a bench site’s link does not ride to orb-os.net", func(t *testing.T) {
+		a, _ := siteServer(t, answers)
+		s, _ := linkedHub(t, a.URL)
+		var seen http.Header
+		siteStoodIn(s, &seen, `{"designId":"`+siteDesignID+`","app":"clock","version":9}`)
+		if _, err := asked(t, s, "https://"+orbOSNet); err != nil {
+			t.Fatalf("the resolve to orb-os.net: %v", err)
+		}
+		if got := seen.Get("Authorization"); got != "" {
+			t.Errorf("a link minted by a bench site carried %q to orb-os.net", got)
+		}
+	})
+
+	// A refused bearer is the site's answer about this design, not news about the
+	// credential: the check says so, the link stays exactly where it was, and the sentence
+	// the owner reads never repeats the token back.
+	t.Run("a refused resolve says nothing about the token and unlinking nobody", func(t *testing.T) {
+		for _, code := range []int{http.StatusUnauthorized, http.StatusInternalServerError} {
+			site, _ := siteServer(t, func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(code) })
+			s, tok := linkedHub(t, site.URL)
+			_, err := asked(t, s, site.URL)
+			if err == nil {
+				t.Fatalf("an HTTP %d resolved with no error", code)
+			}
+			if strings.Contains(err.Error(), tok) {
+				t.Errorf("an HTTP %d refusal carries the token: %v", code, err)
+			}
+			if l := s.loadSiteLink(); l == nil || l.Token != tok || l.Disconnected {
+				t.Errorf("an HTTP %d about one design undid the link: %+v", code, l)
+			}
+		}
+	})
 }
 
 // --- S3b: an SVG is art too -------------------------------------------------------------
@@ -1029,7 +1272,7 @@ func TestSiteImportRefusesSvgOutsideTheBounds(t *testing.T) {
 	}{
 		{"handler", []byte(`<svg xmlns="http://www.w3.org/2000/svg" onload="alert(1)"><rect width="2" height="2"/></svg>`), func([]byte) string { return svgRefusalHandler }},
 		{"outside link", []byte(`<svg xmlns="http://www.w3.org/2000/svg"><image href="https://example.com/a.png"/></svg>`), func([]byte) string { return svgRefusalLink }},
-		{"not an svg", []byte("text that is not markup, and is long enough to read as neither"), func([]byte) string { return svgRefusalNotSvg }},
+		{"not an svg", []byte("<html><body>text</body></html>"), func([]byte) string { return svgRefusalNotSvg }},
 		{"oversize", append([]byte(`<svg xmlns="http://www.w3.org/2000/svg">`),
 			append(bytes.Repeat([]byte(" "), svgMaxBytes), []byte("</svg>")...)...),
 			func(b []byte) string { return fmt.Sprintf(svgRefusalSizeFormat, (len(b)+1023)/1024) }},

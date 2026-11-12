@@ -24,3 +24,5 @@ keyframe.png
 tools/orb-manager/orb-manager
 # orbsdk.py build output, beside each app
 apps/*/build/
+# check-rename-live screenshots and report.json, written under the repo root
+.rename-shots/

@@ -404,8 +404,9 @@ def build(appdir, out_dir=None):
 # is written here: orb-app.js, `window.__ORB_APP = {slug, version}`, the release the
 # theme@1 session stamps into every design (the clock's region sets the same), plus its
 # `schema` when editor.json names the design schema the editor reads (design §6.5 point 1,
-# so the session can refuse to start against an editor.json that disagrees with it).
-EDITOR_KEYS = {"baker", "editor", "entry", "host", "module", "runtime", "schema"}
+# so the session can refuse to start against an editor.json that disagrees with it), plus its
+# `minSchema` when editor.json declares the floor of the schemas it still reads (ruling 34).
+EDITOR_KEYS = {"baker", "editor", "entry", "host", "minSchema", "module", "runtime", "schema"}
 RUNTIME_ID = re.compile(r"^[a-z][a-z0-9_-]*@[0-9][0-9.]*$")
 ZIP_DATE = (1980, 1, 1, 0, 0, 0)
 
@@ -436,12 +437,31 @@ def editor_schema(ej, slug):
     return None
 
 
+def editor_min_schema(ej, slug, schema):
+    """editor.json's `minSchema`: the lowest design schema this editor still reads (ruling 34:
+    a breaking change is declared, never silent). The int, or None when the editor names none,
+    which is what every editor before M2 does and means 1. A floor is only meaningful under a
+    schema, so naming one with no `schema` is refused, and so is one above the schema the
+    editor reads: it would exclude the designs the editor itself writes."""
+    if "minSchema" not in ej:
+        return None
+    value = ej["minSchema"]
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        fail("%s's editor.json minSchema must be a whole number from 1 to its schema, not %r" % (slug, value))
+    if schema is None:
+        fail("%s's editor.json names minSchema, which needs a schema to be under" % slug)
+    if value > schema:
+        fail("%s's editor.json minSchema must be a whole number from 1 to its schema, not %r" % (slug, value))
+    return value
+
+
 # The app keeps one sample design per past schema (design §6.5 point 4), in a folder of
 # its editor's like the _selftest/ beside it. Ruling 36 makes them travel: every sample at
 # or below the editor's own schema is packed into the editor region as
 # `_fixtures/schema-<n>.orbdesign`, so a hub holding only the container can run the check,
 # and the build refuses what check-migrations would refuse — one scan (fixture_schemas)
-# answers both, so neither can drift from the other.
+# answers both, so neither can drift from the other. Ruling 34's `minSchema` lifts that scan's
+# floor: a sample below it is skipped by the same one scan, so build and check agree on it too.
 FIXTURES = "_fixtures"
 FIXTURE_RE = re.compile(r"^schema-([1-9][0-9]{0,5})\.orbdesign$")   # the site's check-plan.ts grammar: no 0, no leading zero
 
@@ -456,11 +476,14 @@ def fixture_region_name(n):
     return "%s/%s" % (FIXTURES, fixture_name(n))
 
 
-def fixture_schemas(slug, schema, fdir):
+def fixture_schemas(slug, schema, fdir, floor=1):
     """The schemas the app's _fixtures folder holds, ascending. A name that is not
     schema-<n>.orbdesign, and a fixture newer than the editor's own schema, are refused here:
     the folder is the app's promise of one design per past schema, so the build that packs it
-    and the check that runs it refuse the same things (design §6.5 point 4, ruling 36)."""
+    and the check that runs it refuse the same things (design §6.5 point 4, ruling 36).
+    `floor` is the editor's declared minSchema (ruling 34): a sample below it is skipped, not
+    refused, printing the line below and leaving the answer. Correction 9: containers built
+    before a floor keep their files; packing and checking just stop reading them."""
     names = sorted(n for n in os.listdir(fdir) if os.path.isfile(os.path.join(fdir, n))) \
         if os.path.isdir(fdir) else []
     have = []
@@ -468,20 +491,24 @@ def fixture_schemas(slug, schema, fdir):
         found = FIXTURE_RE.match(n)
         if not found:
             fail("%s: %s in _fixtures is not named schema-<n>.orbdesign" % (slug, n))
+        if int(found.group(1)) < floor:
+            print("%s: schema-%d fixture is below minSchema %d, not checked" % (slug, int(found.group(1)), floor))
+            continue
         if int(found.group(1)) > schema:
             fail("%s: %s is newer than the schema this editor reads (%d)" % (slug, n, schema))
         have.append(int(found.group(1)))
     return sorted(have)
 
 
-def fixture_members(slug, schema, fdir):
+def fixture_members(slug, schema, fdir, min_schema=None):
     """The fixture members of an editor region: every sample the migration check would open,
-    which is every schema the folder holds at or below the editor's own (ruling 36) — the
-    past schemas the check migrates and an own-schema sample it opens as it is. An editor
-    with no design schema drives no design and packs none; no folder is nothing."""
+    which is every schema the folder holds between the editor's floor and its own schema
+    (ruling 36, amended by ruling 34) — the past schemas the check still migrates and an
+    own-schema sample it opens as it is. An editor with no design schema drives no design and
+    packs none; no folder is nothing."""
     if schema is None:
         return []
-    return [fixture_region_name(k) for k in fixture_schemas(slug, schema, fdir)]
+    return [fixture_region_name(k) for k in fixture_schemas(slug, schema, fdir, min_schema or 1)]
 
 
 def tree_region_builder(key):
@@ -509,16 +536,19 @@ def fixtures_dir(appdir, m):
     return None
 
 
-def schema_fixture_rule(slug, schema, fdir):
-    """An editor reading schema N >= 2 must hold a fixture for every past schema 1 … N-1
-    (ruling 36): a design migrates from the schema before its own, so a two-hop-old design is
+def schema_fixture_rule(slug, schema, fdir, min_schema=None):
+    """An editor reading schema N >= 2 must hold a fixture for every past schema it still
+    reads: 1 … N-1, or `min_schema` … N-1 once it declares a floor (ruling 36, amended by
+    ruling 34). A design migrates from the schema before its own, so a two-hop-old design is
     proven to open only if its schema has a sample too. The first gap is named, and the same
     scan refuses a stray name or a fixture newer than the editor — what check-migrations
-    would refuse, refused at build instead (design §6.5 point 4)."""
+    would refuse, refused at build instead (design §6.5 point 4). Below the floor the scan
+    skips a sample rather than requiring or refusing it, so an app that stops reading a schema
+    can delete its fixture without a build that lies about it."""
     if not schema or schema <= 1 or fdir is None:
         return
-    have = fixture_schemas(slug, schema, fdir)
-    for k in range(1, schema):
+    have = fixture_schemas(slug, schema, fdir, min_schema or 1)
+    for k in range(min_schema or 1, schema):
         if k in have:
             continue
         rel = os.path.relpath(os.path.join(fdir, fixture_name(k)), os.path.dirname(os.path.dirname(fdir)))
@@ -548,7 +578,8 @@ def editor_region(appdir, m, release):
     if not isinstance(runtime, list) or not all(isinstance(r, str) and RUNTIME_ID.match(r) for r in runtime):
         fail("editor.json's runtime lists ids like theme@1, not %r" % (runtime,))
     schema = editor_schema(ej, m["slug"])
-    schema_fixture_rule(m["slug"], schema, fixtures_dir(appdir, m))
+    min_schema = editor_min_schema(ej, m["slug"], schema)
+    schema_fixture_rule(m["slug"], schema, fixtures_dir(appdir, m), min_schema)
     files = sorted(n for n in os.listdir(d)
                    if not n.startswith(".") and n != "editor.json" and os.path.isfile(os.path.join(d, n)))
     if "host" in ej:
@@ -580,11 +611,13 @@ def editor_region(appdir, m, release):
         fail("%s's editor carries orb-app.js, which the SDK writes" % m["slug"])
     # ruling 36: the fixtures ride too, keyed as `_fixtures/schema-<n>.orbdesign`. They join
     # the one sorted list below, where `_` (0x5F) sorts before the top-level files' letters.
-    fixtures = fixture_members(m["slug"], schema, fixtures_dir(appdir, m))
+    fixtures = fixture_members(m["slug"], schema, fixtures_dir(appdir, m), min_schema)
     members = [("editor.json", json.dumps(ej, sort_keys=True, separators=(",", ":")).encode())]
     st = {"slug": m["slug"], "version": release}
     if schema is not None:
         st["schema"] = schema
+    if min_schema is not None:
+        st["minSchema"] = min_schema
     if m.get("os_min"):
         st["os_min"] = m["os_min"]
     stamp = ("window.__ORB_APP = %s;\n" % json.dumps(st, sort_keys=True)).encode()
@@ -847,16 +880,19 @@ def cmd_binds(a):
 
 # ---- check-migrations (design §6.5 point 4) ------------------------------------------
 
-def _fixtures_to_run(slug, schema, fdir):
+def _fixtures_to_run(slug, schema, fdir, floor=1):
     """The fixture names to run, in schema order. A stray file, a fixture newer than the
-    editor, or a past schema without one of its own is refused here, before anything
-    reaches node: the folder is the app's promise of one design per past schema. The scan
-    of what the folder holds is fixture_schemas, which the build shares (ruling 36)."""
-    have = fixture_schemas(slug, schema, fdir)
-    for k in range(1, schema):
+    editor, or a schema in [floor, schema-1] without one of its own is refused here, before
+    anything reaches node: the folder is the app's promise of one design per past schema it
+    still reads. The scan of what the folder holds is fixture_schemas, which the build shares
+    (ruling 36), and a sample below the floor — the editor's declared minSchema, ruling 34 —
+    is skipped by that scan rather than opened here."""
+    have = fixture_schemas(slug, schema, fdir, floor)
+    for k in range(floor, schema):
         if k not in have:
-            fail("%s: no fixture for schema %d: check-migrations keeps one design per past schema"
-                 % (slug, k))
+            fail("%s: no fixture for schema %d: check-migrations keeps one design per past schema%s"
+                 % (slug, k,
+                    " (this editor reads from minSchema %d)" % floor if floor > 1 else ""))
     return [fixture_name(k) for k in have]
 
 
@@ -872,9 +908,11 @@ def _run_migrate(a, node, runtime, editor_tmp, extra):
 def cmd_check_migrations(a):
     """Open each app's schema fixtures in its packed editor, through the migration runner.
     Answers 0 only when every app passed; an app with no editor, or an editor with no
-    design schema, has nothing to migrate. The SDK's own directory is skipped: it is the
-    generic SDK for building new apps, not an app, and `apps/*/` catches it. Every other
-    directory without app.json still fails, so a typo is never silently skipped."""
+    design schema, has nothing to migrate. An editor that declares `minSchema` is checked from
+    that floor up: a sample below it is skipped, not opened. The SDK's own directory is
+    skipped: it is the generic SDK for building new apps, not an app, and `apps/*/` catches
+    it. Every other directory without app.json still fails, so a typo is never silently
+    skipped."""
     node = os.environ.get("ORB_NODE") or "node"
     runtime = a.runtime or (os.path.join(ROOT, "tools", "orb-manager", "web", "runtime")
                             if IN_TREE else os.path.join(SDK, "runtime"))
@@ -909,6 +947,7 @@ def cmd_check_migrations(a):
                 print("%s: its editor names no design schema, nothing to migrate" % slug)
                 continue
             fdir = fixtures_dir(d, m)
+            floor = editor_min_schema(ej, slug, schema) or 1      # ruling 34's declared floor
             if a.save_current:
                 target = os.path.join(fdir, fixture_name(schema))
                 if os.path.exists(target):
@@ -919,7 +958,7 @@ def cmd_check_migrations(a):
                     fail("%s: the packed editor gave up no current design: see the runner "
                          "output above" % slug)
                 continue
-            fixtures = _fixtures_to_run(slug, schema, fdir)
+            fixtures = _fixtures_to_run(slug, schema, fdir, floor)
             if not fixtures:
                 print("%s: schema 1 and no fixtures, nothing to migrate yet" % slug)
                 continue
@@ -929,7 +968,8 @@ def cmd_check_migrations(a):
             if not os.path.isfile(os.path.join(runtime, "_runner", "migrate.js")):
                 fail("no migration runner at %s: pass --runtime an editor runtime" % runtime)
             if _run_migrate(a, node, runtime, ed, [os.path.join(fdir, n) for n in fixtures]):
-                fail("%s: a past design no longer opens in this editor" % slug)
+                fail("%s: a past design no longer opens in this editor: restore its migration step, or "
+                     "declare \"minSchema\" in editor.json to stop reading that schema" % slug)
     return 0
 
 

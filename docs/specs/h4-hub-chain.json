@@ -1,0 +1,25 @@
+{
+  "name": "h4-hub",
+  "repo": "../..",
+  "base": "h4",
+  "retries": 2,
+  "timeout": 5400,
+  "steps": [
+    {
+      "name": "h4-hub-1-scopes-on-the-link",
+      "spec": "docs/specs/h4-hub-1-scopes-on-the-link.md",
+      "hard": true,
+      "verify": "set -o pipefail; export GOFLAGS=-buildvcs=false PATH=/usr/local/go/bin:$PATH && cd tools/orb-manager && go vet ./... && go test -run 'TestSite(Connect|Link|Exchange)|TestStateFileHoldsNoSecrets|TestEditorAPI' -count=1 -v . 2>&1 | tee /tmp/h4-hub-1.log && grep -q -- '--- PASS: TestSiteConnectURLIsTheContract' /tmp/h4-hub-1.log && grep -q -- '--- PASS: TestSiteLinkFileWithoutScopesStillLoads' /tmp/h4-hub-1.log && grep -q -- '--- PASS: TestSiteExchangeScopesAreTheAnswer' /tmp/h4-hub-1.log && grep -q -- '--- PASS: TestSiteLinkFileRoundTrip' /tmp/h4-hub-1.log && ! grep -q -- '--- FAIL' /tmp/h4-hub-1.log && grep -q 'scope=designs%3Aread+designs%3Awrite' sitelink_test.go && grep -q 'json:\"scopes,omitempty\"' sitelink.go && grep -q 'func siteLinkScopes' sitelink.go && git diff --exit-code h4 -- web internal state.go designs.go libentries.go main.go siteimport.go && cd ../.. && test -z \"$(git diff --name-only h4 | grep -v -E '^(tools/orb-manager/|docs/)')\""
+    },
+    {
+      "name": "h4-hub-2-upload-doors",
+      "spec": "docs/specs/h4-hub-2-upload-doors.md",
+      "verify": "set -o pipefail; export GOFLAGS=-buildvcs=false PATH=/usr/local/go/bin:$PATH && cd tools/orb-manager && go vet ./... && go test -run 'TestSiteUpload|TestSiteLocalDesigns|TestSiteDoorShut|TestSiteLink|TestEditorAPI' -count=1 -v . 2>&1 | tee /tmp/h4-hub-2.log && grep -q -- '--- PASS: TestSiteUploadSendsTheDocument' /tmp/h4-hub-2.log && grep -q -- '--- PASS: TestSiteUploadAnswerMatrix' /tmp/h4-hub-2.log && grep -q -- '--- PASS: TestSiteUploadOnceOnly' /tmp/h4-hub-2.log && grep -q -- '--- PASS: TestSiteLocalDesignsListsAcrossApps' /tmp/h4-hub-2.log && ! grep -q -- '--- FAIL' /tmp/h4-hub-2.log && grep -q '/api/site/upload' sitelink.go && grep -q '/api/site/local-designs' sitelink.go && grep -q 'siteUploadTimeout' sitelink.go && git diff --exit-code h4 -- web internal state.go designs.go libentries.go && grep -q -- '--- PASS: TestSiteUploadSendsAThemesDesign' /tmp/h4-hub-2.log && grep -q -- '--- PASS: TestSiteUploadThemeWithNoDesign' /tmp/h4-hub-2.log && grep -q -- '--- PASS: TestSiteLocalDesignsListsThemesToo' /tmp/h4-hub-2.log && cd ../.. && test -z \"$(git diff --name-only h4 | grep -v -E '^(tools/orb-manager/|docs/)')\""
+    },
+    {
+      "name": "h4-hub-3-upload-ui",
+      "spec": "docs/specs/h4-hub-3-upload-ui.md",
+      "verify": "set -o pipefail; export GOFLAGS=-buildvcs=false PATH=/usr/local/go/bin:$PATH && cd tools/orb-manager && go vet ./... && go test -run 'TestSiteUpload|TestSiteUI|TestSiteLink|TestSiteConnect|TestSiteDesigns|TestSiteDisconnect|TestSiteImport|TestSiteDoorShut|TestStateFileHoldsNoSecrets|TestEditorAPI' -count=1 -v . 2>&1 | tee /tmp/h4-hub-3.log && grep -q -- '--- PASS: TestSiteUploadDialogIsModalHonest' /tmp/h4-hub-3.log && grep -q -- '--- PASS: TestSiteUploadButtonIsEnabledByScopesOnly' /tmp/h4-hub-3.log && grep -q -- '--- PASS: TestSiteUploadSendsForeignBytesAsTextOnly' /tmp/h4-hub-3.log && ! grep -q -- '--- FAIL' /tmp/h4-hub-3.log && grep -q -- '--- PASS: TestSiteUploadReplaceConfirmsBeforeItSends' /tmp/h4-hub-3.log && grep -q -- '--- PASS: TestSiteUploadSuccessNamesTheVisibility' /tmp/h4-hub-3.log && go test ./... -count=1 && grep -q 'id=\"up-mask\"' web/index.html && grep -q 'Reconnect to allow uploads' web/app.js && cd ../.. && make check-apps check-hub check-editor check-web check-runner check-migrations check-editor-origin && test -z \"$(git diff --name-only h4 | grep -v -E '^(tools/orb-manager/|docs/)')\""
+    }
+  ]
+}

@@ -41,6 +41,13 @@ type ThemeApp struct {
 	// editor, and this field answers "can I author themes for this app here".
 	HasEditor bool   `json:"has_editor"`
 	EditorURL string `json:"editor_url,omitempty"`
+	// EditorEval is ruling 38's answer for this app's editor: the hub shelf copy's
+	// editor.json names a runtime that needs 'unsafe-eval', so the editor listener
+	// serves it that allowance and every other app's editor does not get it. The
+	// Themes face shows it because it is the one place the operator chooses whose
+	// editor to open, and an author deciding whether to trust a stranger's package
+	// with an editor session deserves to see what that package asked for.
+	EditorEval bool `json:"editor_eval"`
 	// Drift names the identity words on which the orb's installed container and the
 	// container the hub is serving disagree, empty when they match. It needs a copy on
 	// the hub's side to compare against, so it stays empty wherever Client.Containers is

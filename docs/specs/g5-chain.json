@@ -1,0 +1,16 @@
+{
+  "name": "g5",
+  "repo": "../..",
+  "base": "g5",
+  "read": ["/home/greg/docker/worktrees/orb-os-net-fu2-lead"],
+  "retries": 2,
+  "timeout": 5400,
+  "steps": [
+    {
+      "name": "g5-1-editor-eval-per-app",
+      "spec": "docs/specs/g5-1-editor-eval-per-app.md",
+      "hard": true,
+      "verify": "export GOFLAGS=-buildvcs=false PATH=/usr/local/go/bin:$PATH && set -o pipefail && R=$PWD && cd tools/orb-manager && go vet ./... && test \"$(go test -run 'EditorCSP|EditorAllowsEval|EditorListenerCSP|ControlHeadersUnchanged|ThemesRowsSayEditorEval' -v . | grep -cE '^--- PASS: Test(EditorCSPEvalIsS2Bytes|EditorCSPStrictDropsOnlyEval|EditorAllowsEvalOnlyForTheTwoRuntimes|EditorListenerCSPPerApp|ControlHeadersUnchanged|ThemesRowsSayEditorEval) ')\" = 6 && cd $R && make check-editor-origin ARGS='--json /tmp/g5.json' 2>&1 | tail -15 | tee /tmp/g5-live.txt && grep -q 'editor-origin-live: 10/10 passed' /tmp/g5-live.txt && test -z \"$(git diff --stat g5 -- tools/orb-manager/main.go tools/orb-manager/security.go apps tools/orb-manager/contract)\" && sh docs/specs/s3-gotest.sh && make check-editor && make check-web && make check-runner && make check-migrations"
+    }
+  ]
+}

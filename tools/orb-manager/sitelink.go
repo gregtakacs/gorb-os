@@ -45,6 +45,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -78,6 +79,13 @@ const siteDesignsBodyMax = 256 << 10
 // test pins the timeout case against the shipped deadline at a scale it can afford.
 var siteCallTimeout = 10 * time.Second
 
+// siteUploadTimeout is the patience §6's upload door gets: a 10 MB design over a home
+// line is not a 10-second request, and an owner who confirmed an upload should read the
+// site's answer rather than the hub's impatience. A var for the reason siteCallTimeout is
+// one — a test pins the stall case against the shipped deadline at a scale it can afford.
+// One attempt, no retry: a retry would turn one confirmed Replace into two versions.
+var siteUploadTimeout = 120 * time.Second
+
 // The three sentences §5's site doors answer with, one per answer the hub can give. They
 // name orb-os.net rather than the configured host because that is the account's own name:
 // a hub pointed at a developer's site has a developer's GORB_SITE and its owner is reading
@@ -88,17 +96,69 @@ const (
 	siteMsgNoAnswer     = "orb-os.net did not answer"
 )
 
-// siteLink is the hub's link to an orb-os.net account, as §5's file shape names it: the
-// site origin, the bearer it handed, when the link was made, the owner's handle for the
-// page's words, and the disconnected flag a 401 rewrites onto the file (step 2's writer;
-// read here so a hub that was disconnected while closed still says so after a restart).
-// An empty Token reads as no link at all, never as an empty credential to send.
+// The two consent words H4 knows (h4-design.md §1.2), declared once here because this
+// file decides what a scope is on the hub's side: the connect URL asks with them, the
+// exchange filters its answer through them, and every reader defaults to the first.
+// siteScopesAsked is a var of the words rather than one joined constant so a later step
+// can reuse the words without re-spelling them; nothing else asks for a scope.
+const (
+	siteScopeRead  = "designs:read"
+	siteScopeWrite = "designs:write"
+)
+
+var siteScopesAsked = []string{siteScopeRead, siteScopeWrite}
+
+// normalizeSiteScopes is the hub's reading of the scopes the site answered (§6): unknown
+// words dropped, duplicates dropped, the rest sorted, so one consent has one spelling on
+// both sides of the wire. Empty in any form — absent, null, [], all-unknown — or a set
+// that does not contain designs:read comes back read-only: the site refuses to mint a
+// write-only link (§10's first answer), so a hub handed one has been told something it
+// cannot act on, and the conservative reading costs a relink rather than a failed upload.
+// The exchange never fails over a scope answer; less than the ask is a smaller link, not
+// a broken one.
+func normalizeSiteScopes(in []string) []string {
+	var out []string
+	for _, s := range in {
+		if !slices.Contains(siteScopesAsked, s) || slices.Contains(out, s) {
+			continue
+		}
+		out = append(out, s)
+	}
+	if !slices.Contains(out, siteScopeRead) {
+		return []string{siteScopeRead}
+	}
+	slices.Sort(out)
+	return out
+}
+
+// siteLinkScopes is the reader's side of the same rule: the file is never repaired by
+// loading it, so nothing that touches loadSiteLink or loadSiteLinkRaw changes, and every
+// reader of a link's consent comes through here. A nil link has no scopes to name; a
+// file with no key, an empty key or junk reads as the read-only link it always was —
+// the same default the site's migration gives its rows, so both sides of one link age
+// the same way.
+func siteLinkScopes(l *siteLink) []string {
+	if l == nil {
+		return nil
+	}
+	return normalizeSiteScopes(l.Scopes)
+}
+
+// siteLink is the hub's link to an orb-os.net account, as §5's file shape names it (and
+// as H4 §6 grows it): the site origin, the bearer it handed, when the link was made, the
+// owner's handle for the page's words, the scopes the site answered for this link
+// (omitempty: a link carrying no consent writes no key at all, which is what lets an H2
+// file and an H4 file mean the same thing), and the disconnected flag a 401 rewrites onto
+// the file (step 2's writer; read here so a hub that was disconnected while closed still
+// says so after a restart). An empty Token reads as no link at all, never as an empty
+// credential to send.
 type siteLink struct {
-	Token        string `json:"token,omitempty"`
-	Site         string `json:"site"`
-	LinkedAt     int64  `json:"linkedAt"`
-	Handle       string `json:"handle,omitempty"`
-	Disconnected bool   `json:"disconnected,omitempty"`
+	Token        string   `json:"token,omitempty"`
+	Site         string   `json:"site"`
+	LinkedAt     int64    `json:"linkedAt"`
+	Handle       string   `json:"handle,omitempty"`
+	Scopes       []string `json:"scopes,omitempty"`
+	Disconnected bool     `json:"disconnected,omitempty"`
 }
 
 // siteLinkPath is the credential file: a sibling of the state file, derived from its
@@ -139,6 +199,25 @@ func (s *Server) liveSiteLink() *siteLink {
 		return nil
 	}
 	return l
+}
+
+// siteBearerFor is the credential one call to one site may carry: the link's bearer when
+// this hub holds a live link to exactly that origin, and "" for every other host. It is
+// the rule every bearer call already keeps — the token goes only to the site that minted
+// it — said once, so a new door cannot get it wrong, and the comparison is the canonical
+// one the import gate uses: an origin written with an explicit :443 or in another case
+// names the same site as the stored one. A hub with no link, a link that was marked
+// disconnected, and a site that is not the one this hub is open to all answer "".
+func (s *Server) siteBearerFor(site string) string {
+	l := s.liveSiteLink()
+	if l == nil {
+		return ""
+	}
+	want, asked := canonicalSiteOrigin(l.Site), canonicalSiteOrigin(site)
+	if want == "" || asked == "" || want != asked {
+		return ""
+	}
+	return l.Token
 }
 
 // saveSiteLink writes the credential whole: the config dir first (0700, exactly as
@@ -246,14 +325,17 @@ func siteLabelOf(name string, err error) string {
 }
 
 // siteConnectURL builds the browser's /connect request. The query is assembled by hand in
-// §5's order — install, label, platform, version, redirect, challenge, state — so the
-// param order is code and not map luck, and so the wire bytes can be pinned by a test.
+// §5's order — install, label, platform, version, scope, redirect, challenge, state — so
+// the param order is code and not map luck, and so the wire bytes can be pinned by a test.
+// The scope field (h4-design.md §1.2, §6) asks for both words every time and lets the
+// owner's consent decide: nothing else in the hub chooses a scope at connect time.
 func (s *Server) siteConnectURL(port int, verifier, connectState string) string {
 	fields := [][2]string{
 		{"install", s.installID},
 		{"label", siteLabel()},
 		{"platform", siteConnectPlatform()},
 		{"version", version},
+		{"scope", strings.Join(siteScopesAsked, " ")},
 		{"redirect", fmt.Sprintf("http://127.0.0.1:%d/callback", port)},
 		{"challenge", siteChallenge(verifier)},
 		{"state", connectState},
@@ -466,13 +548,13 @@ func (s *Server) siteFinishWithCode(att *siteAttempt, w http.ResponseWriter, cod
 	prev := s.loadSiteLink()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	tok, handle, err := s.siteTokenExchange(ctx, att.verifier, code)
+	tok, handle, scopes, err := s.siteTokenExchange(ctx, att.verifier, code)
 	if err != nil {
 		log.Printf("orb-manager: site connect: the exchange failed: %v", err)
 		siteCallbackPage(w, "<h1>Not connected</h1><p>That sign-in did not go through: press Connect again.</p>")
 		return
 	}
-	newLink := &siteLink{Token: tok, Site: siteReleaseBase(), LinkedAt: time.Now().Unix(), Handle: handle}
+	newLink := &siteLink{Token: tok, Site: siteReleaseBase(), LinkedAt: time.Now().Unix(), Handle: handle, Scopes: scopes}
 	if err := s.saveSiteLink(newLink); err != nil {
 		log.Printf("orb-manager: site connect: the token could not be stored: %v", err)
 		siteCallbackPage(w, "<h1>Not connected</h1><p>That sign-in did not go through: press Connect again.</p>")
@@ -515,45 +597,49 @@ func (s *Server) revokeSiteToken(ctx context.Context, site, token string) string
 // through the no-redirects client — a 302 from a hostile site is a failed sign-in, not a
 // step to take — with the context's ten-second patience and an eight-kilobyte cap on the
 // answer. Only a 200 carrying a token is a token; every other answer, 400 or 401
-// invalid_grant or junk, is one failure worded for the log.
-func (s *Server) siteTokenExchange(ctx context.Context, verifier, code string) (token, handle string, err error) {
+// invalid_grant or junk, is one failure worded for the log. H4 (§6) adds the fourth
+// result: the scopes the site ANSWERED, normalized — never what this hub asked for,
+// because a site that grants less mints a smaller link. The wording of every failure is
+// H2's: a scope answer never fails an exchange the token would have completed.
+func (s *Server) siteTokenExchange(ctx context.Context, verifier, code string) (token, handle string, scopes []string, err error) {
 	payload, err := json.Marshal(map[string]string{"code": code, "verifier": verifier})
 	if err != nil {
-		return "", "", err
+		return "", "", nil, err
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, siteReleaseBase()+"/api/hub/token", bytes.NewReader(payload))
 	if err != nil {
-		return "", "", err
+		return "", "", nil, err
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("User-Agent", "orb-manager/"+version)
 	resp, err := s.siteHTTP().Do(req)
 	if err != nil {
-		return "", "", fmt.Errorf("the site could not be reached for the exchange: %w", err)
+		return "", "", nil, fmt.Errorf("the site could not be reached for the exchange: %w", err)
 	}
 	defer resp.Body.Close()
 	b, err := io.ReadAll(io.LimitReader(resp.Body, int64(siteTokenBodyMax)+1))
 	if err != nil {
-		return "", "", fmt.Errorf("the site's exchange answer did not arrive: %w", err)
+		return "", "", nil, fmt.Errorf("the site's exchange answer did not arrive: %w", err)
 	}
 	if len(b) > siteTokenBodyMax {
-		return "", "", errors.New("the site's exchange answer was too large to be one")
+		return "", "", nil, errors.New("the site's exchange answer was too large to be one")
 	}
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		return "", "", fmt.Errorf("the site answered HTTP %d", resp.StatusCode)
+		return "", "", nil, fmt.Errorf("the site answered HTTP %d", resp.StatusCode)
 	}
 	var out struct {
-		Token  string `json:"token"`
-		Handle string `json:"handle"`
+		Token  string   `json:"token"`
+		Handle string   `json:"handle"`
+		Scopes []string `json:"scopes"`
 	}
 	if err := json.Unmarshal(b, &out); err != nil {
-		return "", "", fmt.Errorf("the site's exchange answer was not the shape it documents: %w", err)
+		return "", "", nil, fmt.Errorf("the site's exchange answer was not the shape it documents: %w", err)
 	}
 	if strings.TrimSpace(out.Token) == "" {
-		return "", "", errors.New("the site answered the exchange without a token")
+		return "", "", nil, errors.New("the site answered the exchange without a token")
 	}
-	return out.Token, out.Handle, nil
+	return out.Token, out.Handle, normalizeSiteScopes(out.Scopes), nil
 }
 
 // --- the doors ---------------------------------------------------------------------------
@@ -579,7 +665,11 @@ func (s *Server) handleSiteConnect(w http.ResponseWriter, r *http.Request) {
 // nothing else (lead review point 5): "pending" while an attempt is open, "linked" with
 // the site, handle and timestamp while a token is stored, "disconnected" when the site
 // ended the link and the file says so, "none" for a hub that never linked. The token
-// never leaves the file through this door or any other.
+// never leaves the file through this door or any other. The linked answer carries the
+// normalized scopes — always the array, so the page defaults nothing — read through the
+// same helper every consent reader uses: a file written before H4 answers read-only.
+// The other three states answer no scopes key, as they answer no handle when there is
+// none: there is no consent to name.
 func (s *Server) handleSiteLinkStatus(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "GET only", http.StatusMethodNotAllowed)
@@ -594,6 +684,7 @@ func (s *Server) handleSiteLinkStatus(w http.ResponseWriter, r *http.Request) {
 		data["state"] = "linked"
 		data["site"] = l.Site
 		data["linkedAt"] = l.LinkedAt
+		data["scopes"] = siteLinkScopes(l)
 		if l.Handle != "" {
 			data["handle"] = l.Handle
 		}
@@ -788,13 +879,16 @@ func (s *Server) handleSiteDisconnect(w http.ResponseWriter, r *http.Request) {
 }
 
 // routesSiteLink mounts the connect surface: the press, the status read, the design list
-// that only a linked hub can ask for, and the door that ends the link — all behind
-// requireControl, registered only inside main.go's !s.siteHidden block, and none of them on
-// the editor-API listener: an app's page neither links the hub to an account, reads whose
-// designs it holds, nor signs it out of one.
+// that only a linked hub can ask for, the door that ends the link — and H4's two upload
+// doors, the picker's read and the upload itself — all behind requireControl, registered
+// only inside main.go's !s.siteHidden block, and none of them on the editor-API listener:
+// an app's page neither links the hub to an account, reads whose designs it holds, uploads
+// one to an account, nor signs the hub out of one.
 func (s *Server) routesSiteLink(mux *http.ServeMux) {
 	mux.Handle("/api/site/connect", s.requireControl(http.HandlerFunc(s.handleSiteConnect)))
 	mux.Handle("/api/site/link-status", s.requireControl(http.HandlerFunc(s.handleSiteLinkStatus)))
 	mux.Handle("/api/site/designs", s.requireControl(http.HandlerFunc(s.handleSiteDesigns)))
 	mux.Handle("/api/site/disconnect", s.requireControl(http.HandlerFunc(s.handleSiteDisconnect)))
+	mux.Handle("/api/site/upload", s.requireControl(http.HandlerFunc(s.handleSiteUpload)))
+	mux.Handle("/api/site/local-designs", s.requireControl(http.HandlerFunc(s.handleSiteLocalDesigns)))
 }

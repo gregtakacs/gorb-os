@@ -117,18 +117,73 @@ func newEditorKey() []byte {
 	return b
 }
 
+// editorEvalRuntimes are the two runtimes whose editors need 'unsafe-eval': Babel
+// compiles the operator's JSX at load and the support composer evals its preview
+// source (ruling 38, orb-os-net docs/design.md — the same list studio-headers.ts
+// relaxes for). Exact ids only: babel@7.28.0 or support@2 is a different build's
+// promise to make, and a near-miss gets the strict policy rather than a prefix
+// match's benefit of the doubt.
+var editorEvalRuntimes = []string{"babel@7.29.0", "support@1"}
+
 // editorCSP is the document policy every response on this listener carries, refusals
-// included. The allowances are an editor's own: inline and eval scripts because the
-// hosted page boots a React/Babel runtime that needs them, data:/blob: because a bake
-// is built out of both, and 'self' for connect-src because the editor's API is its own
-// origin. frame-ancestors names the hub page, the only thing allowed to show an editor.
-func (s *Server) editorCSP() string {
+// included. The allowances are an editor's own: inline scripts because the hosted page
+// boots a React runtime that needs them, data:/blob: because a bake is built out of
+// both, and 'self' for connect-src because the editor's API is its own origin.
+// frame-ancestors names the hub page, the only thing allowed to show an editor.
+//
+// Ruling 38 took 'unsafe-eval' out of that common set: it is the one allowance that
+// turns any injected script into arbitrary code, and it belongs only to the two
+// runtimes that need it. eval=false — every app the shelf does not list in
+// editorEvalRuntimes — is the same policy with exactly that token removed from
+// script-src; eval=true is the S2 byte string unchanged, so an app that opts into
+// Babel sees the policy it always had.
+func (s *Server) editorCSP(eval bool) string {
 	cp := strconv.Itoa(s.controlPort)
-	return "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval' blob:; " +
+	base := "default-src 'self'; script-src 'self' 'unsafe-inline' blob:; " +
 		"style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; " +
 		"media-src 'self' data: blob:; connect-src 'self' data: blob:; worker-src 'self' blob:; " +
 		"frame-src 'self' blob: data:; object-src 'none'; base-uri 'self'; form-action 'self'; " +
 		"frame-ancestors 'self' http://127.0.0.1:" + cp + " http://localhost:" + cp
+	if !eval {
+		return base
+	}
+	return strings.Replace(base, "'unsafe-inline' blob:", "'unsafe-inline' 'unsafe-eval' blob:", 1)
+}
+
+// editorAllowsEval answers ruling 38's question for one app: does the copy of it on
+// this hub's shelf declare a runtime that needs 'unsafe-eval'? The answer comes from
+// the editor region's own editor.json — the same manifest the door serves and the
+// runtime gate reads — so a relaxation cannot be claimed by anything but the app's
+// package. Anything the hub cannot read or parse answers false: no app on the shelf,
+// no editor, no manifest, a manifest whose runtime list will not parse. The read rides
+// hubEditorRegion, memoised on the container's size and mtime, so a replaced .orbapp
+// changes this answer on the next response and a page load costs one stat, not a zip.
+func (s *Server) editorAllowsEval(slug string) bool {
+	if slug == "" {
+		return false
+	}
+	zr, err := s.hubEditorRegion(slug)
+	if err != nil {
+		return false
+	}
+	manifest, ok := editorMember(zr, "editor.json")
+	if !ok {
+		return false
+	}
+	var m struct {
+		Runtime []string `json:"runtime"`
+	}
+	if err := json.Unmarshal(manifest, &m); err != nil {
+		return false
+	}
+	for _, want := range editorEvalRuntimes {
+		for _, have := range m.Runtime {
+			if have == want {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // editorShim is the first script of every editor document. A page's fetches are what
@@ -265,7 +320,7 @@ func (s *Server) editorHandler() http.Handler {
 		// The headers go on before the route runs, so a refusal is a response under the
 		// same policy as an answer: a hostile page cannot read a 421 differently from a
 		// document, and nothing served here can be framed into another origin's page.
-		w.Header().Set("Content-Security-Policy", s.editorCSP())
+		w.Header().Set("Content-Security-Policy", s.editorCSP(false))
 		w.Header().Set("Referrer-Policy", "no-referrer")
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		// No response on this listener ever sets a cookie, and the control credential is
@@ -274,6 +329,13 @@ func (s *Server) editorHandler() http.Handler {
 		slug, ok := s.editorGuard(w, r)
 		if !ok {
 			return
+		}
+		// Ruling 38: the strict policy went out above as every response's header, so the
+		// relaxed one is never what a refusal wears. It is added here, and only for a
+		// request the guard scoped to an app whose own editor.json asks for a runtime
+		// that needs it — the scope the credential signed, not the Host's guess.
+		if s.editorAllowsEval(slug) {
+			w.Header().Set("Content-Security-Policy", s.editorCSP(true))
 		}
 		mux.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), editorScopeKey{}, slug)))
 	})

@@ -13,13 +13,15 @@
 #   make web            the release's web file, into tools/orb-manager/bin/web/ (design §6.1)
 #   make check-web      open the shipped editors in headless Chromium: needs Go, Chromium, minutes
 #   make check-pictures the studio kit's picture fitter in headless Chromium: needs Node, Chromium
+#   make check-svg-live  the SVG rules' live gate, in headless Chromium: needs Node, Chromium
+#   make check-rename-live  fu2-4's rename prompt, live in the clock editor in headless Chromium: needs Go, Node, Chromium
 #   make check-runner   the migration runner against a scratch editor: needs Chromium
 #   make check-migrations  each app's schema fixtures, opened in its packed editor: needs Node and Chromium
 
 PYTHON ?= python3
 NODE   ?= $(shell command -v node 2>/dev/null || ls $$HOME/.local/share/nodeenv-gorb/bin/node 2>/dev/null)
 
-.PHONY: check check-sandbox check-host check-apps check-hub check-editor check-web check-pictures check-runner check-editor-origin check-migrations rebake firmware apps hub sdk dist web
+.PHONY: check check-sandbox check-host check-apps check-hub check-editor check-web check-pictures check-runner check-editor-origin check-rename-live check-migrations rebake firmware apps hub sdk dist web
 
 check: check-host check-apps check-hub check-editor
 	@echo 'check: host suites, apps, hub and editor all green'
@@ -74,6 +76,7 @@ check-apps:
 	$(PYTHON) tools/make_factory_apps.py --check
 	$(PYTHON) tools/make_default_theme.py --check
 	$(PYTHON) tools/rebake_shelf.py --check
+	$(PYTHON) tools/check_app_versions.py
 
 ## check-hub: the hub's Go suite, vet, every release platform, the vendored runtime
 check-hub:
@@ -96,6 +99,25 @@ check-editor:
 	$(PYTHON) tools/host_weather_fx_test.py
 	@# the hub's map tool (maps@1) against tools/orbmap.py's bytes and orb_map_raster.c's pixels
 	$(PYTHON) tools/host_orbmap_js_test.py
+	@# the studio kit's own suite, node alone: the SVG rules' byte half, since node has no XML parser
+	cd tools/orb-manager/web/runtime/_selftest && $(NODE) headless-studio.test.js
+	@# and the same rules' full answer sheet, the shared vectors file, in a headless Chromium
+	cd tools/orb-manager/web/runtime/_selftest && $(NODE) svg-vectors.js
+
+## check-svg-live: no SVG the rules accept ever asks the network, proven in a headless Chromium
+## over the shared vectors file, in each of the three ways a picked picture reaches a browser.
+## Deliberately NOT part of `check`, like check-pictures: it needs Node and Chromium.
+check-svg-live:
+	@test -n "$(NODE)" || { echo 'no node on PATH (see BUILDING.md: the editor suites need node 20+)'; exit 1; }
+	$(NODE) tools/orb-manager/web/runtime/_selftest/svg-fetch-live.js
+
+## check-rename-live: fu2-4's rename prompt, live: a hub from this tree, three seeded clock
+## designs, and the owner's flow in headless Chromium — the sheet, its suggestion, the cancel,
+## the accept, and the old entry still listing, opening and forgetting. Deliberately NOT part
+## of `check`, like check-svg-live: it needs Go, Node and Chromium, and it takes minutes.
+check-rename-live:
+	@test -n "$(NODE)" || { echo 'no node on PATH (see BUILDING.md: the editor suites need node 20+)'; exit 1; }
+	$(NODE) tools/orb-manager/web/runtime/_selftest/rename-live.js
 
 ## check-pictures: the studio kit's picture fitter, run in a headless Chromium: a picked
 ## picture is scaled to fit 1024 x 1024 and an SVG rasterised before an editor stores it.

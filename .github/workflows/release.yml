@@ -105,6 +105,9 @@ jobs:
   windows:
     needs: build
     runs-on: windows-latest
+    # The signing secrets live in the `release` environment, whose required reviewer is the
+    # owner: the run waits for an Approve before this job sees them (RELEASING.md).
+    environment: release
     outputs:
       signed: ${{ steps.flag.outputs.signed }}
     env:
@@ -163,6 +166,9 @@ jobs:
   macos:
     needs: build
     runs-on: macos-latest
+    # The signing secrets live in the `release` environment, whose required reviewer is the
+    # owner: the run waits for an Approve before this job sees them (RELEASING.md).
+    environment: release
     outputs:
       signed: ${{ steps.flag.outputs.signed }}
     env:
@@ -219,8 +225,10 @@ jobs:
           dmg="bin/dist/orb-manager-$VERSION-macos.dmg"
           codesign --force --timestamp --sign "$MACOS_SIGN_IDENTITY" "$dmg"
           echo "$APPLE_API_KEY_P8" | base64 --decode > "$RUNNER_TEMP/AuthKey.p8"
+          # Apple usually answers in minutes, but holds a new account's first submissions for
+          # hours (2026-11-11: still In Progress past 30 min). 3 h stays inside the job's 6 h cap.
           xcrun notarytool submit "$dmg" --key "$RUNNER_TEMP/AuthKey.p8" \
-            --key-id "$APPLE_API_KEY_ID" --issuer "$APPLE_API_ISSUER" --wait --timeout 30m \
+            --key-id "$APPLE_API_KEY_ID" --issuer "$APPLE_API_ISSUER" --wait --timeout 3h \
             --output-format json | tee "$RUNNER_TEMP/notary.json"
           rm -f "$RUNNER_TEMP/AuthKey.p8"
           grep -q '"status" *: *"Accepted"' "$RUNNER_TEMP/notary.json" || { echo "::error::notarization was not accepted"; exit 1; }

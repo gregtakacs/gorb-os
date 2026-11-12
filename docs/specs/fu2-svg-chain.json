@@ -1,0 +1,16 @@
+{
+  "name": "fu2-svg",
+  "repo": "../..",
+  "base": "fu2",
+  "read": ["/tmp/claude-1000/-home-greg-docker-Projects/5278e4ea-1e48-4d88-90a5-999cf1ef2d25/scratchpad/svgreview", "/tmp/claude-1000/-home-greg-docker-Projects/5278e4ea-1e48-4d88-90a5-999cf1ef2d25/scratchpad/svgprobe"],
+  "retries": 2,
+  "timeout": 5400,
+  "steps": [
+    {
+      "name": "fu2-1-svg-parse",
+      "spec": "docs/specs/fu2-1-svg-parse.md",
+      "hard": true,
+      "verify": "export GOFLAGS=-buildvcs=false PATH=/usr/local/go/bin:$PATH && R=$PWD && test \"$(python3 -c \"import json;print(len(json.load(open('tools/orb-manager/testdata/svg-vectors.json'))))\")\" -ge 70 && make check-editor 2>&1 | tee /tmp/fu2-1-ed.txt | tail -5 && grep -qE 'svg-vectors: ([0-9]+)/\\1 passed' /tmp/fu2-1-ed.txt && make check-svg-live 2>&1 | tail -5 | tee /tmp/fu2-1-live.txt && grep -q 'accepted 0 fetched' /tmp/fu2-1-live.txt && make check-pictures && test -z \"$(git diff --stat fu2 -- tools/orb-manager/contract apps tools/orb-manager/editor.go tools/orb-manager/security.go docs/specs/fu2-svg-rules.md)\" && sh docs/specs/s3-gotest.sh && make check-web"
+    }
+  ]
+}

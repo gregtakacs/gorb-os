@@ -159,11 +159,14 @@ type LibraryFile struct {
 	// OSMin is the oldest OS release the app runs on, from the stamp in its editor region
 	// (app.json's os_min); empty when the app names none.
 	OSMin string `json:"os_min,omitempty"`
-	// Origin is a theme's import record, read from its `.origin.json` sidecar: where the
-	// design came from and which version was baked. H1b put it on the listing so a view
-	// with no orb in hand can still say where a shelf theme came from. Nil for a theme the
-	// hub never imported (or whose sidecar will not read), and never set on an app row.
-	Origin *ThemeOrigin `json:"origin,omitempty"`
+	// Origin is the row's import record, read from the `.origin.json` sidecar beside its file,
+	// and its type belongs to its kind: a *ThemeOrigin on a theme row (where the design came from
+	// and which version was baked) and an *AppOrigin on an app row (which site added it, at which
+	// release and hash). One field because the JSON key is one key — a second field tagged
+	// `origin` at the same depth would cancel the first for both kinds, and themes already speak
+	// it. Nil for a file the hub never imported from a site (or whose sidecar will not read),
+	// which is the ordinary homemade case.
+	Origin any `json:"origin,omitempty"`
 }
 
 var osMinRe = regexp.MustCompile(`"os_min":\s*"(v\d{1,2}\.\d{1,2}\.\d{1,2})"`)
@@ -310,9 +313,17 @@ func listAppLibrary(dir string, out *LibraryPayload) {
 					stem, c.Slug)})
 			continue
 		}
-		found = append(found, LibraryFile{File: e.Name(), Slug: c.Slug, Title: c.Title,
+		row := LibraryFile{File: e.Name(), Slug: c.Slug, Title: c.Title,
 			Version: c.Version, Caps: c.CapNames(), Themes: c.HasThemes(),
-			HasEditor: c.HasEditor(), Bytes: len(body), OSMin: appOSMin(body)})
+			HasEditor: c.HasEditor(), Bytes: len(body), OSMin: appOSMin(body)}
+		// A1 §7.3: an app the hub added from orb-os.net wears where it came from. Filled only when
+		// the sidecar reads, so an app the hub has no record of leaves the key out entirely; the
+		// `.orbapp.origin.json` beside it is already no row and no refusal, since the loop above
+		// admits only files whose extension is .orbapp.
+		if o := readAppOrigin(filepath.Join(dir, e.Name())); o != nil {
+			row.Origin = o
+		}
+		found = append(found, row)
 	}
 	sort.Slice(found, func(i, j int) bool { return found[i].Slug < found[j].Slug })
 	out.Apps = append(out.Apps, found...)
@@ -355,9 +366,14 @@ func listThemeLibrary(dir string, out *LibraryPayload) {
 		if len(c.Sections) > 0 {
 			app = c.Sections[0]
 		}
-		found = append(found, LibraryFile{File: e.Name(), Slug: c.ID, Title: c.Name,
-			Bytes: len(body), App: app, Design: c.DesignSize,
-			Origin: readThemeOrigin(filepath.Join(dir, e.Name()))})
+		row := LibraryFile{File: e.Name(), Slug: c.ID, Title: c.Name,
+			Bytes: len(body), App: app, Design: c.DesignSize}
+		// Filled only when a record reads: an `any` field holding a typed nil is not a nil field,
+		// and everything downstream reads this one as "did a site send this theme".
+		if o := readThemeOrigin(filepath.Join(dir, e.Name())); o != nil {
+			row.Origin = o
+		}
+		found = append(found, row)
 	}
 	sort.Slice(found, func(i, j int) bool { return found[i].Slug < found[j].Slug })
 	out.Themes = append(out.Themes, found...)
@@ -483,6 +499,14 @@ func (s *Server) h_appsImport(w http.ResponseWriter, r *http.Request) {
 			// K9: the hub serves its library's editor, so a new copy retires every
 			// remembered region rather than leaving the old editor up for ten minutes
 			editorInvalidate()
+			// A1 §7.3: these bytes came off a disk in the owner's hand, so a record the store left
+			// beside this slug would now describe bytes the site did not send, and it comes down.
+			// A hand copy has no chip and no update offer; that is what "the shelf no longer holds
+			// the site's bytes" reads as on the face. Having no record to remove is the usual case.
+			if err := removeAppOrigin(dest); err != nil {
+				log.Printf("orb-manager: import kept %s but left its origin record standing: %v", dest, err)
+				out["origin_refused"] = err.Error()
+			}
 		}
 	}
 	if install {
@@ -621,6 +645,14 @@ func (l *Library) Drop(kind, name string) (string, error) {
 	if kind == "theme" {
 		if err := removeThemeOrigin(dest); err != nil {
 			return "", fmt.Errorf("%s could not be deleted along with its theme: %w", themeOriginPath(dest), err)
+		}
+	}
+	// A1 §7.3: the app side of the same rule. An app's record belongs to the app and to nothing
+	// else, so it goes when the app goes — and a hand-carried or bundled copy never had one, so a
+	// missing sidecar is success here rather than a failure to report.
+	if kind == "app" {
+		if err := removeAppOrigin(dest); err != nil {
+			return "", fmt.Errorf("%s could not be deleted along with its app: %w", appOriginPath(dest), err)
 		}
 	}
 	log.Printf("orb-manager: library dropped %s", dest)

@@ -12,7 +12,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -35,6 +38,17 @@ func TestSiteAllowedMatchesConfiguredSiteAndOrbOSNet(t *testing.T) {
 		{"", "http://orb-os.net", false},
 		{"", "https://evil.orb-os.net", false},
 		{"", "https://orb-os.net.evil.example", false},
+		// fu2-3 (ruling 35, as amended 2026-11-11): the site's other public name is the
+		// same door, and every other subdomain — or suffix look-alike — is still refused.
+		{"", "https://www.orb-os.net", true},
+		{"", "https://www.orb-os.net:443", true},
+		{"", "HTTPS://WWW.Orb-OS.NET", true},
+		{"", "https://www.orb-os.net:8443", false},
+		{"", "http://www.orb-os.net", false},
+		{"", "ftp://www.orb-os.net", false},
+		{"", "https://api.orb-os.net", false},
+		{"", "https://www.orb-os.net.evil.example", false},
+		{"", "https://evil.www.orb-os.net", false},
 		{"", "https://evil.example", false},
 		{"", "http://localhost:3000", true},
 		{"", "http://127.0.0.1:8080", true},
@@ -49,6 +63,9 @@ func TestSiteAllowedMatchesConfiguredSiteAndOrbOSNet(t *testing.T) {
 		{"https://bench.example:8443", "https://orb.takacsfamily.com", false},
 		{"https://orb-os.net", "https://orb-os.net", true},
 		{"https://orb-os.net", "https://orb.takacsfamily.com", false},
+		{"https://www.orb-os.net", "https://www.orb-os.net", true},
+		{"https://www.orb-os.net", "https://orb-os.net", true},
+		{"https://www.orb-os.net", "https://api.orb-os.net", false},
 	}
 	for _, c := range cases {
 		t.Setenv("GORB_SITE", c.env)
@@ -59,24 +76,31 @@ func TestSiteAllowedMatchesConfiguredSiteAndOrbOSNet(t *testing.T) {
 }
 
 func TestSiteAllowedRefusalSentences(t *testing.T) {
-	t.Run("the default site names itself and orb-os.net", func(t *testing.T) {
+	t.Run("the default site names itself and both spellings of orb-os.net", func(t *testing.T) {
 		t.Setenv("GORB_SITE", "")
-		want := "Orb Manager imports themes only from orb.takacsfamily.com and orb-os.net, not from evil.example"
+		want := "Orb Manager imports themes only from orb.takacsfamily.com and orb-os.net/www.orb-os.net, not from evil.example"
 		if got := siteNotAllowed("https://evil.example").Error(); got != want {
 			t.Errorf("sentence = %q, want %q", got, want)
 		}
 	})
 	t.Run("a bench site names its own port", func(t *testing.T) {
 		t.Setenv("GORB_SITE", "https://bench.example:8443")
-		want := "Orb Manager imports themes only from bench.example:8443 and orb-os.net, not from evil.example:9"
+		want := "Orb Manager imports themes only from bench.example:8443 and orb-os.net/www.orb-os.net, not from evil.example:9"
 		if got := siteNotAllowed("https://evil.example:9").Error(); got != want {
 			t.Errorf("sentence = %q, want %q", got, want)
 		}
 	})
 	t.Run("once the site has moved, the sentence names one place", func(t *testing.T) {
 		t.Setenv("GORB_SITE", "https://orb-os.net")
-		want := "Orb Manager imports themes only from orb-os.net, not from evil.example"
+		want := "Orb Manager imports themes only from orb-os.net/www.orb-os.net, not from evil.example"
 		if got := siteNotAllowed("https://evil.example").Error(); got != want {
+			t.Errorf("sentence = %q, want %q", got, want)
+		}
+	})
+	t.Run("the site moved under its www name and the sentence still names one place", func(t *testing.T) {
+		t.Setenv("GORB_SITE", "https://www.orb-os.net")
+		want := "Orb Manager imports themes only from orb-os.net/www.orb-os.net, not from api.orb-os.net"
+		if got := siteNotAllowed("https://api.orb-os.net").Error(); got != want {
 			t.Errorf("sentence = %q, want %q", got, want)
 		}
 	})
@@ -228,12 +252,13 @@ func TestArtRefusalSentences(t *testing.T) {
 		{"data:image/png;base64", pngArt(1024, 1024, 2), ""},
 		{"data:image/png;base64", pngArt(1025, 1024, 3), size(1025, 1024)},
 		{"data:image/png;base64", pngArt(1024, 1, 4), ""},
-		{"data:image/jpeg;base64", []byte("no header"), ""},
-		{"data:image/gif;base64", []byte{1, 2, 3}, ""},
+		{"data:image/png;base64", pngArt(1, 1, 11), ""},                       // a 1 × 1 picture is a picture
+		{"data:image/png;base64", mustArt(t, designArt(1)), ""},               // a real 1 × 1 PNG, CRCs and all, off the fixture helper
+		{"data:image/jpeg;base64", []byte("no header"), artRefusalUnreadable}, // 9 bytes: under the floor (fu2-2)
+		{"data:image/gif;base64", []byte{1, 2, 3}, artRefusalUnreadable},      // 3 bytes: under the floor
+		{"data:image/png;base64", []byte("0123456789"), artRefusalUnreadable}, // exactly the floor, and no header in it
 		{"data:image/png;base64", []byte("not an image at all, and long enough to check"), artRefusalUnreadable},
 		{"data:image/svg+xml;base64", pngArt(9, 9, 5), svgRefusalNotText}, // binary bytes fail the text rule before the root check
-		{"data:image/svg+xml;base64", nil, ""},                            // the prefix-only pass: the bytes are checked next
-		{"data:image/png;base64", nil, ""},                                // too short to name a size, whatever it is
 		{"", pngArt(9, 9, 6), artRefusalType},
 		{"DATA:IMAGE/PNG;BASE64", pngArt(9, 9, 7), ""},
 	}
@@ -244,36 +269,159 @@ func TestArtRefusalSentences(t *testing.T) {
 	}
 }
 
-// --- S3b: the SVG text rules -----------------------------------------------------------
-// svgVectors is the shared set, the same text and the same sentences the studio's
-// OrbStudio.checkSvg is tested against (_selftest/headless-studio.test.js): the site,
-// the hub and the editor read one SVG the same way. "" is the answer that means "keep it".
-var svgVectors = []struct {
-	name string
-	text string
-	want string
-}{
-	{"plain rect", `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><rect width="10" height="10"/></svg>`, ""},
-	{"fragment href", `<svg xmlns="http://www.w3.org/2000/svg"><defs><linearGradient id="g"/></defs><rect fill="url(#g)" width="4" height="4"/><use href="#g"/></svg>`, ""},
-	{"embedded raster", `<svg xmlns="http://www.w3.org/2000/svg"><image href="data:image/png;base64,iVBORw0KGgo=" width="4" height="4"/></svg>`, ""},
-	{"xlink fragment", `<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink"><use xlink:href="#g"/></svg>`, ""},
-	{"plain file, no script", `<svg xmlns="http://www.w3.org/2000/svg"><rect width="2" height="2"/></svg>`, ""},
-	{"handler", `<svg xmlns="http://www.w3.org/2000/svg" onload="fetch('//x')">`, svgRefusalHandler},
-	{"handler no space", `<svg xmlns="http://www.w3.org/2000/svg"><rect onclick=alert(1)/></svg>`, svgRefusalHandler},
-	{"outside href", `<svg xmlns="http://www.w3.org/2000/svg"><image href="https://example.com/a.png"/></svg>`, svgRefusalLink},
-	{"outside single-quoted href", `<svg xmlns="http://www.w3.org/2000/svg"><use xlink:href='//example.com/x.svg'/></svg>`, svgRefusalLink},
-	{"outside url()", `<svg xmlns="http://www.w3.org/2000/svg"><rect fill="url(https://example.com/a.png)" width="2" height="2"/></svg>`, svgRefusalLink},
-	{"data url of another kind", `<svg xmlns="http://www.w3.org/2000/svg"><rect fill="url(data:text/html;base64,PHN2Zz4=)" width="2" height="2"/></svg>`, svgRefusalLink},
-	{"not an svg", `hello, not markup at all, and long enough to read`, svgRefusalNotSvg},
-}
-
-func TestCheckSvgArtVectors(t *testing.T) {
-	for _, v := range svgVectors {
-		if got := checkSvgArt([]byte(v.text)); got != v.want {
-			t.Errorf("checkSvgArt(%s) = %q, want %q", v.name, got, v.want)
+// TestArtPrefixRefusalSentences: a reused art ref — a data URL with no bytes in hand —
+// is judged by its prefix alone and never for length (fu2-2, ruling 35 as amended).
+func TestArtPrefixRefusalSentences(t *testing.T) {
+	for _, prefix := range append(append([]string{}, artPrefixes...), svgArtPrefix, "DATA:IMAGE/SVG+XML;BASE64") {
+		if got := artPrefixRefusal(prefix); got != "" {
+			t.Errorf("artPrefixRefusal(%q) = %q, want kept", prefix, got)
+		}
+	}
+	// the old artRefusal(_, nil) rows, which were the prefix-only pass, live here now
+	if got := artPrefixRefusal(svgArtPrefix); got != "" {
+		t.Errorf("nil SVG = %q, want the bytes checked next, not the prefix refused", got)
+	}
+	if got := artPrefixRefusal("data:image/png;base64"); got != "" {
+		t.Errorf("nil PNG = %q, want a ref never refused for length", got)
+	}
+	for _, prefix := range []string{"", "data:image/bmp;base64", "data:text/html;base64", "DATA:IMAGE_PNG;BASE64"} {
+		if got := artPrefixRefusal(prefix); got != artRefusalType {
+			t.Errorf("artPrefixRefusal(%q) = %q, want the type sentence", prefix, got)
 		}
 	}
 }
+
+// mustArt decodes a fixture's base64 body for a row that wants the real bytes.
+func mustArt(t *testing.T, s string) []byte {
+	t.Helper()
+	b, err := base64.StdEncoding.DecodeString(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b
+}
+
+// --- fu2-1: the SVG rules, checked by parsing ------------------------------------------
+//
+// The vectors live in one file, testdata/svg-vectors.json, which the studio's own selftest
+// (_selftest/svg-vectors.js) and the site's svg-art tests read too: one rule set, held to
+// one answer per input. A vector is {name, svg, rule} and the rule is null for an input all
+// three accept; a body that is not valid UTF-8 travels as {name, svg_base64, rule} instead,
+// since a JSON string cannot hold those bytes. The size ceiling is the one rule no entry in
+// the file can ask, so TestCheckSvgArtSize builds that body from bytes here.
+
+// svgVector is one line of the shared file. The two body fields are pointers because the
+// file distinguishes a vector whose body is the empty string from one that carries no svg
+// field at all, and an empty body is one of the inputs the rules have an answer for.
+type svgVector struct {
+	Name  string  `json:"name"`
+	Svg   *string `json:"svg"`
+	Svg64 *string `json:"svg_base64"`
+	Want  *string `json:"rule"`
+}
+
+func (v svgVector) rule() string {
+	if v.Want == nil {
+		return ""
+	}
+	return *v.Want
+}
+
+// bytes is the vector's body, decoded when it arrived as base64.
+func (v svgVector) bytes() []byte {
+	if v.Svg64 != nil {
+		b, err := base64.StdEncoding.DecodeString(*v.Svg64)
+		if err != nil {
+			return nil
+		}
+		return b
+	}
+	if v.Svg != nil {
+		return []byte(*v.Svg)
+	}
+	return nil
+}
+
+// svgVectorsFile is the shared set, read off disk.
+func svgVectorsFile(t *testing.T) []svgVector {
+	t.Helper()
+	b, err := os.ReadFile("testdata/svg-vectors.json")
+	if err != nil {
+		t.Fatalf("the shared SVG vectors are not there to read: %v", err)
+	}
+	var vectors []svgVector
+	if err := json.Unmarshal(b, &vectors); err != nil {
+		t.Fatalf("the shared SVG vector file does not parse: %v", err)
+	}
+	return vectors
+}
+
+// TestSvgVectorsFile is the shared set against the hub's checker: one line per vector, and
+// the failure names the vector, the rule expected and the rule given.
+func TestSvgVectorsFile(t *testing.T) {
+	vectors := svgVectorsFile(t)
+	if len(vectors) < 70 {
+		t.Errorf("the shared vector file holds %d vectors; it is meant to hold at least 70", len(vectors))
+	}
+	for _, v := range vectors {
+		if v.Svg == nil && v.Svg64 == nil {
+			t.Errorf("%s: carries neither an svg nor an svg_base64 body", v.Name)
+			continue
+		}
+		body := v.bytes()
+		if body == nil && v.Svg64 != nil {
+			t.Errorf("%s: its svg_base64 body is not base64 at all", v.Name)
+			continue
+		}
+		rule, sentence := checkSvgArtRule(body)
+		if rule != v.rule() {
+			t.Errorf("%s: rule = %q, want %q (sentence %q)", v.Name, rule, v.rule(), sentence)
+			continue
+		}
+		if want := svgRuleSentence(rule); sentence != want {
+			t.Errorf("%s: sentence = %q, want the hub's wording %q", v.Name, sentence, want)
+		}
+	}
+}
+
+// TestSvgVectorsFileShape is the shape of the shared set: the names are the ids every runner
+// prints, one of the two body fields is filled, and every rule but the size ceiling — the one
+// a file entry cannot carry — is asked at least once.
+func TestSvgVectorsFileShape(t *testing.T) {
+	seen := map[string]int{}
+	names := map[string]bool{}
+	for _, v := range svgVectorsFile(t) {
+		if names[v.Name] {
+			t.Errorf("two vectors are named %s; the runners report by name", v.Name)
+		}
+		names[v.Name] = true
+		if v.Name == "" || (v.Svg == nil) == (v.Svg64 == nil) {
+			t.Errorf("a vector does not name its body once and only once: %+v", v)
+		}
+		switch v.rule() {
+		case "", svgRuleTooBig, svgRuleNotUTF8, svgRuleNotWellFormed, svgRuleMarkup, svgRuleRoot,
+			svgRuleElement, svgRuleForeignElement, svgRuleEventAttr, svgRuleLink, svgRuleCSS:
+			seen[v.rule()]++
+		default:
+			t.Errorf("%s: %q is not one of the rule ids", v.Name, v.rule())
+		}
+	}
+	if n := seen[svgRuleTooBig]; n != 0 {
+		t.Errorf("%d vectors ask rule 1; the size ceiling is not something a string in a file can be", n)
+	}
+	for _, rule := range []string{svgRuleNotUTF8, svgRuleNotWellFormed, svgRuleMarkup, svgRuleRoot,
+		svgRuleElement, svgRuleForeignElement, svgRuleEventAttr, svgRuleLink, svgRuleCSS, ""} {
+		if seen[rule] == 0 {
+			t.Errorf("no vector asks rule %q", rule)
+		}
+	}
+}
+
+// the two refusals the door's cases name, as the rule set words them now
+var (
+	svgRefusalHandler = svgRuleSentence(svgRuleEventAttr)
+	svgRefusalLink    = svgRuleSentence(svgRuleLink)
+)
 
 func TestCheckSvgArtSize(t *testing.T) {
 	pad := func(n int) []byte {
@@ -283,24 +431,187 @@ func TestCheckSvgArtSize(t *testing.T) {
 		}
 		return append(b, []byte("</svg>")...)
 	}
-	if got := checkSvgArt(pad(svgMaxBytes)); got != "" {
-		t.Errorf("an SVG of exactly %d bytes refused: %q", svgMaxBytes, got)
+	if rule, _ := checkSvgArtRule(pad(svgMaxBytes)); rule != "" {
+		t.Errorf("an SVG of exactly %d bytes refused: rule %q", svgMaxBytes, rule)
 	}
-	want := fmt.Sprintf(svgRefusalSizeFormat, 257)
-	if got := checkSvgArt(pad(svgMaxBytes + 1)); got != want {
-		t.Errorf("checkSvgArt(256 KB + 1 byte) = %q, want %q", got, want)
+	if rule, got := checkSvgArtRule(pad(svgMaxBytes + 1)); rule != svgRuleTooBig ||
+		got != fmt.Sprintf(svgRefusalSizeFormat, 257) {
+		t.Errorf("checkSvgArt(256 KB + 1 byte) = %q/%q, want %q/%q", rule, got, svgRuleTooBig,
+			fmt.Sprintf(svgRefusalSizeFormat, 257))
 	}
-	if got := checkSvgArt(pad(3 * 1024 * 1024)); got != fmt.Sprintf(svgRefusalSizeFormat, 3072) {
-		t.Errorf("a 3 MB SVG = %q, want 3072 KB", got)
+	if rule, got := checkSvgArtRule(pad(3 * 1024 * 1024)); rule != svgRuleTooBig ||
+		got != fmt.Sprintf(svgRefusalSizeFormat, 3072) {
+		t.Errorf("a 3 MB SVG = %q/%q, want svg_too_big/3072 KB", rule, got)
 	}
 }
 
+func TestCheckSvgArtBytes(t *testing.T) {
+	// Rule 2 is about the bytes, so it is asked before anything is parsed: a body that is
+	// not UTF-8, and one with a NUL in it, both read as the text refusal. A leading BOM is
+	// allowed and belongs to no markup, and a literal U+FFFD is a character like any other.
+	cases := []struct {
+		name string
+		b    []byte
+		rule string
+	}{
+		{"not utf-8", []byte(svgArtHead + "\xff</svg>"), svgRuleNotUTF8},
+		{"lone continuation byte", []byte(svgArtHead + "\xbc</svg>"), svgRuleNotUTF8},
+		{"nul byte", []byte(svgArtHead + "\x00</svg>"), svgRuleNotUTF8},
+		{"empty", nil, svgRuleNotWellFormed},
+		{"bom and a file", append([]byte("\ufeff"), []byte(validSvgArt)...), ""},
+		{"ufffd is a character", []byte(strings.Replace(validSvgArt, "<rect", "<!-- \ufffd --><rect", 1)), ""},
+	}
+	for _, c := range cases {
+		rule, sentence := checkSvgArtRule(c.b)
+		if rule != c.rule {
+			t.Errorf("%s: rule = %q, want %q (sentence %q)", c.name, rule, c.rule, sentence)
+		}
+	}
+	if got := checkSvgArt([]byte(svgArtHead + "\xff</svg>")); got != svgRefusalNotText {
+		t.Errorf("a body that is not UTF-8 = %q, want the text sentence", got)
+	}
+}
+
+// validSvgArt is the smallest file a design may hold, and svgArtHead the tag it opens with.
+const (
+	validSvgArt = `<svg xmlns="http://www.w3.org/2000/svg"><rect width="2" height="2"/></svg>`
+	svgArtHead  = `<svg xmlns="http://www.w3.org/2000/svg">`
+)
+
 func TestCheckSvgArtRefusedBeforeParsed(t *testing.T) {
-	// Weight first: a body over the ceiling never gets asked whether it holds a handler,
-	// so the heaviest file gets the one sentence that describes it.
-	text := `<svg onload="x">` + strings.Repeat(" ", svgMaxBytes) + `</svg>`
+	// Weight first: a body over the ceiling never gets asked whether it holds a handler, so
+	// the heaviest file gets the one sentence that describes it.
+	text := `<svg xmlns="http://www.w3.org/2000/svg" onload="x">` + strings.Repeat(" ", svgMaxBytes) + `</svg>`
+	if rule, _ := checkSvgArtRule([]byte(text)); rule != svgRuleTooBig {
+		t.Errorf("an oversized SVG with a handler = rule %q, want %q", rule, svgRuleTooBig)
+	}
 	if got := checkSvgArt([]byte(text)); got != fmt.Sprintf(svgRefusalSizeFormat, (len(text)+1023)/1024) {
 		t.Errorf("an oversized SVG with a handler = %q, want the size sentence", got)
+	}
+}
+
+// TestSvgArtFilesInApps is the rule set against the art the shelf actually carries: every
+// .svg under apps/ is a picture a design holds today, so every one of them has to answer
+// the parse the way a picture must.
+func TestSvgArtFilesInApps(t *testing.T) {
+	var n, bad int
+	err := filepath.WalkDir("../../apps", func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() || !strings.HasSuffix(path, ".svg") {
+			return nil
+		}
+		b, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		n++
+		if rule, sentence := checkSvgArtRule(b); rule != "" {
+			bad++
+			t.Errorf("%s: rule %q (%s)", path, rule, sentence)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("apps/ could not be walked: %v", err)
+	}
+	if n == 0 {
+		t.Fatal("no SVG art under apps/ to check")
+	}
+	if bad != 0 {
+		t.Errorf("%d of %d of the shelf's SVGs are refused by the rules", bad, n)
+	}
+}
+
+// TestSvgRuleSentences keeps the hub's wording pinned. The rule ids are what the shared
+// vectors assert; these are the sentences a design's owner reads, four of them the ones
+// S3b wrote and the rest the holds sentence worded the same way.
+func TestSvgRuleSentences(t *testing.T) {
+	holds := func(what string) string { return fmt.Sprintf(svgRefusalHoldsFormat, what) }
+	cases := []struct{ rule, want string }{
+		{"", ""},
+		{svgRuleTooBig, ""}, // worded with the file's own weight by its caller
+		{svgRuleNotUTF8, svgRefusalNotText},
+		{svgRuleRoot, svgRefusalNotSvg},
+		{svgRuleNotWellFormed, holds("XML that does not parse")},
+		{svgRuleMarkup, holds("a DOCTYPE, a CDATA section, a processing instruction or a comment a design's SVGs can't hold")},
+		{svgRuleElement, holds("an element a design's SVGs can't hold")},
+		{svgRuleForeignElement, holds("an element from another namespace")},
+		{svgRuleEventAttr, svgRefusalHandler},
+		{svgRuleLink, svgRefusalLink},
+		{svgRuleCSS, holds("CSS that can reach outside the file")},
+	}
+	for _, c := range cases {
+		if got := svgRuleSentence(c.rule); got != c.want {
+			t.Errorf("svgRuleSentence(%q) = %q, want %q", c.rule, got, c.want)
+		}
+	}
+}
+
+// TestSvgScanMarkup is the rule-4 walk on its own, since it is the one part of the check the
+// parser cannot be asked about the same way in all three checkers: a CDATA section looks
+// like text to encoding/xml, and a bogus declaration looks like a DOCTYPE.
+func TestSvgScanMarkup(t *testing.T) {
+	cases := []struct {
+		name, text, want string
+	}{
+		{"clean", validSvgArt, ""},
+		{"leading decl", `<?xml version="1.0"?>` + validSvgArt, ""},
+		{"clean comment", strings.Replace(validSvgArt, svgArtHead, svgArtHead+"<!-- drawn by hand -->", 1), ""},
+		{"comment holding a tag", strings.Replace(validSvgArt, svgArtHead, svgArtHead+`<!-- <image href="//x"> -->`, 1), svgRuleMarkup},
+		{"comment holding --", strings.Replace(validSvgArt, svgArtHead, svgArtHead+"<!-- a--b -->", 1), svgRuleNotWellFormed},
+		{"unterminated comment", validSvgArt + "<!--", svgRuleNotWellFormed},
+		{"cdata", strings.Replace(validSvgArt, svgArtHead, svgArtHead+"<![CDATA[x]]>", 1), svgRuleMarkup},
+		{"unclosed cdata", strings.Replace(validSvgArt, svgArtHead, svgArtHead+"<![CDATA[x]", 1), svgRuleNotWellFormed},
+		{"doctype", "<!DOCTYPE svg>" + validSvgArt, svgRuleMarkup},
+		{"doctype with a subset", `<!DOCTYPE svg [<!ENTITY a "aa">]>` + validSvgArt, svgRuleMarkup},
+		{"unclosed doctype", `<!DOCTYPE svg [<!ENTITY a "aa">` + validSvgArt, svgRuleNotWellFormed},
+		{"bogus declaration", strings.Replace(validSvgArt, svgArtHead, svgArtHead+"<!x>", 1), svgRuleNotWellFormed},
+		{"stylesheet instruction", `<?xml-stylesheet href="a.css"?>` + validSvgArt, svgRuleMarkup},
+		{"second declaration", `<?xml version="1.0"?><?xml version="1.0"?>` + validSvgArt, svgRuleMarkup},
+		{"instruction after the root", strings.Replace(validSvgArt, svgArtHead, svgArtHead+`<?php ?>`, 1), svgRuleMarkup},
+		{"a > inside a value", strings.Replace(validSvgArt, `width="2"`, `aria-label="a>b" width="2"`, 1), ""},
+		{"a < inside a value", strings.Replace(validSvgArt, `width="2"`, `aria-label="a<b" width="2"`, 1), svgRuleNotWellFormed},
+		{"a declaration inside a value", strings.Replace(validSvgArt, `width="2"`, `aria-label="<!DOCTYPE svg>" width="2"`, 1), svgRuleNotWellFormed},
+		{"unclosed tag", `<svg xmlns="http://www.w3.org/2000/svg"><rect`, svgRuleNotWellFormed},
+		{"bom", "\ufeff" + validSvgArt, ""},
+	}
+	for _, c := range cases {
+		if got := svgScanMarkup(c.text); got != c.want {
+			t.Errorf("%s: svgScanMarkup = %q, want %q", c.name, got, c.want)
+		}
+	}
+}
+
+// TestSvgScanTag is the quoted-value half of that walk, which is what keeps the review's
+// d4 vector a CSS refusal rather than an escape out of a tag.
+func TestSvgScanTag(t *testing.T) {
+	whole := func(text string) bool {
+		n, ok := svgScanTag(text)
+		return ok && n == len(text)
+	}
+	for _, text := range []string{
+		`<rect width="2" height="2"/>`,
+		`<rect width="2" aria-label="a>b"/>`, // the > is inside a value, not the tag's end
+		`<image href='a'/>`,
+	} {
+		if !whole(text) {
+			t.Errorf("svgScanTag(%q) did not read the tag to its end", text)
+		}
+	}
+	for _, text := range []string{
+		`<rect width=2/>`,             // an unquoted value is not XML
+		`<rect width="a<b"/>`,         // a literal < in a value has to be &lt;
+		`<rect width="a" width="b"/>`, // one attribute name, twice
+		`<rect width="a`,              // a value that never closes
+		`< rect/>`,                    // no element name
+		`<rect width="a"b="c"/>`,      // an attribute straight after a value
+		`<rect/`,                      // a tag that never closes
+	} {
+		if _, ok := svgScanTag(text); ok {
+			t.Errorf("svgScanTag(%q) read a tag a strict parser stops at", text)
+		}
 	}
 }
 
@@ -327,10 +638,12 @@ func TestSiteImportRefusesAnotherHostBeforeAnyFetch(t *testing.T) {
 	for _, link := range []string{
 		"https://evil.example/t/" + siteDesignID,
 		"https://orb-os.net.evil.example/t/" + siteDesignID,
+		"https://api.orb-os.net/t/" + siteDesignID,
+		"https://www.orb-os.net.evil.example/t/" + siteDesignID,
 		"https://not-the-configured-site.test:8443/t/" + siteDesignID,
 	} {
 		got := importErr(t, s, link)
-		want := "Orb Manager imports themes only from orb.takacsfamily.com and orb-os.net, not from " +
+		want := "Orb Manager imports themes only from orb.takacsfamily.com and orb-os.net/www.orb-os.net, not from " +
 			siteHost(strings.TrimSuffix(link[:strings.Index(link, "/t/")], "https://"))
 		if got != want {
 			t.Errorf("import of %q: error = %q, want %q", link, got, want)
@@ -441,7 +754,8 @@ func TestSiteImportKeepsArtExactlyAtTheBound(t *testing.T) {
 }
 
 // The update check asks the same gate the import does: an origin sidecar naming another
-// host is refused before its socket opens, in the import's own sentence.
+// host is refused before its socket opens, in the import's own sentence. fu2-3 (ruling 35,
+// as amended): a subdomain of the site's own domain is that host, www or not.
 func TestResolveOriginRefusesAnUnknownSite(t *testing.T) {
 	t.Setenv("GORB_SITE", "")
 	s, _, _ := libHub(t)
@@ -449,12 +763,14 @@ func TestResolveOriginRefusesAnUnknownSite(t *testing.T) {
 		t.Errorf("the update check dialed a host the gate refuses: %s", r.URL.Path)
 	})
 	_ = srv
-	_, err := s.resolveOrigin(t.Context(), &ThemeOrigin{
-		Site: "https://evil.example", DesignID: siteDesignID, Version: 3,
-	})
-	want := "Orb Manager imports themes only from orb.takacsfamily.com and orb-os.net, not from evil.example"
-	if err == nil || err.Error() != want {
-		t.Fatalf("resolveOrigin error = %v, want %q", err, want)
+	for _, refused := range []string{"https://evil.example", "https://api.orb-os.net", "https://orb-os.net.evil.example"} {
+		_, err := s.resolveOrigin(t.Context(), &ThemeOrigin{
+			Site: refused, DesignID: siteDesignID, Version: 3,
+		})
+		want := "Orb Manager imports themes only from orb.takacsfamily.com and orb-os.net/www.orb-os.net, not from " + siteHost(refused)
+		if err == nil || err.Error() != want {
+			t.Fatalf("resolveOrigin(%q) error = %v, want %q", refused, err, want)
+		}
 	}
 	if n := len(*asks); n != 0 {
 		t.Errorf("a refused origin made %d requests to the test site", n)
@@ -544,43 +860,5 @@ func TestCheckSharedNameRefusalIsNotDamage(t *testing.T) {
 	}
 	if !strings.HasSuffix(got, themeNameRefusalChars) {
 		t.Errorf("shared-name refusal = %q; want it to end with the character sentence", got)
-	}
-}
-
-// the two refusals the earlier cases name, as the holds sentence now words them
-var (
-	svgRefusalHandler = fmt.Sprintf(svgRefusalHoldsFormat, "an event handler")
-	svgRefusalLink    = fmt.Sprintf(svgRefusalHoldsFormat, "an outside link")
-)
-
-// TestSvgArtSharedVectors is ruling 35's shared table, the same one the site's svg-art
-// tests use, so both refuse the same files; plus the namespace-prefixed elements.
-func TestSvgArtSharedVectors(t *testing.T) {
-	holds := func(what string) string { return fmt.Sprintf(svgRefusalHoldsFormat, what) }
-	big := "<svg>" + strings.Repeat(" ", 262145-len("<svg></svg>")) + "</svg>"
-	cases := []struct{ name, svg, want string }{
-		{"plain", `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><rect width="10" height="10" fill="#f00"/></svg>`, ""},
-		{"decl, comment, fragment links", `<?xml version="1.0"?><!-- c --><svg xmlns="http://www.w3.org/2000/svg"><use href="#a"/><rect id="a" fill="url(#g)"/></svg>`, ""},
-		{"embedded raster", `<svg xmlns="http://www.w3.org/2000/svg"><image href="data:image/png;base64,iVBORw0KGgo="/></svg>`, ""},
-		{"script", `<svg><script>alert(1)</script></svg>`, holds("a script")},
-		{"event handler", `<svg onload="x()"></svg>`, holds("an event handler")},
-		{"doctype", `<?xml version="1.0"?><!DOCTYPE svg [<!ENTITY a "aa">]><svg/>`, holds("a DOCTYPE")},
-		{"outside image", `<svg><image href="https://evil.example/x.png"/></svg>`, holds("an outside link")},
-		{"outside url in style", `<svg><rect style="fill:url(http://evil.example/p)"/></svg>`, holds("an outside link")},
-		{"javascript url", `<svg><a xlink:href="javascript:x()"/></svg>`, holds("a javascript: URL")},
-		{"foreignObject", `<svg><foreignObject/></svg>`, holds("foreignObject")},
-		{"not an svg", `<html><svg/></html>`, svgRefusalNotSvg},
-		{"too big", big, fmt.Sprintf(svgRefusalSizeFormat, 257)},
-		{"prefixed script", `<svg xmlns:x="http://www.w3.org/2000/svg"><x:script>1</x:script></svg>`, holds("a script")},
-		{"prefixed iframe", `<svg><h:iframe xmlns:h="http://www.w3.org/1999/xhtml"/></svg>`, holds("an iframe")},
-		{"not utf-8", "<svg>\xff</svg>", svgRefusalNotText},
-		{"nul byte", "<svg>\x00</svg>", svgRefusalNotText},
-		{"svg not first", `<rect/><svg/>`, svgRefusalNotSvg},
-		{"@import", `<svg><style>@import "x.css";</style></svg>`, holds("an @import")},
-	}
-	for _, c := range cases {
-		if got := checkSvgArt([]byte(c.svg)); got != c.want {
-			t.Errorf("%s: got %q, want %q", c.name, got, c.want)
-		}
 	}
 }

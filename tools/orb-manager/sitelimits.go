@@ -4,11 +4,11 @@ package main
 //
 // Two of them. The first is whose links this hub will open at all: only the configured
 // site — GORB_SITE, the one origin release.go's resolver answers, so a bench and the
-// site's §11 move are the same one string — and orb-os.net itself, plus loopback, which
-// is how the hub's own tests and a developer's machine site are served. A link to any
-// other host is refused here, before a socket opens: dialing an unknown host with the
-// design's id would tell that host both that this owner imports from orb-os.net and
-// which design they were after.
+// site's §11 move are the same one string — and orb-os.net under either of its two
+// public names, plus loopback, which is how the hub's own tests and a developer's
+// machine site are served. A link to any other host is refused here, before a socket
+// opens: dialing an unknown host with the design's id would tell that host both that
+// this owner imports from orb-os.net and which design they were after.
 //
 // The second is what a bundle's art may be. The site applies these rules when it stores
 // a picture, so a bundle that arrived through the site's own doors already holds to
@@ -29,8 +29,10 @@ package main
 import (
 	"bytes"
 	"encoding/base64"
+	"encoding/xml"
 	"errors"
 	"fmt"
+	"io"
 	"net/url"
 	"regexp"
 	"sort"
@@ -38,8 +40,16 @@ import (
 	"unicode/utf8"
 )
 
-// orbOSNet is the site's future home (§11): always allowed, https only.
-const orbOSNet = "orb-os.net"
+// orbOSNet is the site's future home (§11): always allowed, https only. Its www spelling
+// (ruling 35, as amended 2026-11-11) is the same site behind the other name an owner's
+// paste is just as likely to carry, so it is allowed by the same door, and the two are
+// named together in the refusal an owner reads.
+const (
+	orbOSNet    = "orb-os.net"
+	orbOSNetWww = "www.orb-os.net"
+	// orbOSNetNames is the public half of the allow-list as the sentences spell it.
+	orbOSNetNames = orbOSNet + "/" + orbOSNetWww
+)
 
 // siteAllowed reports whether a canonical site origin (scheme://host[:port], as
 // parseSiteLink answers it) is one Orb Manager may import from or ask about.
@@ -57,7 +67,7 @@ func siteAllowed(site string) bool {
 	if c, _, cp, cok := siteOriginParts(siteReleaseBase()); cok && scheme == c && hostport == cp {
 		return true
 	}
-	return scheme == "https" && hostport == orbOSNet
+	return scheme == "https" && (hostport == orbOSNet || hostport == orbOSNetWww)
 }
 
 // siteNotAllowed is the refusal for a link to any other host. It names the two places a
@@ -66,10 +76,10 @@ func siteAllowed(site string) bool {
 func siteNotAllowed(site string) error {
 	conf := canonicalSiteOrigin(siteReleaseBase())
 	host := siteHost(site)
-	if conf == "https://"+orbOSNet {
-		return fmt.Errorf("Orb Manager imports themes only from %s, not from %s", orbOSNet, host)
+	if conf == "https://"+orbOSNet || conf == "https://"+orbOSNetWww {
+		return fmt.Errorf("Orb Manager imports themes only from %s, not from %s", orbOSNetNames, host)
 	}
-	return fmt.Errorf("Orb Manager imports themes only from %s and %s, not from %s", siteHost(conf), orbOSNet, host)
+	return fmt.Errorf("Orb Manager imports themes only from %s and %s, not from %s", siteHost(conf), orbOSNetNames, host)
 }
 
 // siteOriginParts splits a site origin the way the comparisons need it: the scheme and
@@ -120,8 +130,9 @@ type imageHeader struct {
 const artMaxSide = 1024
 
 // artMinHeaderBytes is the site's ART_MIN_HEADER_BYTES: fewer bytes than this cannot
-// declare a size in any of the four formats, and the hub's own contract carries such
-// tiny placeholders. Too short to name a size is not a refusal.
+// declare a size in any of the four formats, and (ruling 35, as amended 2026-11-11)
+// that is a refusal — too short to name a size cannot be a picture. The hub's own
+// contract fixtures carry real tiny PNGs rather than placeholders under the floor.
 const artMinHeaderBytes = 10
 
 // The three refusals, verbatim; the size sentence is a format over the header's sides.
@@ -152,198 +163,618 @@ const (
 	svgRefusalNotSvg      = "an image in it says it is an SVG but isn't one"
 )
 
-var (
-	// svgHandlerRe finds an event handler attribute: onload= and friends, the attribute
-	// names that run script the moment the picture is drawn. The character before the
-	// name is required, so a stroke-linejoin or a data-onX keeps its day.
-	svgHandlerRe = regexp.MustCompile(`(?i)[\s"'/]on[a-z]+\s*=`)
-	// svgHrefRe finds where an SVG points at something: every href and xlink:href
-	// attribute value, in either kind of quote.
-	svgHrefRe = regexp.MustCompile(`(?i)\b(?:xlink:)?href\s*=\s*"([^"]*)"|\b(?:xlink:)?href\s*=\s*'([^']*)'`)
-	// svgUrlRe finds a CSS url(…) reference, the other way a fill can point out of file.
-	svgUrlRe = regexp.MustCompile(`(?i)url\(\s*['"]?([^'")]+)`)
-	// svgImageRe is the cheap shape test: the text holds an <svg tag somewhere.
-	svgOpenRe = regexp.MustCompile(`(?i)<svg[\s/>]`)
+// fu2-1 (ruling 35, as amended): the rule ids of docs/specs/fu2-svg-rules.md, in the
+// order the rules are checked. The first failure is the one reported, in all three
+// checkers — this file, the studio's OrbStudio.checkSvg and the site's svg-art.ts.
+const (
+	svgRuleTooBig         = "svg_too_big"
+	svgRuleNotUTF8        = "svg_not_utf8"
+	svgRuleNotWellFormed  = "svg_not_well_formed"
+	svgRuleMarkup         = "svg_markup"
+	svgRuleRoot           = "svg_root"
+	svgRuleElement        = "svg_element"
+	svgRuleForeignElement = "svg_foreign_element"
+	svgRuleEventAttr      = "svg_event_attr"
+	svgRuleLink           = "svg_link"
+	svgRuleCSS            = "svg_css"
 )
 
-// svgAllowedDataURL is the base64 tail of every raster prefix a design may hold: an SVG's
-// own links may embed one, because a picture pointing at a picture inside itself is what
-// a collage is.
-var svgAllowedDataURL = []string{"data:image/png;base64,", "data:image/jpeg;base64,", "data:image/gif;base64,", "data:image/webp;base64,"}
+// svgRuleHolds is the holds-sentence each refusal rule words into: "an SVG in it holds
+// …". The size, text and root refusals keep their own long-standing sentences.
+var svgRuleHolds = map[string]string{
+	svgRuleNotWellFormed:  "XML that does not parse",
+	svgRuleMarkup:         "a DOCTYPE, a CDATA section, a processing instruction or a comment a design's SVGs can't hold",
+	svgRuleElement:        "an element a design's SVGs can't hold",
+	svgRuleForeignElement: "an element from another namespace",
+	svgRuleEventAttr:      "an event handler",
+	svgRuleLink:           "an outside link",
+	svgRuleCSS:            "CSS that can reach outside the file",
+}
 
-// svgLinkOK is S3b's link rule: a reference inside an SVG may be a fragment of the same
-// file, or an embedded raster of one of the four formats the design could have carried
-// directly. Anything else — http, mailto, a data: of another type — is an outside link,
-// and a design must draw the same picture with the network cable out.
-func svgLinkOK(target string) bool {
-	t := strings.TrimSpace(target)
-	if strings.HasPrefix(t, "#") {
-		return true
+// svgRuleSentence is the hub's sentence for one rule id, "" for the accepted rule "".
+// The size refusal carries the file's own weight and is worded by its caller.
+func svgRuleSentence(rule string) string {
+	switch rule {
+	case "":
+		return ""
+	case svgRuleTooBig:
+		return ""
+	case svgRuleNotUTF8:
+		return svgRefusalNotText
+	case svgRuleRoot:
+		return svgRefusalNotSvg
 	}
-	lower := strings.ToLower(t)
-	for _, p := range svgAllowedDataURL {
-		if strings.HasPrefix(lower, p) {
+	return fmt.Sprintf(svgRefusalHoldsFormat, svgRuleHolds[rule])
+}
+
+// The namespaces the rules name by URI.
+const (
+	svgNS        = "http://www.w3.org/2000/svg"
+	svgXLinkNS   = "http://www.w3.org/1999/xlink"
+	svgXMLNS     = "http://www.w3.org/XML/1998/namespace"
+	svgXMLNSDecl = "http://www.w3.org/2000/xmlns/"
+)
+
+// svgLinkAttr is rule 9's extra half: the attribute names, beyond href and xlink:href,
+// that a browser or an SVG renderer reads as a reference the way it reads href — src on an
+// image included, which is how the review's svgprobe set reaches its beacon. Any value in
+// one of them is a reach out of the file, whatever it says, because none of them is a
+// reference a design's art has any reason to carry.
+var svgLinkAttr = []string{
+	"src", "background", "poster", "action", "formaction", "dynsrc", "lowsrc",
+}
+
+// svgFragRef is the shape of a same-document reference: "#" and an XML name. The \p{}
+// classes stand in for XML 1.0's NameStartChar and NameChar; the studio's checkSvg and
+// the site's svg-art.ts match this regexp's set of characters exactly.
+var svgFragRef = regexp.MustCompile("^#[\\p{L}__:][\\p{L}\\p{N}._:-]*$")
+
+// svgDataURL is rule 9's allowed data: URL: one of the four raster formats the design
+// could have carried directly, base64, and a tail of nothing but base64 characters.
+var svgDataURL = regexp.MustCompile(`^data:image/(?:png|jpeg|gif|webp);base64,[A-Za-z0-9+/=]+$`)
+
+// svgURLTarget finds a CSS url( reference and its target, past optional whitespace and
+// optional quotes, up to the quote or the closing parenthesis.
+var svgURLTarget = regexp.MustCompile(`(?i)url\(\s*['"]?([^'")]*)`)
+
+// svgValueOutside is rule 9's substring half: a value that holds one of these cannot be
+// anything but a reach out of the file.
+var svgValueOutside = []string{"javascript:", "data:", "image-set("}
+
+// svgStyleBad is rule 10's substring half: an escape, a comment opening, an at-rule or a
+// tag opening — any of which hides a reference from the plain url( scan — plus the two
+// CSS image sources, matched lower-cased like rule 9's image-set.
+var svgStyleBad = []string{`\`, "/*", "@", "<", "image-set", "expression"}
+
+// svgAllowedElement is rule 6's list: the elements, in the SVG namespace, a design's SVG
+// may hold. Everything else in the SVG namespace is refused, notably script, style,
+// foreignObject, every animation element, feImage, a, iframe, embed, object, video, audio
+// and the old SVG Tiny handler/cursor/font shapes. Art is baked to pixels for a
+// 466 × 466 display, so animation and styling sheets have no use.
+var svgAllowedElement = map[string]bool{}
+
+// svgForeignForbiddenLocal is rule 7's catch: even an element in an allowed foreign
+// namespace is refused when its local name, case-insensitively, names an SVG or HTML
+// element, because an HTML parser inlining the document ignores prefixes and would raise a
+// real element out of it.
+var svgForeignForbiddenLocal = map[string]bool{}
+
+func init() {
+	for _, n := range strings.Fields(`svg g defs symbol use path rect circle ellipse line polyline polygon
+		text tspan textPath title desc metadata linearGradient radialGradient stop pattern clipPath mask
+		marker image filter feBlend feColorMatrix feComponentTransfer feComposite feDiffuseLighting
+		feDisplacementMap feDistantLight feDropShadow feFlood feFuncA feFuncB feFuncG feFuncR feGaussianBlur
+		feMerge feMergeNode feMorphology feOffset fePointLight feSpecularLighting feSpotLight feTile
+		feTurbulence switch view`) {
+		svgAllowedElement[n] = true
+		svgForeignForbiddenLocal[n] = true
+	}
+	for _, n := range strings.Fields(`a abbr acronym address applet area article aside audio b base basefont
+		bdi bdo bgsound big blink blockquote body br button canvas caption center cite code col colgroup
+		content data datalist dd del details dfn dialog dir div dl dt em embed fieldset figcaption figure
+		font footer form frame frameset h1 h2 h3 h4 h5 h6 head header hgroup hr html i iframe image img
+		input ins isindex kbd keygen label legend li link listing main map mark marquee menu menuitem meta
+		meter nav noembed noframes nobr ol optgroup option output p param picture plaintext pre progress q
+		rp rt ruby s samp script section select shadow small source spacer span strike strong style sub
+		summary sup table tbody td template textarea tfoot th thead time title tr track tt u ul var video
+		wbr xmp`) {
+		svgForeignForbiddenLocal[n] = true
+	}
+}
+
+// svgEditorNS is rule 7's unconditional foreign namespaces: the two Inkscape and Sodipodi
+// write into a plain save, elements and attributes alike.
+var svgEditorNS = map[string]bool{
+	"http://www.inkscape.org/namespaces/inkscape":        true,
+	"http://sodipodi.sourceforge.net/DTD/sodipodi-0.dtd": true,
+}
+
+// svgMetaNS is rule 7's conditional ones: RDF, Creative Commons and Dublin Core, allowed
+// only inside a metadata element, which is where an editor puts a file's authorship.
+var svgMetaNS = map[string]bool{
+	"http://www.w3.org/1999/02/22-rdf-syntax-ns#": true,
+	"http://creativecommons.org/ns#":              true,
+	"http://web.resource.org/cc/":                 true,
+	"http://purl.org/dc/elements/1.1/":            true,
+}
+
+// checkSvgArt is the SVG check of docs/specs/fu2-svg-rules.md: the decoded text of one
+// picture announced under the SVG prefix. It returns "" when a design may hold the SVG and
+// the refusal sentence otherwise. The order is the rule set's: weight first (a body over
+// the ceiling is refused without parsing it), then the bytes, then a walk of the markup
+// that decides rules 3 and 4, then the parse, then the elements, handlers, links and CSS
+// in rule order.
+func checkSvgArt(b []byte) string {
+	_, sentence := checkSvgArtRule(b)
+	return sentence
+}
+
+// checkSvgArtRule is the same check with the rule id first, so the hub, the studio and the
+// site's svg-art.ts can be held to one answer per vector. The sentence is the hub's own
+// wording of that rule; the rule id is the fact the shared vectors assert.
+func checkSvgArtRule(b []byte) (string, string) {
+	if len(b) > svgMaxBytes {
+		return svgRuleTooBig, fmt.Sprintf(svgRefusalSizeFormat, (len(b)+1023)/1024)
+	}
+	if !utf8.Valid(b) || bytes.IndexByte(b, 0) >= 0 {
+		return svgRuleNotUTF8, svgRuleSentence(svgRuleNotUTF8)
+	}
+	text := strings.TrimPrefix(string(b), "\ufeff") // a leading BOM is allowed and belongs to no markup
+	rule := svgScanMarkup(text)
+	if rule == "" {
+		rule = svgParseRule([]byte(text))
+	}
+	return rule, svgRuleSentence(rule)
+}
+
+// svgParseRule parses the document with a strict, namespace-aware parser and answers the
+// first rule its answer fails, "" when it fails none. Rules 3 and 4 came from the markup
+// walk, or from the three leniency points encoding/xml keeps where a strict XML parser
+// does not — a duplicated attribute, an undeclared prefix, a document that is not one
+// element; rules 5 to 10 are the elements, attributes and styles the parse handed back.
+func svgParseRule(b []byte) string {
+	doc := svgWalkParse(b)
+	if doc.rule != "" {
+		return doc.rule
+	}
+	if !doc.rootSeen || doc.rootNS != svgNS || doc.rootName != "svg" {
+		return svgRuleRoot
+	}
+	for _, f := range []struct {
+		rule string
+		bad  bool
+	}{
+		{svgRuleElement, doc.badElement},
+		{svgRuleForeignElement, doc.foreignElement},
+		{svgRuleEventAttr, doc.eventAttr},
+		{svgRuleLink, doc.link},
+		{svgRuleCSS, doc.css},
+	} {
+		if f.bad {
+			return f.rule
+		}
+	}
+	return ""
+}
+
+// svgDoc is one document as the walk saw it: the rule the parse itself failed, if any, the
+// root's name and namespace, and one flag per element rule. Every flag is the whole
+// document's answer to one rule, because the rules are asked in order and the first failure
+// is the one reported: a file holding both a <script> and an outside link is refused for
+// its element, wherever in the file each of them sits.
+type svgDoc struct {
+	rule           string
+	rootSeen       bool
+	rootName       string
+	rootNS         string
+	badElement     bool
+	foreignElement bool
+	eventAttr      bool
+	link           bool
+	css            bool
+}
+
+// svgScanMarkup walks the raw text the way an XML parser walks it — over the text between
+// tags, inside a start tag past quoted attribute values, through comments, declarations and
+// processing instructions — and answers the two rules a parse alone does not settle the
+// same way in all three checkers: svg_not_well_formed for markup a strict parser stops at,
+// and svg_markup for the constructs a design may not hold at all. "" is the answer for
+// markup a design may hold. The studio's checkSvg makes the same walk by hand, so all three
+// checkers refuse the same construct under the same rule id.
+func svgScanMarkup(text string) string {
+	markup := "" // the first rule-4 construct, held until the walk is sure there is no rule 3
+	i := 0
+	if strings.HasPrefix(text, "\ufeff") {
+		i = len("\ufeff") // a leading BOM is allowed and belongs to no markup
+	}
+	for i < len(text) {
+		lt := strings.IndexByte(text[i:], '<')
+		if lt < 0 {
+			break
+		}
+		i += lt
+		switch {
+		case strings.HasPrefix(text[i:], "<!--"):
+			end := strings.Index(text[i+4:], "-->")
+			if end < 0 || strings.Contains(text[i+4:i+4+end], "--") {
+				return svgRuleNotWellFormed // an unterminated comment, or one holding "--"
+			}
+			if strings.ContainsAny(text[i+4:i+4+end], "<>") {
+				markup = svgRuleMarkup // a comment holding a tag opens a tag inside the file
+			}
+			i += 4 + end + 3
+		case strings.HasPrefix(text[i:], "<![CDATA["):
+			end := strings.Index(text[i+9:], "]]>")
+			if end < 0 {
+				return svgRuleNotWellFormed
+			}
+			markup = svgRuleMarkup
+			i += 9 + end + 3
+		case strings.HasPrefix(text[i:], "<!DOCTYPE"):
+			end := svgDeclEnd(text[i:])
+			if end < 0 {
+				return svgRuleNotWellFormed
+			}
+			markup = svgRuleMarkup
+			i += end
+		case strings.HasPrefix(text[i:], "<!"):
+			return svgRuleNotWellFormed // no other <! is a declaration XML knows
+		case strings.HasPrefix(text[i:], "<?"):
+			end := strings.Index(text[i+2:], "?>")
+			if end < 0 {
+				return svgRuleNotWellFormed
+			}
+			if svgPIName(text[i+2:i+2+end]) != "xml" || i > len("\ufeff") {
+				markup = svgRuleMarkup // a processing instruction, or a declaration out of place
+			}
+			i += 2 + end + 2
+		case strings.HasPrefix(text[i:], "</"):
+			end := strings.IndexByte(text[i:], '>')
+			if end < 0 {
+				return svgRuleNotWellFormed
+			}
+			i += end + 1
+		default:
+			next, ok := svgScanTag(text[i:])
+			if !ok {
+				return svgRuleNotWellFormed
+			}
+			i += next
+		}
+	}
+	return markup
+}
+
+// svgScanTag is the walk through one start tag, from its "<" to the byte past its ">":
+// quotes are honoured, so neither a ">" nor a "<!" inside a value moves the walk out of the
+// tag. It answers false for whatever a strict parser stops at — a tag with no name, an
+// attribute with no value, a value without quotes, a tag that never closes.
+func svgScanTag(t string) (int, bool) {
+	i := 1
+	var seen map[string]bool
+	for i < len(t) && !svgTagBreak(t[i]) {
+		i++
+	}
+	if i == 1 {
+		return 0, false // '<' then whitespace, '/', '>' or nothing at all: no name
+	}
+	for i < len(t) {
+		for i < len(t) && svgSpaceByte(t[i]) {
+			i++
+		}
+		if i >= len(t) {
+			return 0, false
+		}
+		if t[i] == '>' {
+			return i + 1, true
+		}
+		if t[i] == '/' {
+			if i+1 >= len(t) || t[i+1] != '>' {
+				return 0, false
+			}
+			return i + 2, true
+		}
+		name := i
+		for name < len(t) && !svgTagBreak(t[name]) && t[name] != '=' {
+			name++
+		}
+		if name == i {
+			return 0, false
+		}
+		attr := strings.ToLower(t[i:name])
+		i = name
+		for i < len(t) && svgSpaceByte(t[i]) {
+			i++
+		}
+		if i >= len(t) || t[i] != '=' {
+			return 0, false
+		}
+		i++
+		for i < len(t) && svgSpaceByte(t[i]) {
+			i++
+		}
+		if i >= len(t) {
+			return 0, false
+		}
+		if quote := t[i]; quote == '"' || quote == '\'' {
+			end := strings.IndexByte(t[i+1:], quote)
+			if end < 0 {
+				return 0, false
+			}
+			if strings.IndexByte(t[i+1:i+1+end], '<') >= 0 {
+				return 0, false // a "<" in a value has to be &lt; for the file to parse at all
+			}
+			if seen == nil {
+				seen = map[string]bool{}
+			}
+			if seen[attr] {
+				return 0, false // one attribute name, twice, is not well-formed
+			}
+			seen[attr] = true
+			i += 2 + end
+			if i < len(t) && !svgSpaceByte(t[i]) && t[i] != '>' && t[i] != '/' {
+				return 0, false // two attributes with nothing between them is not a tag
+			}
+			continue
+		}
+		return 0, false // an unquoted attribute value is not XML
+	}
+	return 0, false
+}
+
+func svgTagBreak(c byte) bool { return c == '<' || c == '>' || c == '/' || svgSpaceByte(c) }
+
+func svgSpaceByte(c byte) bool { return c == ' ' || c == '\t' || c == '\n' || c == '\r' }
+
+// svgDeclEnd is the length past a <!DOCTYPE …> declaration: the "]>" closing an internal
+// subset, or the ">" closing the declaration, and -1 when neither is there.
+func svgDeclEnd(t string) int {
+	end := strings.IndexByte(t, '>')
+	if end < 0 {
+		return -1
+	}
+	if sub := strings.IndexByte(t[:end], '['); sub >= 0 {
+		closer := strings.Index(t, "]>")
+		if closer < 0 {
+			return -1
+		}
+		end = closer + 1
+	}
+	return end + 1
+}
+
+// svgPIName is a processing instruction's target, the name before its first space.
+func svgPIName(inst string) string {
+	i := strings.IndexAny(inst, " \t\r\n")
+	if i < 0 {
+		return inst
+	}
+	return inst[:i]
+}
+
+// svgWalkParse runs the parse and collects what the document is. encoding/xml is strict
+// about well-formedness but lenient about three things a strict XML parser is not — a
+// duplicated attribute, an undeclared namespace prefix and a document that is not exactly
+// one element — so this walk checks those itself and calls them rule 3.
+func svgWalkParse(b []byte) svgDoc {
+	doc := svgDoc{}
+	dec := xml.NewDecoder(bytes.NewReader(b))
+	dec.Strict = true
+	dec.Entity = nil
+	depth, metaAt, roots := 0, -1, 0
+	for {
+		tok, err := dec.Token()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			doc.rule = svgRuleNotWellFormed
+			return doc
+		}
+		switch t := tok.(type) {
+		case xml.StartElement:
+			if depth == 0 {
+				roots++
+				if roots > 1 {
+					doc.rule = svgRuleNotWellFormed // a document is one element, not two
+					return doc
+				}
+				doc.rootSeen, doc.rootName, doc.rootNS = true, t.Name.Local, t.Name.Space
+			}
+			if svgUndeclared(t.Name.Space) {
+				doc.rule = svgRuleNotWellFormed // a prefix the document never declared
+				return doc
+			}
+			doc.startElement(t, metaAt >= 0)
+			if doc.rule != "" {
+				return doc
+			}
+			if t.Name.Local == "metadata" && t.Name.Space == svgNS {
+				metaAt = depth
+			}
+			depth++
+		case xml.EndElement:
+			depth--
+			if depth == metaAt {
+				metaAt = -1
+			}
+		case xml.CharData:
+			if depth == 0 && strings.TrimSpace(string(t)) != "" {
+				doc.rule = svgRuleNotWellFormed // text outside the document element
+				return doc
+			}
+		}
+	}
+	if !doc.rootSeen {
+		doc.rule = svgRuleNotWellFormed // a document with no element in it at all
+	}
+	return doc
+}
+
+// startElement records what one start tag does to the document's answers: rule 6 for an
+// element in the SVG namespace, rule 7 for one in any other, rule 8, 9 or 10 for one of its
+// attributes. Rule 3 is the only one that can stop the walk on its way, because it outranks
+// every rule the rest of the document could still answer.
+func (doc *svgDoc) startElement(t xml.StartElement, inMeta bool) {
+	local, space := t.Name.Local, t.Name.Space
+	switch {
+	case space == svgNS:
+		if !svgAllowedElement[local] {
+			doc.badElement = true
+		}
+	case svgEditorNS[space], inMeta && svgMetaNS[space]:
+		if svgForeignForbiddenLocal[strings.ToLower(local)] {
+			doc.foreignElement = true // an editor's namespace wrapped around a real element name
+		}
+	default:
+		doc.foreignElement = true
+	}
+	seen := make(map[string]bool, len(t.Attr))
+	for _, a := range t.Attr {
+		if dup := a.Name.Space + "\x00" + a.Name.Local; seen[dup] {
+			doc.rule = svgRuleNotWellFormed // two attributes with one name is not well-formed
+			return
+		} else {
+			seen[dup] = true
+		}
+		name := strings.ToLower(a.Name.Local)
+		if strings.HasPrefix(name, "on") {
+			doc.eventAttr = true // rule 8 asks every attribute, in every namespace, first
+			continue
+		}
+		if svgUndeclared(a.Name.Space) {
+			doc.rule = svgRuleNotWellFormed
+			return
+		}
+		if a.Name.Space == "xmlns" || (a.Name.Space == "" && name == "xmlns") {
+			continue // a namespace declaration is neither a reference nor a style
+		}
+		doc.attr(a, name)
+	}
+}
+
+// attr records what one attribute does: rule 9 for a reference, rule 10 for a style.
+func (doc *svgDoc) attr(a xml.Attr, name string) {
+	value := a.Value
+	if name == "base" && a.Name.Space == svgXMLNS {
+		doc.link = true // xml:base moves every relative reference in the file
+		return
+	}
+	if name == "href" && (a.Name.Space == "" || a.Name.Space == svgXLinkNS) {
+		if !svgRefOK(value) {
+			doc.link = true
+		}
+		return
+	}
+	if name == "style" && a.Name.Space == "" {
+		if !svgStyleOK(value) {
+			doc.css = true
+		}
+		return
+	}
+	lower := strings.ToLower(value)
+	// Presentation attributes (fill, filter, mask, cursor …) are parsed as CSS values, so a
+	// CSS escape there turns into url( after the scans below have looked (Chromium fetches
+	// fill="\75rl(…)"). An escape or a comment opening in any attribute value is rule 10.
+	if strings.Contains(value, `\`) || strings.Contains(value, "/*") {
+		doc.css = true
+	}
+	for _, ref := range svgLinkAttr {
+		if name == ref {
+			doc.link = true // an attribute a renderer reads as a reference, href or no href
+			return
+		}
+	}
+	for _, out := range svgValueOutside {
+		if strings.Contains(lower, out) {
+			doc.link = true
+			return
+		}
+	}
+	if svgURLOutside(value) {
+		doc.link = true
+	}
+}
+
+// svgUndeclared reports whether a name carries a prefix the document never declared:
+// encoding/xml hands the prefix itself back where a strict parser hands back a namespace.
+func svgUndeclared(space string) bool {
+	return space != "" && space != "xmlns" && !strings.Contains(space, ":")
+}
+
+// svgRefOK is rule 9's href answer: a fragment of the same file, or an embedded raster of
+// one of the four formats a design could have carried directly. The value arrives with the
+// parser's entities already decoded, so an &#x6a;avascript: URL is a javascript: URL here.
+func svgRefOK(value string) bool {
+	t := strings.Trim(value, " \t\r\n")
+	return svgFragment(t) || svgDataURL.MatchString(strings.ToLower(t))
+}
+
+// svgFragment: the reference is "#" and an XML name, which is a same-document reference.
+func svgFragment(t string) bool { return svgFragRef.MatchString(t) }
+
+// svgStyleOK is rule 10: a style attribute with nothing in it that could hide a reference
+// or reach out of the file. The style attribute is the one attribute rule 9's substring
+// scan leaves to this rule, so a url( in a style is a CSS refusal and not a link refusal.
+func svgStyleOK(value string) bool {
+	lower := strings.ToLower(value)
+	for _, bad := range svgStyleBad {
+		if strings.Contains(lower, bad) {
+			return false
+		}
+	}
+	return !svgURLOutside(value)
+}
+
+// svgURLOutside reports whether a value holds a url( whose target is anything but a
+// fragment of the same file. Every url( counts, not just the first: a filter list
+// (filter="url(#a) url(…)") names several, and Chromium fetches each one.
+func svgURLOutside(value string) bool {
+	for _, m := range svgURLTarget.FindAllStringSubmatch(value, -1) {
+		if !svgFragment(strings.TrimSpace(m[1])) {
 			return true
 		}
 	}
 	return false
 }
 
-// checkSvgArt is S3b's SVG check: the decoded text of one picture announced under the
-// SVG prefix. It returns "" when a design may hold the SVG and the sentence otherwise.
-// The order is the site's: weight first (a body over the ceiling is refused without
-// parsing it), then the shape, then handlers, then links.
-func checkSvgArt(b []byte) string {
-	if len(b) > svgMaxBytes {
-		return fmt.Sprintf(svgRefusalSizeFormat, (len(b)+1023)/1024)
+// artPrefixRefusal is "" when a data-URL prefix names one of the five picture kinds a
+// design may hold, and the type sentence otherwise. It judges the prefix alone and never
+// looks at bytes: this is the question a reused art ref (a data URL with no bytes yet in
+// hand) is asked, and fu2-2 rules that such a ref is never refused for length.
+func artPrefixRefusal(prefix string) string {
+	lower := strings.ToLower(prefix)
+	if lower == svgArtPrefix {
+		return ""
 	}
-	if !utf8.Valid(b) || bytes.IndexByte(b, 0) >= 0 {
-		return svgRefusalNotText
-	}
-	text := string(b)
-	lower := strings.ToLower(text)
-	if at := svgFirstElement(lower); at < 0 || !svgRootAt(lower, at) {
-		return svgRefusalNotSvg
-	}
-	for _, f := range svgForbidden {
-		if f.found(lower) {
-			return fmt.Sprintf(svgRefusalHoldsFormat, f.label)
+	for _, p := range artPrefixes {
+		if p == lower {
+			return ""
 		}
 	}
-	if svgHandlerRe.MatchString(text) {
-		return fmt.Sprintf(svgRefusalHoldsFormat, "an event handler")
-	}
-	for _, m := range svgHrefRe.FindAllStringSubmatch(text, -1) {
-		target := m[1]
-		if target == "" {
-			target = m[2]
-		}
-		if !svgLinkOK(strings.TrimSpace(target)) {
-			return fmt.Sprintf(svgRefusalHoldsFormat, "an outside link")
-		}
-	}
-	for _, m := range svgUrlRe.FindAllStringSubmatch(text, -1) {
-		if !svgLinkOK(strings.TrimSpace(m[1])) {
-			return fmt.Sprintf(svgRefusalHoldsFormat, "an outside link")
-		}
-	}
-	return ""
-}
-
-// svgForbidden is ruling 35's list of what an SVG may not hold, matched case-insensitively
-// anywhere in the text. Elements match with or without a namespace prefix (<x:script> is
-// still a script once xmlns:x names the SVG or XHTML namespace).
-var svgForbidden = []struct {
-	label string
-	found func(string) bool
-}{
-	{"a DOCTYPE", func(t string) bool { return strings.Contains(t, "<!doctype") }},
-	{"an entity", func(t string) bool { return strings.Contains(t, "<!entity") }},
-	{"a script", svgElement("script")},
-	{"foreignObject", svgElement("foreignobject")},
-	{"an iframe", svgElement("iframe")},
-	{"an embed", svgElement("embed")},
-	{"an object", svgElement("object")},
-	{"a stylesheet link", func(t string) bool { return strings.Contains(t, "<?xml-stylesheet") }},
-	{"an @import", func(t string) bool { return strings.Contains(t, "@import") }},
-	{"a javascript: URL", func(t string) bool { return strings.Contains(t, "javascript:") }},
-}
-
-// svgElement matches <name or <prefix:name, followed by anything but a name character, in
-// lower-cased text.
-func svgElement(name string) func(string) bool {
-	re := regexp.MustCompile(`<(?:[a-z0-9_.-]+:)?` + name + `(?:[^a-z0-9_.:-]|$)`)
-	return re.MatchString
-}
-
-// svgFirstElement is where the document's first element starts, past an optional XML
-// declaration, comments, whitespace and a DOCTYPE (which the forbidden list then refuses),
-// or -1 when the text ends inside one of those.
-func svgFirstElement(t string) int {
-	i := 0
-	for {
-		for i < len(t) && (t[i] == ' ' || t[i] == '\t' || t[i] == '\n' || t[i] == '\r' || strings.HasPrefix(t[i:], "\ufeff")) {
-			if strings.HasPrefix(t[i:], "\ufeff") {
-				i += len("\ufeff")
-			} else {
-				i++
-			}
-		}
-		switch {
-		case i >= len(t):
-			return -1
-		case strings.HasPrefix(t[i:], "<?"):
-			e := strings.Index(t[i+2:], "?>")
-			if e < 0 {
-				return -1
-			}
-			i += 2 + e + 2
-		case strings.HasPrefix(t[i:], "<!--"):
-			e := strings.Index(t[i+4:], "-->")
-			if e < 0 {
-				return -1
-			}
-			i += 4 + e + 3
-		case strings.HasPrefix(t[i:], "<!"):
-			e := strings.Index(t[i+2:], ">")
-			if e < 0 {
-				return -1
-			}
-			// a DOCTYPE with an internal subset ([...]) ends at "]>", not at its first ">"
-			if sub := strings.Index(t[i+2:], "["); sub >= 0 && sub < e {
-				end := strings.Index(t[i+2:], "]>")
-				if end < 0 {
-					return -1
-				}
-				e = end + 1
-			}
-			i += 2 + e + 1
-		default:
-			return i
-		}
-	}
-}
-
-// svgRootAt: the element at i is <svg, followed by whitespace, / or > (or the end).
-func svgRootAt(t string, i int) bool {
-	if !strings.HasPrefix(t[i:], "<svg") {
-		return false
-	}
-	if i+4 == len(t) {
-		return true
-	}
-	switch t[i+4] {
-	case ' ', '\t', '\n', '\r', '/', '>':
-		return true
-	}
-	return false
+	return artRefusalType
 }
 
 // artRefusal is "" when bytes announced by this data-URL prefix are a picture a design
 // may hold, and the sentence otherwise — the site's artRefusal, in its order: the prefix
-// first, because it is free; then the too-short pass-through; then the header. S3b's SVG
-// prefix takes the text check instead of the header check: an SVG's declared sides are
-// its own business, its weight, handlers and links are not.
+// first, because it is free; then the floor and the header. S3b's SVG prefix takes the
+// text check instead of the header check: an SVG's declared sides are its own business,
+// its weight, handlers and links are not. fu2-2 (ruling 35, as amended): a raster under
+// artMinHeaderBytes is refused as unreadable, and a nil payload (the prefix-only pass)
+// is judged by artPrefixRefusal instead, so a reused ref is never refused for length.
 func artRefusal(prefix string, b []byte) string {
 	lower := strings.ToLower(prefix)
 	if lower == svgArtPrefix {
 		if b == nil {
-			return "" // the prefix-only pass of checkInlineArt: the bytes come next
+			return artPrefixRefusal(svgArtPrefix) // the prefix-only pass: the bytes come next
 		}
 		return checkSvgArt(b)
 	}
-	known := false
-	for _, p := range artPrefixes {
-		if p == lower {
-			known = true
-			break
-		}
-	}
-	if !known {
-		return artRefusalType
+	if s := artPrefixRefusal(lower); s != "" {
+		return s
 	}
 	if len(b) < artMinHeaderBytes {
-		return ""
+		return artRefusalUnreadable
 	}
 	h, ok := readImageHeader(b)
 	if !ok {
@@ -383,7 +814,7 @@ func checkInlineArt(v any) error {
 		}
 		comma := strings.IndexByte(t, ',')
 		prefix := t[:comma]
-		if s := artRefusal(prefix, nil); s != "" {
+		if s := artPrefixRefusal(prefix); s != "" { // a ref is judged by its prefix alone (fu2-2)
 			return &bundleArtError{s}
 		}
 		body, err := base64.StdEncoding.DecodeString(t[comma+1:])

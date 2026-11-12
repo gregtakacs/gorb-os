@@ -5,6 +5,9 @@
 #   tools/signing_secrets.sh mac cert.p12 AuthKey_XXXX.p8   # the six Apple ones
 #   tools/signing_secrets.sh check                          # which are set (names only)
 #
+# With SIGNING_SECRETS_DIR set, every mode ends by probing the filed values with Azure and
+# Apple (tools/signing_probe.py): one test signature and one notary key check.
+#
 # Every value is typed at a hidden prompt or read from the file named, so nothing lands
 # in shell history, the terminal or a chat. The .p12 and .p8 go in as single-line base64,
 # which the workflow decodes; base64 -i is macOS's spelling and wraps lines on Linux, so
@@ -22,6 +25,10 @@ die() { echo "signing_secrets.sh: $*" >&2; exit 1; }
 command -v gh >/dev/null || die "needs the gh CLI, logged in (gh auth login)"
 
 dir=${SIGNING_SECRETS_DIR:-}
+# With SIGNING_SECRETS_ENV set (release), the secrets go to that GitHub environment, not the
+# repo: the release workflow's signing jobs read them only after the owner approves the run.
+ENVARG=()
+[ -n "${SIGNING_SECRETS_ENV:-}" ] && ENVARG=(--env "$SIGNING_SECRETS_ENV")
 if [ -n "$dir" ]; then
 	umask 077
 	mkdir -p "$dir"
@@ -32,13 +39,13 @@ fi
 ask() {
 	echo
 	if [ -n "$dir" ] && [ -s "$dir/$1" ]; then
-		gh secret set "$1" <"$dir/$1"
+		gh secret set "${ENVARG[@]}" "$1" <"$dir/$1"
 		echo "$1 set from $dir/$1"
 		return
 	fi
 	echo "$1 — $2"
 	if [ -z "$dir" ]; then
-		gh secret set "$1"
+		gh secret set "${ENVARG[@]}" "$1"
 		return
 	fi
 	local v
@@ -46,24 +53,24 @@ ask() {
 	echo
 	[ -n "$v" ] || die "$1: empty value"
 	printf '%s' "$v" >"$dir/$1"
-	gh secret set "$1" <"$dir/$1"
+	gh secret set "${ENVARG[@]}" "$1" <"$dir/$1"
 	echo "$1 set, and filed in $dir/$1"
 }
 
 # A file's bytes as one line of base64, or the base64 already filed in $dir.
 file_secret() {
 	if [ -z "${2:-}" ] && [ -n "$dir" ] && [ -s "$dir/$1" ]; then
-		gh secret set "$1" <"$dir/$1"
+		gh secret set "${ENVARG[@]}" "$1" <"$dir/$1"
 		echo "$1 set from $dir/$1"
 		return
 	fi
 	[ -f "${2:-}" ] || die "no file for $1: usage: $0 mac <cert.p12> <AuthKey_XXXX.p8>"
 	if [ -n "$dir" ]; then
 		base64 <"$2" | tr -d '\n' >"$dir/$1"
-		gh secret set "$1" <"$dir/$1"
+		gh secret set "${ENVARG[@]}" "$1" <"$dir/$1"
 		echo "$1 set from $2, and filed in $dir/$1"
 	else
-		base64 <"$2" | tr -d '\n' | gh secret set "$1"
+		base64 <"$2" | tr -d '\n' | gh secret set "${ENVARG[@]}" "$1"
 		echo "$1 set from $2"
 	fi
 }
@@ -90,7 +97,7 @@ check) ;;
 esac
 
 echo
-have=$(gh secret list --json name -q '.[].name')
+have=$(gh secret list "${ENVARG[@]}" --json name -q '.[].name')
 for s in AZURE_TENANT_ID AZURE_CLIENT_ID AZURE_CLIENT_SECRET AZURE_SIGNING_ENDPOINT \
 	AZURE_SIGNING_ACCOUNT AZURE_CERT_PROFILE MACOS_CERT_P12 MACOS_CERT_PASSWORD \
 	MACOS_SIGN_IDENTITY APPLE_API_KEY_P8 APPLE_API_KEY_ID APPLE_API_ISSUER; do
@@ -98,3 +105,11 @@ for s in AZURE_TENANT_ID AZURE_CLIENT_ID AZURE_CLIENT_SECRET AZURE_SIGNING_ENDPO
 	[ -n "$dir" ] && [ -s "$dir/$s" ] && f="  (filed)"
 	if grep -qx "$s" <<<"$have"; then echo "  set      $s$f"; else echo "  missing  $s$f"; fi
 done
+
+# With the values on file, ask Azure and Apple whether they work (one test signature, one
+# notary key check): a wrong account name or password shows here, not in a release run.
+if [ -n "$dir" ]; then
+	echo
+	echo "probing the filed values with Azure and Apple:"
+	python3 "$(dirname "$0")/signing_probe.py" "$dir"
+fi

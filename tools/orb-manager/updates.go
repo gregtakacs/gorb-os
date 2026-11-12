@@ -204,38 +204,54 @@ func (s *Server) appUpdateRows(restorable []RestorableApp) []updateItem {
 // exactly this version is held back until a newer one appears.
 //
 // A resolve that fails is reported rather than smoothed over: the row says the theme
-// could not be checked instead of implying it is current.
+// could not be checked instead of implying it is current. A resolve the site could not
+// answer yet (fu2-6) is a row of its own too — information, nothing to press, nothing
+// recorded — and only a site that says "gone" in its own body retires a design.
 func (s *Server) themeUpdateRows(r *http.Request, pl *LibraryPayload) []updateItem {
 	var out []updateItem
 	for _, t := range pl.Themes {
-		if t.Origin == nil {
+		// A1 §7.3 gave the listing's one `origin` key an app shape as well as a theme one, so a
+		// theme row's record is read back as what it is. Anything that is not a theme record — no
+		// key at all included — is "this theme came from no site", which is what the nil check was
+		// for before.
+		o, ok := t.Origin.(*ThemeOrigin)
+		if !ok || o == nil {
 			continue
 		}
-		if c, ok := s.choiceFor("theme", t.Origin.DesignID); ok && c.Keep {
+		if c, ok := s.choiceFor("theme", o.DesignID); ok && c.Keep {
 			continue
 		}
-		ans, err := s.resolveOrigin(r.Context(), t.Origin)
+		ans, err := s.resolveOrigin(r.Context(), o)
 		if err != nil {
-			out = append(out, updateItem{Kind: "theme", Key: t.Origin.DesignID, Title: t.Title,
+			out = append(out, updateItem{Kind: "theme", Key: o.DesignID, Title: t.Title,
 				Note: "could not be checked: " + err.Error(), Choices: []string{}})
 			continue
 		}
 		if ans.Gone {
-			out = append(out, updateItem{Kind: "theme", Key: t.Origin.DesignID, Title: t.Title,
+			out = append(out, updateItem{Kind: "theme", Key: o.DesignID, Title: t.Title,
 				Gone: true, Choices: []string{}})
 			continue
 		}
-		if ans.Version <= t.Origin.Version {
+		if ans.NotYet {
+			// A site that cannot answer the question yet is not news about the design: the
+			// row is information, it offers nothing to press, and it records nothing — so
+			// the next check asks this site again. siteHost names which one could not.
+			out = append(out, updateItem{Kind: "theme", Key: o.DesignID, Title: t.Title,
+				Note:    fmt.Sprintf("%s can’t check this theme for updates yet", siteHost(o.Site)),
+				Choices: []string{}})
 			continue
 		}
-		if c, ok := s.choiceFor("theme", t.Origin.DesignID); ok && c.SkippedVersion == ans.Version {
+		if ans.Version <= o.Version {
+			continue
+		}
+		if c, ok := s.choiceFor("theme", o.DesignID); ok && c.SkippedVersion == ans.Version {
 			continue
 		}
 		to := ans.SharedName
 		if to == "" {
 			to = t.Title
 		}
-		out = append(out, updateItem{Kind: "theme", Key: t.Origin.DesignID, Title: to,
+		out = append(out, updateItem{Kind: "theme", Key: o.DesignID, Title: to,
 			From: t.Title, To: to, Version: ans.Version,
 			Renamed: ans.SharedName != "" && ans.SharedName != t.Title,
 			Choices: []string{"update", "skip", "keep"}})
@@ -473,6 +489,12 @@ func (s *Server) applyThemeUpdate(r *http.Request, key, baked string) (*applyPay
 	if ans.Gone {
 		return nil, fmt.Errorf("%s is no longer shared on orb-os.net; the theme stays, and Orb Manager "+
 			"will stop checking it", oldName)
+	}
+	if ans.NotYet {
+		// The same refusal this row will still be offering nothing about: the site could
+		// not say what the design's current version is, which is not a reason to write
+		// anything. Nothing on the shelf, on an orb or in the state file changes.
+		return nil, fmt.Errorf("%s: %s can’t check for updates yet", oldName, siteHost(origin.Site))
 	}
 	if ans.Version <= origin.Version {
 		return nil, fmt.Errorf("orb-os.net has no newer version of %s than the one that was baked", oldName)

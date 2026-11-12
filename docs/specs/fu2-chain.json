@@ -1,0 +1,37 @@
+{
+  "name": "fu2-gorb",
+  "repo": "../..",
+  "base": "delegate/fu2-1-svg-parse",
+  "read": [
+    "/home/greg/docker/worktrees/orb-os-net-fu2-lead",
+    "/home/greg/docker/worktrees/gorb-os-fu2-lead-fu2-rename-probe"
+  ],
+  "retries": 2,
+  "timeout": 5400,
+  "steps": [
+    {
+      "name": "fu2-2-art-floor",
+      "spec": "docs/specs/fu2-2-art-floor.md",
+      "hard": true,
+      "verify": "export GOFLAGS=-buildvcs=false PATH=/usr/local/go/bin:$PATH && set -o pipefail && R=$PWD && cd tools/orb-manager && go vet ./... && go test -run 'ArtRefusal|ArtPrefixRefusal|Svg|BundleArt|SiteImport|Contract|Design' . && make contract >/dev/null && test -z \"$(git -C $R diff --name-only -- tools/orb-manager/contract)\" && grep -q 'func artPrefixRefusal' sitelimits.go && cd $R && make check-pictures && make check-editor && make check-web && sh docs/specs/s3-gotest.sh && test -z \"$(git diff --name-only delegate/fu2-1-svg-parse -- apps tools/orb-manager/editor.go tools/orb-manager/security.go tools/orb-manager/release.go tools/orb-manager/designs.go tools/orb-manager/libentries.go)\""
+    },
+    {
+      "name": "fu2-3-www-and-sdkdoc",
+      "spec": "docs/specs/fu2-3-www-and-sdkdoc.md",
+      "hard": true,
+      "verify": "export GOFLAGS=-buildvcs=false PATH=/usr/local/go/bin:$PATH && set -o pipefail && R=$PWD && cd tools/orb-manager && go vet ./... && go test -run 'SiteAllowed|SiteImport|ResolveOrigin|ThemeOrigin' . && cd $R && grep -q 'www.orb-os.net' tools/orb-manager/sitelimits.go && grep -q 'unsafe-eval' apps/README.md && grep -qi 'support@1' apps/README.md && make check-hub && sh docs/specs/s3-gotest.sh && test -z \"$(git diff --name-only delegate/fu2-1-svg-parse -- tools/orb-manager/contract apps/clock apps/flights apps/weather apps/radar apps/color_picker)\""
+    },
+    {
+      "name": "fu2-4-rename-prompt",
+      "spec": "docs/specs/fu2-4-rename-prompt.md",
+      "hard": true,
+      "verify": "export GOFLAGS=-buildvcs=false PATH=/usr/local/go/bin:$PATH && set -o pipefail && R=$PWD && cd tools/orb-manager && go vet ./... && go test -run 'Rename|ThemeName|Design|LibEntry|Keep|Forget' . && node --check web/runtime/theme@1/session.js && grep -qE 'func \\(s \\*Server\\) checkNewName' libentries.go && test -z \"$(git diff delegate/fu2-1-svg-parse -- libentries.go | grep -E '^[+-].*func (checkNewName|checkThemeName)')\" && cd $R && make check-rename-live 2>&1 | tail -3 | grep -qE 'rename-live: ([0-9]+)/\\1 passed' && make check-editor && make check-web && sh docs/specs/s3-gotest.sh && test -z \"$(git diff --name-only delegate/fu2-3-www-and-sdkdoc -- tools/orb-manager/contract apps)\""
+    },
+    {
+      "name": "fu2-5-app-versions",
+      "spec": "docs/specs/fu2-5-app-versions.md",
+      "hard": true,
+      "verify": "export GOFLAGS=-buildvcs=false PATH=/usr/local/go/bin:$PATH && set -o pipefail && R=$PWD && test -f tools/check_app_versions.py && grep -q 'check_app_versions' Makefile && python3 tools/check_app_versions.py && grep -q 'fetch-depth: 0' .github/workflows/ci.yml && make check-apps && sh docs/specs/s3-gotest.sh && test -z \"$(git diff --name-only delegate/fu2-1-svg-parse -- tools/orb-manager/contract)\""
+    }
+  ]
+}

@@ -35,8 +35,11 @@ tell users how to get past the warning.
    ```sh
    git tag v1.2.6 && git push origin v1.2.6
    ```
-3. Wait for the run under Actions → release. Notarization is usually the slowest
-   step. It ends with a **draft** release that has the three downloads, `sha256sums.txt`,
+3. **Approve the signing.** The run's Windows and macOS jobs wait for your approval before
+   they can read the signing secrets (the `release` environment's required reviewer): open
+   the run under Actions → release, press **Review deployments**, tick `release` and press
+   **Approve and deploy**. Nothing can sign as you without that press. Then wait for the
+   run. Notarization is usually the slowest step. It ends with a **draft** release that has the three downloads, `sha256sums.txt`,
    and notes: yours, then the firmware and app versions built in, then every commit since
    the previous tag, folded.
 4. Read the draft over. To publish it, open the draft under Releases, choose Edit, and press
@@ -146,22 +149,35 @@ still show "Windows protected your PC" for a short while, even when signed.
 
 ## Adding the secrets
 
+The secrets live in the **`release` environment** (Settings → Environments → release), not
+in the repository: only the two signing jobs use that environment, only `main` and `v*`
+tags may deploy to it, and every run waits for the owner to approve it. `v*` tags
+themselves can only be created, moved or deleted by a repository admin (the ruleset
+"Release tags: owner only"). So a push, a pull request or a collaborator's tag cannot sign
+a build.
+
+Set `SIGNING_SECRETS_ENV=release` for the script below so it writes to the environment.
+
 `tools/signing_secrets.sh` sets them from the repo root: `windows` asks for the six
 Azure values at hidden prompts, `mac cert.p12 AuthKey_XXXX.p8` encodes the two files and
 asks for the other four, and `check` lists which are set. GitHub never shows a secret
 again, so with `SIGNING_SECRETS_DIR` set the script also files each value there (one
-owner-only file per secret) and loads it from there next time. Or, in GitHub, go to the repo →
-Settings → Secrets and variables → Actions → New repository secret. Or by hand with the
+owner-only file per secret) and loads it from there next time. With the values on file,
+every mode then probes them with the vendors (`tools/signing_probe.py`): one test signature
+from the Azure account and profile, the .p12 opened with its password and matched to the
+identity, and the notary key checked with Apple. A wrong account name shows as a FAIL line
+in seconds; in a release it is a bare 403 from Azure half an hour in. Or, in GitHub, go to the repo →
+Settings → Environments → release → Add environment secret. Or by hand with the
 CLI (`base64 -i` is macOS's spelling; on Linux use `base64 -w0`):
 
 ```sh
-base64 -i cert.p12 | gh secret set MACOS_CERT_P12
-gh secret set MACOS_CERT_PASSWORD      # prompts for the value
-gh secret set MACOS_SIGN_IDENTITY --body 'Developer ID Application: Your Name (TEAMID1234)'
-base64 -i AuthKey_XXXX.p8 | gh secret set APPLE_API_KEY_P8
-gh secret set APPLE_API_KEY_ID --body XXXX
-gh secret set APPLE_API_ISSUER --body xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
-gh secret set AZURE_TENANT_ID --body …   # and the other five the same way
+base64 -i cert.p12 | gh secret set --env release MACOS_CERT_P12
+gh secret set --env release MACOS_CERT_PASSWORD      # prompts for the value
+gh secret set --env release MACOS_SIGN_IDENTITY --body 'Developer ID Application: Your Name (TEAMID1234)'
+base64 -i AuthKey_XXXX.p8 | gh secret set --env release APPLE_API_KEY_P8
+gh secret set --env release APPLE_API_KEY_ID --body XXXX
+gh secret set --env release APPLE_API_ISSUER --body xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
+gh secret set --env release AZURE_TENANT_ID --body …   # and the other five the same way
 ```
 
 Then run the workflow once by hand (Run workflow) and check that each job's signing

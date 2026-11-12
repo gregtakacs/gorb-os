@@ -2,6 +2,8 @@ package main
 
 import (
 	"bytes"
+	"compress/zlib"
+	"encoding/base64"
 	"encoding/binary"
 	"encoding/json"
 	"hash/crc32"
@@ -10,6 +12,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -65,8 +68,49 @@ func withABI(body []byte, abi uint32) []byte {
 
 func designDoc(name, ver string, art int) []byte {
 	return []byte(`{"format":"wc-design","schema":1,"app":"clock","appVersion":"` + ver + `","made":"2026-11-04T00:00:00Z",` +
-		`"dial":"skeleton","themeName":"` + name + `","assets":[{"id":"bg-1","dataUrl":"data:image/png;base64,` + strings.Repeat("A", art) + `"}],` +
+		`"dial":"skeleton","themeName":"` + name + `","assets":[{"id":"bg-1","dataUrl":"data:image/png;base64,` + designArt(art) + `"}],` +
 		`"saved":{"name":"ignored","at":1,"extra":{"dial":"skeleton"}}}`)
+}
+
+// designArt is the base64 body of a picture that clears the art floor: a real, valid
+// 1×1 RGBA PNG — signature, one IHDR, one IDAT, one IEND, every CRC honest — whose tEXt
+// chunk carries a padded payload, so a body made for N is at least N bytes long.
+// designDoc carries one (ruling 35, as amended: art under 10 bytes is refused), so the
+// contract fixture the site replays holds real pictures; the art-floor table in
+// sitelimits_test.go uses it too.
+func designArt(art int) string {
+	ihdr := make([]byte, 13)
+	binary.BigEndian.PutUint32(ihdr[0:], 1)
+	binary.BigEndian.PutUint32(ihdr[4:], 1)
+	ihdr[8], ihdr[9], ihdr[10], ihdr[11], ihdr[12] = 8, 6, 0, 0, 0
+	idat := zlibChunk([]byte{0, byte(art), 0x7f, 0xb0, 0xff})
+	text := strconv.Itoa(art) + ";" + strings.Repeat("A", art+8)
+	b := append([]byte{0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a}, pngChunk("IHDR", ihdr)...)
+	b = append(b, pngChunk("tEXt", append([]byte("art\x00"), text...))...)
+	b = append(b, pngChunk("IDAT", idat)...)
+	b = append(b, pngChunk("IEND", nil)...)
+	return base64.StdEncoding.EncodeToString(b)
+}
+
+// pngChunk writes one PNG chunk — length, type, data, CRC over type and data, as any
+// decoder checks them. The hub reads only the header; a CRC that lies would fail one.
+func pngChunk(typ string, data []byte) []byte {
+	var head [4]byte
+	binary.BigEndian.PutUint32(head[:], uint32(len(data)))
+	body := append(append([]byte{}, typ...), data...)
+	var crc [4]byte
+	binary.BigEndian.PutUint32(crc[:], crc32.ChecksumIEEE(body))
+	return append(append(head[:], body...), crc[:]...)
+}
+
+// zlibChunk compresses one PNG image stream with a zlib default-method writer; flate is
+// deterministic run to run on a given toolchain, which is all a fixture needs.
+func zlibChunk(raw []byte) []byte {
+	var b bytes.Buffer
+	w := zlib.NewWriter(&b)
+	_, _ = w.Write(raw)
+	_ = w.Close()
+	return b.Bytes()
 }
 
 func libHub(t *testing.T) (*Server, string, string) {
@@ -135,7 +179,7 @@ func TestDraftsAreFilesOnTheHubOnePerName(t *testing.T) {
 	}
 	rec := rawCall(t, s, http.MethodGet, "/api/library/design?app=clock&name=Big%20sub", nil)
 	var got map[string]any
-	if json.Unmarshal(rec.Body.Bytes(), &got) != nil || got["format"] != "wc-design" || !strings.Contains(rec.Body.String(), strings.Repeat("A", 9000)) {
+	if json.Unmarshal(rec.Body.Bytes(), &got) != nil || got["format"] != "wc-design" || !strings.Contains(rec.Body.String(), designArt(9000)) {
 		t.Fatalf("design = %.200s, want the saved document with its art", rec.Body)
 	}
 	if sv, _ := got["saved"].(map[string]any); sv["name"] != "Big sub" {
@@ -213,7 +257,7 @@ func TestLibraryIsOneEntryPerName(t *testing.T) {
 	if env := designCall(t, s, http.MethodPost, "/api/library/forget?app=clock&name=Tourbillon&what=draft", nil); env["ok"] != true {
 		t.Fatalf("discard: %v", env)
 	}
-	if rec := rawCall(t, s, http.MethodGet, "/api/library/design?app=clock&name=Tourbillon", nil); !strings.Contains(rec.Body.String(), `base64,AA"`) {
+	if rec := rawCall(t, s, http.MethodGet, "/api/library/design?app=clock&name=Tourbillon", nil); !strings.Contains(rec.Body.String(), `base64,`+designArt(2)+`"`) {
 		t.Errorf("Tourbillon opened at %.200s after discarding its changes, want the (rebaked) theme's design", rec.Body)
 	}
 	if e := entriesOf(t, s, "clock")["Tourbillon"]; e.State != "theme" {

@@ -8171,11 +8171,12 @@ On the pomodoro design's owner questions (`docs/specs/pomodoro-design.md`):
 - **The owner, on Bronze:** with a 5:00 short break, a turn reached 30:00 (the setting's own
   maximum), and the ring rescaled oddly past 5:00; paused, a turn to 30:00 "messes up the ring";
   running at 1:48 a turn down stopped at 1:00 where 0:48 was meant.
-- **Ruling: the time spent plus the time left never passes the phase's setting**, so the ring's
-  full circle is always the setting and never rescales (the ring is left over setting). A turn up
-  stops at the setting less what is spent: minutes turned off come back, no more. Running, a
-  turn keeps the seconds and stops short of 0 (1:48 -> 0:48; 0:48 down stays). Stopped or paused
-  it drops the seconds and keeps a minute's floor (1:48 -> 1:00 or 2:00). A clamp never moves the
-  time against the knob (0:45 turned down stays 0:45). A phase that is over (waiting, chimed) has
-  spent its setting: a turn there only reports the limit; press starts the next phase.
-- This replaces §64.10's turn ceiling (the setting's maximum) and its "a turn ends the waiting".
+- **Ruling (as amended the same day): a turn can always bring the time left back to the
+  phase's setting, however much has run, and never past it.** The ring is left over the setting,
+  so its full circle is always the setting and it never rescales. Running, a turn keeps the
+  seconds and stops short of 0 (1:48 -> 0:48; 0:48 down stays). Stopped, paused or over it drops
+  the seconds and keeps a minute's floor (1:48 -> 1:00 or 2:00). A clamp never moves the time
+  against the knob (0:45 turned down stays 0:45). A phase that is over, turned up, has that time
+  again and waits paused for the press. (The first reading, spent + left never past the setting,
+  stopped a turn up at the setting less what had run; the owner withdrew it.)
+- This replaces §64.10's turn ceiling (the setting's maximum).

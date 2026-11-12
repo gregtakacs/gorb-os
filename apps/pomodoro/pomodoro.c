@@ -72,22 +72,17 @@ void pm_press(pm_t *s, const pm_cfg_t *c)
 
 int pm_turn(pm_t *s, const pm_cfg_t *c, int delta, int64_t now_s)
 {
-    /* §64.14 (owner, Bronze 2026-11-11): the time spent plus the time left never passes the
-     * phase's setting, so the ring's full circle is always the setting and never rescales. A
-     * turn up stops at the setting less what is spent (minutes turned off come back, no more);
-     * running, a turn keeps the seconds and stops short of 0 (1:48 -> 0:48); stopped or paused
-     * it drops the seconds and keeps a minute's floor (1:48 -> 1:00 or 2:00). A phase that is
-     * over has spent its whole setting: a turn there only reports the limit. */
-    const int set = pm_len_s(c, pm_ring_phase(s, c->focuses));
-    int spent = s->st == PM_STOP ? 0 : s->len - s->rem;
+    /* §64.14 (owner, Bronze 2026-11-11): a turn can always bring the time left back to the
+     * phase's setting, however much has run, and never past it; the ring is left over the
+     * setting, so it never rescales. Running, a turn keeps the seconds and stops short of 0
+     * (1:48 -> 0:48); stopped, paused or over it drops the seconds and keeps a minute's floor
+     * (1:48 -> 1:00 or 2:00). A phase that is over and turned up is paused with that time. */
+    const int room = pm_len_s(c, pm_ring_phase(s, c->focuses));
     int want, lim = 0;
 
     if (delta == 0) return PM_EV_NONE;
     if (delta > 90) delta = 90;                  /* a wild ask cannot overflow the seconds */
     if (delta < -90) delta = -90;
-    if (spent < 0) spent = 0;
-    const int room = set - spent > 0 ? set - spent : 0;
-    if (s->st == PM_WAIT || s->st == PM_WAITED || room <= 0) return PM_EV_LIMIT;
     if (s->st == PM_RUN) {
         want = s->rem + delta * 60;
         if (want > room) { want = room; lim = 1; }
@@ -100,6 +95,7 @@ int pm_turn(pm_t *s, const pm_cfg_t *c, int delta, int64_t now_s)
     /* a clamp never moves the time against the turn (0:45 turned down stays 0:45) */
     if ((delta < 0 && want > s->rem) || (delta > 0 && want < s->rem)) return PM_EV_LIMIT;
     if (want == s->rem) return lim ? PM_EV_LIMIT : PM_EV_NONE;
+    if (s->st == PM_WAIT || s->st == PM_WAITED) s->st = PM_PAUSE;   /* time again: paused */
     if (s->st == PM_STOP) s->len = want;         /* nothing spent: the length is the turn */
     else s->len += want - s->rem;                /* the spent part is never rewound */
     s->rem = want;

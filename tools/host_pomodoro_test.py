@@ -93,18 +93,22 @@ MUTATIONS = [
     ("        if (s->len < PM_MIN_S) s->len = pm_len_s(c, pm_phase_at(s->k, c->focuses));", "        s->len = pm_len_s(c, PM_FOCUS);"),  # a press over the turned length
     ("        s->k = (int16_t)pm_next_k(s->k, c->focuses);\n        s->len", "        s->len"),                     # the press never moves on
     ("        s->len = pm_len_s(c, pm_phase_at(s->k, c->focuses));\n        s->rem = s->len;\n        s->st = PM_RUN;", "        s->len = pm_len_s(c, PM_FOCUS);\n        s->rem = s->len;\n        s->st = PM_RUN;"),  # the next phase at the focus's length
-    # §64.14's turn: spent + left never passes the setting
-    ("        want = s->rem + delta * 60;", "        want = s->rem / 60 * 60 + delta * 60;"),                          # running drops its seconds
-    ("        want = s->rem / 60 * 60 + delta * 60;", "        want = s->rem + delta * 60;"),                          # paused keeps its seconds
-    ("        want = s->rem + delta * 60;", "        want = s->rem + delta * 30;"),                                    # a click is not a minute
-    ("        if (want > room) { want = room; lim = 1; }\n        if (want <= 0)", "        if (want > room + 60) { want = room; lim = 1; }\n        if (want <= 0)"),  # the ceiling leaks a click
-    ("        if (want <= 0) return PM_EV_LIMIT;", "        if (want < 0) want = 0;"),                              # turned to zero
-    ("    if (s->st == PM_WAIT || s->st == PM_WAITED) s->st = PM_PAUSE;   /* time again: paused */", "    if (s->st == PM_WAIT) s->st = PM_PAUSE;"),  # a chimed phase stays chimed
+    # §64.14's turn: always back to the setting, never past it; down to 0:00 and paused
+    ("    if (s->st == PM_RUN) want = s->rem + delta * 60;", "    if (s->st == PM_RUN) want = s->rem / 60 * 60 + delta * 60;"),  # running drops its seconds
+    ("    if (s->st == PM_RUN) want = s->rem + delta * 60;", "    if (s->st == PM_RUN) want = s->rem + delta * 30;"),            # a click is not a minute
+    ("    else want = s->rem / 60 * 60 + (delta + 1) * 60;", "    else want = s->rem / 60 * 60 + delta * 60;"),                 # down skips a minute
+    ("    else if (delta > 0 || s->rem % 60 == 0)", "    else if (delta > 0)"),                                                # 12:00 down is 12:00
+    ("    if (want > room) { want = room; lim = 1; }", "    if (want > room + 60) { want = room; lim = 1; }"),               # the ceiling leaks a click
+    ("    if (want > room) { want = room; lim = 1; }", "    if (want > room) { want = room; }"),                              # the stop never reported
+    ("    if (want < 0) { want = 0; lim = 1; }", "    if (want < 0) { want = 60; lim = 1; }"),                                 # the old floor back
     ("    const int room = pm_len_s(c, pm_ring_phase(s, c->focuses));", "    const int room = pm_len_s(c, PM_LONG);"),    # another phase's setting for this one's
-    ("    else s->len += want - s->rem;", "    else s->len = want;"),                                             # the spent arc rewound
-    ("    s->end_s = s->st == PM_RUN ? now_s + want : 0;", "    s->end_s = s->st == PM_RUN ? now_s : 0;"),       # the turn leaves the end
+    ("    else s->len += want - s->rem;", "    else s->len = want;"),                                                     # the spent arc rewound
+    ("    s->end_s = s->st == PM_RUN ? now_s + want : 0;", "    s->end_s = s->st == PM_RUN ? now_s : 0;"),               # the turn leaves the end
+    ("    if (s->st == PM_WAIT || s->st == PM_WAITED || want == 0) s->st = PM_PAUSE;", "    if (s->st == PM_WAIT || want == 0) s->st = PM_PAUSE;"),  # a chimed phase stays chimed
+    ("    if (s->st == PM_WAIT || s->st == PM_WAITED || want == 0) s->st = PM_PAUSE;", "    if (s->st == PM_WAIT || s->st == PM_WAITED) s->st = PM_PAUSE;"),  # 0:00 runs on
     ("    if ((delta < 0 && want > s->rem) || (delta > 0 && want < s->rem)) return PM_EV_LIMIT;", ""),          # a clamp turns against the knob
     (".len = pm_len_s(c, pm_ring_phase(s, c->focuses)),", ".len = s->len,"),                                   # the ring rescales on a turn
+    ("    s->rem = st == PM_PAUSE ? (raw->rem < 0 ? 0 : raw->rem > len ? len : raw->rem) : rem;", "    s->rem = rem;"),  # a paused 0:00 restores at 1:00
     ("int pm_at_start(const pm_t *s) { return s->len <= 0 || s->rem >= s->len; }", "int pm_at_start(const pm_t *s) { return s->len <= 0 || s->rem > s->len; }"),  # a fresh phase is not fresh
     ("    if (pos == 0 && at_start && p < 0) p -= 1;", "    if (pos == 0 && !at_start && p < 0) p -= 1;"),           # -1 skipped when it should not be
     ("    const int lo = k > 0 ? -k - 1 : -1;", "    const int lo = k > 0 ? -k : -1;"),                             # one slot off the front of the cycle
@@ -324,21 +328,23 @@ int main(void)
             "and the minutes turned off come back, up to the setting");
         q = mk(PM_RUN, 0, 1500, 108, 4000);
         ckk(pm_turn(&q, &c, -1, 4892) == PM_EV_NONE && q.rem == 48, 1, "running keeps the seconds: 1:48 then a click down is 0:48");
-        ckk(pm_turn(&q, &c, -1, 4952) == PM_EV_LIMIT && q.rem == 48 && q.end_s == 4892 + 48, 1,
-            "and 0:48 turned down stays: a turn never takes a phase to 0");
+        ckk(pm_turn(&q, &c, -1, 4952) == PM_EV_LIMIT && q.rem == 0 && q.st == PM_PAUSE && q.end_s == 0, 1,
+            "and 0:48 turned down runs to 0:00 and stops there, paused (owner)");
+        ckk(pm_turn(&q, &c, -1, 4952) == PM_EV_LIMIT && q.rem == 0, 1, "and 0:00 turned down stays");
+        ckk(pm_turn(&q, &c, 1, 4952) == PM_EV_NONE && q.rem == 60 && q.st == PM_PAUSE, 1, "a click up from 0:00 is 1:00, still paused");
         q = mk(PM_RUN, 0, 1000, 754, 4000);
         ckk(pm_turn(&q, &c, 1, 5000) == PM_EV_NONE && q.rem == 814, 1, "running keeps the seconds: 12:34 then a click is 13:34");
         q = mk(PM_PAUSE, 0, 900, 108, 0);
-        ckk(pm_turn(&q, &c, -1, 5000) == PM_EV_LIMIT && q.rem == 60, 1,
-            "paused at 1:48, a click down is 1:00, the floor, and says so (owner)");
+        ckk(pm_turn(&q, &c, -1, 5000) == PM_EV_NONE && q.rem == 60, 1,
+            "paused at 1:48, a click down snaps to 1:00 (owner)");
         q = mk(PM_PAUSE, 0, 900, 108, 0);
         ckk(pm_turn(&q, &c, 1, 5000) == PM_EV_NONE && q.rem == 120, 1, "and a click up is 2:00");
         q = mk(PM_PAUSE, 0, 1000, 754, 0);
         ckk(pm_turn(&q, &c, 1, 5000) == PM_EV_NONE && q.rem == 780 && q.len == 1026, 1,
             "paused at 12:34, a click up drops the seconds first: 13:00, the spent part kept");
         q = mk(PM_PAUSE, 0, 1500, 45, 0);
-        ckk(pm_turn(&q, &c, -2, 5000) == PM_EV_LIMIT && q.rem == 45 && q.st == PM_PAUSE, 1,
-            "paused at 0:45, a turn down leaves it be");
+        ckk(pm_turn(&q, &c, -2, 5000) == PM_EV_LIMIT && q.rem == 0 && q.st == PM_PAUSE, 1,
+            "paused at 0:45, a turn down of two stops at 0:00 and says so");
         q = mk(PM_PAUSE, 0, 900, 45, 0);
         ckk(pm_turn(&q, &c, 1, 5000) == PM_EV_NONE && q.rem == 60, 1, "paused at 0:45 with room, a click up is 1:00");
         q = mk(PM_PAUSE, 0, 1500, 30, 0);
@@ -353,8 +359,14 @@ int main(void)
         ckk(pm_turn(&q, &c, 1, 5000) == PM_EV_NONE && q.st == PM_PAUSE && q.rem == 60, 1,
             "a chimed phase, turned up, is paused with its minute too");
         q = mk(PM_PAUSE, 0, 900, 45, 0);
-        ckk(pm_turn(&q, &c, -1, 5000) == PM_EV_LIMIT && q.rem == 45, 1,
-            "paused at 0:45 with room to spare, a click down still never lifts it to the 1:00 floor");
+        ckk(pm_turn(&q, &c, -1, 5000) == PM_EV_NONE && q.rem == 0 && q.st == PM_PAUSE, 1,
+            "paused at 0:45, a click down snaps to 0:00 and stays paused");
+        q = mk(PM_STOP, 0, 60, 60, 0);
+        ckk(pm_turn(&q, &c, -1, 5000) == PM_EV_NONE && q.rem == 0 && q.st == PM_PAUSE, 1,
+            "a stopped 1:00 turned down is 0:00, held paused");
+        q = mk(PM_PAUSE, 0, 1500, 754, 0);
+        ckk(pm_turn(&q, &c, -1, 5000) == PM_EV_NONE && q.rem == 720, 1, "paused at 12:34, a click down snaps to 12:00");
+        ckk(pm_turn(&q, &c, -1, 5000) == PM_EV_NONE && q.rem == 660, 1, "and the next is 11:00");
         q = mk(PM_STOP, 0, 1800, 1800, 0);                 /* set at 30:00, then the setting went to 25:00 */
         ckk(pm_turn(&q, &c, 1, 5000) == PM_EV_LIMIT && q.rem == 1800, 1,
             "over a setting lowered under it, a click up never shortens the time");
@@ -456,7 +468,12 @@ int main(void)
         pm_restore(&s, &c, &(pm_raw_t){199, 1500, 0, 900}, 1, 1000);
         ckk(s.st == PM_WAITED && s.k == 7, 1, "a torn pm_st of 199 is clamped, not trusted");
         pm_restore(&s, &c, &(pm_raw_t){10, 900, 0, -500}, 0, 1000);
-        ckk(s.rem == PM_MIN_S, 1, "a negative pm_rem is clamped up, not trusted");
+        ckk(s.rem == 0 && s.st == PM_PAUSE, 1, "a negative pm_rem is clamped to 0:00, not trusted");
+        pm_restore(&s, &c, &(pm_raw_t){10, 900, 0, 0}, 1, 1000);
+        ckk(s.rem == 0 && s.st == PM_PAUSE, 1, "a phase paused at 0:00 restores at 0:00 (§64.14)");
+        pm_restore(&s, &c, &(pm_raw_t){9, 900, 1794400000, 0}, 0, 1000);
+        ckk(s.st == PM_PAUSE && s.rem == PM_MIN_S, 1,
+            "a RUN restored before the clock can place it is held at a minute, never at 0:00 as if over");
         pm_restore(&s, &c, &(pm_raw_t){27, 360, 0, 0}, 1, 1000);
         ckk(s.st == PM_WAITED, 1, "a stored WAIT comes back already chimed: no chime out of a restore");
         s = mk(PM_RUN, 5, 600, 321, 777);

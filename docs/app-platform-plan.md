@@ -8174,9 +8174,10 @@ On the pomodoro design's owner questions (`docs/specs/pomodoro-design.md`):
 - **Ruling (as amended the same day): a turn can always bring the time left back to the
   phase's setting, however much has run, and never past it.** The ring is left over the setting,
   so its full circle is always the setting and it never rescales. Running, a turn keeps the
-  seconds and stops short of 0 (1:48 -> 0:48; 0:48 down stays). Stopped, paused or over it drops
-  the seconds and keeps a minute's floor (1:48 -> 1:00 or 2:00). A clamp never moves the time
-  against the knob (0:45 turned down stays 0:45). A phase that is over, turned up, has that time
-  again and waits paused for the press. (The first reading, spent + left never past the setting,
-  stopped a turn up at the setting less what had run; the owner withdrew it.)
+  seconds (1:45 -> 0:45). Stopped, paused or over, it snaps to the whole minute in the turn's
+  direction (1:48 -> 1:00 or 2:00; 12:34 -> 12:00 or 13:00). **Down runs to 0:00 and stops there,
+  paused** (1:45 -> 0:45 -> 0:00); the press resumes it into its end and chime. A paused 0:00
+  survives a restart. A clamp never moves the time against the knob. A phase that is over,
+  turned up, has that time again and waits paused for the press. (Withdrawn the same day: spent +
+  left never past the setting, and a minute's floor.)
 - This replaces §64.10's turn ceiling (the setting's maximum).

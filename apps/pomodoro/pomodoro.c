@@ -74,30 +74,27 @@ int pm_turn(pm_t *s, const pm_cfg_t *c, int delta, int64_t now_s)
 {
     /* §64.14 (owner, Bronze 2026-11-11): a turn can always bring the time left back to the
      * phase's setting, however much has run, and never past it; the ring is left over the
-     * setting, so it never rescales. Running, a turn keeps the seconds and stops short of 0
-     * (1:48 -> 0:48); stopped, paused or over it drops the seconds and keeps a minute's floor
-     * (1:48 -> 1:00 or 2:00). A phase that is over and turned up is paused with that time. */
+     * setting, so it never rescales. Running, a turn keeps the seconds (1:45 -> 0:45); stopped,
+     * paused or over, it snaps to the whole minute in the turn's direction (1:48 -> 1:00 or
+     * 2:00). Down runs to 0:00 and stops there, paused (1:45 -> 0:45 -> 0:00); the press then
+     * resumes it into its end. A phase that is over, turned up, waits paused with that time. */
     const int room = pm_len_s(c, pm_ring_phase(s, c->focuses));
     int want, lim = 0;
 
     if (delta == 0) return PM_EV_NONE;
     if (delta > 90) delta = 90;                  /* a wild ask cannot overflow the seconds */
     if (delta < -90) delta = -90;
-    if (s->st == PM_RUN) {
-        want = s->rem + delta * 60;
-        if (want > room) { want = room; lim = 1; }
-        if (want <= 0) return PM_EV_LIMIT;       /* never to 0 by a turn: that reads as finished */
-    } else {
-        want = s->rem / 60 * 60 + delta * 60;
-        if (want > room) { want = room; lim = 1; }
-        if (want < PM_MIN_S) { want = PM_MIN_S < room ? PM_MIN_S : room; lim = 1; }
-    }
-    /* a clamp never moves the time against the turn (0:45 turned down stays 0:45) */
+    if (s->st == PM_RUN) want = s->rem + delta * 60;
+    else if (delta > 0 || s->rem % 60 == 0) want = s->rem / 60 * 60 + delta * 60;
+    else want = s->rem / 60 * 60 + (delta + 1) * 60;   /* the first click down takes the seconds */
+    if (want > room) { want = room; lim = 1; }
+    if (want < 0) { want = 0; lim = 1; }
+    /* a clamp never moves the time against the knob */
     if ((delta < 0 && want > s->rem) || (delta > 0 && want < s->rem)) return PM_EV_LIMIT;
     if (want == s->rem) return lim ? PM_EV_LIMIT : PM_EV_NONE;
-    if (s->st == PM_WAIT || s->st == PM_WAITED) s->st = PM_PAUSE;   /* time again: paused */
     if (s->st == PM_STOP) s->len = want;         /* nothing spent: the length is the turn */
     else s->len += want - s->rem;                /* the spent part is never rewound */
+    if (s->st == PM_WAIT || s->st == PM_WAITED || want == 0) s->st = PM_PAUSE;   /* held here */
     s->rem = want;
     s->end_s = s->st == PM_RUN ? now_s + want : 0;
     return lim ? PM_EV_LIMIT : PM_EV_NONE;
@@ -224,7 +221,9 @@ void pm_restore(pm_t *s, const pm_cfg_t *c, const pm_raw_t *raw, int synced, int
     }
     s->st = PM_PAUSE;                            /* a RUN the clock cannot place is held */
     s->len = len;
-    s->rem = rem;
+    /* a paused phase may be held at 0:00 (§64.14: a turn runs down to the end and pauses);
+     * a RUN the clock cannot place has no seconds in the store, and is held at its floor */
+    s->rem = st == PM_PAUSE ? (raw->rem < 0 ? 0 : raw->rem > len ? len : raw->rem) : rem;
     s->end_s = 0;
 }
 

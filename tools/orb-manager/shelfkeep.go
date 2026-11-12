@@ -49,6 +49,47 @@ func (s *Server) takeForShelf(token string) []byte {
 	return b
 }
 
+// holdCommitApp records which app a refusal handed its commit token to: the app the refused
+// container's own header names, which is the app the orb files it under. The editor listener
+// reads the record to refuse one app's editor a commit of another app's staged copy
+// (H3-hub-1), so it is held under the same lock and the same bound as the bytes it accompanies
+// — a refusal nobody commits is dropped rather than held for the life of the hub. An empty
+// token or an app-less container records nothing: there is no scope to answer with.
+func (s *Server) holdCommitApp(token, app string) {
+	if token == "" || app == "" {
+		return
+	}
+	s.sendMu.Lock()
+	defer s.sendMu.Unlock()
+	if s.commitApps == nil {
+		s.commitApps = map[string]string{}
+	}
+	if len(s.commitApps) >= shelfPendingMax {
+		for k := range s.commitApps {
+			delete(s.commitApps, k)
+			break
+		}
+	}
+	s.commitApps[token] = app
+}
+
+// commitAppOf is whose app a held commit token was handed for, "" when the hub holds no
+// record of it — a token it never issued, or one already spent.
+func (s *Server) commitAppOf(token string) string {
+	s.sendMu.Lock()
+	defer s.sendMu.Unlock()
+	return s.commitApps[token]
+}
+
+// dropCommitApp forgets a token that has been spent, by either port's commit. The device's
+// token is one-shot, so after a commit that landed it names nothing the hub may still scope:
+// the next ask for it is an unknown token, and on the editor port that is a refusal.
+func (s *Server) dropCommitApp(token string) {
+	s.sendMu.Lock()
+	defer s.sendMu.Unlock()
+	delete(s.commitApps, token)
+}
+
 func (s *Server) keepOnShelf(body []byte) {
 	if dest, err := s.library().keepTheme(body, true); err != nil {
 		log.Printf("theme shelf: not kept: %v", err)

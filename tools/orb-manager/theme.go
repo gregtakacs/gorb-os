@@ -1006,6 +1006,7 @@ func (s *Server) handleThemeUpload(w http.ResponseWriter, r *http.Request) {
 		verdict, note := s.themeDuplicate(ip, c)
 		s.setSend(ip, func(st *themeSend) {
 			st.Phase, st.ID, st.Total, st.Sent, st.Note = verdict, c.ID, int64(len(body)), 0, note
+			st.App = containerApp(c)
 		})
 		s.jsonOK(w, map[string]any{"duplicate": verdict == "duplicate", "exact": verdict == "exact",
 			"note": note, "name": c.Name, "id": c.ID, "serial": c.Serial})
@@ -1034,6 +1035,7 @@ func (s *Server) handleThemeUpload(w http.ResponseWriter, r *http.Request) {
 	// ~2 MB reasoning above).
 	s.setSend(ip, func(st *themeSend) {
 		st.Phase, st.ID, st.Total, st.Sent, st.Note = "uploading", c.ID, int64(len(body)), 0, ""
+		st.App = containerApp(c)
 	})
 	// A theme shipping changes what the card would answer for its id's preview
 	// and for the list beside it, so this address's whole memory retires before
@@ -1051,6 +1053,7 @@ func (s *Server) handleThemeUpload(w http.ResponseWriter, r *http.Request) {
 			st.Phase, st.Note = "duplicate", "a different theme with that name is already on the card"
 		})
 		s.holdForShelf(de.CommitToken(), body)
+		s.holdCommitApp(de.CommitToken(), containerApp(c))
 		s.jsonErrFields(w, de.Error()+" — send it again with overwrite to replace it", map[string]any{
 			"duplicate": true, "commit": de.CommitToken(),
 		})
@@ -1113,9 +1116,20 @@ func (s *Server) streamThemeUpload(w http.ResponseWriter, r *http.Request, ip st
 		return
 	}
 	defer release()
+	// The same witness the JSON door opens, and for the same reason on this path: the editor's
+	// Send is the streamed one, so this is where a send of an app gets recorded as one (H3-hub-1
+	// scopes the progress line by it). A streamed run tells its later words as its own step
+	// lines, so the witness carries this door's two verdicts rather than every stage.
+	s.setSend(ip, func(st *themeSend) {
+		st.Phase, st.ID, st.Total, st.Sent, st.Note = "uploading", c.ID, int64(len(body)), 0, ""
+		st.App = containerApp(c)
+	})
 	s.dropThemeCache(ip)
 	if s.streamThemeStore(r.Context(), ip, body, c.Name, c, overwrite, false, send) {
+		s.setSend(ip, func(st *themeSend) { st.Phase = "stored" })
 		s.keepOnShelf(body)
+	} else {
+		s.setSend(ip, func(st *themeSend) { st.Phase = "rejected" })
 	}
 }
 
@@ -1247,6 +1261,9 @@ func (s *Server) handleThemeCommit(w http.ResponseWriter, r *http.Request) {
 	defer release()
 	raw, err := s.device.ThemeCommit(t.IP, q.Commit)
 	if err == nil {
+		// The token is spent — one-shot on the device and now forgotten here, whichever port
+		// spent it, so an editor cannot ask again for a scope record of a commit that landed.
+		s.dropCommitApp(q.Commit)
 		// The staged copy landed and its store was queued: same retirement as
 		// any other write to the card, and the same follow-through as an upload, so
 		// the reply comes once the orb is back drawing it rather than mid-reboot.
@@ -1612,6 +1629,20 @@ type themeSend struct {
 	Total int64  `json:"total"`
 	Note  string `json:"note,omitempty"`
 	At    int64  `json:"at"`
+	// App is the app the send's own container named, held so the editor listener can refuse
+	// one app's editor the progress line of another app's send (H3-hub-1). It is never part of
+	// the answer: the witness of a send says where a transfer is, not whose it was.
+	App string `json:"-"`
+}
+
+// containerApp is the app a parsed container's own header names — the app the orb files it
+// under, and so the only app whose editor may be told anything about a send of it. Empty for
+// a container that names no section, which scopes nothing.
+func containerApp(c *orbnet.ThemeContainer) string {
+	if c == nil || len(c.Sections) == 0 {
+		return ""
+	}
+	return c.Sections[0]
 }
 
 func (s *Server) setSend(ip string, f func(*themeSend)) {

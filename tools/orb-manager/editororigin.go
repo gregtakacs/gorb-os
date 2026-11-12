@@ -565,10 +565,13 @@ func (s *Server) routesEditorListener(mux *http.ServeMux) {
 	mux.Handle("/api/theme/design", editorMethod(http.MethodGet, s.editorScopeDesignAnswer(s.handleThemeDesign)))
 	mux.Handle("/api/theme/stem", editorMethod(http.MethodGet, s.editorScopeSlugDefault(s.handleThemeStem)))
 	mux.Handle("/api/editor/source", editorMethod(http.MethodGet, s.editorScopeSlug(s.handleEditorSource)))
-	// The send door: an editor's own theme upload, and the progress line it paints.
+	// The send door: an editor's own theme upload, and the progress line it paints. The commit
+	// and the progress line name an address or a token rather than an app, so their scope comes
+	// from the hub's own record of the send — the token's app when a refusal was handed, and
+	// the app the running send's container carried.
 	mux.Handle("/api/theme/upload", editorMethod(http.MethodPost, s.editorScopeContainer(s.handleThemeUpload)))
-	mux.Handle("/api/theme/commit", editorMethod(http.MethodPost, s.handleThemeCommit))
-	mux.Handle("/api/theme/upload-status", editorMethod(http.MethodGet, s.handleThemeSendStatus))
+	mux.Handle("/api/theme/commit", editorMethod(http.MethodPost, s.editorScopeCommit(s.handleThemeCommit)))
+	mux.Handle("/api/theme/upload-status", editorMethod(http.MethodGet, s.editorScopeSendStatus(s.handleThemeSendStatus)))
 	mux.Handle("/api/orb/known", editorMethod(http.MethodGet, s.handleRememberedIP))
 	// The site bundle an imported design bakes from, and the keep that files the bake.
 	mux.Handle("/api/site/bundle", editorMethod(http.MethodGet, s.editorScopeTicket(s.handleSiteBundle)))
@@ -688,6 +691,53 @@ func (s *Server) editorScopeContainer(next http.HandlerFunc) http.HandlerFunc {
 		}
 		if c.Sections[0] != scope {
 			editorScopeOther(w, r, scope, c.Sections[0])
+			return
+		}
+		next(w, r)
+	}
+}
+
+// editorScopeCommit scopes the zero-byte commit that answers a duplicate refusal. The body
+// names a token and an address, never an app, so the scope comes from the hub's own record of
+// who that token was handed to (holdCommitApp): a token this hub never issued, or one already
+// spent through the control port, is nobody's editor's to commit, and a token issued to another
+// app is that app's staged copy. A body this layer cannot read — none, not JSON, or one larger
+// than the {ip, commit} envelope — is passed through unjudged, because the handler below has
+// the sentence a malformed request deserves and this layer would only overwrite it.
+func (s *Server) editorScopeCommit(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		scope := editorScopeOf(r)
+		var q struct {
+			Commit string `json:"commit"`
+		}
+		// The cap is this envelope's own size, not an upload's: the body is {ip, commit}, and
+		// anything longer than 4 KiB is not one. It reaches the handler already truncated, the
+		// way an over-large body reaches editorScopeContainer's handler as over-large.
+		if json.Unmarshal(editorBodyCapped(r, 4096), &q) != nil || q.Commit == "" {
+			next(w, r)
+			return
+		}
+		switch app := s.commitAppOf(q.Commit); {
+		case app == "":
+			reject(w, r, http.StatusForbidden,
+				"this editor is the %s app's: it can only commit a theme it sent", scope)
+		case app != scope:
+			editorScopeOther(w, r, scope, app)
+		default:
+			next(w, r)
+		}
+	}
+}
+
+// editorScopeSendStatus scopes the progress line a send is watched by. The request names only
+// an address, so the subject is whatever the hub is running there: a send this hub started from
+// a container naming another app is refused, while an idle orb — or a send of this editor's own
+// theme — answers exactly as it did before this door was scoped.
+func (s *Server) editorScopeSendStatus(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		scope := editorScopeOf(r)
+		if app := s.sendSnapshot(strings.TrimSpace(r.URL.Query().Get("ip"))).App; app != "" && app != scope {
+			editorScopeOther(w, r, scope, app)
 			return
 		}
 		next(w, r)

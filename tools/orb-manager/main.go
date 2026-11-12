@@ -278,6 +278,10 @@ type Server struct {
 	// shelfPending holds a duplicate refusal's bytes under its commit token, so the
 	// zero-byte commit that follows can still keep the theme on the shelf (K9).
 	shelfPending map[string][]byte
+	// commitApps remembers which app a duplicate refusal handed its commit token to, so the
+	// editor listener can refuse one app's editor a commit of another app's staged copy
+	// (H3-hub-1). Same lock and same bound as the hold it accompanies; see shelfkeep.go.
+	commitApps map[string]string
 	// kickMu guards lastPlug: the orb MACs the previous cable sweep attributed, which
 	// is what lets kickLostCables (liveness.go) tell an unplug from a steady bench and
 	// re-dial the unplugged board's remembered address the second the lead goes quiet.

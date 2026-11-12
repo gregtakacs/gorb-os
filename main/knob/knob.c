@@ -100,6 +100,12 @@
  * heavily, and 200 ms is still far faster than anyone deliberately taps it, so
  * one physical click can't become two. (Mirrors orb-os SW_DEBOUNCE_MS.) */
 #define SW_DEBOUNCE_MS 200
+/* §64.17 (owner, Bronze 2026-11-12: "I can't double press"): a new press is accepted once the
+ * previous release has settled (KG_SETTLE_MS open, the rule that already swallows release
+ * bounce) and SW_REPRESS_MS after the previous press edge. The old 200 ms counted from ANY
+ * edge, the release included, so a hand's second press 80-150 ms after letting go was thrown
+ * away before it began. Bounce while down is the same press (kg_down), as before. */
+#define SW_REPRESS_MS 120
 
 /* Hold duration that promotes a hold to a long press. The reference uses 8000 ms
  * (a recovery-reboot guard nobody hits by accident); for an interactive control
@@ -128,7 +134,13 @@ static uint8_t          s_prevAB  = 0xFF; /* last decoded AB, shared by A and B 
 static volatile int32_t s_rawPos  = 0;   /* raw quadrature count               */
 static int32_t          s_net     = 0;   /* travel since the last valley arrival */
 static volatile int32_t s_detent  = 0;   /* committed detents — the true stream*/
-static volatile bool    s_pressPend = false;  /* set at release if held < LONG  */
+/* §64.17: completed presses, each with its release instant, in a tiny ring: two presses can
+ * never merge into one flag, and a double press is timed by the hand, not by when a busy
+ * LVGL task got round to polling (Bronze, 2026-11-12: "it works sometimes"). */
+#define PRESS_Q 4
+static volatile int64_t s_pressAt[PRESS_Q];
+static volatile uint8_t s_pressHead, s_pressTail;  /* producer: ISR or poll; consumer: poll */
+static portMUX_TYPE     s_sw_mux = portMUX_INITIALIZER_UNLOCKED;
 static volatile bool    s_longPend  = false;  /* set once a hold passes LONG     */
 
 /* The quadrature state the shaft rests in when it is parked on a click — the valley
@@ -164,6 +176,8 @@ static portMUX_TYPE     s_rot_mux   = portMUX_INITIALIZER_UNLOCKED;
 /* Switch edge bookkeeping, live inside the SW ISR (microseconds from esp_timer
  * so both edges share one IRAM-safe clock). */
 static volatile int64_t s_swLastEdgeUs  = 0;  /* us of the last accepted edge        */
+static volatile int64_t s_swLastPressUs = 0;  /* us of the last accepted press edge  */
+static volatile uint32_t s_swRejected;        /* press edges the debounce refused    */
 
 /* Consumer read-cursor (only ever touched by the single take_delta caller). */
 static int32_t s_lastTakenDetent = 0;
@@ -431,6 +445,15 @@ static void IRAM_ATTR knob_rot_isr(void *arg)
 
 /* ---- Switch ISR: fires on any edge of SW. Debounces both edges, then decides
  * press vs. long-press at the release edge from the measured hold time. ---- */
+/* One completed press, at its release instant (us). Called with s_sw_mux held. */
+static inline __attribute__((always_inline)) void press_push(int64_t at)
+{
+    const uint8_t next = (uint8_t)((s_pressHead + 1u) % PRESS_Q);
+    if (next == s_pressTail) return;                  /* full: four unread presses already */
+    s_pressAt[s_pressHead] = at ? at : 1;
+    s_pressHead = next;
+}
+
 static void IRAM_ATTR knob_sw_isr(void *arg)
 {
     (void)arg;
@@ -445,6 +468,15 @@ static void IRAM_ATTR knob_sw_isr(void *arg)
         s_swLastEdgeUs = now;
         return;
     }
+    /* §64.17: a release that has stayed open KG_SETTLE_MS has ended its press even if the poll
+     * has not got round to it (a busy LVGL task polls late): finish it here, so this close is a
+     * NEW press and not bounce folded into the old one. */
+    portENTER_CRITICAL_ISR(&s_sw_mux);
+    if (s_g.down && s_g.up_at && now - s_g.up_at >= (int64_t)KG_SETTLE_MS * 1000) {
+        const int64_t up = s_g.up_at;
+        if (kg_settle(&s_g, now) == KG_PRESS) press_push(up);
+    }
+    portEXIT_CRITICAL_ISR(&s_sw_mux);
     /* A close while a release settles is the same press, and one inside a press-and-turn's
      * grace continues it: no debounce, no new gesture. */
     if (kg_down(&s_g, now)) {
@@ -452,12 +484,16 @@ static void IRAM_ATTR knob_sw_isr(void *arg)
         return;
     }
 
-    /* PRESS (falling): accept only SW_DEBOUNCE_MS after any prior edge, which
-     * rejects both make-bounce and the tail of a just-released switch. */
-    if ((now - s_swLastEdgeUs) < (int64_t)SW_DEBOUNCE_MS * 1000) {
+    /* PRESS (falling): a new press once the last release has settled and SW_REPRESS_MS after
+     * the last press edge (see SW_REPRESS_MS). A close inside the settle never got here:
+     * kg_down answered it as the same press. */
+    if ((now - s_swLastEdgeUs) < (int64_t)KG_SETTLE_MS * 1000 ||
+        (now - s_swLastPressUs) < (int64_t)SW_REPRESS_MS * 1000) {
+        s_swRejected++;
         return;
     }
     s_swLastEdgeUs   = now;
+    s_swLastPressUs  = now;
     if (kg_press(&s_g, now, s_rawPos)) s_pushEndPend = true;
 }
 
@@ -480,6 +516,7 @@ esp_err_t knob_init(void)
     /* Seed the switch debounce clock in the past so the very first press is not
      * swallowed by the min-interval rule against an unset zero. */
     s_swLastEdgeUs = esp_timer_get_time() - ((int64_t)SW_DEBOUNCE_MS * 2000);
+    s_swLastPressUs = s_swLastEdgeUs;
 
     /* Learn the valley — the AB state the detent spring parks the shaft in — by
      * sampling rather than assuming. Nobody is holding the knob at app_main, so this
@@ -534,9 +571,12 @@ void knob_poll(void)
     /* A release that has settled ends the press here, a hold fires at its threshold. */
     /* An opening edge lost (read low under bounce) is found here, so a press never sticks. */
     if (s_g.down && !s_g.up_at && gpio_get_level(PIN_KNOB_SW)) kg_up(&s_g, now);
+    portENTER_CRITICAL(&s_sw_mux);
+    const int64_t up = s_g.up_at;
     const int rel = kg_settle(&s_g, now);
-    if (rel == KG_PRESS) s_pressPend = true;
-    else if (rel == KG_LONG) s_longPend = true;
+    if (rel == KG_PRESS) press_push(up);             /* timed at the release, not at this poll */
+    portEXIT_CRITICAL(&s_sw_mux);
+    if (rel == KG_LONG) s_longPend = true;
     if (kg_poll(&s_g, now, s_rawPos)) s_longPend = true;
     if (kg_end(&s_g, now)) s_pushEndPend = true;
     int32_t settled = 0, spent = 0, net_seen = 0;
@@ -645,11 +685,24 @@ bool knob_take_push_end(void)
     return e;
 }
 
+bool knob_take_press_at(int64_t *at_us)
+{
+    bool got = false;
+    int64_t at = 0;
+    portENTER_CRITICAL(&s_sw_mux);
+    if (s_pressTail != s_pressHead) {
+        at = s_pressAt[s_pressTail];
+        s_pressTail = (uint8_t)((s_pressTail + 1u) % PRESS_Q);
+        got = true;
+    }
+    portEXIT_CRITICAL(&s_sw_mux);
+    if (at_us) *at_us = at;
+    return got;
+}
+
 bool knob_take_press(void)
 {
-    const bool p = s_pressPend;
-    s_pressPend  = false;
-    return p;
+    return knob_take_press_at(NULL);
 }
 
 bool knob_take_long_press(void)
@@ -697,3 +750,5 @@ uint32_t knob_long_press_ms(void)
 {
     return LONG_PRESS_MS;
 }
+
+uint32_t knob_press_rejected(void) { return s_swRejected; }

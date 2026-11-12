@@ -65,6 +65,27 @@ int orb_press_lent(int slot);
  *  same slot. A clear of a slot that never claimed is a no-op. */
 void orb_press_drop(int slot);
 
+/* §64.17 (owner, 2026-11-12): the lent press is a DOUBLE press, so the single press, the turn
+ * and the press-and-turn all stay the app's. While a claim stands, a plain press is held for
+ * ORB_TAP_WINDOW_MS: a second within it is the claimant's, none and it is the app's single
+ * press, late by the window. Pure timing, no clock of its own: the caller passes ms. */
+#define ORB_TAP_WINDOW_MS 450   /* a relaxed hand's double press, event to event (Bronze) */
+enum { ORB_TAP_NONE = 0, ORB_TAP_SINGLE = 1, ORB_TAP_DOUBLE = 2 };
+
+/** A lendable plain press arrived: ORB_TAP_DOUBLE when it completes a pair inside the window
+ *  (the pair goes to the claimant), ORB_TAP_NONE when it starts one (held). */
+int orb_tap_press(uint32_t now_ms);
+/** The held press's fate by now: ORB_TAP_SINGLE once the window passed without a second
+ *  press (deliver it to the app), else ORB_TAP_NONE. */
+int orb_tap_due(uint32_t now_ms);
+/** Another gesture arrived first: ORB_TAP_SINGLE when a press was held (deliver it now,
+ *  ahead of that gesture), else ORB_TAP_NONE. */
+int orb_tap_cancel(void);
+/** Forget a held press without delivering it (a hold, the carousel, a switch). */
+void orb_tap_drop(void);
+/** True while a press is held. */
+int orb_tap_pending(void);
+
 /** How many presses have been swallowed at the ceiling since the last init (the counter
  *  a fifth simultaneous press moves; it says nothing about who was refused). */
 int orb_press_swallowed(void);

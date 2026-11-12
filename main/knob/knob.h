@@ -104,6 +104,13 @@ bool knob_take_push_end(void);
 /** True exactly once if the knob was tapped (released under the hold time). */
 bool knob_take_press(void);
 
+/** §64.17: one completed press and its release instant (esp_timer us), oldest first; false
+ *  when none is waiting. Presses queue (up to 4), so two never merge into one. */
+bool knob_take_press_at(int64_t *at_us);
+
+/** Press edges the switch debounce refused since boot (/status knob.rej, §64.17). */
+uint32_t knob_press_rejected(void);
+
 /** True exactly once if the knob was held at least the long-press time. */
 bool knob_take_long_press(void);
 

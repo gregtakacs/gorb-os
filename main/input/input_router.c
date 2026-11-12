@@ -368,16 +368,62 @@ static void arm_current(void)
  * the app on the glass (§64.13: on its own glass the app handles the press as always). The
  * queue owns the fifth-press swallow; the pulse is the OS's confirmation, on the claimant's
  * own ring and never OS art. */
-static bool lend_plain_press(const orb_app_t *app, bool was_dimmed)
+static bool lend_target(const orb_app_t *app, bool was_dimmed)
 {
     if (!app || app->kind != ORB_APP_KIND_APP) return false;
     if (was_dimmed) return false;   /* sampled before the touch was reported, not after */
     const int owner = orb_press_owner();
-    if (owner < 0 || owner == app->flash_slot) return false;
+    return owner >= 0 && owner != app->flash_slot;
+}
+
+static void lend_now(void)
+{
+    const int owner = orb_press_owner();
+    if (owner < 0) return;
     orb_press_lend(owner);
     orb_ring_disp_pulse(owner);
-    return true;
 }
+
+/* §64.17 (owner, 2026-11-12): the lent press is a DOUBLE press. While a claim stands and its
+ * claimant is not the app on the glass, a bare press is held for ORB_TAP_WINDOW_MS; a second
+ * inside it goes to the claimant (the ring pulses), none and the held press reaches the app as
+ * its ordinary single press, late by the window. Any other gesture first delivers a held press
+ * ahead of itself, so the press, the turn and the press-and-turn all stay the app's; a hold, a
+ * carousel or a switch drops it. Returns the press the app should see this poll. */
+static const orb_app_t *s_tap_app;      /* the app a held press was made on */
+static bool tap_gate(bool pressed, int64_t press_us, int32_t delta, int32_t push, bool was_dimmed)
+{
+    const uint32_t ms = (uint32_t)(esp_timer_get_time() / 1000);
+    const uint32_t pms = (uint32_t)((press_us ? press_us : esp_timer_get_time()) / 1000);
+    bool deliver = false;
+    if (orb_tap_pending() && s_tap_app != s_current) orb_tap_drop();     /* the app changed under it */
+    const bool lendable = lend_target(s_current, was_dimmed);
+    /* A press already waiting is weighed by its own time before the window can close on the
+     * clock: a poll that came late must not turn the second half of a pair into a single. */
+    if (pressed && !delta && !push && lendable && orb_tap_pending()) {
+        if (orb_tap_press(pms) == ORB_TAP_DOUBLE) { lend_now(); return deliver; }
+        s_tap_app = s_current;                                           /* too late to pair: a new first */
+        deliver = true;                                                  /* and the old one was a single */
+        return deliver;
+    }
+    if (orb_tap_due(ms) == ORB_TAP_SINGLE) deliver = true;               /* no pair came in time */
+    if (orb_tap_pending() && (delta || push || !lendable))
+        deliver = orb_tap_cancel() == ORB_TAP_SINGLE || deliver;         /* another gesture: first the press */
+    if (pressed && !delta && !push && lendable) {
+        if (orb_tap_press(pms) == ORB_TAP_DOUBLE) lend_now();             /* the pair is the claimant's */
+        else {
+            s_tap_app = s_current;                                       /* held: the app may yet get it */
+            int64_t next_us = 0;                                         /* its pair may already be queued */
+            if (knob_take_press_at(&next_us)) {
+                if (orb_tap_press((uint32_t)(next_us / 1000)) == ORB_TAP_DOUBLE) lend_now();
+                else deliver = true;                                     /* too far apart: the first was a single */
+            }
+        }
+        return deliver;
+    }
+    return pressed || deliver;
+}
+
 
 /* Runs on the LVGL task (created via lv_timer), so widget calls are legal here. */
 /* §59: the rotation. Quiet means no knob event and no screen switch since s_quiet_from;
@@ -417,7 +463,8 @@ static void poll_timer_cb(lv_timer_t *timer)
     knob_poll();
 
     int32_t delta   = knob_take_delta();
-    bool    pressed = knob_take_press();
+    int64_t press_us = 0;               /* §64.17: when the hand let go, not when we polled */
+    bool    pressed = knob_take_press_at(&press_us);
     bool lpress = knob_take_long_press();
 
     /* Press-and-turn (radar-plan §2.10): the clicks turned with the knob held down, kept
@@ -511,6 +558,7 @@ static void poll_timer_cb(lv_timer_t *timer)
 
     /* §61: the theme carousel, likewise: the knob is its own while it is up. */
     if (theme_strip_active()) {
+        orb_tap_drop();                      /* §64.17: a held press never lands under a carousel */
         theme_strip_poll(delta, pressed, lpress, now);
         return;
     }
@@ -518,6 +566,7 @@ static void poll_timer_cb(lv_timer_t *timer)
     /* §54: while the carousel is up, every knob event is its own, and its frames are
      * drawn from here. It hands the glass back itself. */
     if (orb_strip_active()) {
+        orb_tap_drop();
         orb_strip_poll(delta, pressed, lpress, now);   /* the carousel has no press-and-turn */
         return;
     }
@@ -542,6 +591,7 @@ static void poll_timer_cb(lv_timer_t *timer)
     }
     if (lpress) {
         open_switcher(0);                    /* §51: out of the app, onto the app list */
+        orb_tap_drop();                      /* §64.17: a hold leaves; the held press goes nowhere */
         return;
     }
 
@@ -561,7 +611,7 @@ static void poll_timer_cb(lv_timer_t *timer)
 
     if (!screen_armed(s_current)) {
         delta += push;                       /* nobody to take it: an ordinary turn */
-        if (pressed && !delta && lend_plain_press(s_current, was_dimmed)) return;   /* §64.13: a plain press goes to the claimant */
+        pressed = tap_gate(pressed, press_us, delta, 0, was_dimmed);   /* §64.17: a double press is the claimant's */
         if (pressed) { arm_current(); return; }
         /* The list's own sense of a detent (knob_row_step, as menu_view walks it), so
          * the turn that opens the list moves its cursor the way the next turn will. */
@@ -573,8 +623,7 @@ static void poll_timer_cb(lv_timer_t *timer)
      * means is its own iface's business. The router used to name
      * menu_view_apply_input() and color_picker_apply_input() here and hardcode
      * the clock as unreachable; a new app now needs no edit in this file. */
-    const bool plain_press = pressed && !delta && !push;   /* §64.13: only a bare tap is lendable */
-    if (plain_press && lend_plain_press(s_current, was_dimmed)) pressed = false;   /* queued; the glass app never arms on it */
+    pressed = tap_gate(pressed, press_us, delta, push, was_dimmed);   /* §64.17: a double press is the claimant's */
     if (push && !orb_app_push(push)) delta += push;   /* no orb_push: an ordinary turn */
     orb_app_input(delta, pressed);
 }

@@ -49,9 +49,9 @@
      "default": 0, "show": "none"},
     {"id": "press_any", "type": "enum", "label": "Borrow the press",
      "choices": ["Off", "When it's calling", "Whenever it runs"], "default": 2,
-     "help": "Start the next phase by tapping whatever is on the glass. Off keeps every press for the app you are looking at. When it's calling borrows one only while a phase has ended and waits for you. Whenever it runs borrows it through a focus or a break too, and the running drain's ring keeps the opacity you set for it. A tap that only woke the screen is never borrowed, and the ring pulses once when a press does come here."}
+     "help": "Double-press whatever is on the glass to pause, resume or start the next phase without leaving it; a single press stays with that app, just a moment later while the timer runs. Off keeps every press for the app you are looking at. When it's calling borrows the double press only while a phase has ended and waits for you. Whenever it runs borrows it through a focus or a break too. A press that only woke the screen is never borrowed, and the ring pulses once when one comes here."}
   ],
   "shelf": true,
-  "os_min": "v9.9.9",
+  "os_min": "v1.8.0",
   "editor": "editor"
 }

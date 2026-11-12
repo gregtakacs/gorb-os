@@ -72,38 +72,101 @@ its address** and type the address the orb shows on its **ABOUT** page.
 
 ## Using the orb
 
-The knob does three things, the same way in every app:
+### The knob
 
-| Knob | Does |
+The orb has one control, a knob you turn and press. The same few gestures mean the same
+things in every app, so once you know one app you know them all.
+
+| Gesture | How | What it does |
+|---|---|---|
+| **Turn** | turn the knob | moves through what the app is showing |
+| **Press** | press and let go | the app's one action |
+| **Press and turn** | hold the knob down and turn it before the hold takes effect | the app's second control, where it has one (zoom, or the pomodoro's phases) |
+| **Hold** | keep the knob pressed for a moment | leaves the app for the app list, in every app |
+| **Double press** | press twice quickly, anywhere | only while a pomodoro is running: works the timer without leaving the app you are in (see below) |
+
+A few things are true of every gesture:
+
+- **The first touch wakes a dimmed display** and does nothing else, so a press that only
+  woke the orb never changes anything. (Moving the orb wakes it too.)
+- **Turning never needs a press first.** There are no modes to enter.
+- **A slow turn moves one step per click; a quick spin moves several,** and a spin always
+  stops on the home view, so one flick back from anywhere takes you home. Leave the knob for
+  20 seconds and the app goes back to its home view by itself.
+- **Every app has a home view,** and turning moves away from it both ways: one kind of thing
+  lies clockwise, another anticlockwise.
+- **Clockwise is forward**: later, closer, more.
+
+### What the knob does in each app
+
+| App | Home | Turn clockwise | Turn anticlockwise | Press | Press and turn |
+|---|---|---|---|---|---|
+| **Clock** | the watch face | opens the app list | opens the app list | nothing | — |
+| **Weather** | the weather now | hour by hour, from the next hour | the next five days, from tomorrow | the next place | — (acts as a turn) |
+| **Radar** | the rain now (left alone, the recent past plays as a loop) | ahead of now: the forecast | back from now: the past | the next place | zoom: clockwise closer, anticlockwise wider |
+| **Flights** | the radar | aircraft, nearest first, each with its details | aircraft, farthest first | the next place | zoom: clockwise closer, anticlockwise wider |
+| **Pomodoro** | the phase now | a minute more | a minute less | start, pause, resume; when a phase is over, the next one | move between phases (and **Reset**) |
+
+Weather keeps your hour or day when you press for the next place, so you can compare the same
+afternoon in two places. In Radar and Flights the zoom lands when you let go, and the level
+you reached is shown large on the screen while you turn.
+
+### Pomodoro
+
+Pomodoro is a focus timer: a focus, a short break, and after a set number of focuses a long
+break. The lengths and the number of focuses are its settings.
+
+- **Press** starts the phase, pauses it, and resumes it. When a phase ends the orb chimes and
+  waits; a press starts the next one.
+- **Turn** changes the time left. Clockwise gives a minute back, anticlockwise takes one off.
+  While it runs the seconds stay as they are (1:48 becomes 0:48); stopped or paused it moves in
+  whole minutes (1:48 becomes 1:00 or 2:00). It never goes past the length you set for the
+  phase, and it never goes the wrong way. Turning down runs to **0:00 and pauses there**; a
+  press at 0:00 goes straight to the next phase, with no chime. A phase that has ended can be
+  turned up to give it time again.
+- **Press and turn** moves between phases: clockwise to the next, anticlockwise back to this
+  one's start and then to the phases before it. The header names the phase you have reached,
+  and it lands when you let go. All the way anticlockwise is **Reset**: the cycle goes back to
+  its first focus, stopped, and the ring disappears. That is how you turn the pomodoro off.
+
+**The ring.** While a pomodoro is going, a ring round the edge of the screen shows it over
+whatever app you are looking at:
+
+| The ring | Means |
 |---|---|
-| Turn | moves through what the app is showing |
-| Press | the app's one action |
-| Hold | leaves the app for the app list |
+| drains steadily | a phase is running; the ring is the time left of the phase's length |
+| breathes, dimming and brightening | paused |
+| flashes, the whole ring | the phase is over and waiting for your press |
+| pulses once | a double press on another app went to the timer |
+| not there | the pomodoro is stopped (or its ring is turned off in its settings) |
 
-Every app has a home view, and turning moves away from it in both directions: one kind
-of thing lies clockwise, another anticlockwise. A slow turn moves one step per click. A
-quick spin moves several steps per click, and it always stops on the home view, so one
-flick back from anywhere takes you home. Leave the knob for 20 seconds and the app goes
-back to its home view by itself.
+The flash and the breathing are drawn solid on a black band so they show over any app; the
+running ring uses the opacity you set. Its colour comes from the look, or one you pick for
+when you are in the app and another for when you are not; its direction and starting point
+are settings too.
 
-| App | Home | Clockwise | Anticlockwise | Press |
-|---|---|---|---|---|
-| **Weather** | the weather now | hour by hour, from the next hour | the next five days, from tomorrow | the next place |
-| **Flights** | the radar | aircraft, nearest first, each with its details | aircraft, farthest first | the next place |
-| **Radar** | the rain now (left alone, the recent past plays as a loop) | ahead of now, the forecast | back from now, the past | the next place |
-| **Pomodoro** | the phase now | the next phase | back to this phase's start, then the phases before it | start, pause, resume — and, when a phase is over, the next one |
-| **Clock** | the watch face | opens the app list | opens the app list | nothing |
+### The double press
 
-Weather keeps your hour or day when you press for the next place, so you can compare
-the same afternoon in two places.
+While a pomodoro is running, you do not have to leave the app you are in to work the timer:
+**press the knob twice quickly** on any other app. The double press does what a press would do
+in the pomodoro itself (pause, resume, or start the next phase when one has ended), and the
+ring pulses once to show it went there.
 
-**Press and turn.** In Radar and Flights, hold the knob down and turn it to zoom:
-clockwise closer, anticlockwise wider. In Pomodoro, hold the knob down and turn to move
-between phases: clockwise to the next, anticlockwise back to this one's start and then to
-the phases before it, the header naming the phase you have reached. Either way the change
-lands when you let go. Turning in Pomodoro is the clock, not the view: a click is a minute
-on the phase in hand, and the change stays — nothing about a running timer comes back on
-its own.
+Everything else stays with the app in front of you: its press, its turn and its press and turn
+work exactly as before. The one difference while a pomodoro is running is that a **single press
+on another app arrives a moment later** (under half a second), because the orb waits to see
+whether a second press follows. When no pomodoro is running, nothing is delayed. On the
+pomodoro's own screen, its presses are immediate as always.
+
+The pomodoro's setting **Borrow the press** decides when the double press goes to the timer:
+
+| Setting | The double press works the timer |
+|---|---|
+| **Whenever it runs** (the default) | the whole time a phase is running, paused, or over and waiting |
+| **When it's calling** | only when a phase has ended and is waiting for you |
+| **Off** | never: every press stays with the app you are looking at |
+
+A press that only wakes the display never counts toward a double press.
 
 **The app list.** Hold the knob in any app, or turn it on the clock, and the list of
 apps appears with the one you came from highlighted. Turn to choose, press to open,

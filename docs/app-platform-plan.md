@@ -8210,3 +8210,19 @@ On the pomodoro design's owner questions (`docs/specs/pomodoro-design.md`):
   warm core; the light-to-heavy order always reads.
 - **Small lettering is capitals** in every look (radar Paper and Brass, weather Paper).
 - **The pomodoro may differ from the pack at its rim**: the ring is an OS overlay there.
+
+### 64.17 The lent press is a double press — 2026-11-12
+
+- **The owner, after using press anywhere on Bronze:** borrowing the single press takes a
+  gesture away from every app while the timer runs. Map the ring's action to a double press
+  instead, so the three gestures apps claim (press, turn, press-and-turn) never change; the
+  single press arriving a little later while the pomodoro runs is an accepted trade.
+- **Ruling:** while a claim stands and its claimant is not on the glass, a bare press is held
+  for `ORB_TAP_WINDOW_MS` (450 ms; first 300 ms, too short for a hand on this switch). A second press inside the window goes to the claimant (the
+  ring pulses); no second press and the held press reaches the app as its ordinary single
+  press. A turn or press-and-turn first delivers a held press, then itself; a hold, a carousel
+  or an app switch drops it. With no claim, nothing is delayed. On the claimant's own glass its
+  presses are immediate. The machine is pure C in `orb_press.c` (`orb_tap_*`), host-tested
+  with mutants, the counter's wrap included.
+- The knob rule's exception (app-design-rules.md) now names the double press.
+

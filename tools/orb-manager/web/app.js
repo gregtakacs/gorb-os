@@ -90,7 +90,7 @@ function show(view) {
   // look, so the view that shows it re-reads it on the way in. The Updates list is read
   // beside it for the same reason and because Keep my version changes what this very
   // section draws: the two are one look at the hub's own shelf and the site above it.
-  if (view === "manage") { loadLibThemes(); loadUpdates(); }
+  if (view === "manage") { loadLibThemes(); loadUpdates(); loadSiteInbox(); }
   return true;
 }
 
@@ -5538,6 +5538,204 @@ $("#mn-site-btn").onclick = () => {
 $("#mn-site-go").onclick = () => { siteImportPress(); };
 $("#mn-site-link").onkeydown = (e) => { if (e.key === "Enter") siteImportPress(); };
 
+// H3 §7.1 hub step 2: the "From orb-os.net" tray, built here rather than in index.html
+// so the Updates section keeps its markup of record and the block appears beside it at the
+// first look. Rows come from /api/site/inbox, which reads the hub's disk and never the
+// network, so the block opens on a plane's wifi. It refreshes with the tab's own idiom —
+// loadSiteInbox runs where loadUpdates runs — and adds no polling of its own: the hub
+// loop's minute is the poll. A hub whose doors are not there at all answers 404, and the
+// section stays hidden rather than reporting a block nobody was offered.
+async function loadSiteInbox() {
+  const section = siteInboxSection();
+  const list = document.getElementById("mn-inbox-list"), state = document.getElementById("mn-inbox-state"), count = document.getElementById("mn-inbox-count");
+  let data = null;
+  try {
+    const r = await hubFetch("/api/site/inbox");
+    if (r.status === 404) {
+      if (section) section.hidden = true;
+      const wrap = document.getElementById("mn-orbonly");
+      if (wrap) wrap.hidden = true;
+      return;
+    }
+    if (section) section.hidden = false;
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok || !j || j.ok !== true) throw new Error((j && j.error) || ("HTTP " + r.status));
+    data = j.data || {};
+  } catch (e) {
+    // A failed read leaves the rows standing, as the Updates list does: they were the
+    // truth a moment ago, and an empty tray would be a claim the hub never made.
+    if (state) state.textContent = "the inbox could not be read: " + e.message;
+    return;
+  }
+  const items = Array.isArray(data.items) ? data.items : [];
+  // §7.3: the block's refresh is the enumeration's cadence too — the walk dials orbs and the
+  // site, so it happens on the tab's own idiom and never on a timer of its own.
+  loadOrbOnlyThemes();
+  if (state) state.textContent = "";
+  if (count) count.textContent = String(items.length);
+  if (!list) return;
+  list.textContent = "";
+  if (!items.length) {
+    const li = document.createElement("li");
+    li.className = "hint";
+    li.textContent = "Nothing waiting.";
+    list.appendChild(li);
+    return;
+  }
+  for (const it of items) list.appendChild(siteInboxRow(it, data));
+}
+
+// siteInboxSection is the block's own little build-once, mirroring #mn-updates' shape:
+// an h3 with a count, a themelist ul, a state span. It rides in beside the Updates
+// section, which index.html owns untouched.
+function siteInboxSection() {
+  const existing = document.getElementById("mn-inbox");
+  if (existing) return existing;
+  const anchor = $("#mn-updates");
+  if (!anchor || !anchor.parentNode) return null;
+  const section = document.createElement("section");
+  section.id = "mn-inbox";
+  section.className = "fleet";
+  section.hidden = true;
+  const h = document.createElement("h3");
+  h.textContent = "From orb-os.net ";
+  const c = document.createElement("span");
+  c.id = "mn-inbox-count";
+  c.className = "count";
+  h.appendChild(c);
+  const ul = document.createElement("ul");
+  ul.id = "mn-inbox-list";
+  ul.className = "themelist";
+  const st = document.createElement("span");
+  st.id = "mn-inbox-state";
+  st.className = "hint";
+  // §7.3 hub step 4: the orb-only sub-block rides inside this section rather than beside it,
+  // because it is the same news about the same site — only the shelf is missing. It is built
+  // hidden: a hub that cannot answer the door hides the sub-block and not the tray.
+  const wrap = document.createElement("div");
+  wrap.id = "mn-orbonly";
+  wrap.hidden = true;
+  const oh = document.createElement("h4");
+  oh.textContent = "Themes on orbs only";
+  const ol = document.createElement("ul");
+  ol.id = "mn-orbonly-list";
+  ol.className = "themelist";
+  const ost = document.createElement("span");
+  ost.id = "mn-orbonly-state";
+  ost.className = "hint";
+  wrap.append(oh, ol, ost);
+  section.append(h, ul, st, wrap);
+  anchor.parentNode.insertBefore(section, anchor);
+  return section;
+}
+
+// loadOrbOnlyThemes reads §7.3's enumeration into the sub-block. The door dials the operator's
+// orbs and asks the site about the names the shelf does not carry, so this runs when the block
+// refreshes and not on a timer; a failed read leaves the rows standing, same rule as the tray —
+// they were the truth a moment ago and an empty list would be a claim the hub never made.
+async function loadOrbOnlyThemes() {
+  const wrap = document.getElementById("mn-orbonly");
+  const list = document.getElementById("mn-orbonly-list"), state = document.getElementById("mn-orbonly-state");
+  if (!wrap || !list) return;
+  let rows = null;
+  try {
+    const r = await hubFetch("/api/site/orb-themes");
+    if (r.status === 404) { wrap.hidden = true; return; }
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok || !j || j.ok !== true) throw new Error((j && j.error) || ("HTTP " + r.status));
+    rows = j.data && Array.isArray(j.data.themes) ? j.data.themes : [];
+  } catch (e) {
+    // A door that exists and cannot answer shows its heading and its sentence rather than
+    // hiding: an unreadable enumeration is news, and hiding the block would be a claim.
+    wrap.hidden = false;
+    if (state) state.textContent = "the orbs\u2019 cards could not be read: " + e.message;
+    return;
+  }
+  wrap.hidden = false;
+  if (state) state.textContent = "";
+  list.textContent = "";
+  if (!rows.length) {
+    const li = document.createElement("li");
+    li.className = "hint";
+    li.textContent = "Nothing untracked.";
+    list.appendChild(li);
+    return;
+  }
+  for (const t of rows) list.appendChild(orbOnlyRow(t));
+}
+
+// orbOnlyRow is one enumeration row: name · app · the orbs wearing it, and the one button that
+// does anything about it — or, for a gone answer, the sentence and nothing to press, because a
+// name the site retired is news rather than an offer.
+function orbOnlyRow(t) {
+  const li = document.createElement("li");
+  li.className = "trow";
+  const name = String(t.name || "theme");
+  const info = document.createElement("div");
+  info.className = "tinfo";
+  const b = document.createElement("b");
+  b.textContent = name;
+  const line = document.createElement("div");
+  line.className = "ttags";
+  const tag = document.createElement("span");
+  tag.className = "tag mut";
+  if (t.gone) {
+    tag.textContent = name + " is gone from the site.";
+    info.append(b, line);
+    line.appendChild(tag);
+    li.appendChild(info);
+    return li;
+  }
+  const orbs = Array.isArray(t.orbs) ? t.orbs.map(String) : [];
+  tag.textContent = name + " \u00b7 " + String(t.app || "?") + " \u00b7 on " + (orbs.length ? orbs.join(", ") : "an orb");
+  line.appendChild(tag);
+  info.append(b, line);
+  li.appendChild(info);
+  const acts = document.createElement("div");
+  acts.className = "acts";
+  const go = document.createElement("button");
+  go.type = "button";
+  go.textContent = "Track this theme";
+  go.addEventListener("click", () => { orbOnlyAdopt(t, go); });
+  acts.appendChild(go);
+  li.appendChild(acts);
+  return li;
+}
+
+// orbOnlyAdopt is the Track this theme press. The hub's answer is the apply door's own payload,
+// so the outcome is said exactly the way an update row's apply result is said — and a needBake
+// answer goes to the same editor door an update press opens, holding the theme NAME as its key:
+// that is the key the settle press must arrive with, and the only one this row knows.
+async function orbOnlyAdopt(t, go) {
+  const state = document.getElementById("mn-orbonly-state");
+  if (go) go.disabled = true;
+  if (state) state.textContent = "asking orb-os.net about \u201c" + String(t.name || "") + "\u201d\u2026";
+  let data = null, refusal = "";
+  try {
+    const r = await hubFetch("/api/site/orb-themes/adopt", {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: t.name }),
+    });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok || !j || j.ok !== true) refusal = (j && j.error) || ("HTTP " + r.status);
+    else data = j.data;
+  } catch (e) {
+    refusal = "the hub did not answer: " + orbWaitWords(e);
+  }
+  if (refusal) {
+    if (state) state.textContent = "\u2717 " + refusal;
+    if (go) go.disabled = false;
+    return;
+  }
+  if (data && data.needBake) {
+    applyStart({ kind: "theme", key: String(t.name || "") }, data);
+    return;
+  }
+  updateApplied(data, state);
+  loadSiteInbox();
+  loadUpdates();
+  loadLibThemes();
+}
+
 async function siteImportPress() {
   const link = $("#mn-site-link"), go = $("#mn-site-go"), st = $("#mn-site-state");
   if (!link || !go || !st) return;
@@ -5564,6 +5762,118 @@ async function siteImportPress() {
     return;
   }
   await finishSiteImport(data);
+}
+
+// siteInboxRow is one hold: §8's wording — `<name> · from <site> · waiting` or `… ·
+// delivered <relative time>` — with the row's two acts. Rows are built from nodes, not
+// markup, exactly as updateRow builds. The relative time is the send's: the tray knows
+// when the item was sent, and a delivered row's age is the send's age.
+function siteInboxRow(it, data) {
+  const li = document.createElement("li");
+  li.className = "trow";
+  const info = document.createElement("div");
+  info.className = "tinfo";
+  const name = document.createElement("b");
+  name.textContent = String(it.name || it.designId || it.itemId || "theme");
+  const line = document.createElement("div");
+  line.className = "ttags";
+  const tag = document.createElement("span");
+  tag.className = "tag mut";
+  const siteName = data && data.site ? siteHostWords(String(data.site)) : "orb-os.net";
+  tag.textContent = String(it.name || "theme") + " \u00b7 from " + siteName
+    + (it.claimed ? " \u00b7 delivered " + siteInboxAgo(it.sentAt) : " \u00b7 waiting");
+  line.appendChild(tag);
+  info.append(name, line);
+  li.appendChild(info);
+  const acts = document.createElement("div");
+  acts.className = "acts";
+  const add = document.createElement("button");
+  add.type = "button";
+  add.textContent = "Add to library";
+  const bye = document.createElement("button");
+  bye.type = "button";
+  bye.className = "ghost";
+  bye.textContent = "Dismiss";
+  add.addEventListener("click", () => { siteInboxAdd(it, add, bye); });
+  bye.addEventListener("click", () => { siteInboxDismiss(it, li); });
+  acts.append(add, bye);
+  li.appendChild(acts);
+  return li;
+}
+
+// siteInboxAgo words an ISO instant the way a person reads a tray: minutes, hours, days.
+function siteInboxAgo(iso) {
+  const t = Date.parse(String(iso || ""));
+  if (!isFinite(t)) return "\u2014";
+  const s = Math.max(0, Math.floor((Date.now() - t) / 1000));
+  if (s < 60) return "just now";
+  if (s < 3600) return Math.floor(s / 60) + "m ago";
+  if (s < 86400) return Math.floor(s / 3600) + "h ago";
+  if (s < 86400 * 30) return Math.floor(s / 86400) + "d ago";
+  return "a while ago";
+}
+
+// siteHostWords is the hub's site minus its scheme: the name §8's "from <site>" prints.
+function siteHostWords(base) {
+  return String(base).replace(/^https?:\/\//, "").replace(/\/+$/, "");
+}
+
+// siteInboxAdd hands the held bytes to the hub, and the hub's answer to the paste
+// import's own tail: one editor path, one judgement about the app and its version. The
+// row's buttons sit out of the way while the import is in flight.
+async function siteInboxAdd(it, add, bye) {
+  add.disabled = true;
+  bye.disabled = true;
+  let data = null, refusal = "";
+  try {
+    const r = await hubFetch("/api/site/inbox/add", {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ itemId: it.itemId }),
+    });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok || j.ok === false) refusal = j.error || ("HTTP " + r.status);
+    else data = j.data;
+  } catch (e) {
+    refusal = "the hub did not answer: " + orbWaitWords(e);
+  }
+  if (refusal) {
+    const st = document.getElementById("mn-inbox-state");
+    if (st) st.textContent = "\u2717 " + refusal;
+    add.disabled = false;
+    bye.disabled = false;
+    return;
+  }
+  await finishSiteImport(data);
+  const st = document.getElementById("mn-inbox-state"), pst = $("#mn-site-state");
+  if (st && pst && pst.textContent) st.textContent = pst.textContent;
+  loadSiteInbox();
+}
+
+// siteInboxDismiss deletes the hold and leaves §8's "Dismissed." in the row's place until
+// the repaint takes it; the re-read that follows is the repaint.
+async function siteInboxDismiss(it, li) {
+  let refusal = "";
+  try {
+    const r = await hubFetch("/api/site/inbox/dismiss", {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ itemId: it.itemId }),
+    });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok || j.ok === false) refusal = j.error || ("HTTP " + r.status);
+  } catch (e) {
+    refusal = "the hub did not answer: " + orbWaitWords(e);
+  }
+  if (refusal) {
+    const st = document.getElementById("mn-inbox-state");
+    if (st) st.textContent = "\u2717 " + refusal;
+    return;
+  }
+  if (li) {
+    li.textContent = "";
+    const span = document.createElement("span");
+    span.className = "hint";
+    span.textContent = "Dismissed.";
+    li.appendChild(span);
+  }
+  loadSiteInbox();
 }
 
 // finishSiteImport is the shared tail of an orb-os.net import: the hub has fetched a

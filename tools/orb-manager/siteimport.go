@@ -592,11 +592,16 @@ func readThemeOrigin(themePath string) *ThemeOrigin {
 	return &o
 }
 
-// removeThemeOrigin takes a theme's sidecar with it when the theme is dropped. Having no
-// sidecar is the normal case, so a missing file is success.
+// removeThemeOrigin takes a theme's sidecar with it when the theme is dropped, and the by-name
+// gone marker beside it too: both are facts about the same theme, and a marker left standing
+// after its theme is gone is a fact about a file that no longer exists — and, the day a theme of
+// that name comes back, a silence nobody chose. Having neither is the normal case, so a missing
+// file is success.
 func removeThemeOrigin(themePath string) error {
-	if err := os.Remove(themeOriginPath(themePath)); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return err
+	for _, p := range []string{themeOriginPath(themePath), themeGonePath(themePath)} {
+		if err := os.Remove(p); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
 	}
 	return nil
 }
@@ -645,21 +650,57 @@ func (s *Server) resolveOrigin(ctx context.Context, o *ThemeOrigin) (*resolveAns
 	if !siteAllowed(o.Site) {
 		return nil, siteNotAllowed(o.Site)
 	}
-	u := o.Site + "/api/hub/resolve?site=" + url.QueryEscape(o.Site) +
-		"&designId=" + url.QueryEscape(o.DesignID) +
-		"&version=" + strconv.Itoa(o.Version)
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	return s.resolveAsk(ctx, o.Site, "site="+url.QueryEscape(o.Site)+
+		"&designId="+url.QueryEscape(o.DesignID)+
+		"&version="+strconv.Itoa(o.Version))
+}
+
+// resolveName asks the site the hub is configured with about a theme its shelf holds under a
+// shared name and records nothing about (§7.4's point 3, h3-design.md §7.2): a theme that came
+// off a file rather than through the import door has no sidecar to resolve by, and its name and
+// its app are the only question that can be asked of it. The door answers a name with the name
+// its bundle door would give the same caller at the design's CURRENT version, so an adoption
+// never records a name the site would not have credited, and an old handle on the shelf reads
+// back as the rename the site already made.
+//
+// `app` is part of the question because the door requires it: one shared name can exist in two
+// apps, and the hub always knows the app the theme on its shelf themes. The site asked is the
+// configured one — the same origin a bake is fetched from — whether or not this hub's link
+// points there: one origin of truth, and a ` by @<someone>` naming another account is simply a
+// miss here rather than a second origin to go hunting for.
+//
+// The answer's classification table is resolveOrigin's, byte for byte and shared through
+// resolveAsk, because a hub with two resolve clients that disagree about what a 404 means would
+// be a hub with two stories about one shelf.
+func (s *Server) resolveName(ctx context.Context, site, app, name string) (*resolveAnswer, error) {
+	if site == "" || app == "" || name == "" {
+		return nil, errors.New("this theme has no name to resolve")
+	}
+	if !siteAllowed(site) {
+		return nil, siteNotAllowed(site)
+	}
+	return s.resolveAsk(ctx, site, "site="+url.QueryEscape(site)+
+		"&app="+url.QueryEscape(app)+
+		"&name="+url.QueryEscape(name))
+}
+
+// resolveAsk is the resolve door's whole HTTP half both clients share: the gate the caller has
+// already checked is the only thing standing between here and the socket, one GET with the hub's
+// ordinary door headers, H2's credential on the one condition siteBearerFor states, and the
+// reading of an answer a design's identity fits into a line.
+func (s *Server) resolveAsk(ctx context.Context, site, query string) (*resolveAnswer, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, site+"/api/hub/resolve?"+query, nil)
 	if err != nil {
-		return nil, fmt.Errorf("could not reach %s: %v", siteHost(o.Site), err)
+		return nil, fmt.Errorf("could not reach %s: %v", siteHost(site), err)
 	}
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("User-Agent", "orb-manager/"+version)
-	if bearer := s.siteBearerFor(o.Site); bearer != "" {
+	if bearer := s.siteBearerFor(site); bearer != "" {
 		req.Header.Set("Authorization", "Bearer "+bearer)
 	}
 	resp, err := s.siteHTTP().Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("could not reach %s: %v", siteHost(o.Site), err)
+		return nil, fmt.Errorf("could not reach %s: %v", siteHost(site), err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusGone {
@@ -674,10 +715,10 @@ func (s *Server) resolveOrigin(ctx context.Context, o *ThemeOrigin) (*resolveAns
 		return &resolveAnswer{NotYet: true}, nil
 	}
 	if resp.StatusCode >= 300 && resp.StatusCode < 400 {
-		return nil, fmt.Errorf("%s sent a sign-in page instead of an answer: the site isn’t open to Orb Manager yet", siteHost(o.Site))
+		return nil, fmt.Errorf("%s sent a sign-in page instead of an answer: the site isn’t open to Orb Manager yet", siteHost(site))
 	}
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		return nil, fmt.Errorf("%s answered HTTP %d", siteHost(o.Site), resp.StatusCode)
+		return nil, fmt.Errorf("%s answered HTTP %d", siteHost(site), resp.StatusCode)
 	}
 	var body struct {
 		DesignID   string `json:"designId"`
@@ -687,13 +728,13 @@ func (s *Server) resolveOrigin(ctx context.Context, o *ThemeOrigin) (*resolveAns
 	}
 	b, err := io.ReadAll(io.LimitReader(resp.Body, resolveAnswerBodyMax))
 	if err != nil {
-		return nil, fmt.Errorf("could not read %s's answer: %v", siteHost(o.Site), err)
+		return nil, fmt.Errorf("could not read %s's answer: %v", siteHost(site), err)
 	}
 	if err := json.Unmarshal(b, &body); err != nil {
-		return nil, fmt.Errorf("%s answered with something that is not a design", siteHost(o.Site))
+		return nil, fmt.Errorf("%s answered with something that is not a design", siteHost(site))
 	}
 	if body.DesignID == "" || body.Version < 1 {
-		return nil, fmt.Errorf("%s answered without a design id or a version", siteHost(o.Site))
+		return nil, fmt.Errorf("%s answered without a design id or a version", siteHost(site))
 	}
 	return &resolveAnswer{Resolved: true, DesignID: body.DesignID, App: body.App,
 		SharedName: body.SharedName, Version: body.Version}, nil

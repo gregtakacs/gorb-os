@@ -2849,3 +2849,67 @@ func TestAppSettingsColourPickerIsWiredInTheFace(t *testing.T) {
 		t.Errorf("the hub copies %d palette colours and the dial steps 12 (ring-design §9.1)", n)
 	}
 }
+
+// TestOrbOnlySubBlockIsWiredIntoTheTray: §7.3's enumeration lives INSIDE the From orb-os.net
+// block, on the block's own refresh, and its rows are names that came off an orb's card — so the
+// row is built with DOM APIs, the gone entry carries no button, and the press that adopts goes
+// through the apply door's own half-finished-bake path with the card's name as the key the settle
+// must come back with. The hub side is pinned too: the two-sided shape is what this suite exists
+// for, and a renamed door is invisible until the button is pressed.
+func TestOrbOnlySubBlockIsWiredIntoTheTray(t *testing.T) {
+	app := readAppJS(t)
+	build := blockOf(t, app, "function siteInboxSection()")
+	for _, want := range []string{`"mn-orbonly"`, `"mn-orbonly-list"`, "Themes on orbs only"} {
+		if !strings.Contains(build, want) {
+			t.Errorf("the From orb-os.net block never builds %s; §7.3's sub-list is not inside it", want)
+		}
+	}
+	// The refresh is the tray's, not a loop of its own: the enumeration dials orbs and the site,
+	// so it runs exactly where loadSiteInbox already runs.
+	tray := blockOf(t, app, "async function loadSiteInbox()")
+	if !strings.Contains(tray, "loadOrbOnlyThemes()") {
+		t.Error("loadSiteInbox never refreshes the orb-only sub-list, so the block is built and never read")
+	}
+	read := blockOf(t, app, "async function loadOrbOnlyThemes()")
+	if !strings.Contains(read, `"/api/site/orb-themes"`) {
+		t.Error("the orb-only sub-list never reads /api/site/orb-themes")
+	}
+	if !strings.Contains(read, "Nothing untracked.") {
+		t.Error("an empty enumeration does not say \"Nothing untracked.\"")
+	}
+	row := blockOf(t, app, "function orbOnlyRow(")
+	for _, bad := range []string{"innerHTML", "insertAdjacentHTML", "${", "outerHTML"} {
+		if strings.Contains(row, bad) {
+			t.Errorf("the orb-only row uses %s; card names are device-supplied bytes and must go through textContent", bad)
+		}
+	}
+	if !strings.Contains(row, "createElement") || !strings.Contains(row, "textContent") {
+		t.Error("the orb-only row must build with createElement/textContent")
+	}
+	if !strings.Contains(row, " is gone from the site.") {
+		t.Error("a gone entry does not print §8's \"<name> is gone from the site.\"")
+	}
+	if !strings.Contains(row, "Track this theme") {
+		t.Error("the orb-only row offers no Track this theme press")
+	}
+	// A gone entry is news, not an offer: the sentence is written before any button is built.
+	if strings.Index(row, " is gone from the site.") > strings.Index(row, "Track this theme") {
+		t.Error("the gone entry is drawn after the button, so a retired name is still offered as an adoption")
+	}
+	press := blockOf(t, app, "async function orbOnlyAdopt(")
+	for _, want := range []string{`"/api/site/orb-themes/adopt"`, "applyStart(", "needBake", "updateApplied("} {
+		if !strings.Contains(press, want) {
+			t.Errorf("the Track this theme press does not carry %s; an adoption is not rendered the way an update row's apply result is", want)
+		}
+	}
+	// The two sides agree on the door, which is the failure this suite exists for.
+	hub, err := os.ReadFile("orbonly.go")
+	if err != nil {
+		t.Fatalf("read orbonly.go: %v", err)
+	}
+	for _, want := range []string{`"/api/site/orb-themes"`, `"/api/site/orb-themes/adopt"`} {
+		if !strings.Contains(string(hub), want) {
+			t.Errorf("the hub registers no %s door, so app.js presses a route that is not there", want)
+		}
+	}
+}

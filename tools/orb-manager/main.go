@@ -146,6 +146,9 @@ type Server struct {
 	// siteTickets holds the bundles that door fetched and no bake has kept yet — the
 	// one-time imports /api/site/bundle and /api/site/keep work from. See siteimport.go.
 	siteTickets siteTicketStore
+	// siteInboxMu orders the minute's inbox pass against the tray's doors: one writer
+	// at a time over the hold directory, so a settle never races an Add's rewrite.
+	siteInboxMu sync.Mutex
 	// siteCatalogue is the store read GET /api/site/apps serves: one held copy and when it
 	// was fetched, so the face's reads share a dial and an unreachable site still has an
 	// answer. Memory only — a hub never persists a catalogue it can no longer confirm. appstore.go.
@@ -870,6 +873,11 @@ func main() {
 		return true, true
 	}
 	go s.probeLiveness(cableCtx)
+	// H3 §7.1 hub step 2: the site inbox client, once a minute after a short boot
+	// delay, on the same context the liveness loop runs on so shutdown ends it.
+	if !s.siteHidden {
+		go s.siteInboxLoop(cableCtx)
+	}
 	// The sweeper's verdict doubles as the read-ahead's starting gun: a board the
 	// hub just watched answer for the first time (boot, wake, join) gets its card
 	// learned before any page presses it, so the Themes face opens warm. It is a
@@ -1387,6 +1395,11 @@ func (s *Server) routes(mux *http.ServeMux) {
 		mux.Handle("/api/release/latest", s.requireControl(http.HandlerFunc(s.serveReleaseLatest)))
 		// §7.6 G3-2: the one Updates list and its two refusals.
 		s.routesUpdates(mux)
+		// H3 §7.1 hub step 2: the site inbox's tray doors, disk-only reads and two POSTs.
+		s.routesSiteInbox(mux)
+		// H3 §7.3 hub step 4: themes that live only on an orb, asked by name and adopted
+		// through the apply path.
+		s.routesOrbOnly(mux)
 	}
 	// radar-plan §2.4: the map tool's tile forwarder and its source.
 	s.routesMaps(mux)

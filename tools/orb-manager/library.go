@@ -440,10 +440,21 @@ func (s *Server) h_libraryRm(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	q := r.URL.Query()
-	dest, err := s.library().Drop(q.Get("kind"), strings.TrimSpace(q.Get("name")))
+	kind, name := q.Get("kind"), strings.TrimSpace(q.Get("name"))
+	// §7.3: a removed library theme takes its orb-theme ledger entry with it, and the ledger
+	// keys by the theme's NAME — facts the file can state right up until it is deleted, which
+	// is why they are read before the drop and acted on only after it succeeds.
+	forgetName, forgetID := "", ""
+	if kind == "theme" && themeFileOK(name) {
+		forgetName, forgetID = s.orbOnlyThemeFacts(filepath.Join(s.library().writableThemesDir(), name+".orbtheme"))
+	}
+	dest, err := s.library().Drop(kind, name)
 	if err != nil {
 		s.jsonErr(w, err.Error())
 		return
+	}
+	if forgetName != "" || forgetID != "" {
+		s.orbOnlyForget(forgetName, forgetID)
 	}
 	s.jsonOK(w, map[string]any{"removed": dest})
 }

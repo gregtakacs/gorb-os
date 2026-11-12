@@ -30,7 +30,9 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/gregtakacs/gorb-os/tools/orb-manager/internal/firmware"
 	"github.com/gregtakacs/gorb-os/tools/orb-manager/internal/orbnet"
@@ -207,16 +209,31 @@ func (s *Server) appUpdateRows(restorable []RestorableApp) []updateItem {
 // could not be checked instead of implying it is current. A resolve the site could not
 // answer yet (fu2-6) is a row of its own too — information, nothing to press, nothing
 // recorded — and only a site that says "gone" in its own body retires a design.
+//
+// A theme with no sidecar is §7.4's point 3, and h3-design.md §7.2 writes its policy: it is
+// asked about by NAME at the one site this hub is configured with, and only when its title is
+// a shared name the site itself could have written and the theme names the app it themes. What
+// comes back is not a row: an answer adopts (see themeAdoptByName), a gone answer marks, and
+// every other silence is one log line and nothing else. A row that reappeared each time the
+// tab opened would be the noise review 5 was written against; the shelf marker and one hub log
+// line are the whole surface of a name the site will not speak of.
 func (s *Server) themeUpdateRows(r *http.Request, pl *LibraryPayload) []updateItem {
 	var out []updateItem
-	for _, t := range pl.Themes {
+	for i := range pl.Themes {
 		// A1 §7.3 gave the listing's one `origin` key an app shape as well as a theme one, so a
 		// theme row's record is read back as what it is. Anything that is not a theme record — no
 		// key at all included — is "this theme came from no site", which is what the nil check was
-		// for before.
+		// for before. H3's by-name path lives on the other side of that check rather than inside
+		// it: an adoption writes the record and the theme then falls through to everything below,
+		// so one loop body answers for a theme the hub has tracked and one it just learned about,
+		// and the two cannot drift.
+		t := pl.Themes[i]
 		o, ok := t.Origin.(*ThemeOrigin)
 		if !ok || o == nil {
-			continue
+			if o = s.themeAdoptByName(r, pl, &pl.Themes[i]); o == nil {
+				continue
+			}
+			t = pl.Themes[i]
 		}
 		if c, ok := s.choiceFor("theme", o.DesignID); ok && c.Keep {
 			continue
@@ -241,7 +258,16 @@ func (s *Server) themeUpdateRows(r *http.Request, pl *LibraryPayload) []updateIt
 				Choices: []string{}})
 			continue
 		}
-		if ans.Version <= o.Version {
+		// The pure-rename gate, h3-design.md §5.4: a version that did not move is not the same
+		// statement as a name that did. The site renames nothing on its own today (ruling 29; H4's
+		// Replace case rule), so an equal-version answer arrives in practice from the handle-change
+		// migration's *Rename each on its next update* — a design that moved handle and not version
+		// — and the row is written for the general case regardless, because a different shared name
+		// at any version is news about the name, which is what From and To already report. An equal
+		// version whose name did not move, or that moved with no name to say so, is the nothing this
+		// gate always skipped; Skip silences what it now lets through keyed by the same version.
+		if ans.Version < o.Version ||
+			(ans.Version == o.Version && (ans.SharedName == "" || ans.SharedName == t.Title)) {
 			continue
 		}
 		if c, ok := s.choiceFor("theme", o.DesignID); ok && c.SkippedVersion == ans.Version {
@@ -257,6 +283,105 @@ func (s *Server) themeUpdateRows(r *http.Request, pl *LibraryPayload) []updateIt
 			Choices: []string{"update", "skip", "keep"}})
 	}
 	return out
+}
+
+// themeGonePath is the by-name gone marker's path: the theme's own path with a suffix beside the
+// record it sits with, so the fact lives with the file it is about rather than in a state entry a
+// restore could lose — and a state entry would be the second source of one fact. It is not a
+// sidecar: it records no design, only that the site would not speak of the name.
+func themeGonePath(themePath string) string { return themePath + ".origin.gone" }
+
+// themeMarkedGone is the marker read as the one question it answers.
+func themeMarkedGone(themePath string) bool {
+	_, err := os.Stat(themeGonePath(themePath))
+	return err == nil
+}
+
+// markThemeGone writes the marker with the library's own atomic write. Its bytes say when, for
+// the human who finds one and wonders; its existence is the fact the hub acts on.
+func markThemeGone(themePath string) error {
+	return writeFileAtomic(themeGonePath(themePath),
+		[]byte(`{"gone":true,"markedAt":`+strconv.FormatInt(time.Now().UnixMilli(), 10)+`}`+"\n"))
+}
+
+// themeAdoptByName is §7.4's point 3 and h3-design.md §7.2's by-name column, one pass over a
+// shelf theme the hub holds no record of. It answers with the origin record the theme now
+// carries, or nil for "this pass has nothing to say about it" — and the kinds of nothing are
+// deliberately unlike each other:
+//
+//   - a name the site could never have written, a theme that names no app, or a marker from an
+//     earlier gone answer asks nothing at all. A homemade `My Doodad` is the operator's own, and
+//     the hub has no business dialling a stranger's site once a minute about it — that is the
+//     discretion the nil arm always kept; and the marker IS the news a gone answer carried, so
+//     the asking that would re-learn it is the noise review 5 was written against.
+//   - a gone answer writes that marker and logs one line. NotYet, a 400 and a transport failure
+//     log one line and touch nothing, which is how a hub whose site is down, or has no resolve
+//     door yet, spends the next minute exactly as it spent this one.
+//   - an answer adopts: the sidecar is written with the configured site and the identity the site
+//     named, the record is read back off the disk it landed on, and the loop's ordinary body does
+//     the rest — Keep, resolve, gate, row — as though it had always been there. Keying the row by
+//     the answered design id is what lets the skip, keep and apply doors need no new arm.
+func (s *Server) themeAdoptByName(r *http.Request, pl *LibraryPayload, t *LibraryFile) *ThemeOrigin {
+	if t.File == "" || t.App == "" {
+		return nil
+	}
+	site := siteReleaseBase()
+	if site == "" {
+		return nil
+	}
+	name, handle, sentence := checkSharedName(t.Title)
+	if sentence != "" || name == "" || handle == "" {
+		return nil
+	}
+	path := filepath.Join(pl.ThemesDir, t.File)
+	if themeMarkedGone(path) {
+		return nil
+	}
+	ans, err := s.resolveName(r.Context(), site, t.App, t.Title)
+	if err != nil {
+		// The one sentence review 5 asked for: which theme, what the site said, and nothing else
+		// about it changes.
+		log.Printf("orb-manager: site resolve: %s: %v", t.Title, err)
+		return nil
+	}
+	if ans.Gone {
+		if err := markThemeGone(path); err != nil {
+			log.Printf("orb-manager: site resolve: %s: %s said the name is gone and the marker could not be written: %v",
+				t.Title, siteHost(site), err)
+			return nil
+		}
+		log.Printf("orb-manager: site resolve: %s is gone from %s; Orb Manager will stop asking about it",
+			t.Title, siteHost(site))
+		return nil
+	}
+	if ans.NotYet {
+		log.Printf("orb-manager: site resolve: %s: %s has no answer about it yet",
+			t.Title, siteHost(site))
+		return nil
+	}
+	if c, ok := s.choiceFor("theme", ans.DesignID); ok && c.Keep {
+		// The operator already claimed a copy of this design, and the sidecar a keep deleted is
+		// not resurrected by a name matching: h_keep's own rule, read on the adoption path too.
+		return nil
+	}
+	o := &ThemeOrigin{Site: site, DesignID: ans.DesignID, Version: ans.Version,
+		ImportedAt: s.tickets().clock().UnixMilli()}
+	if err := writeThemeOrigin(path, o); err != nil {
+		log.Printf("orb-manager: site resolve: %s was answered, but where it came from could not be recorded: %v",
+			t.Title, err)
+		return nil
+	}
+	// The write read back through the parser every other reader uses: a record that will not
+	// survive the disk it landed on is no adoption at all, and the theme is asked again next pass
+	// rather than left half-tracked.
+	if o = readThemeOrigin(path); o == nil {
+		log.Printf("orb-manager: site resolve: %s: the record just written did not read back", t.Title)
+		return nil
+	}
+	t.Origin = o
+	log.Printf("orb-manager: site resolve: %s is %s v%d on %s; Orb Manager will track it from now on",
+		t.Title, ans.DesignID, o.Version, siteHost(site))
+	return o
 }
 
 // updateRefusal is either POST body: a kind, a key, and for a skip the version that was
@@ -466,6 +591,12 @@ func (s *Server) applyThemeUpdate(r *http.Request, key, baked string) (*applyPay
 	}
 	oldPath, origin := shelfByDesign(lib.ThemesDir, key)
 	if oldPath == "" {
+		// An adoption's browser-driven second half presses with the theme NAME the card still
+		// wears rather than a design id (orbOnlySettle, orbonly.go); anything else this key can
+		// be is the ordinary refusal.
+		if out, settled, err := s.orbOnlySettle(r, lib, key, baked); settled {
+			return out, err
+		}
 		return nil, errors.New("that theme is no longer in Orb Manager’s library")
 	}
 	oldBlob, err := os.ReadFile(oldPath)
@@ -496,7 +627,12 @@ func (s *Server) applyThemeUpdate(r *http.Request, key, baked string) (*applyPay
 		// anything. Nothing on the shelf, on an orb or in the state file changes.
 		return nil, fmt.Errorf("%s: %s can’t check for updates yet", oldName, siteHost(origin.Site))
 	}
-	if ans.Version <= origin.Version {
+	// The same relaxed gate themeUpdateRows draws its row on, and the reason the row and the
+	// press cannot disagree: an equal version with a different shared name is a rename this door
+	// runs, and the refusal below answers only when neither the version nor the name moved. The
+	// app gate under it is untouched by the relaxation — a rename never changes an app.
+	if ans.Version < origin.Version ||
+		(ans.Version == origin.Version && (ans.SharedName == "" || ans.SharedName == oldName)) {
 		return nil, fmt.Errorf("orb-os.net has no newer version of %s than the one that was baked", oldName)
 	}
 	if ans.App != "" && ans.App != app {
@@ -504,6 +640,19 @@ func (s *Server) applyThemeUpdate(r *http.Request, key, baked string) (*applyPay
 			oldName, ans.App)
 	}
 
+	return s.applyUpdateSteps(r, lib, origin, app, oldName, ans, baked, oldPath)
+}
+
+// applyUpdateSteps is the three steps applyThemeUpdate exists for — bake, install on every orb
+// wearing the old name, remove the old copies — pulled out so an orb-only adoption (h3-design.md
+// §7.3, orbonly.go) runs the SAME path a tracked row's press runs rather than a second one that
+// must be kept agreeing. `oldPath` is the shelf file being retired, empty for an adoption, which
+// has no shelf file yet: step 1's bake writes the first one, and step 3 removes old CARD copies
+// without touching a shelf file it did not replace. The gates above (version, gone, app) stay
+// with the caller that needs them: a tracked row asks whether anything moved, and an adoption is
+// the question's first answer, always current by construction.
+func (s *Server) applyUpdateSteps(r *http.Request, lib *Library, origin *ThemeOrigin, app, oldName string,
+	ans *resolveAnswer, baked, oldPath string) (*applyPayload, error) {
 	// Step 1. Nothing on any orb has been touched when this returns.
 	newPath, newName, ask, err := s.updateBake(r, lib, origin, app, oldName, ans, baked)
 	if err != nil {
@@ -584,11 +733,12 @@ func (s *Server) applyThemeUpdate(r *http.Request, key, baked string) (*applyPay
 		}
 		s.dropThemeCache(w.ip)
 	}
-	if out.Renamed && len(stale) == 0 {
+	if out.Renamed && len(stale) == 0 && oldPath != "" {
 		// The file goes before the sidecar, and only once every card has given its copy up: the
 		// file and its record are what keep this design's row on the Updates list, and dropping
 		// them alongside a stranded card copy would leave an old theme on an orb with nothing
-		// left in the hub to name it, offer it again, or finish removing it.
+		// left in the hub to name it, offer it again, or finish removing it. An adoption retires
+		// no shelf file: the one it just gained is the point of the press.
 		if err := os.Remove(oldPath); err != nil && !os.IsNotExist(err) {
 			stale = append(stale, "the shelf")
 		} else if err := removeThemeOrigin(oldPath); err != nil {
@@ -599,7 +749,7 @@ func (s *Server) applyThemeUpdate(r *http.Request, key, baked string) (*applyPay
 		out.Note = fmt.Sprintf("“%s” is installed as “%s”; the old copy is still on %s and needs a manual remove",
 			oldName, newName, strings.Join(stale, ", "))
 	}
-	log.Printf("site update: %s %s v%d -> %q on %d orb(s)", origin.Site, key, ans.Version, newName, len(out.InstalledOn))
+	log.Printf("site update: %s %s v%d -> %q on %d orb(s)", origin.Site, origin.DesignID, ans.Version, newName, len(out.InstalledOn))
 	return out, nil
 }
 

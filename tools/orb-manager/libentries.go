@@ -360,10 +360,17 @@ func (s *Server) handleLibForget(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if what == "all" && e.Theme != nil {
+		// §7.3: the whole-erase path takes the ledger entry with the theme, beside the
+		// sidecar Drop's own removeThemeOrigin does.
+		originID := ""
+		if e.Theme.Origin != nil {
+			originID = e.Theme.Origin.DesignID
+		}
 		if _, err := lib.Drop("theme", e.Theme.Stem); err != nil {
 			s.jsonErr(w, err.Error())
 			return
 		}
+		s.orbOnlyForget(e.Name, originID)
 	}
 	s.jsonOK(w, map[string]any{"name": name, "what": what})
 }

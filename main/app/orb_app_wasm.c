@@ -171,8 +171,9 @@ typedef struct {
     struct cfg_ent *cfg;         /* the settings mirror, one per declared setting */
     uint32_t       cfg_seen;     /* the broker's cfg_gen the mirror was read at */
     uint32_t       cfg_local;    /* moves on every mirror change: orb.cfg_gen */
-    uint32_t       cfg_pending;  /* writes posted to the worker, not yet landed */
-    bool           cfg_stale;    /* a posted write was refused: re-read at next call */
+    uint32_t       cfg_pending;  /* a flush job posted to the worker, not yet finished */
+    uint32_t       cfg_dirty;    /* settings written in the mirror, not yet stored (bit = index) */
+    bool           cfg_stale;    /* the broker refused a write: re-read at next call */
     bool           stage;        /* the live theme is this app's: it owns the stage */
     uint32_t       wake_ms;      /* §64.6: this app's last orb_wake uptime stamp, 0 = never;
                                   * the once-a-minute rate limit. Reset with the rest of the
@@ -223,7 +224,16 @@ static void slot_release(wasm_slot_t *s)
     if (s->rt) m3_FreeRuntime(s->rt);
     if (s->env) m3_FreeEnvironment(s->env);
     if (s->code) heap_caps_free(s->code);
-    if (s->cfg) heap_caps_free(s->cfg);
+    /* A settings flush in flight reads s->cfg: let it finish (it is the worker's one job and a
+     * few NVS writes), and leak the mirror rather than free it under a flush that overran. */
+    __atomic_store_n(&s->cfg_dirty, 0u, __ATOMIC_RELEASE);
+    for (int w = 0; w < 50 && __atomic_load_n(&s->cfg_pending, __ATOMIC_ACQUIRE) && !orb_jobs_on_worker(); w++)
+        vTaskDelay(pdMS_TO_TICKS(10));
+    if (s->cfg) {
+        if (__atomic_load_n(&s->cfg_pending, __ATOMIC_ACQUIRE))
+            ESP_LOGW(TAG, "a settings flush outlived its app's release: its mirror is kept");
+        else heap_caps_free(s->cfg);
+    }
     if (s->icon) heap_caps_free(s->icon);
     memset(s, 0, sizeof *s);
 }
@@ -451,10 +461,18 @@ static void mirror_load(wasm_slot_t *s)
     s->cfg_local++;
 }
 
+static void cfg_flush_kick(wasm_slot_t *s);
+
 static void mirror_sync(wasm_slot_t *s)
 {
     if (s->app) orb_svc_grants_warm(s->app);   /* the grant word is NVS too */
-    if (!s->app || __atomic_load_n(&s->cfg_pending, __ATOMIC_ACQUIRE)) return;
+    if (!s->app) return;
+    /* Writes the worker could not take yet are retried here, before every guest call; and the
+     * mirror is never re-read over them, or the store's older value would come back as if the
+     * owner had set it (the pomodoro's turn reverting, Bronze 2026-11-11). */
+    if (__atomic_load_n(&s->cfg_dirty, __ATOMIC_ACQUIRE)) cfg_flush_kick(s);
+    if (__atomic_load_n(&s->cfg_pending, __ATOMIC_ACQUIRE) ||
+        __atomic_load_n(&s->cfg_dirty, __ATOMIC_ACQUIRE)) return;
     if (!s->cfg || s->cfg_stale || orb_svc_cfg_gen(s->app) != s->cfg_seen) mirror_load(s);
 }
 
@@ -470,42 +488,60 @@ static int mirror_find(const wasm_slot_t *s, const char *id, bool want_str)
     return -1;
 }
 
-typedef struct {
-    wasm_slot_t *s;
-    int          idx;
-    bool         is_str;
-    int32_t      v;
-    char         str[32];
-} cfg_job_t;
+/* A guest's setting writes reach the store through one flush job at a time. The jobs worker
+ * takes a single job (orb_jobs_post refuses while one is queued or running), so a write per
+ * job lost the second of every pair an app wrote back to back -- and then re-read the store
+ * over it. Now a write marks its setting dirty in the mirror and kicks a flush; a flush that
+ * cannot be posted yet stays dirty and is kicked again from mirror_sync, before the app's next
+ * call. The flush stores each dirty setting's mirror value as it is when the job runs: a write
+ * landing mid-flush sets its bit again, so the last value always reaches the store. */
+typedef struct { wasm_slot_t *s; } cfg_job_t;
 
 static void cfg_job(void *arg)
 {
-    const cfg_job_t *j = arg;
-    wasm_slot_t *s = j->s;
-    if (s->app && j->idx < s->app->n_settings) {
-        const char *id = s->app->settings[j->idx].id;
-        const esp_err_t e = j->is_str ? orb_svc_table()->cfg_set_str(s->app, id, j->str)
-                                      : orb_svc_table()->cfg_set(s->app, id, j->v);
+    wasm_slot_t *s = ((const cfg_job_t *)arg)->s;
+    const uint32_t m = __atomic_exchange_n(&s->cfg_dirty, 0u, __ATOMIC_ACQ_REL);
+    for (int i = 0; s->app && s->cfg && i < s->app->n_settings && i < 32; i++) {
+        if (!(m & (1u << i))) continue;
+        const orb_setting_desc_t *d = &s->app->settings[i];
+        esp_err_t e;
+        if (d->type == ORB_SET_STRING) {
+            char str[sizeof s->cfg[i].str];
+            memcpy(str, s->cfg[i].str, sizeof str);
+            str[sizeof str - 1] = 0;
+            e = orb_svc_table()->cfg_set_str(s->app, d->id, str);
+        } else {
+            e = orb_svc_table()->cfg_set(s->app, d->id, s->cfg[i].v);
+        }
         if (e != ESP_OK) {
             ESP_LOGW(TAG, "\"%s\" setting \"%s\" was not stored: %s",
-                     s->app->slug, id, esp_err_to_name(e));
-            s->cfg_stale = true;
+                     s->app->slug, d->id, esp_err_to_name(e));
+            s->cfg_stale = true;          /* the broker's refusal: its value is the truth */
         }
     }
-    __atomic_sub_fetch(&s->cfg_pending, 1, __ATOMIC_RELEASE);
+    __atomic_store_n(&s->cfg_pending, 0u, __ATOMIC_RELEASE);
 }
 
+/* Post a flush unless one is already on its way; a busy worker leaves the bits for later. */
+static void cfg_flush_kick(wasm_slot_t *s)
+{
+    uint32_t idle = 0u;
+    if (!__atomic_compare_exchange_n(&s->cfg_pending, &idle, 1u, false,
+                                     __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) return;
+    cfg_job_t j = { .s = s };
+    if (orb_jobs_post(cfg_job, &j, sizeof j) != ESP_OK)
+        __atomic_store_n(&s->cfg_pending, 0u, __ATOMIC_RELEASE);   /* retried from mirror_sync */
+}
+
+/* The mirror already holds the new value; this only gets it stored. Never refused for a busy
+ * worker: the write is kept and lands on a later flush. */
 static esp_err_t mirror_post(wasm_slot_t *s, int idx, bool is_str, int32_t v, const char *str)
 {
-    cfg_job_t j = { .s = s, .idx = idx, .is_str = is_str, .v = v };
-    if (is_str) snprintf(j.str, sizeof j.str, "%s", str);
-    __atomic_add_fetch(&s->cfg_pending, 1, __ATOMIC_ACQ_REL);
-    const esp_err_t e = orb_jobs_post(cfg_job, &j, sizeof j);
-    if (e != ESP_OK) {
-        __atomic_sub_fetch(&s->cfg_pending, 1, __ATOMIC_RELEASE);
-        s->cfg_stale = true;
-    }
-    return e;
+    (void)is_str; (void)v; (void)str;
+    if (idx < 0 || idx >= 32) return ESP_ERR_INVALID_ARG;
+    __atomic_or_fetch(&s->cfg_dirty, 1u << idx, __ATOMIC_ACQ_REL);
+    cfg_flush_kick(s);
+    return ESP_OK;
 }
 
 /* ---- the broker, guest -> OS ---------------------------------------------

@@ -466,12 +466,14 @@ ORB_IMPORT("maps_gen")    uint32_t orb_maps_gen(void);
 #define ORB_RING_BREATHE  2     /* slow in/out: "paused"                               */
 #define ORB_RING_MATCH    0x01u /* byte-1 ask: arc/track take the live theme's overlay colour (§64.9) */
 #define ORB_RING_CCW      0x02u /* byte-1 ask: the arc runs anticlockwise from `start` (rim-design §3) */
-#define ORB_RING_FLAGS_MASK 0x03u /* the bits rim-1 knows; ring_clamp drops the rest                    */
+#define ORB_RING_BACKED   0x04u /* byte-1 ask: the whole rim band is drawn black with the arc on it at
+                                 * full opacity, whatever the alpha byte says (plan §64.12)            */
+#define ORB_RING_FLAGS_MASK 0x07u /* the bits the OS knows; ring_clamp drops the rest                    */
 
 typedef struct {
     uint16_t fraction;   /* 0..1000, from twelve in the record's own direction; >1000 clamps to 1000 */
     uint8_t  effect;     /* ORB_RING_STEADY | _FLASH | _BREATHE; other values => STEADY  */
-    uint8_t  flags;      /* ORB_RING_MATCH | ORB_RING_CCW; unknown bits are dropped      */
+    uint8_t  flags;      /* ORB_RING_MATCH | _CCW | _BACKED; unknown bits are dropped    */
     uint32_t arc;        /* 0xAARRGGBB — arc alpha in bits 31..24 (0 => the arc draws nothing) */
     uint32_t track;      /* 0xAARRGGBB — track alpha in bits 31..24 (0 => a bare arc)   */
     uint16_t period_ms;  /* effect period, clamped by the OS; 0 => the OS default        */
@@ -484,6 +486,23 @@ ORB_IMPORT("ring_set")   int32_t orb_ring_set(const orb_ring_t *r);  /* sig i(i)
                                                                         for NULL, or the
                                                                         cap refusal */
 ORB_IMPORT("ring_clear") int32_t orb_ring_clear(void);              /* sig i(): the same */
+
+/* ---- the lent press (cap "press"; plan §64.13, docs/specs/alerts-design.md §3) --------- *
+ * While a claim stands, a plain press on whatever app is on the glass is queued for the
+ * claimant and that app never sees it; the claimant reads the queue from its orb_service(),
+ * never woken or raised by the lend (turn and press-and-turn stay with the glass app, and a
+ * press that only woke a dimmed face is never lent). Latest caller wins, one claimant at a
+ * time; a re-claim by the current owner keeps its unread queue, so a service may re-assert
+ * the claim every beat. The queue is bounded at 4 unread presses: a fifth is swallowed,
+ * never replayed as a flood when the service wakes. Both answers are 0 for an app that did
+ * not declare the cap (the call records the same refusal any gated import does). */
+#define ORB_PRESS_MAX_LENT 4   /* unread lent presses an app can hold at once (documented) */
+
+ORB_IMPORT("press_claim") int32_t orb_press_claim(int32_t on);  /* sig i(i): 1 when this app
+                                                                  * now holds the claim, 0 when
+                                                                  * it does not (or lacks the cap) */
+ORB_IMPORT("press_lent")  int32_t orb_press_lent(void);         /* sig i(): how many plain presses
+                                                                  * the OS has queued for this app */
 
 /* ---- JSON (free): the OS's streaming tokenizer (D51) ----------------------------- *
  * Begin over the landed network body (buf NULL) or a buffer of the app's own (copied,

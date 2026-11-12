@@ -190,14 +190,15 @@
       if (e.im) paintTo(el, e.im); else if (e.els.indexOf(el) < 0) e.els.push(el);
     }, size, size, null, null, tip || 'The look, drawn by the bake’s own picture()');
   }
-  // the dots row on its own, at the bake's own size, from the bake's own dotFrame
-  function dotsCv(K, label, d, filled) {
+  // the dots row on its own, at the bake's own size, from the bake's own dotFrame: the frame
+  // the app would pick for a cycle of `cells` focuses with `filled` of them counted
+  function dotsCv(K, label, d, filled, cells) {
     return K.Cv(label, function (el) {
       if (!el) return;
-      var f = B.dotFrame(B.complete(d), filled), x = el.getContext('2d'), s = Math.min(2, (el.width - 12) / f.width);
+      var f = B.dotFrame(B.complete(d), filled, cells), x = el.getContext('2d'), s = Math.min(2, (el.width - 12) / f.width);
       x.clearRect(0, 0, el.width, el.height);
       x.drawImage(f, (el.width - f.width * s) / 2, (el.height - f.height * s) / 2, f.width * s, f.height * s);
-    }, 150, 150, null, null, 'Twelve seats, ' + filled + ' filled: the frame the app picks at row 13');
+    }, 150, 150, null, null, cells + ' cells, ' + filled + ' filled: the frame the app picks at row 13');
   }
 
   /* ---- the look's parts: what the left pane lists and the Furniture step hides. Taken from
@@ -298,8 +299,8 @@
     } else if (step === 'count') {
       out.push(K.H('The dots'));
       out.push(K.Sl('Shape', d.dots, B.DOTS.map(function (k) { return { v: k, label: B.DOT_TITLES[k] }; }), function (v) { upd('dots', v); }));
-      out.push(K.Nt('', 'Twelve seats — the app’s ceiling — and thirteen frames bake, the one with `f` filled for every f from 0 to 12, so the row says how many focuses this cycle has run without redrawing. The shape is the look’s own: a board’s discs, a chart’s squares, brass studs, stars.'));
-      out.push(dotsCv(K, 'The row', d, +c.view.count || 3));
+      out.push(K.Nt('', 'Two rows bake at the one place: a track of twelve hollow frames, one per cell count from one to twelve, and a fill of thirteen frames over it, one per count, its first frame empty — so the row is the cycle you set rather than twelve seats every time. A cycle of four focuses reads four dots, three of them filled through the third focus and the break after it, all four at the long break. The shape is the look’s own: a board’s discs, a chart’s squares, brass studs, stars.'));
+      out.push(dotsCv(K, 'The row', d, +c.view.count || 3, 4));
       out.push(K.H('Their colours'));
       out.push(C('Filled', 'ink'));
       out.push(C('Accent', 'accent'));

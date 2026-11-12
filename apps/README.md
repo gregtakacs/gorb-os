@@ -41,8 +41,8 @@ my_app/
 |---|---|
 | `slug` | the app's id: lowercase a–z, digits and `_`, at most 23 characters. It names the card file, the settings namespace and the slot |
 | `title` | what the dial shows |
-| `caps` | the owned capabilities the app uses: `power`, `net`, `sd_read`, `themes`, `sound`, `location`, `ring`. The declaration is the consent (D19): an import the app did not declare answers a refusal, and the owner can revoke any of them on the dial |
-| `settings` | up to 16, each with a type and a label; the OS draws them on the dial and in Orb Manager ([Settings](#settings)) |
+| `caps` | the owned capabilities the app uses: `power`, `net`, `sd_read`, `themes`, `sound`, `location`, `ring`, `press`. The declaration is the consent (D19): an import the app did not declare answers a refusal, and the owner can revoke any of them on the dial |
+| `settings` | up to 18, each with a type and a label; the OS draws them on the dial and in Orb Manager ([Settings](#settings)) |
 | `period_ms` | the fastest beat the app may ask for, at least 1000. Leave it out and the app never ticks |
 | `memory_kb` | the module's linear memory, 64 (default) or 128 |
 | `shelf` | in this repo only: `true` puts the app on the hub's shelf; `false` builds and checks it but keeps it off |
@@ -372,6 +372,7 @@ ORB_EXPORT("orb_push") void orb_push(int32_t delta)
 | sound | `orb_sound_play/stop/active` | `sound` |
 | location | `orb_home`, `orb_home_gen` | `location` |
 | the ring | `orb_ring_set`, `orb_ring_clear` ([sdk/orb.h](sdk/orb.h), "The ring") | `ring` |
+| the lent press | `orb_press_claim`, `orb_press_lent` ([sdk/orb.h](sdk/orb.h), "The lent press") | `press` |
 | units | `orb_units`, `orb_units_gen`, and the `orb_*_from_*` and `orb_*_label` helpers | free (OS v1.2.10) |
 | power | `orb_power_request`, `orb_wake` ([sdk/orb.h](sdk/orb.h), "Waking the glass") | `power` |
 | stage | `orb_stage_*` ([sdk/orb_stage.h](sdk/orb_stage.h)) | free; draws only for the theme's own app |
@@ -460,10 +461,19 @@ orb_ring_set(&r);
 - **`flags` is the record's byte-1 ask (rim-design §2).** `ORB_RING_MATCH` (`0x01`) asks the ring to
   wear the theme: the OS takes the arc's and track's RGB from the live theme's overlay colour
   (§64.9), each keeping its own alpha — a muted band stays muted. `ORB_RING_CCW` (`0x02`) is the
-  direction, below. Set nothing there (`0`) and the ring keeps the colours you sent. The OS masks the
-  byte to `ORB_RING_FLAGS_MASK` (`0x03`): a bit it does not know is dropped, not honoured. An OS
+  direction, below. `ORB_RING_BACKED` (`0x04`) is the alert backing, below. Set nothing there (`0`)
+  and the ring keeps the colours you sent. The OS masks the
+  byte to `ORB_RING_FLAGS_MASK` (`0x07`): a bit it does not know is dropped, not honoured. An OS
   without this slice ignores the byte entirely: it does nothing with it, so the ring simply draws in
   your own colours.
+- **`ORB_RING_BACKED` paints the whole rim band, and the opacity byte does not apply (plan §64.12).**
+  A breathing or flashing arc blended over a busy app at the ring's own opacity is lost, so an alert
+  that must be seen backs itself: the OS draws the entire band black and the arc on top of it at full
+  opacity, whatever the arc's and track's alpha bytes say. Breathe fades the colour toward black (to a
+  floor, never into the app beneath), flash switches between the colour and the black band. The lanes
+  already cover the whole band, so a backed ring costs no extra pixels. Backed is legal with any
+  effect; a solid backed record is just a black band under your arc. A record without the bit is drawn
+  exactly as before.
 - **`ORB_RING_CCW` and `start` say which way the arc runs and where it begins.** `start` is degrees
   clockwise from twelve (`0` twelve, `90` three, `270` nine); the arc is the wedge from there —
   `[start, start + fraction·360°)` clockwise, `(start − fraction·360°, start]` anticlockwise — and
@@ -473,6 +483,28 @@ orb_ring_set(&r);
 - **The copy arc wins.** While a card copy is running the rim shows the copy arc and your
   ring holds its state; the first frame after the copy stamps your ring again — no work
   for the app, and `/status`'s `ring.on_glass` is false while it waits.
+
+### The lent press
+
+While one app holds the claim (`orb_press_claim(1)`, cap `press`), the OS **lends it a plain
+press** — the tap that would otherwise arm or act on whatever is on the glass right now. A
+press the OS spends on the claimant is queued and never reaches the app under your finger, so
+a background app (a timer, a tracker) can count taps without stealing the face you are looking
+at. Only a bare tap is lent: a turn, a press-and-turn and a hold stay exactly where they were,
+and a press that only woke a dimmed or dark glass is never lent. The claim is best-effort and
+last-writer-wins — one claimant at a time, and re-claiming on your own beat keeps the queue you
+have not read. Your `orb_service()` polls `orb_press_lent()` for how many are waiting and takes
+them one at a time. The queue is bounded at `ORB_PRESS_MAX_LENT` (4): the fifth unread press is
+swallowed, never replayed as a flood when you finally wake, so a claimant that sleeps through a
+burst sees four, not a backlog. The OS confirms a lent press by pulsing **your own ring** for a
+beat (cap `ring`; a claimant with no ring gets no pulse). Release the claim with
+`orb_press_claim(0)` — and lose it automatically on a fault, an uninstall, or the owner
+revoking `press` on the dial.
+
+```c
+int32_t orb_press_claim(int32_t on);   // 1 when this app now holds the claim (0 without the cap)
+int32_t orb_press_lent(void);          // how many plain presses the OS has queued (0 without the cap)
+```
 
 ### Waking the glass
 

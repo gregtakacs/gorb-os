@@ -1,0 +1,32 @@
+{
+  "name": "alerts",
+  "repo": "../..",
+  "base": "delegate/alerts-design",
+  "retries": 2,
+  "steps": [
+    {
+      "name": "alerts-0-dots",
+      "spec": "docs/specs/alerts-0-dots.md",
+      "hard": true,
+      "verify": "set -o pipefail; python3 tools/host_pomodoro_test.py 2>&1 | grep -q ' 0 failed' && python3 tools/host_pomodoro_test.py --mutations > /tmp/alerts0p.log 2>&1 && grep -qE 'mutants caught ([0-9]+)/\\1' /tmp/alerts0p.log && ! grep -q MISSED /tmp/alerts0p.log && grep -q 'pm_dots(' apps/pomodoro/pomodoro.h && grep -q 'PM_DOT_PITCH' apps/pomodoro/pomodoro.h && grep -q 'pm_dots(' apps/pomodoro/main.c && ! grep -q 'pm_dots_frame' apps/pomodoro/main.c && grep -qE 'define CLK_PICK_MAX +64' main/art/clk_types.h && ORB_CHROME=$(command -v chromium) python3 apps/pomodoro/editor/_selftest/bake_check.py > /tmp/alerts0b.log 2>&1 && ORB_CLANG=/usr/lib/llvm-21/bin/clang make check-apps > /tmp/alerts0a.log 2>&1 && test -z \"$(git diff --name-only delegate/alerts-design -- main tools/orb-manager/web apps/pomodoro/version.txt apps/pomodoro/app.json tools/theme_schema.py tools/verify_js_bake.py tools/host_clock3_test.py)\" && make check-sandbox"
+    },
+    {
+      "name": "alerts-1-backed-ring",
+      "spec": "docs/specs/alerts-1-backed-ring.md",
+      "hard": true,
+      "verify": "set -o pipefail; python3 tools/host_ring_test.py 2>&1 | tail -3 | grep -q 'RESULT: pass' && python3 tools/host_ring_test.py --mutations > /tmp/alerts1m.log 2>&1 && grep -qE 'mutants caught ([0-9]+)/\\1' /tmp/alerts1m.log && ! grep -q MISSED /tmp/alerts1m.log && python3 tools/host_pomodoro_test.py --mutations > /tmp/alerts1p.log 2>&1 && grep -qE 'mutants caught ([0-9]+)/\\1' /tmp/alerts1p.log && ! grep -q MISSED /tmp/alerts1p.log && grep -qE 'define ORB_RING_BACKED[[:space:]]+0x04u' main/display/orb_ring.h && grep -qE 'define ORB_RING_FLAGS_MASK[[:space:]]+0x07u' main/display/orb_ring.h && grep -q ORB_RING_BACKED apps/sdk/orb.h && ORB_CLANG=/usr/lib/llvm-21/bin/clang make check-apps > /tmp/alerts1a.log 2>&1 && test -z \"$(git diff --name-only delegate/alerts-0-dots -- main/app main/input main/net tools/orb-manager apps/pomodoro/app.json apps/pomodoro/version.txt)\" && make check-sandbox"
+    },
+    {
+      "name": "alerts-2-lent-press",
+      "spec": "docs/specs/alerts-2-lent-press.md",
+      "hard": true,
+      "verify": "set -o pipefail; python3 tools/host_press_test.py 2>&1 | tail -3 | grep -q 'RESULT: pass' && python3 tools/host_press_test.py --mutations > /tmp/alerts2m.log 2>&1 && grep -qE 'mutants caught ([0-9]+)/\\1' /tmp/alerts2m.log && ! grep -q MISSED /tmp/alerts2m.log && python3 tools/host_ring_test.py 2>&1 | tail -3 | grep -q 'RESULT: pass' && python3 tools/host_svc_test.py 2>&1 | tail -3 | grep -q 'RESULT: pass' && grep -qE 'CAP_PRESS[[:space:]]*=[[:space:]]*11' main/app/orb_svc.h && grep -q '\"press\"' main/app/orb_svc.c && grep -q press_claim apps/sdk/binds.json && grep -q press_lent apps/sdk/binds.json && grep -qE 'ORBAPP_SETTINGS_MAX[[:space:]]+18' main/app/orb_app_manifest.h && grep -qE 'SETTINGS_MAX[[:space:]]*=[[:space:]]*18' tools/orbapp.py && test -z \"$(git diff --name-only delegate/alerts-1-backed-ring -- apps/pomodoro)\" && make check-sandbox"
+    },
+    {
+      "name": "alerts-3-pomodoro-press",
+      "spec": "docs/specs/alerts-3-pomodoro-press.md",
+      "hard": true,
+      "verify": "set -o pipefail; python3 tools/host_pomodoro_test.py --mutations > /tmp/alerts3p.log 2>&1 && grep -qE 'mutants caught ([0-9]+)/\\1' /tmp/alerts3p.log && ! grep -q MISSED /tmp/alerts3p.log && ORB_CLANG=/usr/lib/llvm-21/bin/clang python3 apps/sdk/orbsdk.py build apps/pomodoro > /tmp/alerts3b.log 2>&1 && ORB_CLANG=/usr/lib/llvm-21/bin/clang make check-apps > /tmp/alerts3a.log 2>&1 && grep -q '\"press\"' apps/pomodoro/app.json && grep -q '\"press_any\"' apps/pomodoro/app.json && test -z \"$(git diff --name-only delegate/alerts-2-lent-press -- . ':!docs/specs' ':!apps/pomodoro/main.c' ':!apps/pomodoro/pomodoro.c' ':!apps/pomodoro/pomodoro.h' ':!apps/pomodoro/app.json' ':!tools/host_pomodoro_test.py')\" && make check-sandbox"
+    }
+  ]
+}

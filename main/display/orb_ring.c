@@ -249,6 +249,50 @@ int ring_alpha_moved(int was_alpha, int now_alpha)
     return d >= ORB_RING_STEP_ALPHA;
 }
 
+/* A backed band's pixel (§64.12, alerts-design §2.2). The whole rim is painted: a non-arc pixel is
+ * pure black, an arc pixel is the caller's argb blended against black (never the destination), so
+ * the colour's alpha here is the effect's own — a solid's 255 returns the source, a breathe trough's
+ * floor returns the colour dimmed to black. ring_blend565() over a 0x0000 background is exactly that
+ * blend, in the wire order the tile already holds. */
+uint16_t ring_backed565(uint32_t argb, int arc)
+{
+    if (!arc) return 0x0000;                              /* wire(0) == 0: the band's black, byte for byte */
+    return ring_blend565(0x0000, argb);
+}
+
+/* The alpha the band paints at, for both the backed colour and the send gate (§64.12). Unbacked is
+ * the effect's alpha unchanged (ring_effect_alpha()'s own answer: steady 255, flash 255/0, breathe
+ * its ramp), so today's paths are byte for byte. Backed throws the opacity byte away: a steady (or
+ * unknown) band is solid at 255, a breathe is floored so the trough never reveals the app beneath,
+ * and a flash keeps its phase — but the off-phase is a black band, not nothing, which is what
+ * ring_backed_moved() below decides on, not ring_alpha_moved(). */
+int ring_paint_alpha(const orb_ring_rec *r, int effect_alpha)
+{
+    if (!r) return effect_alpha;
+    if (!(r->flags & ORB_RING_BACKED)) return effect_alpha;
+    if (r->effect == ORB_RING_FLASH)   return effect_alpha;                 /* 255 lit, 0 black — both paint */
+    if (r->effect == ORB_RING_BREATHE)
+        return effect_alpha < ORB_RING_BACKED_MIN_ALPHA ? ORB_RING_BACKED_MIN_ALPHA : effect_alpha;
+    return 255;                                                             /* backed solid: full, byte ignored */
+}
+
+/* The gate for a band whose off-phase is black, not nothing (§64.12, alerts-design §2.3). A fully
+ * black and a fully coloured flash both paint, so the old never-zero clause would resend an
+ * unchanged black band and swallow the transition home; the backed rule is simply that the paint
+ * moved. Two black frames rest, two coloured frames rest, colour-to-black and back both send. */
+int ring_backed_moved(int was_paint, int now_paint)
+{
+    return was_paint != now_paint;
+}
+
+/* The lent-press pulse window (§64.13), pure so the timer has a host test and the glue is
+ * a read. Half-open: an armed stamp `until_ms` pulses for every clock strictly before it and
+ * restores at the exact expiry, so a pulse never runs a frame into the record's normal gate. */
+int ring_pulse_open(int64_t until_ms, int64_t now_ms)
+{
+    return now_ms < until_ms;
+}
+
 /* The governor (rim-design §6.3): the batch's own length times three, floored at the grid the
  * slice asks for and ceiled at the grid the slice started from. The floor of the clamp is the
  * same constant as the ceiling's partner, so a batch nobody measured still ticks at 25 Hz; the
@@ -516,6 +560,12 @@ EXT_RAM_BSS_ATTR static int     s_grid_ms;               /* the governor's curre
 EXT_RAM_BSS_ATTR static int     s_batch_n;               /* lane batches reported, for the log line */
 EXT_RAM_BSS_ATTR static bool    s_old_log;               /* the degradation line, printed once     */
 
+/* The lent-press confirmation pulse (§64.13): PSRAM only, one slot and one expiry stamp.
+ * Armed by orb_ring_disp_pulse when the router lends a press, consumed by the service to hold
+ * that claimant's own record at full paint for ORB_RING_PULSE_MS. */
+EXT_RAM_BSS_ATTR static int     s_pulse_slot;            /* the pulsing claimant, or -1            */
+EXT_RAM_BSS_ATTR static int64_t s_pulse_until_ms;        /* the window's open-until stamp          */
+
 #define RING_CY   233.0f
 #define RING_ROUT 231.0f
 #define RING_RIN  224.0f
@@ -571,6 +621,8 @@ void orb_ring_disp_init(void)
     s_lanes_due = false;
     s_alpha_sent = 0;
     s_batch_n   = 0;
+    s_pulse_slot = -1;                                  /* no lent-press pulse armed (§64.13)      */
+    s_pulse_until_ms = 0;
     s_grid_ms   = ORB_RING_STEP_MS;                    /* the governor starts at the ask (§6.3) */
     if (s_lane_n <= 0) {
         s_lane_n = 0;
@@ -589,6 +641,23 @@ void orb_ring_drop(int slot)
     if (slot < 0 || slot >= ORB_APP_CAP) return;
     if (!s_init) orb_ring_disp_init();
     ring_clear(orb_ring_tbl, orb_ring_owner, ORB_APP_CAP, slot);
+    if (s_pulse_slot == slot) s_pulse_slot = -1;   /* a dropped row cannot keep pulsing */
+}
+
+/* The OS's confirmation that it just spent a press on this claimant (§64.13): arm the
+ * claimant's OWN record to paint full for ORB_RING_PULSE_MS. Called from the router's poll
+ * (the LVGL task, the same task the service runs on) when a plain press is lent. No pulse is
+ * drawn when there is no ring service yet, when the claimant owns no record, or when another
+ * record wins the rim — the pulse is the claimant's ring and nothing else, so a claimant with
+ * no ring (or one the copy arc is covering) simply gets none. */
+void orb_ring_disp_pulse(int slot)
+{
+    if (!s_init) return;                                   /* the ring service is unavailable */
+    if (slot < 0 || slot >= ORB_APP_CAP) return;
+    if (orb_ring_owner[slot] < 0) return;                  /* the claimant owns no record: no pulse */
+    if (pick_slot() != slot) return;                       /* another record owns the rim: no pulse */
+    s_pulse_slot = slot;
+    s_pulse_until_ms = esp_timer_get_time() / 1000 + ORB_RING_PULSE_MS;
 }
 
 /* The annulus rows the arc's leading edge swept between two fractions — design §6's
@@ -725,7 +794,15 @@ void orb_ring_disp_service(void)
         s_have = true;
         owe = true;
     } else if (anim) {
-        owe = ring_alpha_moved(s_alpha_sent, s_alpha) != 0;   /* a breathe/flash step, gated (§6.1) */
+        /* A backed band is gated on paint movement, not alpha movement: its off-phase is a black
+         * band that still paints, and the never-zero clause ring_alpha_moved() leans on would
+         * resend an unchanged black frame and swallow the transition home. Either side backed
+         * routes through the paint gate; a wholly unbacked step keeps today's rule exactly (§64.12). */
+        if ((s_rec.flags | cur.flags) & ORB_RING_BACKED)
+            owe = ring_backed_moved(ring_paint_alpha(&s_rec, s_alpha_sent),
+                                    ring_paint_alpha(&cur, s_alpha)) != 0;
+        else
+            owe = ring_alpha_moved(s_alpha_sent, s_alpha) != 0;   /* a breathe/flash step, gated (§6.1) */
     } else {
         int d = cur.fraction - s_rec.fraction;
         if (d < 0) d = -d;
@@ -735,6 +812,22 @@ void orb_ring_disp_service(void)
             owe   = true;                            /* the drain's own granularity, in lanes    */
         }
         s_rec = cur;                                 /* fraction advanced, sent or not            */
+    }
+
+    /* §64.13: a lent press confirmed. For ORB_RING_PULSE_MS the claimant's own record is held
+     * at full paint and forced out — the pulse ignores the send gate the way a backed band
+     * ignores the alpha byte — on a whole-band frame, so the ring reads solid for the beat.
+     * Only while that claimant still owns the rim; once another record wins it, or the window
+     * closes, the pulse stops and the normal gate resumes. */
+    if (owned && s_pulse_slot >= 0 && pick_slot() == s_pulse_slot &&
+        ring_pulse_open(s_pulse_until_ms, now / 1000)) {
+        s_rec = cur;
+        s_have = true;
+        s_alpha = 255;
+        whole = true;
+        owe   = true;
+    } else if (s_pulse_slot >= 0 && !ring_pulse_open(s_pulse_until_ms, now / 1000)) {
+        s_pulse_slot = -1;                             /* the window closed: stop pulsing */
     }
 
     if (owe) {
@@ -797,17 +890,28 @@ void orb_ring_disp_stamp(int32_t y0, int rows, uint16_t *tile, int32_t x0, int32
 {
     if (!tile || !s_have || rows <= 0 || w <= 0) return;
     const int alpha = s_alpha;                   /* fixed at the service's grid step     */
-    if (alpha <= 0) return;                      /* off-phase or alpha-0: draw nothing   */
-    const uint32_t ac = s_rec.arc, tc = s_rec.track;
-    const uint32_t aa = (uint32_t)(((ac >> 24) & 0xFFu) * (uint32_t)alpha / 255u);
-    const uint32_t ta = (uint32_t)(((tc >> 24) & 0xFFu) * (uint32_t)alpha / 255u);
-    const uint32_t argb_arc = (ac & 0x00FFFFFFu) | (aa << 24);
-    const uint32_t argb_trk = (tc & 0x00FFFFFFu) | (ta << 24);
+    const int backed = (s_rec.flags & ORB_RING_BACKED) ? 1 : 0;
+    if (alpha <= 0 && !backed) return;           /* unbacked off-phase or alpha-0: draw nothing   */
     /* The two words the geometry needs are read out of the record once here, not per row and never
      * per pixel (rim-design §3): the colours above already had the ORB_RING_MATCH substitution
      * folded in by the service, and the start and direction are the record's own. */
     const int start_deg = s_rec.start;
     const int ccw = (s_rec.flags & ORB_RING_CCW) ? 1 : 0;
+    uint16_t on_px = 0, off_px = 0;              /* the backed band's two hoisted colours (§64.12) */
+    uint32_t argb_arc = 0, argb_trk = 0;         /* the unbacked arc/track words, alpha folded in   */
+    if (backed) {
+        const int pa = ring_paint_alpha(&s_rec, alpha);
+        const int cl = pa < 0 ? 0 : (pa > 255 ? 255 : pa);
+        const uint32_t back_argb = (s_rec.arc & 0x00FFFFFFu) | ((uint32_t)cl << 24);
+        on_px  = ring_backed565(back_argb, 1);   /* arc: the colour scaled toward black by the effect */
+        off_px = ring_backed565(back_argb, 0);   /* band: black, even on a flash's off-phase          */
+    } else {
+        const uint32_t ac = s_rec.arc, tc = s_rec.track;
+        const uint32_t aa = (uint32_t)(((ac >> 24) & 0xFFu) * (uint32_t)alpha / 255u);
+        const uint32_t ta = (uint32_t)(((tc >> 24) & 0xFFu) * (uint32_t)alpha / 255u);
+        argb_arc = (ac & 0x00FFFFFFu) | (aa << 24);
+        argb_trk = (tc & 0x00FFFFFFu) | (ta << 24);
+    }
     orb_ring_part_t parts[ORB_RING_PARTS_MAX];
     for (int r = 0; r < rows; r++) {
         const int np = ring_row_parts((int)(y0 + r), s_rec.fraction, start_deg, ccw,
@@ -818,8 +922,13 @@ void orb_ring_disp_stamp(int32_t y0, int rows, uint16_t *tile, int32_t x0, int32
             int xa = parts[i].x0, xb = parts[i].x1;
             if (xa < x0) xa = x0;
             if (xb > x0 + w - 1) xb = x0 + w - 1;
-            const uint32_t argb = parts[i].arc ? argb_arc : argb_trk;
-            for (int x = xa; x <= xb; x++) d[x] = ring_blend565(d[x], argb);
+            if (backed) {
+                const uint16_t px = parts[i].arc ? on_px : off_px;   /* arc on the black band */
+                for (int x = xa; x <= xb; x++) d[x] = px;            /* opaque: no blend      */
+            } else {
+                const uint32_t argb = parts[i].arc ? argb_arc : argb_trk;
+                for (int x = xa; x <= xb; x++) d[x] = ring_blend565(d[x], argb);
+            }
         }
     }
 }

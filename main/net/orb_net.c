@@ -2559,14 +2559,14 @@ static esp_err_t h_status(httpd_req_t *req)
             if (!a) continue;           /* P4a: the span is positional — a free card
                                          * slot answers NULL and the next slot is a
                                          * different app, not the end of the list */
-            char grants[64];
+            char grants[80];
             int goff = 0;
             grants[0] = '\0';
-            char declared[64];
+            char declared[80];
             int doff = 0;
             declared[0] = '\0';
             static const orb_cap_t OC[] = { CAP_POWER, CAP_NET, CAP_SD_READ,
-                                            CAP_THEMES, CAP_SOUND, CAP_LOCATION, CAP_RING };
+                                            CAP_THEMES, CAP_SOUND, CAP_LOCATION, CAP_RING, CAP_PRESS };
             _Static_assert(sizeof OC / sizeof OC[0] == CAP_N - CAP_POWER,
                            "the ledger names every owner cap");
             const uint32_t gm = orb_svc_grants(a);

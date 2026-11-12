@@ -9,8 +9,9 @@
  *
  * The countdown lives in the service export and is kept against the wall second, never a
  * tick count, so it outlives a reboot and one of the OS's in-place restarts (§63). The
- * service draws nothing: the ring is the only OS surface it touches, and the face is drawn
- * by the entries that mean the glass. */
+ * service draws nothing: the ring is the only OS surface it paints over, and the lent press
+ * (§64.13) the only other one it asks anything of — the claim the phase machine wants, and
+ * the taps the OS queued behind it. The face is drawn by the entries that mean the glass. */
 #include <string.h>
 #include "orb.h"
 #include "orb_stage.h"
@@ -22,8 +23,8 @@
 /* The theme's slots (§10.1): five labels and one bank of dots the app picks a frame from.
  * A theme with no time row is not this app's layout and takes the bare face. */
 enum { PM_T_TIME = 8, PM_T_PHASE = 9, PM_T_COUNT = 10, PM_T_STATE = 11, PM_T_HEAD = 12,
-       PM_T_DOTS = 13 };
-enum { S_TIME, S_PHASE, S_COUNT, S_STATE, S_HEAD, S_DOTS, N_SLOTS };
+       PM_T_DOTS = 13, PM_T_FILL = 14 };
+enum { S_TIME, S_PHASE, S_COUNT, S_STATE, S_HEAD, S_DOTS, S_FILL, N_SLOTS };
 #define N_ROWS 64
 
 /* The theme's values (amendment B): the ring's colour per phase, and which of the theme's
@@ -62,7 +63,7 @@ static bool     s_visible;
 static bool     s_dirty = true;
 static char     s_shown[N_SLOTS][PM_TEXT];     /* what the rows already carry */
 static int8_t   s_tone_out[N_SLOTS];
-static int      s_frame_out = -1, s_sec_out = -1;
+static int      s_cells_out = -1, s_fill_out = -1, s_sec_out = -1;
 
 /* The gestures. */
 #define PM_CHOICE_LOST_MS 60000               /* radar's ZOOM_LOST_MS: a let-go that never came */
@@ -83,6 +84,7 @@ static int64_t wall(void) { int64_t t; now_s(&t); return t; }
 
 static void face_forget(void);
 static void redraw(void);
+static void press_pass(void);
 
 /* ---- the theme ---------------------------------------------------------------------- */
 
@@ -124,6 +126,9 @@ static void find_rows(void)
         case PM_T_HEAD:  R[S_HEAD]  = i; break;
         case PM_T_DOTS:
             if (r.shape != CLK_SHAPE_TEXT) R[S_DOTS] = i;      /* the dots are art, not a label */
+            break;
+        case PM_T_FILL:
+            if (r.shape != CLK_SHAPE_TEXT) R[S_FILL] = i;      /* the fill over the same track  */
             break;
         default: break;
         }
@@ -170,20 +175,21 @@ static int32_t cfg_get(const char *id, int32_t dflt)
     return orb_cfg_get(id, &v) == ORB_OK ? v : dflt;
 }
 
-/* The fourteen the owner edits, in one table so a read can be compared with the last one.
+/* The fifteen the owner edits, in one table so a read can be compared with the last one.
  * The lengths and N reach the machine as its settings, which it applies at the next phase;
- * the ring's three and the sound's two take effect at once. Answering whether anything moved
- * is the point of the table: the app's own state write moves orb_cfg_gen too (§5.1), and a
- * gen move that changed no value is not a reason to re-send a ring or to take back a turn. */
-#define PM_N_SET 14
+ * the ring's three, the sound's two and the borrowed press take effect at once. Answering
+ * whether anything moved is the point of the table: the app's own state write moves orb_cfg_gen
+ * too (§5.1), and a gen move that changed no value is not a reason to re-send a ring or to take
+ * back a turn. */
+#define PM_N_SET 15
 static const struct { const char *id; int32_t dflt; } PM_SET[PM_N_SET] = {
     { "focus_len", 25 },     { "break_len", 5 },      { "long_len", 15 },
     { "focuses", 4 },        { "autostart", 0 },      { "chime", 1 },
     { "chime_vol", 70 },     { "wake", 1 },           { "ring_on", 1 },
     { "ring_op", 85 },       { "ring_dir", 0 },       { "ring_start", 0 },
-    { "ring_col_here", -1 }, { "ring_col_away", -1 },
+    { "ring_col_here", -1 }, { "ring_col_away", -1 }, { "press_any", PM_PRESS_CALL },
 };
-static int32_t s_val[PM_N_SET];                  /* the fourteen, as last read */
+static int32_t s_val[PM_N_SET];                  /* the fifteen, as last read */
 static bool    s_val_known;
 
 /* "Match the app" (rim-design §8): the away setting's second special is the only one that asks
@@ -224,6 +230,7 @@ static bool load_settings(void)
     cfg.dir       = s_dir;
     cfg.start     = s_start;
     cfg.match     = match_of(v[13]);                  /* "Match the app", away only (§7) */
+    cfg.press_any = v[14];                            /* which states may borrow the press (§64.13) */
     s_cfg_gen     = orb_cfg_gen();
     return moved != 0;
 }
@@ -287,7 +294,7 @@ static bool own_write_inflight(void) { return s_wrote_ms && up_ms() - s_wrote_ms
  * store in between would take our own unwritten end for a phase that ended long ago. */
 static bool state_settled(void) { return s.st != PM_RUN || s.end_s != 0; }
 
-/* A settings move, from the dial or the LAN: the fourteen re-read at once when the gen moved,
+/* A settings move, from the dial or the LAN: the fifteen re-read at once when the gen moved,
  * and the state only when the keys hold something other than what we last wrote and that write
  * has landed (§5.1: the app's own write moves orb_cfg_gen too, off the tick, and lands late).
  * A move of the keys alone is not a move of the ring's or the face's name: only a settings
@@ -338,7 +345,7 @@ static void face_forget(void)
     for (int i = 0; i < N_SLOTS; i++) s_shown[i][0] = 0;
     s_tone_out[S_TIME] = s_tone_out[S_PHASE] = s_tone_out[S_COUNT] = 0;
     s_tone_out[S_STATE] = s_tone_out[S_HEAD] = 0;
-    s_frame_out = -1;
+    s_cells_out = s_fill_out = -1;
     s_sec_out = -1;
 }
 
@@ -428,6 +435,7 @@ static bool ring_moved(const pm_ring_t *r)
     if (s_sent.arc != r->arc || s_sent.track != r->track) return true;   /* colour, both alphas */
     if (s_sent.dir != r->dir || s_sent.start != r->start) return true;   /* the wedge moved (§8) */
     if (s_sent.match != r->match) return true;                            /* the same ask, answered */
+    if (s_sent.backed != r->backed) return true;                          /* drain->alert needs the band (§64.12) */
     const int d = s_sent.fraction > r->fraction ? s_sent.fraction - r->fraction
                                                 : r->fraction - s_sent.fraction;
     return d >= PM_STEP_PCT || (r->fraction == 0) != (s_sent.fraction == 0);
@@ -458,7 +466,7 @@ static void ring_send(void)
     rec.track = r.track;
     rec.period_ms = (uint16_t)r.period_ms;
     rec.start = (uint16_t)r.start;
-    rec.flags = (uint8_t)((r.dir ? ORB_RING_CCW : 0) | (r.match ? ORB_RING_MATCH : 0));
+    rec.flags = (uint8_t)((r.dir ? ORB_RING_CCW : 0) | (r.match ? ORB_RING_MATCH : 0) | (r.backed ? ORB_RING_BACKED : 0));
     if (orb_ring_set(&rec) == ORB_ERR_NOT_ALLOWED) {
         s_ring_retry_ms = up_ms() + PM_REFUSE_RETRY_MS;
         return;
@@ -510,9 +518,17 @@ static void face_rows(void)
     say(S_STATE, t, over ? ORB_TONE_WARNING : ORB_TONE_QUIET);
     if (s_choosing) { head_text(h, sizeof h); say(S_HEAD, h, ORB_TONE_ACCENT); }
     else say(S_HEAD, "", ORB_TONE_ACCENT);              /* the header is the choice's row */
-    if (R[S_DOTS] >= 0) {
-        const int f = pm_focus_at(v->k, cfg.focuses);    /* 0 filled on either break */
-        if (f != s_frame_out) { orb_stage_frame(R[S_DOTS], f); s_frame_out = f; pose(R[S_DOTS]); }
+    if (R[S_DOTS] >= 0 && R[S_FILL] >= 0) {
+        int cells, filled;                                          /* two picked rows, one face: */
+        pm_dots(v->k, cfg.focuses, &cells, &filled);                /* the track and its fill move */
+        if (cells != s_cells_out || filled != s_fill_out) {         /* with the same centring     */
+            const int ox = (PM_N_MAX - cells) * PM_DOT_PITCH / 2;   /* N hollow cells, n of them  */
+            orb_stage_frame(R[S_DOTS], cells - 1);                  /* lit: the cycle the owner   */
+            orb_stage_frame(R[S_FILL], filled);                     /* set, read straight off     */
+            orb_stage_pose(R[S_DOTS], 0, ox, 0);                    /* the glass                    */
+            orb_stage_pose(R[S_FILL], 0, ox, 0);
+            s_cells_out = cells; s_fill_out = filled;
+        }
     }
     s_sec_out = s.rem;
 }
@@ -630,9 +646,9 @@ ORB_EXPORT("orb_tick") void orb_tick(uint32_t now)
     if (s.rem != s_sec_out) redraw();
 }
 
-/* The one pass that runs whether or not the glass is on: the wall clock, the chime, the ring
- * and the store. Drawing is redraw()'s alone, which returns at once off the glass, so nothing
- * here reaches the display by that name or another's (§8). */
+/* The one pass that runs whether or not the glass is on: the wall clock, the chime, the ring,
+ * the press the OS lends and the store. Drawing is redraw()'s alone, which returns at once off
+ * the glass, so nothing here reaches the display by that name or another's (§8). */
 ORB_EXPORT("orb_service") void orb_service(void)
 {
     const uint32_t gen = orb_cfg_gen();
@@ -652,6 +668,7 @@ ORB_EXPORT("orb_service") void orb_service(void)
         const int32_t ev = pm_service(&s, &cfg, wall());
         if (ev & PM_EV_END) { chime(ended); wake_glass(); s_turned_k = -1; s_dirty = true; }
     }
+    press_pass();                                     /* the borrow the phase machine asked for (§64.13) */
     choice_step();
     ring_send();
     save_if_moved();
@@ -684,6 +701,33 @@ ORB_EXPORT("orb_input") void orb_input(int32_t delta, int32_t pressed)
     }
     redraw();
     save_if_moved();
+}
+
+/* The press the OS lends (§64.13, alerts-design §4.2), asked and read once per service pass —
+ * the beat is the only clock this has, and re-asserting a claim the app already holds keeps its
+ * unread queue, so the pass costs the OS two gate checks. pm_press_want is the whole rule, and
+ * asking it every pass is what releases the claim when the state moves under it: an `Off` move,
+ * a stopped timer and a phase that ended under autostart all drop the borrow with no gesture of
+ * their own. An app that never declared the cap (or whose grant the owner closed) is refused both
+ * calls with 0, which is indistinguishable from nothing queued and no claim: no path here of its
+ * own, and the tap stays where it was.
+ *
+ * A queued press is spent exactly as the same tap on this app's own glass would be — through
+ * orb_input, where the gesture lives — so a borrowed tap starts, holds, resumes, ends a choice
+ * and moves on over like any other, and the foreground path is never forked into two. The OS's
+ * answer is how many wait, not a take: the queue is bounded and there is no door that empties it
+ * but releasing, so a spent queue goes back with claim(0) and the claim is asked again after it —
+ * the state the taps left, never the state they met, which is the difference between a phase the
+ * owner held paused still owning the press for one beat more and not. */
+static void press_pass(void)
+{
+    const int queued = orb_press_lent();
+
+    (void)orb_press_claim(pm_press_want(&cfg, &s));
+    if (queued <= 0) return;
+    for (int i = 0; i < queued && i < ORB_PRESS_MAX_LENT; i++) orb_input(0, 1);
+    (void)orb_press_claim(0);
+    (void)orb_press_claim(pm_press_want(&cfg, &s));
 }
 
 /* Press-and-turn: the phases, one a click, clockwise forward and anticlockwise back, the

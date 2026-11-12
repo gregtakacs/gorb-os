@@ -10,7 +10,10 @@
  *   - fonts 0 (the figures, d.px), 1 (the words, 30 px) and 2 (the small words, 24 px);
  *   - the labels: 8 the time `mm:ss`, 9 the phase, 10 the count, 11 the state,
  *             12 the choice (on a backing that hides the look's baked caption);
- *   - the dots at 13: thirteen frames, f filled for f = 0..12, the app picks;
+ *   - the dots at 13 and 14: a hollow track per cell count (twelve frames of N cells, N =
+ *             1..12) and a fill per count over it (thirteen frames of n filled cells, n =
+ *             0..12, frame 0 empty), both left-aligned and drawn at the one place — the app
+ *             picks the pair with pm_dots and centres both with one pose offset;
  *   - the chimes at sound slots 1, 2 and 3 (never 0: §3 — slot 0 is the clock's tick
  *             loop and the projector refuses a one-shot there);
  *   - the values (`pm_values_t`, 16 B, layout 1): the ring's three colours and the slots;
@@ -36,11 +39,13 @@
 
   var SCHEMA = 1, G = 466, CX = 233, NONE = 0xF;
   var VALUES_VER = 1;                        // pm_values_t, apps/pomodoro/pomodoro.h
-  var SLOT = { time: 8, phase: 9, count: 10, state: 11, head: 12, dots: 13 };
+  var SLOT = { time: 8, phase: 9, count: 10, state: 11, head: 12, dots: 13, fill: 14 };
   var WORD_PX = 30, SMALL_PX = 24;           // fonts 1 and 2 (design §5)
   var PX_MIN = 64, PX_MAX = 144, PX_DFLT = 96;
-  var N_FRAMES = 13;                         // the dots row: f filled for f = 0..12
   var DOT_N = 12, DOT_SZ = 11, DOT_GAP = 6;  // twelve seats: the app's ceiling (PM_N_MAX)
+  var N_TRACK = DOT_N, N_FILL = DOT_N + 1;   // the dots as two picked rows (alerts-0 amendment 2):
+                                             // row 13, twelve hollow tracks; row 14, n filled
+                                             // cells over them, n = 0..12, frame 0 empty
   var UPLOAD_MAX_S = 4.0;                    // owner question 3: an upload to 4.0 s
   // the kit's own sample rate, asked of the baker at the moment it is needed
   function rate() { return (root.GorbBake && root.GorbBake.SOUND_RATE) || 22050; }
@@ -521,49 +526,71 @@
     caption: function (d, x) { text(x, d.cap, CX, LAYOUT[d.look].head, d.bodyFace, 15, rgba(d.quiet, 0.7)); }
   };
 
-  /* ---- the dots: thirteen frames, f filled for f = 0..12 (design §2's row 13) ---- */
+  /* ---- the dots: two picked rows drawn one over the other at the same place (row 13 the
+   * track, row 14 the fill; docs/specs/alerts-0-dots.md amendment 2). The track's frame N-1
+   * draws N hollow cells, the fill's frame n draws n filled cells fully covering the hollow
+   * ones under them, frame 0 empty; both left-aligned on this canvas — the width of twelve
+   * cells, the app's ceiling — at this cell size and gap, in the look's own style. The app
+   * centres the pair with one shared pose offset off pm_dots' answer. dotFrame stays the
+   * editor's preview: one centred row, its own cells first filled. */
   var DOT_W = DOT_N * DOT_SZ + (DOT_N - 1) * DOT_GAP, DOT_H = 14;
-  function dotFrame(d, filled) {
+  function dotCell(x, d, px, cy, sz, f) {
+    var cx = px + sz / 2, on = d.ink;
+    x.fillStyle = d.dots === 'stud' ? '#d9b26a' : (d.dots === 'star' || d.dots === 'chart') ? d.accent : on;
+    if (d.dots === 'square') { f ? x.fillRect(px, cy - sz / 2, sz, sz) : x.strokeRect(px + .75, cy - sz / 2 + .75, sz - 1.5, sz - 1.5); }
+    else if (d.dots === 'square2') {                                    // drafted: a box, filled from its centre
+      x.strokeRect(px + .75, cy - sz / 2 + .75, sz - 1.5, sz - 1.5);
+      if (f) x.fillRect(cx - 2.5, cy - 2.5, 5, 5);
+    }
+    else if (d.dots === 'star') {
+      x.beginPath();
+      for (var p = 0; p < 10; p++) {
+        var r = p % 2 ? sz * .22 : sz * .55, a = p / 10 * 2 * Math.PI;
+        x.lineTo(cx + r * Math.sin(a), cy - r * Math.cos(a));
+      }
+      x.closePath(); f ? x.fill() : x.stroke();
+    }
+    else if (d.dots === 'ring') {                                        // machined: a ring, filled to the bore
+      x.beginPath(); x.arc(cx, cy, sz / 2 - 1, 0, 2 * Math.PI); x.stroke();
+      if (f) { x.beginPath(); x.arc(cx, cy, sz / 2 - 3.5, 0, 2 * Math.PI); x.fill(); }
+    }
+    else if (d.dots === 'stud') {
+      x.strokeStyle = '#8a6f3a'; x.beginPath(); x.arc(cx, cy, sz / 2 - .75, 0, 2 * Math.PI); f ? x.fill() : x.stroke();
+    }
+    else if (d.dots === 'disc') {                                        // a board's snoot: dark when spent
+      if (f) { x.fillStyle = d.ink; x.beginPath(); x.arc(cx, cy, sz / 2 - .75, 0, 2 * Math.PI); x.fill(); }
+      else { x.beginPath(); x.arc(cx, cy, sz / 2 - .75, 0, 2 * Math.PI); x.stroke(); }
+    }
+    else if (d.dots === 'chart') {                                       // a chart square, ticked when logged
+      x.strokeRect(px + .75, cy - sz / 2 + .75, sz - 1.5, sz - 1.5);
+      if (f) { x.beginPath(); x.moveTo(px + 1.5, cy + sz / 2 - 1.5); x.lineTo(cx, cy - sz / 2 + 1.5); x.lineTo(px + sz - 1.5, cy + sz / 2 - 1.5); x.closePath(); x.fill(); }
+    }
+    else { x.beginPath(); x.arc(cx, cy, sz / 2 - .75, 0, 2 * Math.PI); f ? x.fill() : x.stroke(); }
+  }
+  function dotRowCanvas(d, count, filled, left) {                   // count cells, the first `filled` lit
+    var n = Math.max(0, Math.min(DOT_N, Math.round(count)));
+    var f0 = Math.max(0, Math.min(n, Math.round(filled)));
     var c = canvas(DOT_W, DOT_H), x = c.getContext('2d'), sz = DOT_SZ;
     x.lineWidth = 1.5; x.strokeStyle = d.quiet;
-    for (var i = 0, px = 0; i < DOT_N; i++, px += sz + DOT_GAP) {
-      var cx = px + sz / 2, cy = DOT_H / 2, f = i < filled, on = d.ink;
-      x.fillStyle = d.dots === 'stud' ? '#d9b26a' : (d.dots === 'star' || d.dots === 'chart') ? d.accent : on;
-      if (d.dots === 'square') { f ? x.fillRect(px, cy - sz / 2, sz, sz) : x.strokeRect(px + .75, cy - sz / 2 + .75, sz - 1.5, sz - 1.5); }
-      else if (d.dots === 'square2') {                                    // drafted: a box, filled from its centre
-        x.strokeRect(px + .75, cy - sz / 2 + .75, sz - 1.5, sz - 1.5);
-        if (f) x.fillRect(cx - 2.5, cy - 2.5, 5, 5);
-      }
-      else if (d.dots === 'star') {
-        x.beginPath();
-        for (var p = 0; p < 10; p++) {
-          var r = p % 2 ? sz * .22 : sz * .55, a = p / 10 * 2 * Math.PI;
-          x.lineTo(cx + r * Math.sin(a), cy - r * Math.cos(a));
-        }
-        x.closePath(); f ? x.fill() : x.stroke();
-      }
-      else if (d.dots === 'ring') {                                        // machined: a ring, filled to the bore
-        x.beginPath(); x.arc(cx, cy, sz / 2 - 1, 0, 2 * Math.PI); x.stroke();
-        if (f) { x.beginPath(); x.arc(cx, cy, sz / 2 - 3.5, 0, 2 * Math.PI); x.fill(); }
-      }
-      else if (d.dots === 'stud') {
-        x.strokeStyle = '#8a6f3a'; x.beginPath(); x.arc(cx, cy, sz / 2 - .75, 0, 2 * Math.PI); f ? x.fill() : x.stroke();
-      }
-      else if (d.dots === 'disc') {                                        // a board's snoot: dark when spent
-        if (f) { x.fillStyle = d.ink; x.beginPath(); x.arc(cx, cy, sz / 2 - .75, 0, 2 * Math.PI); x.fill(); }
-        else { x.beginPath(); x.arc(cx, cy, sz / 2 - .75, 0, 2 * Math.PI); x.stroke(); }
-      }
-      else if (d.dots === 'chart') {                                       // a chart square, ticked when logged
-        x.strokeRect(px + .75, cy - sz / 2 + .75, sz - 1.5, sz - 1.5);
-        if (f) { x.beginPath(); x.moveTo(px + 1.5, cy + sz / 2 - 1.5); x.lineTo(cx, cy - sz / 2 + 1.5); x.lineTo(px + sz - 1.5, cy + sz / 2 - 1.5); x.closePath(); x.fill(); }
-      }
-      else { x.beginPath(); x.arc(cx, cy, sz / 2 - .75, 0, 2 * Math.PI); f ? x.fill() : x.stroke(); }
-    }
+    var row = n * DOT_SZ + (n - 1) * DOT_GAP;                       // what this frame draws
+    for (var i = 0, px = left ? 0 : Math.round((DOT_W - row) / 2); i < n; i++, px += sz + DOT_GAP) dotCell(x, d, px, DOT_H / 2, sz, i < f0);
     return c;
   }
-  function dotFrames(d) {
+  function dotFrame(d, filled, cells) {                             // the editor's preview: one centred row
+    var n = cells === undefined || cells === null ? DOT_N : Math.round(cells);
+    n = n < 1 ? 1 : n > DOT_N ? DOT_N : n;                          // never fewer than one cell
+    return dotRowCanvas(d, n, filled, false);
+  }
+  function dotTrack(d) {                                            // row 13: N hollow cells, left-aligned
     var out = [];
-    for (var f = 0; f < N_FRAMES; f++) out.push(dotFrame(d, f));
+    for (var n = 1; n <= DOT_N; n++) out.push(dotRowCanvas(d, n, 0, true));
+    if (out.length !== N_TRACK) throw new Error('the track row bakes ' + out.length + ' frames, not ' + N_TRACK);
+    return out;
+  }
+  function dotFill(d) {                                             // row 14: n filled cells, frame 0 empty
+    var out = [];
+    for (var n = 0; n <= DOT_N; n++) out.push(dotRowCanvas(d, n, n, true));
+    if (out.length !== N_FILL) throw new Error('the fill row bakes ' + out.length + ' frames, not ' + N_FILL);
     return out;
   }
   var FIGURES = ['0', '1', '2', '3', '4', '5', '6', '7', '8', '9', ':', ' ', '%'];
@@ -587,9 +614,9 @@
   /* ---- the picture: the picker's preview, the start sheet's tile and the PNG evidence all
    * from here (design §5: a second renderer for the evidence is the drift this rule prevents) ---- */
   var VIEWS = {
-    focus: { time: '25:00', phase: 'Focus', count: '3 of 4', state: '', filled: 3 },
-    short: { time: '05:00', phase: 'Short break', count: 'break', state: '', filled: 0 },
-    long: { time: '15:00', phase: 'Long break', count: 'break', state: '', filled: 0 }
+    focus: { time: '25:00', phase: 'Focus', count: '3 of 4', state: '', cells: 4, filled: 3 },
+    short: { time: '05:00', phase: 'Short break', count: 'break', state: '', cells: 4, filled: 3 },
+    long: { time: '15:00', phase: 'Long break', count: 'break', state: '', cells: 4, filled: 4 }
   };
   // the three fonts measured once: `cell` is what the furniture stands under
   async function fontContext(d) {
@@ -617,7 +644,7 @@
     var st = o.waiting ? 'Waiting' : o.paused ? 'Paused' : v.state;
     if (st) text(x, st, CX, L.state, d.quietFace, SMALL_PX, o.waiting ? d.accent : d.ink);
 
-    x.drawImage(dotFrame(d, v.filled), CX - DOT_W / 2, L.dots - DOT_H / 2);
+    x.drawImage(dotFrame(d, v.filled, v.cells), CX - DOT_W / 2, L.dots - DOT_H / 2);
     // pomodoro-editor §7's second ring preview: the look's glass under another app's words, so a
     // ring colour is judged over what it will actually stand on, not only on its own ground.
     if (o.other) otherApp(x, d);
@@ -778,10 +805,14 @@
     St.row({ n: St.id(), class: PLATE, slot: 0, x: 0, y: 0, w: G, h: G, order: 0, alpha: 255, n_frames: 1 }, plane(groundCanvas(d)), false, true);
     St.row({ n: St.id(), class: PLATE, slot: 1, x: 0, y: 0, w: G, h: G, order: 0, alpha: 255, n_frames: 1 }, plane(furnitureCanvas(d, ctx)), true, false);
 
-    // the dots at 13: thirteen frames the app picks, at the look's own height
+    // the dots at 13 and 14: a hollow track per cell count, a fill per count, the app
+    // picking both off pm_dots and centring them with one shared pose offset
     St.rowPick(Object.assign({ n: St.id(), class: AUX, w: DOT_W, h: DOT_H, pivot_x: DOT_W >> 1, pivot_y: DOT_H >> 1, alpha: 255 },
       { slot: SLOT.dots, x: CX - (DOT_W >> 1), y: LAYOUT[d.look].dots - (DOT_H >> 1), order: ORDER }),
-      dotFrames(d).map(plane), true, false);
+      dotTrack(d).map(plane), true, false);
+    St.rowPick(Object.assign({ n: St.id(), class: AUX, w: DOT_W, h: DOT_H, pivot_x: DOT_W >> 1, pivot_y: DOT_H >> 1, alpha: 255 },
+      { slot: SLOT.fill, x: CX - (DOT_W >> 1), y: LAYOUT[d.look].dots - (DOT_H >> 1), order: ORDER + 1 }),
+      dotFill(d).map(plane), true, false);
 
     [fig, words, small].forEach(function (fo, fi) {
       St.font({ n: St.id(), class: TEXT, slot: fi, x: 0, y: 0, w: fo.w, h: fo.h, order: 0,
@@ -828,14 +859,14 @@
   }
 
   root.PomodoroBake = {
-    SCHEMA: SCHEMA, G: G, CX: CX, SLOT: SLOT, VALUES_VER: VALUES_VER, N_FRAMES: N_FRAMES,
+    SCHEMA: SCHEMA, G: G, CX: CX, SLOT: SLOT, VALUES_VER: VALUES_VER, N_TRACK: N_TRACK, N_FILL: N_FILL,
     FACES: FACES, CHIMES: CHIMES, CHIME_KEYS: CHIME_KEYS, DOTS: DOTS, DOT_TITLES: DOT_TITLES,
     PARTS: PARTS, LAYOUT: LAYOUT, LOOKS: LOOK_KEYS, PRESETS: LOOK_KEYS.slice(),
     STARTERS: STARTERS, STARTER_TITLES: STARTER_TITLES, STARTER_NOTES: STARTER_NOTES,
     VIEWS: Object.keys(VIEWS), PX_MIN: PX_MIN, PX_MAX: PX_MAX, UPLOAD_MAX_S: UPLOAD_MAX_S, PAD_ALPHA: PAD_ALPHA,
     preset: preset, blank: blank, complete: complete, scheme: scheme, frame: frame,
     groundCanvas: groundCanvas, furnitureCanvas: furnitureCanvas, fontContext: fontContext,
-    dotFrame: dotFrame, dotFrames: dotFrames, picture: picture, shrink: shrink, font: font,
+    dotFrame: dotFrame, dotTrack: dotTrack, dotFill: dotFill, picture: picture, shrink: shrink, font: font,
     valuesBytes: valuesBytes, soundPlan: soundPlan, serialOf: serialOf, overlayOf: overlayOf,
     overlayWord: overlayWord, bake: bake
   };

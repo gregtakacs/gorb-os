@@ -36,7 +36,14 @@ extern "C" {
  * twelve-clockwise ring — the fields it wrote were reserved. */
 #define ORB_RING_MATCH      0x01u  /* arc/track take the live theme's overlay colour (§64.9) */
 #define ORB_RING_CCW        0x02u  /* the arc runs anticlockwise from its start (§64.8)      */
-#define ORB_RING_FLAGS_MASK 0x03u  /* ring_clamp drops every bit outside these two           */
+#define ORB_RING_BACKED     0x04u  /* the whole rim band is drawn black with the arc on it,
+                                    * at full opacity whatever the alpha byte says (§64.12)   */
+#define ORB_RING_FLAGS_MASK 0x07u  /* ring_clamp drops every bit outside these three          */
+
+/* The backed breathe's floor: the arc's alpha never falls under this, so the trough reads as the
+ * colour at 96/255 on black — dimmed, never gone, never into the app beneath (§64.12, alerts-design
+ * §2.2 and orchestrator amendment 3, which moved it off the design's original 64). */
+#define ORB_RING_BACKED_MIN_ALPHA 96
 
 /* The clamps the OS applies whatever the app asks (ring-design §6; the rim numbers are
  * rim-design §6.1: the lanes made the 2 Hz grid and the 4 s breath the owner's complaint, so the
@@ -52,12 +59,18 @@ extern "C" {
 #define ORB_RING_STEP_MAX_MS         400   /* the governor's ceiling: the base build's grid      */
 #define ORB_RING_DEFAULT_PERIOD_MS  4000   /* period_ms == 0                                     */
 
+/* The OS's confirmation of a lent press (plan §64.13, alerts-design §3.5): the claimant's
+ * OWN ring record is held at full paint for this long — never OS art, and never at all when
+ * the claimant owns no record or another record wins the rim (the pulse is the claimant's
+ * ring, and a claimant with no ring gets no pulse). */
+#define ORB_RING_PULSE_MS           160
+
 /* The record an app sets, and one row of the ownership table. The layout is the
  * SDK's orb_ring_t (apps/sdk/orb.h, ring-2) and must not drift from it. */
 typedef struct {
     uint16_t fraction;    /* 0..1000, from twelve in the record's direction; > 1000 clamps to 1000 */
     uint8_t  effect;      /* ORB_RING_STEADY | _FLASH | _BREATHE; other values => STEADY */
-    uint8_t  flags;       /* ORB_RING_MATCH | ORB_RING_CCW; ring_clamp masks to ORB_RING_FLAGS_MASK */
+    uint8_t  flags;       /* ORB_RING_MATCH | _CCW | _BACKED; ring_clamp masks to ORB_RING_FLAGS_MASK */
     uint32_t arc;         /* 0xAARRGGBB — arc alpha in bits 31..24 (0 => the arc draws nothing) */
     uint32_t track;       /* 0xAARRGGBB — track alpha in bits 31..24 (0 => a bare arc)  */
     uint16_t period_ms;   /* effect period, clamped by the OS; 0 => the OS default      */
@@ -118,6 +131,32 @@ int ring_effect_alpha(const orb_ring_rec *r, int64_t now_ms);
  *  swallows a transition into or out of nothing. Pure, so the gate has a test and the glue is
  *  three lines. */
 int ring_alpha_moved(int was_alpha, int now_alpha);
+
+/** A backed record's band pixel, wire-order RGB565 out: non-arc pixels (`arc == 0`) are pure
+ *  black; an arc pixel is `argb`'s colour blended against black under its own top-byte alpha, so a
+ *  full-alpha argb is the source colour and a floored breathe is the colour dimmed toward black.
+ *  The record's own alpha byte never reaches this — the caller hands it the effect's alpha (§64.12). */
+uint16_t ring_backed565(uint32_t argb, int arc);
+
+/** The alpha the band is painted at for the send gate and the backed colour: 255 when the record is
+ *  unbacked and steady (a non-effect path), and when it is backed and steady (the band is opaque, the
+ *  byte ignored); the effect's own alpha when unbacked; for a backed breathe the effect floored to
+ *  ORB_RING_BACKED_MIN_ALPHA (never into the app beneath); for a backed flash the effect (255 lit, 0
+ *  black band — and the black phase still paints). Unbacked paths are byte-for-byte today's. */
+int ring_paint_alpha(const orb_ring_rec *r, int effect_alpha);
+
+/** 1 when a band whose off-phase is black (not nothing) owes a refresh between two paint alphas:
+ *  the paint moved. Used only when either side was backed, in place of ring_alpha_moved() — a
+ *  fully black and a fully coloured flash both paint, so the rule is the change, never the
+ *  never-zero clause ring_alpha_moved() leans on (§64.12, alerts-design §2.3). */
+int ring_backed_moved(int was_paint, int now_paint);
+
+/** 1 while a lent-press pulse window is open (§64.13): the pulse was armed for a stamp
+ *  `until_ms` and the clock `now_ms` is still inside it (a half-open [arm, until), so a
+ *  stamp exactly at the expiry restores the record's normal gate). Pure and host-proven
+ *  (tools/host_ring_test.py's "pulse" case); the IDF glue arms it and the service consumes
+ *  it to force that record's paint and send for ORB_RING_PULSE_MS. */
+int ring_pulse_open(int64_t until_ms, int64_t now_ms);
 
 /** The next step's grid in microseconds of the wall clock converted to ms (rim-design §6.3),
  *  given how long the last lane batch took in microseconds `batch_us`: never below
@@ -186,6 +225,7 @@ typedef struct {
 void orb_ring_disp_init(void);              /* boot, before the first app builds (§5)   */
 void orb_ring_disp_service(void);           /* LVGL task, beside orb_edge_arc_service   */
 void orb_ring_drop(int slot);               /* refusal / revoke / uninstall: owner = -1  */
+void orb_ring_disp_pulse(int slot);         /* §64.13: the router lends a press; pulse that claimant's ring */
 void orb_ring_status(orb_ring_status_t *out);
 
 /** display.c, LVGL task: the app ring's rim dispatch, the copy arc's twin. Only ever

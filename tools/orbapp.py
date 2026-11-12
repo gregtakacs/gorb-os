@@ -138,7 +138,7 @@ DEFSTR_MAX = 32                # STRING default bytes, NUL included
 # plausibility bound on art_req — a DECLARED need past the old slot size is a
 # mis-count, not a wish — and the C reader mirrors this number and this rule.
 ART_BYTES_MAX  = 0x003D0000    # 3.81 MB — art_req DECLARATION bound, nothing more
-SETTINGS_MAX   = 16            # the descriptor table the loader is sized for
+SETTINGS_MAX   = 18            # the descriptor table the loader is sized for
 GEOM_BYTES_MAX = 0x00040000    # 256 KB of the app's own records
 
 # P7 (D20/D27): the code region. A `.orbapp` may carry one wasm3 module. Its bytes
@@ -192,8 +192,8 @@ BEAT_MAX_MS = 86400000         # a day; past this the app means "never", and 0
 # this tuple's order ever disagrees: a silent renumber would move every installed
 # app's D19 consent onto a different permission.
 CAP_FREE  = ("time", "config", "ui", "art")     # declarable NEVER
-CAP_OWNER = ("power", "net", "sd_read", "themes", "sound", "location", "ring")   # sound: D39, location: flights §6.4, ring: §64.1; appended
-CAP_BITS  = len(CAP_FREE) + len(CAP_OWNER)      # 11 == CAP_N
+CAP_OWNER = ("power", "net", "sd_read", "themes", "sound", "location", "ring", "press")   # sound: D39, location: flights §6.4, ring: §64.1, press: §64.13; appended
+CAP_BITS  = len(CAP_FREE) + len(CAP_OWNER)      # 12 == CAP_N
 
 # C9's settings types, frozen, in orb_svc.h's orb_set_type_t order: the WIRE types, the
 # gate's. §57's schema types (what the dial and the hub draw) map onto them: number and

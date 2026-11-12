@@ -307,7 +307,7 @@ struct orb_app {
  * table's own storage at runtime; 32 matches the theme's version field width
  * for the reason the header gives (§4.1) rather than the slug's 24. */
 #define ORB_APP_VERSION_MAX  32   /* == ORBAPP_VERSION_MAX */
-#define ORB_APP_SETTINGS_MAX 16   /* == ORBAPP_SETTINGS_MAX */
+#define ORB_APP_SETTINGS_MAX 18   /* == ORBAPP_SETTINGS_MAX */
 
 /** The first card-app registry index — the base every card row sits on.
  *  D35 left ONE compiled row (the shell, index 0), but this stays 3: indices 1

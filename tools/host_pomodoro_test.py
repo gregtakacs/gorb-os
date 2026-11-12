@@ -2,8 +2,9 @@
 """host_pomodoro_test.py — the pomodoro phase machine, pure, on host gcc (§64.3; design §2, §3,
 §5.2, §6, §7).
 
-apps/pomodoro/pomodoro.c is the app's whole brain: the cycle of N focuses, the knob's three moves
-over it, the wall-clock pass that ends a phase, the four hidden settings an in-place restart reads
+apps/pomodoro/pomodoro.c is the app's whole brain: the cycle of N focuses, what the two dots rows
+show for it, the knob's three moves over it, the wall-clock pass that ends a phase, the four
+hidden settings an in-place restart reads
 back, and what the OS ring should be. None of it reaches a dial until pomodoro-2 wires it, and
 almost all of it can be wrong with a clean build: a turn that can reach 0 reads as a finished
 phase, a service pass that fires twice chimes a boundary twice, a restore that trusts a stored
@@ -15,6 +16,8 @@ every mutant must make a check fail — an escaped mutant is a non-zero exit (ri
 Run:  python3 tools/host_pomodoro_test.py              (rc 0 = pass)
       python3 tools/host_pomodoro_test.py --mutations  (proves the checks bite; rc 0 = all bite)
 """
+import importlib.util
+import json
 import os
 import re
 import shutil
@@ -25,17 +28,25 @@ import tempfile
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 APP = os.path.join(ROOT, "apps", "pomodoro")
-MIN_CHECKS = 66          # the harness's own count: a check that vanished is not a pass
+MIN_CHECKS = 730        # the harness's own count: a check that vanished is not a pass
+
+# the manifest's own writer, the one orbsdk and make_factory_apps use, so the settings this app
+# declares are proved to pack and read back rather than argued to be well-formed (alerts-3)
+_spec = importlib.util.spec_from_file_location("orbapp", os.path.join(HERE, "orbapp.py"))
+orbapp = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(orbapp)
 
 # design §3.2's surface, which this step writes word for word.
-FUNCS = ["pm_cycle_len", "pm_phase_at", "pm_focus_at", "pm_next_k", "pm_len_s", "pm_press", "pm_turn",
+FUNCS = ["pm_cycle_len", "pm_phase_at", "pm_focus_at", "pm_dots", "pm_next_k", "pm_len_s", "pm_press", "pm_turn",
          "pm_at_start", "pm_pos_step", "pm_land", "pm_service", "pm_restore", "pm_store", "pm_changed",
+         "pm_press_want",
          "pm_ring_alpha", "pm_ring_for", "pm_fraction", "pm_ring_effect", "pm_ring_phase",
          "pm_state_text", "pm_phase_text", "pm_count_text", "pm_raw_needs_clock"]
 TYPES = ["pm_cfg_t", "pm_t", "pm_raw_t", "pm_ring_t"]
 CONSTS = ["PM_STOP", "PM_RUN", "PM_PAUSE", "PM_WAIT", "PM_WAITED", "PM_FOCUS", "PM_SHORT", "PM_LONG",
           "PM_EV_NONE", "PM_EV_END", "PM_EV_START", "PM_EV_LIMIT", "PM_MIN_S", "PM_ARC_A", "PM_TRACK_A",
-          "PM_BREATHE_MS", "PM_FLASH_MS", "PM_STEP_PCT", "PM_PACK_MUL"]
+          "PM_BREATHE_MS", "PM_FLASH_MS", "PM_STEP_PCT", "PM_PACK_MUL",
+          "PM_PRESS_OFF", "PM_PRESS_CALL", "PM_PRESS_EVERY"]
 
 
 def shape(fail, h_src, c_src):
@@ -52,7 +63,7 @@ def shape(fail, h_src, c_src):
          "<math.h>" not in code and not re.search(r"\b(double|float)\b", code))
     fail("no SDK header and no orb_* call in the code",
          not re.search(r'#include\s*[<"]orb', code) and not re.search(r"\borb_", code))
-    some("§3.2's 22 functions are declared", FUNCS, r"^\s*(?:int|void)\s+%s\s*\(", h_src)
+    some("§3.2's %d functions are declared" % len(FUNCS), FUNCS, r"^\s*(?:int|void)\s+%s\s*\(", h_src)
     some("and defined in the shipped source", FUNCS, r"^(?:int|void)\s+%s\s*\(", c_src)
     some("the four records are the header's", TYPES, r"}\s*%s\s*;", h_src)
     some("§3.2's constants are all there", CONSTS, r"#define\s+%s\b", h_src)
@@ -66,6 +77,10 @@ def shape(fail, h_src, c_src):
                            "PM_STEP_PCT", "PM_PACK_MUL")] == [60, 0xE6, 0x33, 2500, 2000, 4, 8])
     fail("pm_ring_t is orb_ring_t's five values in that order, and says so",
          "offsetof(pm_ring_t, effect)" in h_src and "offsetof(pm_ring_t, track)" in h_src)
+    fail("press_any's three names are app.json's choice indices: 0 Off, 1 calling, 2 whenever",
+         [num(k) for k in ("PM_PRESS_OFF", "PM_PRESS_CALL", "PM_PRESS_EVERY")] == [0, 1, 2])
+    fail("pm_cfg_t carries the borrowed press as one of its own ints",
+         bool(re.search(r"int32_t\s+press_any;", h_src)))
     fail("and the three asks rim-1 adds, still after period_ms",
          all("offsetof(pm_ring_t, %s)" % f in h_src for f in ("dir", "start", "match")))
     fail("pm_cfg_t carries the three asks as plain ints (rim-design §8)",
@@ -86,6 +101,12 @@ MUTATIONS = [
     ("    if (k == last) return PM_LONG;", "    if (k == last - 1) return PM_LONG;"),                              # the long break a slot early
     ("    return (k & 1) ? PM_SHORT : PM_FOCUS;", "    return (k & 1) ? PM_FOCUS : PM_SHORT;"),
     ("    return pm_phase_at(k, focuses) == PM_FOCUS ? k / 2 + 1 : 0;", "    return pm_phase_at(k, focuses) == PM_FOCUS ? k / 2 : 0;"),  # the count off by one
+    # the dots' pick: the rows show the cycle the owner set, so each half of that answer is watched
+    ("    *filled = slot == last ? n : (slot & 1) ? (slot + 1) / 2 : slot / 2 + 1;", "    *filled = slot == last ? n : (slot & 1) ? (slot + 1) / 2 : slot / 2;"),   # the focus in hand not counted
+    ("    *filled = slot == last ? n : (slot & 1) ? (slot + 1) / 2 : slot / 2 + 1;", "    *filled = slot == last ? n : (slot & 1) ? 0 : slot / 2 + 1;"),             # a short break shows none done
+    ("    *filled = slot == last ? n : (slot & 1) ? (slot + 1) / 2 : slot / 2 + 1;", "    *filled = slot == last ? n - 1 : (slot & 1) ? (slot + 1) / 2 : slot / 2 + 1;"),  # the long break a cell short
+    ("    *cells = n;", "    *cells = focuses;"),                                                                                                   # the track indexes off an unclamped N
+    ("    const int slot = k < 0 ? 0 : k > last ? last : k;", "    const int slot = k;"),                                                # the slot off the cycle is trusted
     ("    return k + 1 >= n ? 0 : k + 1;", "    return k + 1 > n ? 0 : k + 1;"),                                    # the cycle wraps a slot late
     ("    if (v < PM_MIN_S) v = PM_MIN_S;", "    if (v < PM_MIN_S) v = 0;"),                                        # a 0-second phase
     ("    if (c->cap_s[phase] >= PM_MIN_S && v > c->cap_s[phase]) v = c->cap_s[phase];", ""),                       # a setting past its cap
@@ -142,8 +163,24 @@ MUTATIONS = [
     ("                        .dir = c->dir ? 1 : 0,", "                        .dir = 0,"),                                # the anticlockwise ask dropped
     ("                        .start = ((c->start % 360) + 360) % 360,", "                        .start = 0,"),            # the start ask dropped
     ("                        .start = ((c->start % 360) + 360) % 360,", "                        .start = c->start,"),      # the fold not applied
-    ("                        .match = c->match ? 1 : 0 };", "                        .match = 1 };"),                      # the theme ask always on
+    ("                        .match = c->match ? 1 : 0,", "                        .match = 1,"),                      # the theme ask always on
     ("    const uint32_t rgb = c->col[pm_ring_phase(s, c->focuses)] & 0x00FFFFFFu;", "    const uint32_t rgb = c->col[PM_FOCUS] & 0x00FFFFFFu;"),  # every phase ruby
+    # alerts-1 §64.12: pm_ring_for backs the alerts and not the drain; each mistake must bite
+    ("                        .backed = eff ? 1 : 0 };", "                        .backed = 0 };"),             # an alert never backs
+    ("                        .backed = eff ? 1 : 0 };", "                        .backed = 1 };"),             # the running drain backed
+    ("                        .backed = eff ? 1 : 0 };", "                        .backed = (eff == 1) ? 1 : 0 };"),  # the breathe alert left unbacked
+    # alerts-3 §64.13: pm_press_want's window. A wrong window and a missed release are the two
+    # ways the borrow fails quietly on the bench, so both sides of every arm of the rule bite.
+    ("    if (st == PM_STOP) return 0;\n", ""),                                                  # a stopped phase borrows a press
+    ("    if (st < PM_STOP || st > PM_WAITED) return 0;", "    if (st < PM_STOP) return 0;"),     # a state off the five claims
+    ("    if (c->press_any == PM_PRESS_OFF) return 0;",
+     "    if (c->press_any == PM_PRESS_OFF) return 1;"),                                         # Off keeps the claim it once made
+    ("    if (c->press_any == PM_PRESS_CALL) return st == PM_WAIT || st == PM_WAITED;",
+     "    if (c->press_any == PM_PRESS_CALL) return 1;"),                                        # calling borrows a tap through a focus
+    ("    if (c->press_any == PM_PRESS_CALL) return st == PM_WAIT || st == PM_WAITED;",
+     "    if (c->press_any == PM_PRESS_CALL) return st == PM_RUN || st == PM_PAUSE;"),           # the window the wrong way round
+    ("    return c->press_any == PM_PRESS_EVERY;", "    return c->press_any == PM_PRESS_CALL;"),  # whenever answers only when called
+    ("    return c->press_any == PM_PRESS_EVERY;", "    return 1;"),                             # an index off the three borrows
     ("    while (lit[i] && i < cap - 1) { buf[i] = lit[i]; i++; }", "    while (lit[i] && i < cap) { buf[i] = lit[i]; i++; }"),  # a word past the caller's cap
 
     ("    else if (s->st == PM_WAIT || s->st == PM_WAITED) put(buf, cap, \"Waiting\");", "    else if (s->st == PM_WAIT) put(buf, cap, \"Waiting\");"),  # WAITED says nothing
@@ -187,6 +224,7 @@ static pm_cfg_t cfg4(int autostart, int op, int ring_on)
     c.cap_s[PM_FOCUS] = 3600; c.cap_s[PM_SHORT] = 600; c.cap_s[PM_LONG] = 1800;
     c.focuses = 4; c.autostart = autostart; c.ring_on = ring_on; c.opacity = op;
     c.dir = 0; c.start = 0; c.match = 0;               /* rim-1's three asks, off by default */
+    c.press_any = PM_PRESS_CALL;                      /* alerts-3: app.json's own default */
     c.col[PM_FOCUS] = 0xBF0A0C; c.col[PM_SHORT] = 0x0A14B4; c.col[PM_LONG] = 0x0AA628;
     return c;
 }
@@ -223,6 +261,53 @@ int main(void)
         ckk(pm_focus_at(i, 4), fo4[i], "focus_at: 1..N on a focus, 0 on either break");
     }
     ckk(pm_phase_at(1, 1), PM_LONG, "N=1: focus then long, no short break");
+    /* ---- the dots' pick: the rows count the cycle the owner set (amendment 2: cells, filled) ---- */
+    {
+        int cells, filled;
+        const int fl4[8] = { 1, 1, 2, 2, 3, 3, 4, 4 };   /* N=4: the focus in hand, then the break after it */
+        for (i = 0; i < 8; i++) {
+            char w[64];
+            pm_dots(i, 4, &cells, &filled);
+            sprintf(w, "the N=4 row at k=%d is 4 cells with %d filled", i, fl4[i]);
+            ckk(cells == 4 && filled == fl4[i], 1, w);
+        }
+        for (i = 0; i < 2; i++) { pm_dots(i, 1, &cells, &filled);
+            ckk(cells == 1 && filled == 1, 1, "N=1: the focus and the long break both fill the one cell"); }
+        for (i = 0; i < 4; i++) { pm_dots(i, 2, &cells, &filled);
+            ckk(cells == 2 && filled == (i < 2 ? 1 : 2), 1, "N=2: 1 of 2, 1 of 2, 2 of 2, 2 of 2"); }
+        for (n = 1; n <= 12; n++) {
+            const int last = 2 * n - 1;
+            for (i = 0; i <= last; i++) {
+                char w[64];
+                pm_dots(i, n, &cells, &filled);
+                sprintf(w, "pm_dots(%d,%d): the rows show their own cycle", i, n);
+                ckk(cells == n && filled == (i == last ? n : (i & 1) ? (i + 1) / 2 : i / 2 + 1), 1, w);
+                ckk(cells >= 1 && cells <= 12 && filled >= 1 && filled <= cells, 1,
+                    "the pair never leaves its own cycle: cells in 1..12, filled in 1..cells");
+            }
+        }
+        pm_dots(4, 4, &cells, &filled);
+        ckk(filled == 3, 1, "focus 3 reads 3 of 4");
+        pm_dots(5, 4, &cells, &filled);
+        ckk(filled == 3, 1, "the break after it still reads 3 of 4");
+        pm_dots(0, 4, &cells, &filled);
+        ckk(filled == 1, 1, "a fresh cycle's first focus reads 1 of 4");
+        pm_dots(-3, 4, &cells, &filled);
+        ckk(cells == 4 && filled == 1, 1, "a negative slot clamps to the first focus: 1 of 4");
+        pm_dots(99, 4, &cells, &filled);
+        ckk(cells == 4 && filled == 4, 1, "a slot past the cycle clamps to the long break: 4 of 4");
+        pm_dots(0, 0, &cells, &filled);
+        ckk(cells == 1 && filled == 1, 1, "focuses under 1 clamps to a cycle of one: 1 of 1");
+        pm_dots(23, 99, &cells, &filled);
+        ckk(cells == 12 && filled == 12, 1, "focuses past 12 clamps to 12, and the long break fills the whole ceiling row");
+        pm_dots(-1, -1, &cells, &filled);
+        ckk(cells == 1 && filled == 1, 1, "both arguments off the end at once still lands inside both banks");
+        for (i = 0; i <= 23; i++) {   /* the two frames the app picks, at the ceiling cycle: inside 0..11 and 1..12 */
+            pm_dots(i, 12, &cells, &filled);
+            ckk(cells - 1 >= 0 && cells - 1 <= 11 && filled >= 0 && filled <= 12, 1,
+                "the track and fill frames the app derives never index off a twelve-frame or thirteen-frame bank");
+        }
+    }
     ckk(pm_next_k(7, 4) == 0 && pm_next_k(0, 4) == 1 && pm_next_k(6, 4) == 7, 1, "next_k wraps at the last slot");
     ckk(pm_at_start(&(pm_t){PM_RUN, 0, 1500, 1500, 0}) == 1 && pm_at_start(&(pm_t){PM_STOP, 0, 0, 0, 0}) == 1, 1,
         "a phase none of which has gone, and a 0-length one, are both at their start");
@@ -506,6 +591,45 @@ int main(void)
         ckk(pm_changed(&raw, &r2) != 0, 1, "any one of the four moving is a change");
     }
 
+    /* ---- the press the OS lends (§64.13, alerts-design §4.2): the setting names the window,
+     * the state says whether it stands open now ---- */
+    {
+        static const int live[5] = { PM_STOP, PM_RUN, PM_PAUSE, PM_WAIT, PM_WAITED };
+        static const int call_w[5] = { 0, 0, 0, 1, 1 };
+        static const int every_w[5] = { 0, 1, 1, 1, 1 };
+        pm_cfg_t c = cfg4(0, 100, 1);
+        for (i = 0; i < 5; i++) {
+            char w[64];
+            pm_t st = mk(live[i], 3, 600, live[i] == PM_STOP ? 600 : 240, 0);
+            c.press_any = PM_PRESS_OFF;
+            ckk(pm_press_want(&c, &st), 0, "Off borrows the press in no state, so any claim is dropped");
+            c.press_any = PM_PRESS_CALL;
+            ckk(pm_press_want(&c, &st), call_w[i], "When it's calling opens the window only over an ended phase");
+            c.press_any = PM_PRESS_EVERY;
+            ckk(pm_press_want(&c, &st), every_w[i], "Whenever it runs covers run, pause and waiting but not a stopped phase");
+            st.k = 0; st.len = 1500; st.rem = 1500; st.end_s = 999999;      /* nothing else answers */
+            sprintf(w, "state %d alone decides: another slot and length answer the same", live[i]);
+            ckk(pm_press_want(&c, &st), every_w[i], w);
+        }
+        c.press_any = PM_PRESS_CALL;
+        ckk(pm_press_want(&c, &(pm_t){PM_WAITED, 7, 900, 0, 0}), 1,
+            "an already-chimed phase is still waiting, so the window is still open");
+        c.press_any = PM_PRESS_EVERY;
+        ckk(pm_press_want(&c, &(pm_t){PM_PAUSE, 0, 600, 0, 0}), 1,
+            "held at 0:00 is still a run the owner may move on with a tap");
+        ckk(pm_press_want(&c, &(pm_t){PM_RUN, 0, 600, 240, 0}), 1, "the answer is exactly 1, never a truthy count");
+        ckk(pm_press_want(&c, &(pm_t){PM_WAITED + 1, 0, 600, 240, 0}) == 0
+            && pm_press_want(&c, &(pm_t){9, 0, 600, 240, 0}) == 0
+            && pm_press_want(&c, &(pm_t){-3, 0, 600, 240, 0}) == 0, 1,
+            "a state off the five borrows nothing, whatever the owner asked for");
+        c.press_any = 3;
+        ckk(pm_press_want(&c, &(pm_t){PM_WAIT, 0, 600, 0, 0}) == 0
+            && pm_press_want(&c, &(pm_t){PM_RUN, 0, 600, 240, 0}) == 0, 1,
+            "an index off the three choices leaves the press on the glass: a torn key claims nothing");
+        c.press_any = -1;
+        ckk(pm_press_want(&c, &(pm_t){PM_WAIT, 0, 600, 0, 0}), 0, "and a negative index likewise");
+    }
+
     /* ---- the ring (design §7) ---- */
     {
         pm_cfg_t c = cfg4(0, 100, 1);
@@ -551,6 +675,24 @@ int main(void)
         ckk(pm_ring_for(&(pm_t){PM_PAUSE, 2, 600, 300, 0}, &c, &out) == 1 && out.effect == 2
             && out.period_ms == PM_BREATHE_MS && PM_BREATHE_MS == 2500, 1,
             "PAUSE breathes at the owner's 2500 ms, the period named not a range");
+
+        /* ---- alerts-1 §64.12: the alerts back the band, the running drain does not ---- */
+        ckk(pm_ring_for(&r, &c, &out) == 1 && out.backed == 0, 1,
+            "a running drain is NOT backed: it keeps the owner's ring_op over other apps");
+        ckk(pm_ring_for(&(pm_t){PM_PAUSE, 2, 600, 300, 0}, &c, &out) == 1 && out.backed == 1, 1,
+            "PAUSE backs its breathe: an alert must be seen");
+        ckk(pm_ring_for(&(pm_t){PM_WAIT, 1, 360, 0, 0}, &c, &out) == 1 && out.backed == 1, 1,
+            "WAIT backs its flash");
+        ckk(pm_ring_for(&(pm_t){PM_WAITED, 1, 360, 0, 0}, &c, &out) == 1 && out.backed == 1, 1,
+            "WAITED backs its flash too");
+        {
+            pm_cfg_t ac = cfg4(0, 55, 1);                 /* a dim opacity: backing ignores the byte, not the record */
+            pm_ring_t ab;
+            ckk(pm_ring_for(&(pm_t){PM_RUN, 0, 1500, 750, 0}, &ac, &ab) == 1 && ab.backed == 0, 1,
+                "backing is not an opacity: a low-opacity drain is still unbacked");
+            ckk(pm_ring_for(&(pm_t){PM_PAUSE, 0, 600, 300, 0}, &ac, &ab) == 1 && ab.backed == 1, 1,
+                "and a low-opacity alert is still backed");
+        }
 
         /* ---- rim-1: the three asks cross the pure boundary (§8) -------------------- */
         pm_cfg_t a3 = cfg4(0, 100, 1);
@@ -616,6 +758,58 @@ int main(void)
 """
 
 
+def manifest(fail):
+    """The shipped manifest as the writer sees it (alerts-3 §1, design §5): the press cap declared,
+    press_any last of the seventeen, and the seventeen packed and read back through tools/orbapp.py
+    — the same gate orbsdk and the loader enforce. A setting dropped to make room is the failure
+    this is here to catch, so the count, the order and the cap's margin are all pinned."""
+    m = json.load(open(os.path.join(APP, "app.json")))
+    word = sum(orbapp.cap_bit(c) for c in m["caps"])              # orbsdk.caps_word's own sum
+    fail("app.json declares the press cap it uses",
+         "press" in m["caps"] and all(c in orbapp.CAP_OWNER for c in m["caps"]))
+    fail("and its caps word crosses the writer's gate as a legal declaration carrying press's bit",
+         orbapp.check_caps(word) == word and bool(word & orbapp.cap_bit("press")))
+    sets, ids = m["settings"], [s["id"] for s in m["settings"]]
+    fail("the seventeen settings are all still declared, none dropped to make room", len(sets) == 17)
+    fail("press_any is the last of them, after the settings it had to be added after",
+         ids[-1] == "press_any")
+    pa = sets[-1]
+    fail("press_any is an enum of Off, When it's calling, Whenever it runs, in that order",
+         pa["type"] == "enum" and pa["choices"] == ["Off", "When it's calling", "Whenever it runs"])
+    fail("and defaults to When it's calling, the design's answer", pa.get("default") == 1)
+    fail("press_any speaks in the pomodoro's own voice, within the schema's help cap",
+         isinstance(pa.get("help"), str) and 80 <= len(pa["help"].encode()) <= orbapp.HELP_MAX)
+    fail("every label still fits the dial's %d bytes" % orbapp.LABEL_MAX,
+         all(len(s["label"].encode()) < orbapp.LABEL_MAX for s in sets))
+    try:
+        rows, schema = orbapp.normalize_settings(list(sets))          # app.json as orbsdk reads it
+        back = orbapp.unpack_settings(orbapp.pack_settings(rows), len(rows))
+    except ValueError as e:
+        fail("the manifest packs: %s" % e, False)
+        return
+    fail("the loader's table (step 2's %d) holds the seventeen this step adds" % orbapp.SETTINGS_MAX,
+         len(rows) == 17 and orbapp.SETTINGS_MAX >= 18)
+    fail("the schema the hub draws names the same seventeen", len(schema) == 17)
+    fail("packed and read back, they are the same seventeen in the same order",
+         [r["id"] for r in back] == ids)
+    w = [r for r in back if r["id"] == "press_any"][0]
+    fail("press_any crosses the wire as an enum the gate range-checks 0..2, default 1",
+         w["type"] == "enum" and w["min"] == 0 and w["max"] == 2 and w["default"] == 1)
+    # the cap is step 2's work and this step's dependency: check_settings is the gate the writer
+    # refuses at, so the margin (18, not 17) is pinned rather than assumed, and nothing here was
+    # dropped or renamed to squeeze into a table that is still full.
+    def packs(n):
+        wire = [{"id": "s_%d" % i, "type": "int", "min": 0, "max": 10, "default": 1} for i in range(n)]
+        try:
+            orbapp.pack_settings(orbapp.check_settings(wire))
+            return True
+        except ValueError:
+            return False
+    fail("the gate admits seventeen settings, and an eighteenth besides", packs(17) and packs(18))
+    fail("and still refuses a nineteenth: the cap holds, and no setting was dropped for it",
+         not packs(19))
+
+
 def run_c(src, d):
     """Compile the shipped source verbatim beside the driver and run it. None = no verdict."""
     open(os.path.join(d, "pomodoro.c"), "w").write(src)
@@ -644,16 +838,72 @@ MAIN_RULES = [
     ("the start reaches the record", r"rec\.start\s*=\s*\(uint16_t\)r\.start"),
     ("a direction or start move re-sends the ring", r"s_sent\.dir[^\n]*s_sent\.start"),
     ("the theme ask re-sends the ring too", r"s_sent\.match[^\n]*r->match"),
+    ("the backed ask re-sends the ring too (drain -> alert needs the band, §64.12)", r"s_sent\.backed[^\n]*r->backed"),
+    ("the backed ask reaches the record's flag byte", r"rec\.flags\s*=.*ORB_RING_CCW.*ORB_RING_MATCH.*ORB_RING_BACKED"),
+    # alerts-3 §64.13: the service is the only place the borrow lives — it asks, it spends what
+    # the OS queued, and it puts a spent queue back. Each of those three is a rule of its own.
+    ("the loader's table holds the fifteen the owner edits", r"#define PM_N_SET 15\b"),
+    ("press_any is read with the manifest's own default", r"\{ \"press_any\", PM_PRESS_CALL \}"),
+    ("press_any reaches pm_cfg_t at the index the loader reads", r"cfg\.press_any\s*=\s*v\[14\];"),
+    ("the queue is read before anything else, so a spent pass cannot miss a lend",
+     r"const int queued = orb_press_lent\(\);[\s\S]{0,400}for \(int i = 0; i < queued"),
+    ("the window is the phase machine's answer, never the setting alone",
+     r"orb_press_claim\(pm_press_want\(&cfg, &s\)\);"),
+    ("the claim is asserted every pass, before the taps are spent",
+     r"\(void\)orb_press_claim\(pm_press_want\(&cfg, &s\)\);\n    if \(queued <= 0\) return;"),
+    ("a lent press is spent exactly as the same tap on the app's own glass", r"orb_input\(0, 1\);"),
+    ("the read is bounded by the ceiling the OS names for its queue", r"i < queued && i < ORB_PRESS_MAX_LENT"),
+    ("a spent queue goes back with claim(0), and the claim is re-asked from the state the taps left",
+     r"\(void\)orb_press_claim\(0\);\n    \(void\)orb_press_claim\(pm_press_want\(&cfg, &s\)\);"),
+    ("the pass runs before the choice lands, the ring is sent and the store written",
+     r"press_pass\(\);[\s\S]{0,200}choice_step\(\);\n    ring_send\(\);"),
     ("the settings fill pm_cfg_t's three asks", r"cfg\.dir\s*=.*\n.*cfg\.start\s*=.*\n.*cfg\.match\s*="),
     ("ring_dir is read as a 0/1", r"s_dir\s*=\s*v\[10\] \? 1 : 0"),
     ("the ladder's anticlockwise end is named Reset (§64.15)", r"s_pos == \(s\.k > 0 \? -s\.k - 1 : -1\)\) \{\s*snprintf\(b, \(size_t\)n, \"%s\", \"Reset\"\)"),
     ("ring_start is read as o'clock degrees", r"s_start\s*=\s*\(\(v\[11\] % 4\) \+ 4\) % 4 \* 90"),
+    ("the dots rows are picked by pm_dots, not by the focus number",
+     r"pm_dots\(v->k, cfg\.focuses, &cells, &filled\)"),
+    ("the dots pair is centred by one shared offset (§ dots amendment 2)",
+     r"\(PM_N_MAX - cells\) \* PM_DOT_PITCH / 2"),
+    ("the track is picked at cells - 1 and the fill at filled",
+     r"orb_stage_frame\(R\[S_DOTS\], cells - 1\)[\s\S]{0,80}orb_stage_frame\(R\[S_FILL\], filled\)"),
+    ("both dots rows are posed with the one offset",
+     r"orb_stage_pose\(R\[S_DOTS\], 0, ox, 0\)[\s\S]{0,120}orb_stage_pose\(R\[S_FILL\], 0, ox, 0\)"),
 ]
 MAIN_MUTATIONS = [
     ("    if (s_sent.dir != r->dir || s_sent.start != r->start) return true;", "    ;"),
-    ("    rec.flags = (uint8_t)((r.dir ? ORB_RING_CCW : 0) | (r.match ? ORB_RING_MATCH : 0));", "    ;"),
+    ("    rec.flags = (uint8_t)((r.dir ? ORB_RING_CCW : 0) | (r.match ? ORB_RING_MATCH : 0) | (r.backed ? ORB_RING_BACKED : 0));", "    ;"),
+    ("    rec.flags = (uint8_t)((r.dir ? ORB_RING_CCW : 0) | (r.match ? ORB_RING_MATCH : 0) | (r.backed ? ORB_RING_BACKED : 0));",
+     "    rec.flags = (uint8_t)((r.dir ? ORB_RING_CCW : 0) | (r.match ? ORB_RING_MATCH : 0) | 0);"),                 # the backed ask never reaches the record
+    ("    if (s_sent.backed != r->backed) return true;", "    ;"),                                                  # a drain->alert backing move rests the ring
     ("    rec.start = (uint16_t)r.start;", "    ;"),
     ("    cfg.dir       = s_dir;", "    ;"),
+    ("        pm_dots(v->k, cfg.focuses, &cells, &filled);",
+     "        cells = PM_N_MAX; filled = pm_focus_at(v->k, cfg.focuses);"),                    # back to twelve seats, lit by the focus number
+    ("            const int ox = (PM_N_MAX - cells) * PM_DOT_PITCH / 2;", "            const int ox = 0;"),  # the row no longer centres
+    ("            orb_stage_frame(R[S_DOTS], cells - 1);", "            orb_stage_frame(R[S_DOTS], cells);"),        # the track one frame late
+    ("            orb_stage_pose(R[S_FILL], 0, ox, 0);", "            orb_stage_pose(R[S_FILL], 0, 0, 0);"),         # the fill drifts off its track
+    # alerts-3: the service's three moves — claim, spend, put back — each broken one at a time
+    ("    (void)orb_press_claim(pm_press_want(&cfg, &s));\n    if (queued <= 0) return;",
+     "    if (queued <= 0) return;"),                                                           # the press never borrowed
+    ("    (void)orb_press_claim(pm_press_want(&cfg, &s));\n    if (queued <= 0) return;",
+     "    (void)orb_press_claim(1);\n    if (queued <= 0) return;"),                            # and borrowed whatever the state says
+    ("    (void)orb_press_claim(0);\n    (void)orb_press_claim(pm_press_want(&cfg, &s));", ""),                     # a missed release: the spent queue stands
+    ("    (void)orb_press_claim(0);\n    (void)orb_press_claim(pm_press_want(&cfg, &s));",
+     "    (void)orb_press_claim(1);"),                                                          # re-asked blind, not from the state the taps left
+    ("    (void)orb_press_claim(0);\n    (void)orb_press_claim(pm_press_want(&cfg, &s));",
+     "    (void)orb_press_claim(0);"),                                                          # put back and never asked again
+    ("    for (int i = 0; i < queued && i < ORB_PRESS_MAX_LENT; i++) orb_input(0, 1);",
+     "    if (queued > 0) orb_input(0, 1);"),                                                   # one tap of the four spent
+    ("    for (int i = 0; i < queued && i < ORB_PRESS_MAX_LENT; i++) orb_input(0, 1);",
+     "    for (int i = 0; i < queued; i++) { }"),                                               # the queue read, never spent
+    ("for (int i = 0; i < queued && i < ORB_PRESS_MAX_LENT; i++)",
+     "for (int i = 0; i < queued; i++)"),                                                       # the ceiling the OS names ignored
+    ("    const int queued = orb_press_lent();", "    const int queued = 0;"),                  # the queue never read at all
+    ("    press_pass();", "    ;"),                                                             # the borrow gone from the pass
+    ("    cfg.press_any = v[14];", "    ;"),                                                    # the setting never reaches the machine
+    ('{ "press_any", PM_PRESS_CALL }', '{ "press_any", PM_PRESS_OFF }'),                        # a key that has never been set reads Off
+    ("#define PM_N_SET 15", "#define PM_N_SET 14"),                                             # the fifteenth left out of the read
 ]
 
 
@@ -662,6 +912,11 @@ def main_rules(fail, m_src):
         fail("main.c: " + what, bool(re.search(pat, m_src, re.S)))
     fail("main.c: amendment J's waiting comment is gone with the code that needed it",
          not re.search(r"amendment J", m_src, re.I))
+    # §64.13's one boundary the router cannot cross: the claimant's own glass keeps its presses,
+    # so the foreground gesture must not grow a claim, a poll or a queue of its own.
+    body = re.search(r'ORB_EXPORT\("orb_input"\)[\s\S]*?\n\}\n', m_src)
+    fail("main.c: orb_input is untouched by the borrow: no claim, no poll, no queue in it",
+         body is not None and "orb_press" not in body.group(0))
 
 
 def verdict(src, d, quiet, m_src=None):
@@ -686,6 +941,7 @@ def verdict(src, d, quiet, m_src=None):
         fail("the driver produced no CHECKS line", False)
     shape(fail, open(os.path.join(APP, "pomodoro.h")).read(), src)
     main_rules(fail, m_src if m_src is not None else open(os.path.join(APP, "main.c")).read())
+    manifest(fail)
     return bool(fails) or res is None
 
 

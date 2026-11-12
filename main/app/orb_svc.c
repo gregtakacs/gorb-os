@@ -37,6 +37,7 @@
 #include "idle_dim.h"         /* the power request path — a request, not a write */
 #include "orb_wake.h"         /* §64.6: the pure one-shot-wake decision */
 #include "orb_ring.h"         /* §64.1: revoking the ring cap drops the app's record */
+#include "orb_press.h"        /* §64.13: revoking the press cap, and a fault, drop the lent-press claim */
 #include "orb_layers.h"       /* P5.5: the layer table the four entries drive */
 #include "orb_sound.h"        /* D39: the engine the sound entries hand off to */
 
@@ -879,7 +880,7 @@ const char *orb_svc_cap_name(orb_cap_t cap)
      * a NULL that /status's ledger handed snprintf("%s") and the httpd faulted on. */
     static const char *const N[] = {
         "time", "config", "ui", "art", "power", "net", "sd_read", "themes", "sound", "location",
-        "ring"
+        "ring", "press"
     };
     _Static_assert(sizeof N / sizeof N[0] == CAP_N, "every cap has a name");
     return (unsigned)cap < CAP_N ? N[cap] : "?";
@@ -1076,6 +1077,10 @@ esp_err_t orb_svc_set_grant(const orb_app_t *a, orb_cap_t cap, bool on)
          * off the glass, or the owner's kill switch is a label (ring-design §5). The drop
          * is keyed by the flash slot (the ring table's key); a card row's -1 is a no-op. */
         if (!on && cap == CAP_RING) orb_ring_drop(a->flash_slot);
+        /* §64.13: revoking the press cap while the app holds the lent-press claim has
+         * to actually take the lend away, or the owner's kill switch is a label — same
+         * door as the ring's. Keyed by the flash slot; a card row's -1 is a no-op. */
+        if (!on && cap == CAP_PRESS) orb_press_drop(a->flash_slot);
         /* P5.5 notes what it does NOT do here: no layer wipe rides a revoke,
          * because CAP_UI is free (never stored, never revoked), so there is no
          * owner door that closes an app's ink. The rows end at suspend and at
@@ -1334,6 +1339,9 @@ void orb_svc_note_fault(const orb_app_t *a, const char *why)
 {
     const int slot = orb_app_index_of(a);
     if (slot >= 0) note_fault_slot(slot, why);
+    /* §64.13: a faulted app loses its lent-press claim with the fault, so a trapped
+     * service's unread presses die with it instead of reaching a later row (§3.4). */
+    if (a) orb_press_drop(a->flash_slot);
 }
 
 uint32_t orb_svc_fault_count(const orb_app_t *a)

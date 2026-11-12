@@ -173,6 +173,15 @@ MUTATIONS = [
     ("    int g = (batch_us * 3) / 1000;", "    int g = batch_us / 1000;"),             # the 3x factor dropped: the ring may fill its own window
     ("    if (g > ORB_RING_STEP_MAX_MS) g = ORB_RING_STEP_MAX_MS;", "    ;"),           # the ceiling dropped: a starved bus is worse than the base build
     ("    if (g < ORB_RING_STEP_MS)     g = ORB_RING_STEP_MS;", "    ;"),               # the floor dropped: a measured batch slower than the grid runs slower than the grid
+    # alerts-1: the backed ring — the mask width, the colour, the paint alpha, the gate
+    ("    r->flags &= ORB_RING_FLAGS_MASK;", "    r->flags &= 0x03u;"),                # the mask not widened: a backed record's ask is dropped
+    ("    if (!arc) return 0x0000;", "    if (!arc) return ring_blend565(0x0000, argb);"),  # the band's black is not black
+    ("    return ring_blend565(0x0000, argb);", "    return ring_blend565(0x0000, argb | 0xFF000000u);"),  # the arc ignores its alpha: no fade to black
+    ("    if (!(r->flags & ORB_RING_BACKED)) return effect_alpha;", "    return effect_alpha;"),            # the backed branch dropped: the band obeys the byte
+    ("    if (r->effect == ORB_RING_FLASH)   return effect_alpha;", "    if (r->effect == ORB_RING_FLASH)   return 255;"),  # a backed flash off-phase forced lit
+    ("        return effect_alpha < ORB_RING_BACKED_MIN_ALPHA ? ORB_RING_BACKED_MIN_ALPHA : effect_alpha;", "        return effect_alpha;"),  # the breathe floor gone: reveals the app
+    ("    return was_paint != now_paint;", "    return was_paint <= 0 || now_paint <= 0;"),  # the backed gate borrows the never-zero rule: an unchanged black band resends
+    ("    return was_paint != now_paint;", "    return was_paint == now_paint;"),            # the backed gate inverted: a transition rests, a still band sends
 ]
 
 HARNESS = r"""
@@ -440,6 +449,45 @@ int main(int argc, char **argv)
         printf("LNE7 %d\n", ring_lanes_in(NULL, full, 2, 463, la, ORB_RING_LANES_MAX));
         printf("LNE8 %d\n", ring_lanes_in(la, 0, 2, 463, la, ORB_RING_LANES_MAX));
         printf("LNE9 %d\n", ring_lanes_in(la, full, 2, 463, la, 0));
+    } else if (!strcmp(m, "bk565")) {
+        /* ring_backed565 (alerts-1 §64.12): argv arc argb -> the wire-order band pixel */
+        printf("BK565 %04X\n", ring_backed565((uint32_t)strtoul(argv[3], NULL, 0), (int)lg(argv[2])));
+    } else if (!strcmp(m, "bkpa")) {
+        /* ring_paint_alpha (alerts-1 §64.12): argv flags effect effect_alpha */
+        orb_ring_rec r = { 500, (uint8_t)lg(argv[3]), (uint8_t)lg(argv[2]), 0, 0, 0, 0 };
+        printf("BKPA %d\n", ring_paint_alpha(&r, (int)lg(argv[4])));
+    } else if (!strcmp(m, "bkmo")) {
+        printf("BKMO %d\n", ring_backed_moved((int)lg(argv[2]), (int)lg(argv[3])));
+    } else if (!strcmp(m, "pulse")) {
+        /* ring_pulse_open (alerts-2 §64.13): argv until_ms now_ms — the half-open window gate
+         * the lent-press confirmation leans on. The glue arms `until` and asks it each step. */
+        printf("PULSE %d\n", ring_pulse_open(lg(argv[2]), lg(argv[3])));
+    } else if (!strcmp(m, "bkcover")) {
+        /* the annulus a backed band must paint, as the stamp sees it: argv fraction start ccw.
+         * The pieces ring_row_parts returns (arc and track) must cover every annulus pixel and no
+         * pixel outside it, whatever the fraction — a backed record paints the track black, so the
+         * whole band is a paint and the app underneath is never left showing through. */
+        const int frac = (int)lg(argv[2]), st = (int)lg(argv[3]), cc = (int)lg(argv[4]);
+        long ann = 0, covin = 0, covout = 0, arcpx = 0, trkpx = 0;
+        orb_ring_part_t pp[8];
+        for (int y = 0; y < GLASS; y++) {
+            const int np = ring_row_parts(y, frac, st, cc, pp, 8);
+            unsigned char inm[GLASS], cov[GLASS];
+            for (int x = 0; x < GLASS; x++) {
+                const long u = 2 * (long)x - 465, v = 2 * (long)y - 465;
+                cov[x] = 0;
+                inm[x] = (200704 <= u * u + v * v && u * u + v * v <= 213444) ? 1 : 0;
+                if (inm[x]) ann++;
+            }
+            for (int i = 0; i < np; i++)
+                for (int x = pp[i].x0; x <= pp[i].x1; x++) {
+                    if (x < 0 || x >= GLASS || cov[x]) continue;
+                    cov[x] = 1;
+                    if (inm[x]) covin++; else covout++;
+                    if (pp[i].arc) arcpx++; else trkpx++;
+                }
+        }
+        printf("BKCOVER ann %ld covin %ld covout %ld arc %ld trk %ld\n", ann, covin, covout, arcpx, trkpx);
     } else return 2;
     return 0;
 }
@@ -614,12 +662,13 @@ def checks(exe, quiet=False):
     # ---- overlay-2: the match byte and the substitution (§8 checks 4 and 5) --------------
     def mk(f, e, match, p):
         return run(exe, "mk", f, e, match, p).split()[1:]
-    ck(mk(500, 0, 7, 4000) == ["500", "0", "4000", "3"], "a flags byte of 7 keeps its two known bits, masks to 3, nothing else moves")
-    ck(mk(500, 1, 0, 100) == ["500", "1", "400", "0"], "a flags byte of 0 stays 0")
+    ck(mk(500, 0, 7, 4000) == ["500", "0", "4000", "7"], "a flags byte of 7 keeps its three known bits, masks to 7, nothing else moves")
+    ck(mk(500, 1, 0, 100) == ["500", "1", "400", "0"], "a flags byte of 0 stays 0 (a zeroed record is not backed)")
     ck(mk(500, 0, 1, 4000) == ["500", "0", "4000", "1"], "a flags byte of 1 (ORB_RING_MATCH) stays 1")
     ck(mk(500, 0, 2, 4000) == ["500", "0", "4000", "2"], "a flags byte of 2 (ORB_RING_CCW) stays 2")
-    ck(mk(500, 0, 0xFC, 4000) == ["500", "0", "4000", "0"], "flags 0xFC is all unknown bits: it clamps to 0")
-    ck(mk(500, 0, 5, 4000) == ["500", "0", "4000", "1"], "an unknown bit beside MATCH leaves MATCH alone: 5 is 1")
+    ck(mk(500, 0, 4, 4000) == ["500", "0", "4000", "4"], "a flags byte of 4 (ORB_RING_BACKED) survives the widened mask")
+    ck(mk(500, 0, 0xF8, 4000) == ["500", "0", "4000", "0"], "flags 0xF8 is all unknown bits: it clamps to 0")
+    ck(mk(500, 0, 5, 4000) == ["500", "0", "4000", "5"], "MATCH beside BACKED keeps both: 5 is MATCH|BACKED")
 
     def ap(match, arc, track, ovl, times=1):
         return "".join(run(exe, "ap", match, hex(arc), hex(track), hex(ovl), times).split()[1:])
@@ -679,16 +728,16 @@ def checks(exe, quiet=False):
 
     def clmp(f, e, fl_, sd, p):
         return run(exe, "cl2", f, e, fl_, sd, p).split()[1:]
-    ck(clmp(500, 0, 0xFC, 0, 4000) == ["500", "0", "4000", "0", "0", "1"],
-       "flags 0xFC is all unknown bits: the record comes back 0, and its other words unmoved")
+    ck(clmp(500, 0, 0xF8, 0, 4000) == ["500", "0", "4000", "0", "0", "1"],
+       "flags 0xF8 is all unknown bits: the record comes back 0, and its other words unmoved")
     ck(clmp(500, 0, 3, 359, 4000) == ["500", "0", "4000", "3", "359", "1"], "359 degrees is a whole start: it stays")
     ck(clmp(500, 0, 3, 360, 4000) == ["500", "0", "4000", "3", "0", "1"], "360 wraps to twelve")
     ck(clmp(500, 0, 3, 361, 4000) == ["500", "0", "4000", "3", "1", "1"], "361 wraps to one degree past twelve")
     ck(clmp(500, 0, 3, 719, 4000) == ["500", "0", "4000", "3", "359", "1"], "719 wraps to 359")
     ck(clmp(500, 0, 3, 720, 4000) == ["500", "0", "4000", "3", "0", "1"], "720 wraps a full twice-round to 0")
-    ck(clmp(1500, 7, 7, 4000, 4000) == ["1000", "0", "4000", "3", "40", "1"],
+    ck(clmp(1500, 7, 7, 4000, 4000) == ["1000", "0", "4000", "7", "40", "1"],
        "one clamp does all five words at once: fraction, effect, flags, start, period")
-    ck(clmp(-5, 2, 5, -90, 90000) == ["1000", "2", "24464", "1", "286", "1"],
+    ck(clmp(-5, 2, 5, -90, 90000) == ["1000", "2", "24464", "5", "286", "1"],
        "each word clamps on its own type: a uint16 start of -90 is 65446, and 65446 wraps to 286")
     ck(clmp(500, 0, 1, 90, 4000) == clmp(500, 0, 1, 90, 4000),
        "clamping a clamped record changes nothing, the two new words included: %s"
@@ -705,8 +754,8 @@ def checks(exe, quiet=False):
     ck(ws2[-1][1:] == ["300", "0", "3", "45"],
        "the table carries the two new words across a set and a pick unchanged: %s" % (ws2[-1][1:],))
     ws3 = own("I", "W 2 300 0 252 4000 4000 1000", "G")
-    ck(ws3[-1][1:] == ["300", "0", "0", "40"],
-       "what a pick hands back is clamped in both new words too: flags 0xFC, start 4000: %s" % (ws3[-1][1:],))
+    ck(ws3[-1][1:] == ["300", "0", "4", "40"],
+       "what a pick hands back is clamped in both new words too: flags 0xFC keeps its BACKED bit, start 4000 wraps: %s" % (ws3[-1][1:],))
     ws4 = own("I", "W 4 500 0 1 90 4000 1000", "C 4", "G")
     ck(ws4[-1][1:] == ["0", "0", "0", "0"], "a cleared row asks nothing, the two new words included")
     ab = own("I", "S 2 300 0 0 1000000", "S 5 700 0 0 2000000", "P")
@@ -871,6 +920,65 @@ def checks(exe, quiet=False):
     absurd = [gov(b) for b in (1, 7, 12345, 99999, 400000, 1 << 20, (1 << 31) - 1)]
     ck(all(40 <= g <= 400 for g in absurd),
        "the grid stays between its two bounds over absurd batch times, a garbage 2^31-1 included: %s" % absurd)
+
+    # ---- alerts-1: the backed ring (§64.12) ------------------------------------------------
+    def bk565(arc, argb):
+        w = run(exe, "bk565", arc, hex(argb)).split()
+        return int(w[1], 16) if len(w) > 1 else -1
+    def bkpa(flags, eff, ea):
+        return int(run(exe, "bkpa", flags, eff, ea).split()[1])
+    def bkmo(w, n):
+        return int(run(exe, "bkmo", w, n).split()[1])
+    def pulse(until, now):
+        return int(run(exe, "pulse", until, now).split()[1])
+
+    # the band's black is a real pixel (a paint), and the arc is the colour blended against black
+    ck(bk565(0, 0xFF0FA36B) == 0x0000 and bk565(0, 0xFFFFFFFF) == 0x0000 and bk565(0, 0x00FF0000) == 0x0000,
+       "a backed non-arc pixel is pure black whatever the colour it was handed (the band is painted, not skipped)")
+    ck(all(bk565(1, c) == exp_blend(0x0000, c) for c in
+           (0xFF0FA36B, 0xFFFFFFFF, 0xFFD62828, 0x600FA36B, 0x00123456)),
+       "a backed arc pixel is argb blended over black, not over the destination")
+    ck(bk565(1, 0xFF0FA36B) == wire(0x150D), "a full-alpha backed arc is the source colour on the wire: %04X" % bk565(1, 0xFF0FA36B))
+    ck(bk565(1, 0x600FA36B) == exp_blend(0x0000, 0x600FA36B) != bk565(1, 0xFF0FA36B),
+       "a breathe trough's 96/255 is the colour dimmed toward black, not the full colour and not the app beneath")
+
+    # the paint alpha: unbacked is today's effect byte for byte; backed throws the byte away
+    ck(bkpa(0x00, 0, 255) == 255 and bkpa(0x00, 1, 0) == 0 and bkpa(0x00, 1, 255) == 255 and bkpa(0x00, 2, 30) == 30,
+       "an unbacked record's paint alpha is the effect's own alpha, unchanged")
+    ck(bkpa(0x04, 0, 123) == 255, "a backed solid band paints at 255, the alpha byte ignored")
+    ck(bkpa(0x04, 1, 0) == 0 and bkpa(0x04, 1, 255) == 255,
+       "a backed flash keeps its phase: lit at 255, black band at 0 — both are a paint")
+    ck(bkpa(0x04, 2, 0) == 96 and bkpa(0x04, 2, 30) == 96 and bkpa(0x04, 2, 96) == 96 and bkpa(0x04, 2, 200) == 200,
+       "a backed breathe never dips under the floor: 96, not the design's old 64")
+
+    # the gate for a band whose off-phase is black: the movement rule, not the never-zero rule
+    ck(bkmo(255, 0) == 1 and bkmo(0, 255) == 1 and bkmo(96, 120) == 1,
+       "a backed flash transition (colour<->black) and a moving breathe both re-send")
+    ck(bkmo(0, 0) == 0 and bkmo(255, 255) == 0 and bkmo(96, 96) == 0,
+       "two identical backed frames rest — the black band is not re-sent against the rule that paint ignores alpha")
+
+    # the lent-press pulse window (§64.13): half-open [arm, until), so the record's normal
+    # gate resumes at the exact expiry and never a frame late.
+    ck(pulse(1000, 999) == 1 and pulse(1000, 0) == 1,
+       "a pulse armed for t=1000 is open the whole step before its expiry")
+    ck(pulse(1000, 1000) == 0 and pulse(1000, 1001) == 0,
+       "the pulse restores at the exact expiry and after it — half-open, never a frame into the next beat")
+    ck(pulse(0, 0) == 0, "no window armed (until 0) is never open at the clock's origin")
+
+    # the whole band the backed stamp paints, for the fraction the pomodoro alerts at
+    def bkcover(frac, st, cc):
+        d = dict(zip(run(exe, "bkcover", frac, st, cc).split()[1::2],
+                     run(exe, "bkcover", frac, st, cc).split()[2::2]))
+        return {k: int(v) for k, v in d.items()}
+    for fr in (0, 1, 125, 500, 999, 1000):
+        c = bkcover(fr, 0, 0)
+        ck(c["ann"] == 10004 and c["covin"] == 10004 and c["covout"] == 0 and c["arc"] + c["trk"] == 10004,
+           "a backed band paints every annulus pixel and nothing outside it at fraction %d (cost: no extra pixels)" % fr)
+    c0 = bkcover(0, 0, 0); c1 = bkcover(1000, 0, 0); c125 = bkcover(125, 0, 0)
+    ck(c0["arc"] == 0 and c0["trk"] == 10004, "fraction 0 backs a whole band of black (all track): the off-phase band")
+    ck(c1["arc"] == 10004 and c1["trk"] == 0, "fraction 1000 makes the whole band the arc")
+    ck(c125["arc"] > 0 and c125["trk"] > 0,
+       "a quarter arc on a black band: both the arc and the black track are painted (got %d/%d)" % (c125["arc"], c125["trk"]))
 
     return fails
 

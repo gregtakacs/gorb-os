@@ -58,6 +58,7 @@
 #include "orb_app_blob.h"       /* radar-plan §2.3: kept bodies */
 #include "orb_map.h"            /* radar-plan §2.4: the OS maps */
 #include "orb_ring.h"           /* §64.1 / ring-design: the OS ring, imp_ring_set/_clear */
+#include "orb_press.h"          /* §64.13 / alerts-design: the OS lends a plain press, imp_press_claim/_lent */
 #include "orb_map_credit.h"     /* radar-plan §2.4: the first map drawn shows the credit */
 #include "orb_map_raster.h"     /* ORB_MAP_W: a view's raster, drawn onto the live layer */
 #include "esp_timer.h"
@@ -219,6 +220,7 @@ static void slot_release(wasm_slot_t *s)
     orb_blob_free_all(slot_index(s));
     orb_map_release_app(slot_index(s));
     orb_ring_drop(slot_index(s));   /* the OS ring: an uninstalled app's record goes with it */
+    orb_press_drop(slot_index(s));  /* §64.13: its lent-press claim, and queued presses, go too */
     /* §64.6: no explicit wake drop — the memset below zeroes s->wake_ms, so an app that
      * leaves and comes back has a fresh minute and its last wake is not held against it. */
     if (s->rt) m3_FreeRuntime(s->rt);
@@ -1005,6 +1007,35 @@ m3ApiRawFunction(imp_ring_clear)           /* i32 ring_clear(void), sig i() */
     }
     ring_clear(orb_ring_tbl, orb_ring_owner, ORB_APP_CAP, slot_index(s));   /* the next surfaces */
     m3ApiReturn(ESP_OK);
+}
+
+/* the lent press (cap "press"; plan §64.13, alerts-design §3.1). A guest that did not
+ * declare the cap gets the SAME refusal every gated import answers — orb_grant_ok records
+ * it, and this app's claim (should it ever have held one) is dropped so a stripped cap
+ * leaves no standing lend — and returns 0, exactly as the design rules. A claimant reads
+ * its queue from orb_service: orb_press_claim(on) asserts or releases the claim, and the
+ * polled orb_press_lent() answers how many plain presses the OS has queued for it. */
+m3ApiRawFunction(imp_press_claim)           /* i32 press_claim(int32_t on), sig i(i) */
+{
+    m3ApiReturnType(int32_t);
+    CALLER();
+    m3ApiGetArg(int32_t, on);
+    if (!orb_grant_ok(s->app, CAP_PRESS)) {                 /* the refusal drops the claim too */
+        orb_press_drop(slot_index(s));
+        m3ApiReturn(0);
+    }
+    m3ApiReturn(orb_press_claim(slot_index(s), on ? 1 : 0));
+}
+
+m3ApiRawFunction(imp_press_lent)            /* i32 press_lent(void), sig i() */
+{
+    m3ApiReturnType(int32_t);
+    CALLER();
+    if (!orb_grant_ok(s->app, CAP_PRESS)) {
+        orb_press_drop(slot_index(s));
+        m3ApiReturn(0);
+    }
+    m3ApiReturn(orb_press_lent(slot_index(s)));
 }
 
 m3ApiRawFunction(imp_sound_stop)           /* void sound_stop(i32 h) */
@@ -1974,6 +2005,8 @@ static const wasm_bind_t s_binds[] = {
     { "orb", "sound_play",    "i(iii)",    imp_sound_play },
     { "orb", "ring_set",      "i(i)",      imp_ring_set },
     { "orb", "ring_clear",    "i()",       imp_ring_clear },
+    { "orb", "press_claim",   "i(i)",      imp_press_claim },   /* §64.13: claim/release the lent press */
+    { "orb", "press_lent",    "i()",       imp_press_lent },    /* §64.13: how many presses the OS queued */
     { "orb", "sound_stop",    "v(i)",      imp_sound_stop },
     { "orb", "sound_active",  "i(i)",      imp_sound_active },
     { "orb", "home",          "i(i)",      imp_home },
@@ -2185,6 +2218,7 @@ static bool wasm_call(wasm_slot_t *s, int entry, const void *argv[], uint32_t ar
         snprintf(why, sizeof why, "%s: %s", s_entries[entry].export_name, r);
         m3_ResetErrorInfo(s->rt);
         orb_svc_note_fault(s->app, why);
+        orb_press_drop(slot_index(s));   /* §64.13: a trapped claimant loses its lent presses now */
         if (s->app && orb_svc_faulted(s->app)) {
             ESP_LOGE(TAG, "\"%s\" failed twice — engine state released until reinstall",
                      s->app->slug);

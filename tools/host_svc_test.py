@@ -405,6 +405,10 @@ bool idle_dim_enabled(void) { return g_dim_enabled; }
  * in orb_ring.c's IDF glue, so the broker's revoke path reaches it as a stub here. */
 int g_ring_drop_slot = -999;
 void orb_ring_drop(int slot) { g_ring_drop_slot = slot; }
+/* Revoking the press cap (and a fault) drops that slot's claim and queued presses (§64.13);
+ * the shipped state machine lives in main/input/orb_press.c, so the broker reaches it as a stub. */
+int g_press_drop_slot = -999;
+void orb_press_drop(int slot) { g_press_drop_slot = slot; }
 
 /* ---- the theme leaves: the shipped package manager, scripted ---------------- */
 int g_tscan_calls;
@@ -545,8 +549,8 @@ int main(int argc, char **argv)
         CK("home: undeclared app refused, record never read",
            S->home(A, &h) == ESP_ERR_NOT_ALLOWED && S->home(G, &h) == ESP_ERR_NOT_ALLOWED &&
            g_home_reads == 0 && (orb_svc_denied_mask(A) & (1u << CAP_LOCATION)) != 0);
-         CK("home: location is an owner cap, not a free one (CAP_N grew to 11 with ring)",
-            !(CAP_FREE_MASK & (1u << CAP_LOCATION)) && CAP_N == 11);
+         CK("home: location is an owner cap, not a free one (CAP_N grew to 12 with press)",
+            !(CAP_FREE_MASK & (1u << CAP_LOCATION)) && CAP_N == 12);
         g_place_reads = 0;
         CK("place: undeclared app refused, record never read",
            S->place(A, 1, &h) == ESP_ERR_NOT_ALLOWED && S->place(G, 1, &h) == ESP_ERR_NOT_ALLOWED &&
@@ -1032,7 +1036,11 @@ int main(int argc, char **argv)
            && orb_svc_layers_live(G) == g_layers_count_rc);
     }
 
+    /* Both markers: ALL PASS is this suite's own line, RESULT: pass is the token every
+     * sibling host suite (host_ring_test.py, host_press_test.py) and the alerts-2 gate ends
+     * on, so the svc suite reports the same way they do. */
     printf("%s\n", g_fail ? "SOME FAILED" : "ALL PASS");
+    printf("%s\n", g_fail ? "SOME FAILED" : "RESULT: pass");
 
 
     return g_fail ? 1 : 0;
@@ -1105,7 +1113,7 @@ def build_run(td, tag, extra_cflags, arg):
             "-I", td]                          # the IDF-shaped stubs shadow mine
            + ["-I", P("app"), "-I", P("art"), "-I", P("gfx"), "-I", P("."),
               "-I", P("assets"), "-I", P("net"),
-              "-I", P("power"), "-I", P("audio"), "-I", P("display"),
+              "-I", P("power"), "-I", P("audio"), "-I", P("display"), "-I", P("input"),
               "-I", os.path.join(ROOT, "assets")]  # real project headers
            + extra_cflags + [SVC_C, P("app", "orb_wake.c"), cpath, "-lm", "-o", exe])
     r = subprocess.run(cmd, capture_output=True, text=True)

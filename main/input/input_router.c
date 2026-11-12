@@ -14,6 +14,8 @@
 #include "idle_dim.h"
 #include "orb_rotation.h"     /* §59: the owner's rotation */
 #include "orb_app.h"
+#include "orb_press.h"      /* §64.13: the OS lends a plain press to a background claimant */
+#include "orb_ring.h"       /* §64.13: the OS confirms a lent press with the claimant's ring pulse */
 #include "orb_carousel.h"   /* cancel only: §51 retired the walk, so nothing puts a peek up */
 #include "orb_fx.h"         /* the transition bench's run, served from this poll */
 #include "orb_strip.h"      /* plan §54: the carousel owns the knob and the glass while up */
@@ -356,6 +358,27 @@ static void arm_current(void)
     ESP_LOGI(TAG, "armed %s", screen_name(s_current));
 }
 
+/* §64.13: lend one plain press to a background claimant. Answers true when the press was
+ * spent on the queue (so it must NOT reach the glass app), false when the press belongs to
+ * the entry on the glass exactly as it always has. Only ever called for a plain press — the
+ * caller has already ruled out a turn, a press-and-turn and a hold (those stay with the app
+ * or the OS). Never lent over an OS/shell/menu/Settings face, never while this very press
+ * is being spent to wake a dimmed or dark glass (orchestrator amendment 4: it wakes the
+ * face and goes nowhere, the next press is lent), and never to a claimant that is itself
+ * the app on the glass (§64.13: on its own glass the app handles the press as always). The
+ * queue owns the fifth-press swallow; the pulse is the OS's confirmation, on the claimant's
+ * own ring and never OS art. */
+static bool lend_plain_press(const orb_app_t *app, bool was_dimmed)
+{
+    if (!app || app->kind != ORB_APP_KIND_APP) return false;
+    if (was_dimmed) return false;   /* sampled before the touch was reported, not after */
+    const int owner = orb_press_owner();
+    if (owner < 0 || owner == app->flash_slot) return false;
+    orb_press_lend(owner);
+    orb_ring_disp_pulse(owner);
+    return true;
+}
+
 /* Runs on the LVGL task (created via lv_timer), so widget calls are legal here. */
 /* §59: the rotation. Quiet means no knob event and no screen switch since s_quiet_from;
  * the decision is orb_rotation_pick's, over the carousel's own walk. */
@@ -428,6 +451,11 @@ static void poll_timer_cb(lv_timer_t *timer)
      * a bench turn over HTTP and an encoder that bounced by itself are
      * indistinguishable, and telling "nobody touched it" from "the bench touched
      * it" is the whole question when the dial refuses to dim. */
+    /* §64.13 amendment 4: whether this touch found the glass dimmed, read BEFORE the touch is
+     * reported. idle_dim_activity() starts the wake; the flag only happens to stay set through
+     * this poll because the wake's write waits on this very task, and the lend must not depend
+     * on that scheduling: a press that wakes the glass is never lent. */
+    const bool was_dimmed = idle_dim_dimmed();
     if (delta || pressed || lpress || push) s_quiet_from = now;   /* §59: a touch holds the rotation */
     if (delta || pressed || lpress || push)
         idle_dim_activity(inj || ipt || ip || il
@@ -533,6 +561,7 @@ static void poll_timer_cb(lv_timer_t *timer)
 
     if (!screen_armed(s_current)) {
         delta += push;                       /* nobody to take it: an ordinary turn */
+        if (pressed && !delta && lend_plain_press(s_current, was_dimmed)) return;   /* §64.13: a plain press goes to the claimant */
         if (pressed) { arm_current(); return; }
         /* The list's own sense of a detent (knob_row_step, as menu_view walks it), so
          * the turn that opens the list moves its cursor the way the next turn will. */
@@ -544,6 +573,8 @@ static void poll_timer_cb(lv_timer_t *timer)
      * means is its own iface's business. The router used to name
      * menu_view_apply_input() and color_picker_apply_input() here and hardcode
      * the clock as unreachable; a new app now needs no edit in this file. */
+    const bool plain_press = pressed && !delta && !push;   /* §64.13: only a bare tap is lendable */
+    if (plain_press && lend_plain_press(s_current, was_dimmed)) pressed = false;   /* queued; the glass app never arms on it */
     if (push && !orb_app_push(push)) delta += push;   /* no orb_push: an ordinary turn */
     orb_app_input(delta, pressed);
 }

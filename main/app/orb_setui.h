@@ -14,7 +14,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define ORB_SETUI_MAX       16      /* ORBAPP_SETTINGS_MAX: one row per declared setting */
+#define ORB_SETUI_MAX       18      /* ORBAPP_SETTINGS_MAX: one row per declared setting */
 #define ORB_SETUI_CHOICES   16      /* orbapp.py CHOICES_MAX: a multi's bitmask fits 16 bits */
 #define ORB_SETUI_LABEL     24      /* orbapp.py LABEL_MAX: bytes, NUL included */
 #define ORB_SETUI_UNIT       9      /* orbapp.py UNIT_MAX + NUL */

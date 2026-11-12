@@ -24,6 +24,21 @@ int pm_focus_at(int k, int focuses)
     return pm_phase_at(k, focuses) == PM_FOCUS ? k / 2 + 1 : 0;
 }
 
+/* The two dots rows' answer for slot k of a cycle of N focuses (rows 13 and 14): N cells,
+ * filled for the focuses this cycle counts — the one in hand during a focus (so the third
+ * focus reads 3 of 4), the ones already done during a short break, and the whole set during
+ * the long break. Both banks are left-aligned and drawn at one place, so the app centres
+ * them with one shared pose offset; k and focuses are both clamped first, because nothing
+ * here may index off a row. */
+void pm_dots(int k, int focuses, int *cells, int *filled)
+{
+    const int n = n_of(focuses);
+    const int last = pm_cycle_len(n) - 1;
+    const int slot = k < 0 ? 0 : k > last ? last : k;
+    *cells = n;
+    *filled = slot == last ? n : (slot & 1) ? (slot + 1) / 2 : slot / 2 + 1;
+}
+
 int pm_next_k(int k, int focuses)
 {
     const int n = pm_cycle_len(focuses);
@@ -250,6 +265,23 @@ int pm_changed(const pm_raw_t *a, const pm_raw_t *b)
     return a->st_k != b->st_k || a->len != b->len || a->end != b->end || a->rem != b->rem;
 }
 
+/* The press the OS lends (§64.13, alerts-design §4.2): the setting names the window, the state
+ * names where the phase machine stands. A stopped phase borrows nothing in any setting — no
+ * countdown is running and no boundary is calling — so the answer is also the release that an
+ * `Off` move and a phase ending under autostart both need, with no gesture of their own. Any
+ * index outside the three choices is Off: an app that cannot read its own setting leaves the
+ * press to the app the owner is looking at. */
+int pm_press_want(const pm_cfg_t *c, const pm_t *s)
+{
+    const int st = s->st;
+
+    if (st == PM_STOP) return 0;
+    if (st < PM_STOP || st > PM_WAITED) return 0;                    /* a state off the five asks for nothing */
+    if (c->press_any == PM_PRESS_OFF) return 0;                      /* every press stays with the glass app */
+    if (c->press_any == PM_PRESS_CALL) return st == PM_WAIT || st == PM_WAITED;
+    return c->press_any == PM_PRESS_EVERY;                           /* run, pause, waiting: every live phase */
+}
+
 /* ---- what the ring should be (§7) ----------------------------------------------------- */
 
 int pm_ring_alpha(int base_alpha, int opacity)
@@ -298,7 +330,11 @@ int pm_ring_for(const pm_t *s, const pm_cfg_t *c, pm_ring_t *out)
                         .period_ms = eff == 2 ? PM_BREATHE_MS : eff == 1 ? PM_FLASH_MS : 0,
                         .dir = c->dir ? 1 : 0,                      /* the record's CCW ask     */
                         .start = ((c->start % 360) + 360) % 360,    /* the fold the OS applies  */
-                        .match = c->match ? 1 : 0 };                /* off-glass, by the caller */
+                        .match = c->match ? 1 : 0,                  /* off-glass, by the caller */
+                        .backed = eff ? 1 : 0 };                    /* §64.12: only the alerts
+                                                                       (PAUSE breathe, WAIT/WAITED
+                                                                       flash) back the band; the
+                                                                       running drain keeps ring_op */
     return 1;
 }
 

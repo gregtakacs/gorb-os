@@ -34,9 +34,14 @@
 #define PM_FLASH_MS   2000  /* twice a second: one second on, one off                      */
 #define PM_STEP_PCT      4  /* the least fraction move worth a send (thousandths)          */
 #define PM_PACK_MUL      8  /* pm_st = k * PM_PACK_MUL + state                             */
+#define PM_PRESS_OFF       0  /* press_any's three choices, in app.json's order (§64.13): Off   */
+#define PM_PRESS_CALL      1  /* leaves every press to the glass app, Calling borrows one only   */
+#define PM_PRESS_EVERY     2  /* once a phase waits, Whenever borrows one in any live phase      */
 
 #define PM_N_MIN   1        /* the cycle's bounds (§4): N focuses, 2N slots                 */
 #define PM_N_MAX   12       /* pm_st's ceiling at 23*8 + 4 = 188 < 200                      */
+#define PM_DOT_PITCH 17     /* the dots bank's cell pitch: pomodoro-bake.js DOT_SZ + DOT_GAP;
+                             * bake_check.py asserts the baked rows stand at this pitch     */
 #define PM_TEXT    24       /* the longest word this file writes, plus a NUL                */
 
 typedef struct {
@@ -50,6 +55,7 @@ typedef struct {
     int32_t start;          /* ring_start as degrees: 0/90/180/270 clockwise from twelve      */
     int32_t match;          /* "Match the app" while off the glass: the ORB_RING_MATCH ask     */
     uint32_t col[3];        /* 0xRRGGBB per phase, from the color settings                   */
+    int32_t press_any;      /* PM_PRESS_OFF/CALL/EVERY: when the app may borrow the press      */
 } pm_cfg_t;
 
 typedef struct {
@@ -77,19 +83,29 @@ typedef struct {
     int dir;                /* 0 clockwise from the start, 1 anticlockwise (ORB_RING_CCW)     */
     int start;              /* degrees clockwise from twelve the arc begins at, folded 0..359  */
     int match;              /* 1 asks the ring to wear the live theme's overlay colour        */
+    int backed;             /* 1 asks the whole rim band black with the arc on it (alerts §64.12) */
 } pm_ring_t;
 _Static_assert(offsetof(pm_ring_t, effect) == sizeof(int) &&
                offsetof(pm_ring_t, arc) == 2 * sizeof(int) &&
                offsetof(pm_ring_t, track) == 3 * sizeof(int) &&
                offsetof(pm_ring_t, dir) == 5 * sizeof(int) &&
                offsetof(pm_ring_t, start) == 6 * sizeof(int) &&
-               offsetof(pm_ring_t, match) == 7 * sizeof(int),
-               "pm_ring_t is fraction, effect, arc, track, period_ms, dir, start, match in that order");
+               offsetof(pm_ring_t, match) == 7 * sizeof(int) &&
+               offsetof(pm_ring_t, backed) == 8 * sizeof(int),
+               "pm_ring_t is fraction, effect, arc, track, period_ms, dir, start, match, backed in that order");
 
 /* ---- the cycle (§2) ------------------------------------------------------------------ */
 int pm_cycle_len(int focuses);                       /* 2N, with N clamped into 1..12        */
 int pm_phase_at(int k, int focuses);                 /* PM_FOCUS|PM_SHORT|PM_LONG            */
 int pm_focus_at(int k, int focuses);                 /* 1..N, 0 on either break              */
+/* What the two dots rows show for slot k of a cycle of `focuses` focuses (alerts-0 amendment
+ * 2): *cells is N clamped to 1..12, *filled the focuses the cycle counts — the one in hand
+ * during a focus (so the third focus reads 3 of 4), the ones done during a short break, the
+ * whole set during the long break. The track row (slot 13: 12 frames of N hollow cells) is
+ * picked at *cells - 1, the fill row (slot 14: 13 frames of n filled cells, frame 0 empty)
+ * at *filled; both are left-aligned banks the app centres with one shared pose offset,
+ * (PM_N_MAX - *cells) * PM_DOT_PITCH / 2. Both arguments are clamped, never trusted. */
+void pm_dots(int k, int focuses, int *cells, int *filled);
 int pm_next_k(int k, int focuses);                   /* wraps at the cycle's end             */
 int pm_len_s(const pm_cfg_t *c, int phase);          /* the setting, into PM_MIN_S .. cap    */
 
@@ -126,6 +142,13 @@ void pm_restore(pm_t *s, const pm_cfg_t *c, const pm_raw_t *raw, int synced, int
 int pm_raw_needs_clock(const pm_raw_t *raw);
 void pm_store(const pm_t *s, pm_raw_t *raw);
 int  pm_changed(const pm_raw_t *a, const pm_raw_t *b);   /* 0 => write nothing */
+
+/* Whether the app may hold the press the OS lends (§64.13, alerts-design §4.2): 1 asks for the
+ * claim, 0 asks for it back. A stopped phase never borrows a press — nothing is running and
+ * nothing is calling — and the answer is read afresh every service pass, so a phase ending or a
+ * settings move claims and releases on its own. This is the whole rule; the caller does the
+ * asking, and the OS answers 0 to both halves for an app that never declared the cap. */
+int  pm_press_want(const pm_cfg_t *c, const pm_t *s);
 
 /* ---- what the ring and the glass should show (§7, §10.1) ----------------------------- */
 int  pm_ring_alpha(int base_alpha, int opacity);     /* base*op/100, rounded down            */

@@ -78,7 +78,8 @@ typedef enum {
     CAP_SOUND = 8,    /* owner: play its own theme sounds (D39)        */
     CAP_LOCATION = 9, /* owner: the OS home location (flight-tracker §6.4) */
     CAP_RING = 10,    /* owner: the OS ring any app may set (§64.1, ring-design) */
-    CAP_N             /* 11                                             */
+    CAP_PRESS = 11,   /* owner: a plain press the OS lends, read from orb_service (§64.13) */
+    CAP_N             /* 12                                             */
 } orb_cap_t;
 
 /* TIME|CONFIG|UI|ART: never stored, never revoked — §4.2's "free, always on"

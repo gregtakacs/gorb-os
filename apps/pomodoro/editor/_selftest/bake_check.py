@@ -5,7 +5,9 @@
 
 Stages bake.html beside the runtime's baker and fonts and this app's bake, runs it headless,
 and checks every theme it prints: the rows apps/pomodoro/main.c finds (plates 0 and 1, fonts
-0..2, the labels at 8..12, the dots at 13 with thirteen frames, three one-shot chimes at slots
+0..2, the labels at 8..12, the dots as two picked rows at the one place — 13 the track, twelve
+hollow frames one per cell count, and 14 the fill, thirteen frames of n filled cells over it,
+frame 0 empty — three one-shot chimes at slots
 1, 2 and 3, sixteen bytes of pm_values_t at version 1 whose chime reads 1,2,3), the two rules
 the looks design can be held to — the furniture inside radius 200 and the ten figures of one
 width and centred — the plate's own offset in plate_off, the design region carried with its
@@ -40,6 +42,24 @@ RUNTIME = os.path.join(ROOT, "tools", "orb-manager", "web", "runtime")
 EDITOR = os.path.dirname(HERE)
 APPV = open(os.path.join(EDITOR, "..", "version.txt")).read().strip()
 VALUES_B = 16                                        # pomodoro.h pm_values_t
+# The dots are two picked rows drawn at the one place (alerts-0 amendment 2): row 13 the
+# track, one frame per cell count N = 1..12 of N hollow cells, and row 14 the fill, one
+# frame per count n = 0..12 of n filled cells over them, frame 0 empty. Both banks are
+# left-aligned on the twelve-seat canvas (eleven of 11 px at a 6 px gap plus the twelfth);
+# the app centres the pair with one shared pose offset off apps/pomodoro/pomodoro.c's
+# pm_dots, and its PM_DOT_PITCH must equal this bake's cell plus gap.
+DOT_N_MAX, DOT_SZ, DOT_GAP = 12, 11, 6
+N_TRACK, N_FILL = DOT_N_MAX, DOT_N_MAX + 1
+DOT_INK = 128                                        # at a cell's centre this is ink, below it hollow
+
+
+def pm_dot_pitch():
+    """apps/pomodoro/pomodoro.h's PM_DOT_PITCH, read off the header the app builds with."""
+    src = open(os.path.join(ROOT, "apps", "pomodoro", "pomodoro.h")).read()
+    m = re.search(r"#define\s+PM_DOT_PITCH\s+(\d+)", src)
+    return int(m.group(1)) if m else None
+
+
 # A theme's room, radar's number (docs/theme-cache-plan.md C4): the pool is a cache, so one
 # theme need only fit alone, beside the most a voice bank may hold (1 MB) and 512 KB of slack.
 BUDGET = (8 << 20) - (1 << 20) - 2 * 4096 - (512 << 10)
@@ -154,6 +174,48 @@ def furniture_radius(sec, slot):
     return r, sum(1 for v in a.values() if v >= ALPHA_INK)
 
 
+def dot_cells(sec, rec, i):
+    """A dots frame i, measured off the baked bytes: (bad, cells, filled, x0, off_pitch).
+    The frame's twelve seats are the expected windows of a left-aligned bank — cell k covers
+    columns 17k .. 17k+11 — and a bank draws its leading cells, so each window is read for
+    ink (a cell is drawn when its window carries any: a look's mark may reach past its box,
+    and a stroked star's miters merge neighbouring windows), and its centre pixel is read
+    for ink (a filled cell is lit at its centre, a hollow one is only an outline). `x0` is
+    the first ink column — a left-aligned bank starts at 0 — and `off_pitch` the worst gap
+    between the drawn windows' first ink columns and the pitch. Two rules land in `bad`
+    directly: no ink may stand outside the drawn windows' reach (a wrong gap leaks into the
+    seats), and the frame's last ink column must land on the last drawn cell's own box."""
+    bad = []
+    w, h = int(rec["w"]), int(rec["h"])
+    sp = sec["blob"]["sprites"][int(rec["frame0"]) + i]
+    if sp["w"] != w or sp["h"] != h or sp["size"] != w * h * 3:
+        return ["dots frame %d is a %dx%d sprite of %d B in a %dx%d row"
+                % (i, sp["w"], sp["h"], sp["size"], w, h)], 0, 0, 0.0, 0.0
+    a = sec["art"][sp["off"] + 2 * w * h: sp["off"] + 3 * w * h]     # the alpha plane, after RGB565
+    cols = [x for x in range(w) if any(a[y * w + x] for y in range(h))]
+    if not cols:
+        return bad, 0, 0, float(w), 0.0                              # an empty frame: fill 0
+    pitch = DOT_SZ + DOT_GAP
+    mid = h // 2
+    cells, firsts, filled = 0, [], 0
+    for k in range(DOT_N_MAX):
+        win = [x for x in cols if pitch * k <= x < pitch * k + DOT_SZ]
+        if not win:
+            break
+        cells += 1
+        firsts.append(win[0])
+        filled += 1 if a[mid * w + (pitch * k * 2 + DOT_SZ - 1) // 2] >= DOT_INK else 0
+    reach = 3                                                        # a mark's bleed past its box
+    if [x for x in cols if pitch * cells - reach <= x]:
+        bad.append("dots frame %d carries ink past its %d drawn cells (first at %d)"
+                   % (i, cells, min(x for x in cols if pitch * cells - reach <= x)))
+    if cols[-1] < pitch * (cells - 1) + DOT_SZ - reach:
+        bad.append("dots frame %d's last ink stands %d px short of its last cell's box"
+                   % (i, pitch * (cells - 1) + DOT_SZ - reach - cols[-1]))
+    off = max(abs(firsts[j] - firsts[j - 1] - pitch) for j in range(1, len(firsts))) if cells > 1 else 0.0
+    return bad, cells, filled, float(cols[0]), float(off)
+
+
 def check(name, raw, exe):
     """One theme, through the door's own reader and the projector that will run it."""
     bad = []
@@ -187,11 +249,48 @@ def check(name, raw, exe):
     labs = [s for s in range(8, 13) if s in aux and int(aux[s]["kind"]) == ts.SHAPE_TEXT]
     if labs != [8, 9, 10, 11, 12]:
         bad.append("labels at %s, not 8..12" % labs)
-    dots = aux.get(13)
-    if not dots:
-        bad.append("no dots row at 13")
-    elif int(dots["kind"]) == ts.SHAPE_TEXT or int(dots["n_frames"]) != 13:
-        bad.append("the dots row at 13 is %d frames of kind %s: thirteen frames of art" % (int(dots["n_frames"]), int(dots["kind"])))
+    track, fill = aux.get(13), aux.get(14)
+    if not track:
+        bad.append("no dots track row at 13")
+    if not fill:
+        bad.append("no dots fill row at 14")
+    if track and fill:
+        if int(track["kind"]) == ts.SHAPE_TEXT or int(track["n_frames"]) != N_TRACK:
+            bad.append("the dots track at 13 is %d frames of kind %s: %d hollow tracks, one per cell count"
+                       % (int(track["n_frames"]), int(track["kind"]), N_TRACK))
+        if int(fill["kind"]) == ts.SHAPE_TEXT or int(fill["n_frames"]) != N_FILL:
+            bad.append("the dots fill at 14 is %d frames of kind %s: %d fills, one per count, frame 0 empty"
+                       % (int(fill["n_frames"]), int(fill["kind"]), N_FILL))
+        for what, e in (("track", track), ("fill", fill)):
+            if int(e.get("delay", 0)):
+                bad.append("the dots %s carries a frame time of %d ms: the app picks it" % (what, int(e["delay"])))
+        if not (int(track["x"]) == int(fill["x"]) and int(track["y"]) == int(fill["y"])
+                and int(track["w"]) == int(fill["w"]) and int(track["h"]) == int(fill["h"])):
+            bad.append("the dots rows do not draw at the one place: track %d,%d of %dx%d, fill %d,%d of %dx%d"
+                       % (int(track["x"]), int(track["y"]), int(track["w"]), int(track["h"]),
+                          int(fill["x"]), int(fill["y"]), int(fill["w"]), int(fill["h"])))
+        if els.index(fill) < els.index(track) or int(fill["order"]) < int(track["order"]):
+            bad.append("the fill row is not emitted after the track: it would draw under it, not over it")
+        pitch = DOT_SZ + DOT_GAP
+        if pm_dot_pitch() != pitch:
+            bad.append("pomodoro.h's PM_DOT_PITCH is %s, the bake's own cell plus gap is %d" % (pm_dot_pitch(), pitch))
+        # amendment 2's samples: a 4-cell track, 3 of the cells lit, and the empty fill — the
+        # three shapes the app can put together, each left-aligned and at the bake's own pitch
+        for label, rec, i, want_cells, want_filled in (("track N=4", track, 3, 4, 0),
+                                                       ("fill n=3", fill, 3, 3, 3),
+                                                       ("fill 0", fill, 0, 0, 0)):
+            dbad, cells, got, x0, off = dot_cells(sec, rec, i)
+            bad += dbad
+            if dbad:
+                continue
+            if cells != want_cells or got != want_filled:
+                bad.append("the dots %s draws %d cells, %d filled" % (label, cells, got))
+            if want_cells and x0 > 2:
+                bad.append("the dots %s starts %d px in: the bank is left-aligned, the app poses the centring"
+                           % (label, int(x0)))
+            if want_cells > 1 and off > 2:
+                bad.append("the dots %s stands up to %.0f px off the bake's %d px pitch (pomodoro.h says %s)"
+                           % (label, off, pitch, pm_dot_pitch()))
     snd = sorted((int(e["slot"]), int(e["kind"]), int(e["flags"])) for e in rows(els, ts.CLASS_SOUND))
     if [s[0] for s in snd] != [1, 2, 3]:
         bad.append("sound slots %s: a chime per phase end, at 1, 2 and 3" % [s[0] for s in snd])

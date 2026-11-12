@@ -71,6 +71,7 @@ idf_component_register(
         "menu/themes_page.c"
         "menu/theme_strip.c"
         "input/input_router.c"
+        "input/orb_press.c"        # §64.13: the pure lent-press machine, host-proven by tools/host_press_test.py
         "imu/imu.c"
         # D39: the sound engine (I2S + ES8311 + NS4150B and the mixer) and its codec.
         # docs/history/sound-plan.md §4; the clock schedules, this plays.

@@ -280,7 +280,7 @@ static const orb_app_t *s_theme_of;
 /* An app page's own rows after its settings: these two sub-menu rows, else a door id. */
 enum { OWN_THEMES = -2, OWN_PERMS = -3, OWN_ROT = -4 };
 static const orb_cap_t OWNER_CAPS[] = { CAP_POWER, CAP_NET,
-                                        CAP_SD_READ, CAP_THEMES, CAP_SOUND, CAP_LOCATION, CAP_RING };
+                                        CAP_SD_READ, CAP_THEMES, CAP_SOUND, CAP_LOCATION, CAP_RING, CAP_PRESS };
 #define N_OWNER_CAPS ((int)(sizeof OWNER_CAPS / sizeof OWNER_CAPS[0]))
 _Static_assert(N_OWNER_CAPS == CAP_N - CAP_POWER,
                "the permissions page lists every owner cap");

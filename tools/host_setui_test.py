@@ -239,7 +239,7 @@ def checks(exe, d, quiet=False):
     refused('{"id":"x"}', "not an array")
     refused('[{"id":"x","type":"slider","label":"X"}]', "a type it does not know")
     refused('[{"type":"int","label":"X"}]', "a row with no id")
-    refused(json.dumps([{"id": "s%d" % i, "type": "int", "label": "S"} for i in range(17)]), "seventeen rows")
+    refused(json.dumps([{"id": "s%d" % i, "type": "int", "label": "S"} for i in range(19)]), "nineteen rows")
     refused(json.dumps([{"id": "m", "type": "multi", "label": "M", "choices": ["c%d" % i for i in range(17)]}]),
             "seventeen choices")
     refused('[{"id":"e","type":"enum","label":"E","choices":["one"]}]', "an enum of one choice")

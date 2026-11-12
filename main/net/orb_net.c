@@ -2657,6 +2657,9 @@ static esp_err_t h_status(httpd_req_t *req)
      * still cannot see it — the ring, like the copy arc, is stamped only into the tiles. */
     orb_ring_status_t rstat;
     orb_ring_status(&rstat);
+    int cv_state = 0;
+    uint32_t cv_fails = 0, cv_rec = 0;
+    orb_bg_canvas_state(&cv_state, &cv_fails, &cv_rec);
     const int n = snprintf(json, sizeof(json),
         "{\"state\":\"%s\",\"ip\":\"%s\",\"mac\":\"%s\",\"rssi\":%d,\"fw\":\"%s\",\"idf\":\"%s\","
         "\"heap_internal\":%u,\"heap_internal_largest\":%u,\"heap_psram\":%u,"
@@ -2675,6 +2678,10 @@ static esp_err_t h_status(httpd_req_t *req)
          * is owned, its effect is on this instant, and the tiled path is live (the
          * untiled fallback funds no rim). /fb reads the mirror and so cannot see it. */
         "\"ring\":{\"owner\":\"%s\",\"fraction\":%d,\"effect\":\"%s\",\"on_glass\":%s},"
+        /* The dial's gear canvas (the delta bank's working memory, on the glass heap): "held",
+         * "missing" (the keyframe is shown and a retry runs every 2 s while on the glass) or
+         * "none" for a dial that wants none; refusals since boot and retries that recovered. */
+        "\"canvas\":{\"state\":\"%s\",\"fails\":%u,\"recovered\":%u},"
         /* §43: the deepest the wasm apps' shared native stack has run, in bytes of
          * its ORB_WASM_NATIVE_STACK. The interpreter's depth is measured, not assumed. */
         "\"wasm_stack_peak\":%u,"
@@ -2764,6 +2771,7 @@ static esp_err_t h_status(httpd_req_t *req)
         display_tiles(),
         rstat.owner ? rstat.owner : "null", rstat.fraction, rstat.effect,
         rstat.on_glass ? "true" : "false",
+        cv_state > 0 ? "held" : cv_state < 0 ? "missing" : "none", (unsigned)cv_fails, (unsigned)cv_rec,
         (unsigned)orb_wasm_stack_peak(),
         (unsigned)orb_wasm_budget_slips(),
         (unsigned)lvm_total, (unsigned)lvm_free, (unsigned)lvm_biggest, (unsigned)lvm_peak,

@@ -96,6 +96,10 @@ void orb_bg_release(void);
  * source it produces, or NULL when there is no canvas (alloc failed, or the
  * bank is oversized) and the classic plate must be used instead. */
 const lv_image_dsc_t *orb_bg_gif_canvas_init(void);
+/** The gear canvas for /status: state 0 none wanted, 1 held, -1 wanted and missing (the
+ *  keyframe is shown; a retry runs every 2 s while on the glass); refusals since boot;
+ *  retries that recovered it. */
+void orb_bg_canvas_state(int *state, uint32_t *fails, uint32_t *recovered);
 /* Fill the still-plate descriptor and build the classic plate-frame bank from
  * it. Only reached after orb_bg_gif_canvas_init() returned NULL, exactly as
  * stage_init() ordered the two. */

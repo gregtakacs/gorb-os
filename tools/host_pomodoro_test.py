@@ -132,6 +132,8 @@ MUTATIONS = [
     ("    s->rem = st == PM_PAUSE ? (raw->rem < 0 ? 0 : raw->rem > len ? len : raw->rem) : rem;", "    s->rem = rem;"),  # a paused 0:00 restores at 1:00
     ("        if (s->rem > 0) {\n            s->st = PM_RUN;", "        if (s->rem >= 0) {\n            s->st = PM_RUN;"),  # 0:00 resumes into a chime
     ("        if (s->rem > 0) {\n            s->st = PM_RUN;", "        if (s->rem > 1) {\n            s->st = PM_RUN;"),   # the last second skipped
+    ("    const int waiting = s->st == PM_WAIT || s->st == PM_WAITED;", "    const int waiting = s->st == PM_WAIT;"),   # a chimed phase flashes nothing
+    ("    *out = (pm_ring_t){ .fraction = waiting ? 1000 : pm_fraction(&of_set),", "    *out = (pm_ring_t){ .fraction = waiting ? 0 : pm_fraction(&of_set),"),   # the blank flash back
     ("int pm_at_start(const pm_t *s) { return s->len <= 0 || s->rem >= s->len; }", "int pm_at_start(const pm_t *s) { return s->len <= 0 || s->rem > s->len; }"),  # a fresh phase is not fresh
     ("    if (pos == 0 && at_start && p < 0) p -= 1;", "    if (pos == 0 && !at_start && p < 0) p -= 1;"),           # -1 skipped when it should not be
     ("    const int lo = k > 0 ? -k - 1 : -1;", "    const int lo = k > 0 ? -k : -1;"),                             # one slot off the front of the cycle
@@ -469,6 +471,13 @@ int main(void)
             q = mk(PM_RUN, 0, 1140, 540, 4000);          /* 25:00 set, 10:00 spent, 6:00 turned off */
             ckk(pm_ring_for(&q, &c, &g) && g.fraction == 360, 1,
                 "the ring is left over the setting: 9:00 of 25:00 is 360, whatever was turned");
+            q = mk(PM_WAIT, 0, 1500, 0, 0);
+            ckk(pm_ring_for(&q, &c, &g) && g.fraction == 1000, 1,
+                "a phase that is over flashes the whole ring, not an empty arc on black (owner)");
+            q = mk(PM_WAITED, 1, 360, 0, 0);
+            ckk(pm_ring_for(&q, &c, &g) && g.fraction == 1000, 1, "chimed and waiting: the whole ring too");
+            q = mk(PM_PAUSE, 0, 1500, 0, 0);
+            ckk(pm_ring_for(&q, &c, &g) && g.fraction == 0, 1, "paused at 0:00 the arc is honestly empty");
         }
     }
 
@@ -661,7 +670,7 @@ int main(void)
         c.opacity = 100;
         ckk(pm_ring_phase(&r, 4), PM_FOCUS, "a focus wears the focus colour");
         ckk(pm_ring_for(&(pm_t){PM_WAIT, 1, 360, 0, 0}, &c, &out) == 1 && out.effect == 1
-            && out.period_ms == PM_FLASH_MS && out.fraction == 0, 1, "WAIT: flash at 2000 with an empty arc");
+            && out.period_ms == PM_FLASH_MS && out.fraction == 1000, 1, "WAIT: flash at 2000 over the whole ring");
         pm_ring_for(&(pm_t){PM_WAIT, 1, 360, 0, 0}, &c, &out);
         c.col[PM_SHORT] = 0x1F0A14B4u;               /* a colour setting with an alpha byte */
         pm_ring_for(&(pm_t){PM_WAIT, 1, 360, 0, 0}, &c, &out);
@@ -776,7 +785,7 @@ def manifest(fail):
     pa = sets[-1]
     fail("press_any is an enum of Off, When it's calling, Whenever it runs, in that order",
          pa["type"] == "enum" and pa["choices"] == ["Off", "When it's calling", "Whenever it runs"])
-    fail("and defaults to When it's calling, the design's answer", pa.get("default") == 1)
+    fail("and defaults to Whenever it runs, the owner's answer (2026-11-12)", pa.get("default") == 2)
     fail("press_any speaks in the pomodoro's own voice, within the schema's help cap",
          isinstance(pa.get("help"), str) and 80 <= len(pa["help"].encode()) <= orbapp.HELP_MAX)
     fail("every label still fits the dial's %d bytes" % orbapp.LABEL_MAX,
@@ -793,8 +802,8 @@ def manifest(fail):
     fail("packed and read back, they are the same seventeen in the same order",
          [r["id"] for r in back] == ids)
     w = [r for r in back if r["id"] == "press_any"][0]
-    fail("press_any crosses the wire as an enum the gate range-checks 0..2, default 1",
-         w["type"] == "enum" and w["min"] == 0 and w["max"] == 2 and w["default"] == 1)
+    fail("press_any crosses the wire as an enum the gate range-checks 0..2, default 2",
+         w["type"] == "enum" and w["min"] == 0 and w["max"] == 2 and w["default"] == 2)
     # the cap is step 2's work and this step's dependency: check_settings is the gate the writer
     # refuses at, so the margin (18, not 17) is pinned rather than assumed, and nothing here was
     # dropped or renamed to squeeze into a table that is still full.
@@ -843,7 +852,7 @@ MAIN_RULES = [
     # alerts-3 §64.13: the service is the only place the borrow lives — it asks, it spends what
     # the OS queued, and it puts a spent queue back. Each of those three is a rule of its own.
     ("the loader's table holds the fifteen the owner edits", r"#define PM_N_SET 15\b"),
-    ("press_any is read with the manifest's own default", r"\{ \"press_any\", PM_PRESS_CALL \}"),
+    ("press_any is read with the manifest's own default", r"\{ \"press_any\", PM_PRESS_EVERY \}"),
     ("press_any reaches pm_cfg_t at the index the loader reads", r"cfg\.press_any\s*=\s*v\[14\];"),
     ("the queue is read before anything else, so a spent pass cannot miss a lend",
      r"const int queued = orb_press_lent\(\);[\s\S]{0,400}for \(int i = 0; i < queued"),
@@ -902,7 +911,7 @@ MAIN_MUTATIONS = [
     ("    const int queued = orb_press_lent();", "    const int queued = 0;"),                  # the queue never read at all
     ("    press_pass();", "    ;"),                                                             # the borrow gone from the pass
     ("    cfg.press_any = v[14];", "    ;"),                                                    # the setting never reaches the machine
-    ('{ "press_any", PM_PRESS_CALL }', '{ "press_any", PM_PRESS_OFF }'),                        # a key that has never been set reads Off
+    ('{ "press_any", PM_PRESS_EVERY }', '{ "press_any", PM_PRESS_CALL }'),                      # a key never set reads the old default
     ("#define PM_N_SET 15", "#define PM_N_SET 14"),                                             # the fifteenth left out of the read
 ]
 

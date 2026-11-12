@@ -323,7 +323,11 @@ int pm_ring_for(const pm_t *s, const pm_cfg_t *c, pm_ring_t *out)
     /* §64.14: the full circle is the phase's setting, so a turn never rescales the ring */
     const pm_t of_set = { .k = s->k, .st = s->st, .len = pm_len_s(c, pm_ring_phase(s, c->focuses)),
                           .rem = s->rem, .end_s = s->end_s };
-    *out = (pm_ring_t){ .fraction = pm_fraction(&of_set),
+    /* A phase that is over waits for a press with nothing left, so its arc is empty; on the
+     * opaque alert track (§64.12) an empty arc is black on black and the flash showed nothing
+     * (owner, Bronze 2026-11-12). Waiting, the whole ring flashes in the phase's colour. */
+    const int waiting = s->st == PM_WAIT || s->st == PM_WAITED;
+    *out = (pm_ring_t){ .fraction = waiting ? 1000 : pm_fraction(&of_set),
                         .effect = eff,
                         .arc = ((uint32_t)pm_ring_alpha(PM_ARC_A, c->opacity) << 24) | rgb,
                         .track = ((uint32_t)pm_ring_alpha(PM_TRACK_A, c->opacity) << 24) | rgb,

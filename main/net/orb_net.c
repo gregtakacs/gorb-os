@@ -2677,7 +2677,8 @@ static esp_err_t h_status(httpd_req_t *req)
          * its latest fraction, effect the record's, and on_glass true only when a record
          * is owned, its effect is on this instant, and the tiled path is live (the
          * untiled fallback funds no rim). /fb reads the mirror and so cannot see it. */
-        "\"ring\":{\"owner\":\"%s\",\"fraction\":%d,\"effect\":\"%s\",\"on_glass\":%s},"
+        "\"ring\":{\"owner\":\"%s\",\"fraction\":%d,\"effect\":\"%s\",\"on_glass\":%s,"
+        "\"alpha\":%d,\"sent\":%d,\"grid_ms\":%d,\"batch_us\":%d,\"batches\":%u},"
         /* The dial's gear canvas (the delta bank's working memory, on the glass heap): "held",
          * "missing" (the keyframe is shown and a retry runs every 2 s while on the glass) or
          * "none" for a dial that wants none; refusals since boot and retries that recovered. */
@@ -2771,6 +2772,7 @@ static esp_err_t h_status(httpd_req_t *req)
         display_tiles(),
         rstat.owner ? rstat.owner : "null", rstat.fraction, rstat.effect,
         rstat.on_glass ? "true" : "false",
+        rstat.alpha, rstat.sent, rstat.grid_ms, rstat.batch_us, (unsigned)rstat.batches,
         cv_state > 0 ? "held" : cv_state < 0 ? "missing" : "none", (unsigned)cv_fails, (unsigned)cv_rec,
         (unsigned)orb_wasm_stack_peak(),
         (unsigned)orb_wasm_budget_slips(),

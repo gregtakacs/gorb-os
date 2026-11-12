@@ -8182,3 +8182,14 @@ On the pomodoro design's owner questions (`docs/specs/pomodoro-design.md`):
   turned up, has that time again and waits paused for the press. (Withdrawn the same day: spent +
   left never past the setting, and a minute's floor.)
 - This replaces §64.10's turn ceiling (the setting's maximum).
+
+### 64.15 The ring holder keeps its theme; the ladder's end is Reset — 2026-11-11
+
+- **The owner:** a running pomodoro should not let its theme be evicted; and there seemed to be no
+  way to turn the pomodoro off, its ring always showing.
+- **Ruling: the app holding the OS ring keeps its display art**, as the app on the glass does
+  (any ring holder, not only the pomodoro): the pool's display reservations pass it as `keep`.
+  Voice banks were never evicted, so chimes were never at risk.
+- **The off switch already existed and is now named:** press-and-turn anticlockwise to the end of
+  the ladder reads **Reset**; letting go lands the cycle's first focus, stopped, and a stopped
+  phase clears the ring.

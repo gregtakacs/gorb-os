@@ -63,6 +63,7 @@
 #include "display.h"            /* display_lvgl_passes: the store waits out a render before it unmaps */
 #include "freertos/task.h"      /* vTaskDelay: the park wait rides ticks, not a spin */
 #include "mbedtls/sha256.h"  /* theme_id(): sha256 over "slug/name" -> the card filename */
+#include "orb_ring.h"            /* the ring holder keeps its display art (§64.15) */
 
 static const char *TAG = "orb_theme";
 
@@ -894,6 +895,16 @@ static void order_touch(const char *slug)
     strlcpy(s_cache.order[s_cache.n_order++], slug, sizeof s_cache.order[0]);
     s_cache_dirty = true;
     if (esp_timer_get_time() - s_cache_saved_us >= ORDER_SAVE_US) cache_save();
+}
+
+/* §64.15 (owner, 2026-11-11): the app holding the OS ring keeps its display art, as the app on
+ * the glass does: a running pomodoro is one turn away and must not come back plain. NULL when
+ * no app holds the ring. */
+static const char *ring_keep(void)
+{
+    orb_ring_status_t r;
+    orb_ring_status(&r);
+    return r.owner;
 }
 
 /* The order as orb_pool_evictions takes it: least recent first. */
@@ -2787,7 +2798,7 @@ esp_err_t orb_theme_install_bundle(const char *id, char *why, size_t whysz)
                 ? orb_pool_evictions_kind(s_pool, slug, ORB_POOL_DISPLAY,
                                           orb_pool_round(entry_size) + v_need -
                                           (old_v >= 0 && v_need ? s_pool->e[old_v].size : 0),
-                                          ord, nord, NULL, &mask)
+                                          ord, nord, ring_keep(), &mask)
                 : ORB_POOL_ERR_ARG;
         if (f) {
             char sent[96];
@@ -2857,7 +2868,7 @@ esp_err_t orb_theme_install_bundle(const char *id, char *why, size_t whysz)
     char gone[ORB_POOL_ENTRIES][ORB_POOL_SLUG_MAX];
     uint32_t ngone = 0;
     const int pr = orb_pool_reserve(&s_pool_io, s_pool, &s_pool_which, slug, ORB_POOL_DISPLAY,
-                                    entry_size, ord, nord, NULL, pg, gone, &ngone);
+                                    entry_size, ord, nord, ring_keep(), pg, gone, &ngone);
     previews_sync(slug, gone, ngone);
     uint32_t art_crc = 0;
     esp_err_t e = pr ? ESP_FAIL : ESP_OK;

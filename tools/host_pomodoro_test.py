@@ -646,6 +646,7 @@ MAIN_RULES = [
     ("the theme ask re-sends the ring too", r"s_sent\.match[^\n]*r->match"),
     ("the settings fill pm_cfg_t's three asks", r"cfg\.dir\s*=.*\n.*cfg\.start\s*=.*\n.*cfg\.match\s*="),
     ("ring_dir is read as a 0/1", r"s_dir\s*=\s*v\[10\] \? 1 : 0"),
+    ("the ladder's anticlockwise end is named Reset (§64.15)", r"s_pos == \(s\.k > 0 \? -s\.k - 1 : -1\)\) \{\s*snprintf\(b, \(size_t\)n, \"%s\", \"Reset\"\)"),
     ("ring_start is read as o'clock degrees", r"s_start\s*=\s*\(\(v\[11\] % 4\) \+ 4\) % 4 \* 90"),
 ]
 MAIN_MUTATIONS = [

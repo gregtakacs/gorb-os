@@ -391,6 +391,12 @@ static const pm_t *shown(pm_t *buf)
  * is the let-go's own rule, and lives in pomodoro.c rather than twice. */
 static void head_text(char *b, int n)
 {
+    /* §64.15: the anticlockwise end of the ladder is the off switch: it lands on the cycle's
+     * first focus, stopped, and a stopped phase clears the ring. Named for what it does. */
+    if (s_pos < 0 && s_pos == (s.k > 0 ? -s.k - 1 : -1)) {
+        snprintf(b, (size_t)n, "%s", "Reset");
+        return;
+    }
     pm_t to = s;
     pm_land(&to, &cfg, s_pos);                          /* pos to slot, as the let-go does */
     pm_phase_text(&to, cfg.focuses, b, n);

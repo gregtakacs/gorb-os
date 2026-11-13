@@ -1,0 +1,72 @@
+# Finish a Mac release that Apple answered late. The release workflow submits the signed dmg
+# and waits about 5 h; when Apple has not answered by then, the draft goes out without the
+# Mac download and the run keeps the signed dmg and its submission id (artifact
+# macos-signed, 14 days). This picks it up from that run: it waits for Apple again, staples
+# the ticket, checks it with Gatekeeper, and attaches the dmg to the release, with
+# sha256sums.txt brought up to date. Run it by hand: Actions > notarize > Run workflow.
+name: notarize
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: The release run that submitted the dmg (the number in its URL)
+        required: true
+      tag:
+        description: The release to attach it to (v1.8.0)
+        required: true
+
+permissions:
+  contents: write
+  actions: read
+
+defaults:
+  run:
+    shell: bash
+    working-directory: tools/orb-manager
+
+jobs:
+  notarize:
+    runs-on: macos-latest
+    timeout-minutes: 345
+    # The notary key lives in the `release` environment: the owner approves this run too.
+    environment: release
+    env:
+      TAG: ${{ inputs.tag }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          name: macos-signed
+          path: tools/orb-manager/bin/signed
+          run-id: ${{ inputs.run_id }}
+          github-token: ${{ github.token }}
+      - name: The dmg is this release's
+        run: |
+          dmg="bin/signed/orb-manager-$TAG-macos.dmg"
+          [ -f "$dmg" ] || { echo "::error::run ${{ inputs.run_id }} kept $(ls bin/signed | tr '\n' ' '), not orb-manager-$TAG-macos.dmg"; exit 1; }
+          gh release view "$TAG" --json tagName -q .tagName >/dev/null
+      - id: notary
+        name: Wait for Apple, staple
+        env:
+          APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+        run: packaging/notary_wait.sh "$(cat bin/signed/submission.txt)" "bin/signed/orb-manager-$TAG-macos.dmg" 320
+      - name: Attach to the release
+        if: steps.notary.outputs.state == 'Accepted'
+        run: |
+          dmg="bin/signed/orb-manager-$TAG-macos.dmg"
+          mkdir -p bin/sums && cd bin/sums
+          gh release download "$TAG" --pattern sha256sums.txt
+          grep -v -- "-macos.dmg\$" sha256sums.txt > sums.new || true
+          (cd ../signed && shasum -a 256 "orb-manager-$TAG-macos.dmg") >> sums.new
+          sort -k2 sums.new > sha256sums.txt && cat sha256sums.txt
+          cd ../..
+          gh release upload "$TAG" "$dmg" bin/sums/sha256sums.txt --clobber
+      - name: Still pending
+        if: steps.notary.outputs.state != 'Accepted'
+        run: |
+          echo "::error::Apple has still not answered submission $(cat bin/signed/submission.txt); run this again later"
+          exit 1

@@ -39,7 +39,9 @@ tell users how to get past the warning.
    they can read the signing secrets (the `release` environment's required reviewer): open
    the run under Actions → release, press **Review deployments**, tick `release` and press
    **Approve and deploy**. Nothing can sign as you without that press. Then wait for the
-   run. Notarization is usually the slowest step. It ends with a **draft** release that has the three downloads, `sha256sums.txt`,
+   run. Notarization is usually the slowest step: Apple answers in minutes, but has taken
+   more than 3 hours (v1.8.0). The run waits about 5 hours for Apple. It ends with a
+   **draft** release that has the three downloads, `sha256sums.txt`,
    and notes: yours, then the firmware and app versions built in, then every commit since
    the previous tag, folded.
 4. Read the draft over. To publish it, open the draft under Releases, choose Edit, and press
@@ -93,8 +95,16 @@ Secrets:
 
 The workflow signs only if both `MACOS_CERT_P12` and `APPLE_API_KEY_P8` are set. It
 signs the bundle (hardened runtime, secure timestamp), then the .dmg. It
-notarizes the .dmg, staples the ticket, and fails the run if Gatekeeper rejects the
-result.
+submits the .dmg to Apple for notarization, waits about 5 hours for an answer (asking once a
+minute), staples the ticket, and fails the run if Apple or Gatekeeper rejects the result.
+
+If Apple has not answered by then, the run still succeeds, with a warning on its summary,
+and the draft goes out **without the Mac download**. The run keeps the signed .dmg and its
+submission id for 14 days (artifact `macos-signed`), and Apple goes on working on the
+submission. To finish it, open Actions → notarize → **Run workflow** with that release
+run's id (the number in its URL) and the tag, and approve it. It waits for Apple again,
+staples the ticket, attaches the .dmg to the release and brings `sha256sums.txt` up to
+date. Publish the draft only once the .dmg is on it. If it times out too, run it again later.
 
 The Developer ID certificate lasts 5 years. When it expires, replace `MACOS_CERT_P12`.
 Apps you already shipped keep working, because the signature carries a timestamp.

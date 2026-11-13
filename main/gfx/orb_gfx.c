@@ -1027,6 +1027,7 @@ enum { AH_IDLE, AH_RUN, AH_DONE };
 static volatile int  s_ah_state = AH_IDLE;
 static volatile bool s_ah_cancel;
 static uint16_t *s_ah_pb;                             /* the spare PB (lean mode's own) */
+static uint32_t  s_ah_yields;                         /* times it gave the glass back to content */
 EXT_RAM_BSS_ATTR static volatile int16_t s_ah_b0[CLK_SCR_H], s_ah_b1[CLK_SCR_H];   /* a row's span written since the snapshot */
 EXT_RAM_BSS_ATTR static int16_t s_ah_x0[CLK_SCR_H], s_ah_x1[CLK_SCR_H];
 /* the snapshot the worker builds from */
@@ -1281,12 +1282,16 @@ bool gfx_prep_ahead(int layer, const int16_t *x0, const int16_t *x1, const uint8
     if (s_ah_state == AH_DONE && s_ah_alp == back_alp && s_ah_gen == s_pp_gen) return true;
     if (!s_ah_pb) {
         const size_t n = (size_t)CLK_SCR_W * CLK_SCR_H * 2;
-        /* The glass region first; else the general PSRAM heap, only while 1 MB of it stays
-         * free after (Bronze: a pair taken regardless left PSRAM's low water at 204 KB). Freed
-         * whenever pre-paint goes off (the carousel, another app). */
-        s_ah_pb = orb_glass_alloc_only(n);
-        if (!s_ah_pb && heap_caps_get_free_size(MALLOC_CAP_SPIRAM) >= n + AH_PSRAM_FLOOR)
+        /* The general PSRAM heap first, while 1 MB of it stays free after (Bronze: a pair taken
+         * regardless left PSRAM's low water at 204 KB); the glass region only after that. The
+         * build-ahead is an optimisation and the glass region is where the app's own content
+         * must fit -- radar's frames have no other place -- so it no longer takes the glass
+         * first (Gold, 2026-11-12: the glass at 50 KB free, the loop's oldest frames dropped and
+         * fetched again every pass, "Loading radar" from -110 to -70). Freed whenever pre-paint
+         * goes off (the carousel, another app), and given back to the glass on demand. */
+        if (heap_caps_get_free_size(MALLOC_CAP_SPIRAM) >= n + AH_PSRAM_FLOOR)
             s_ah_pb = heap_caps_malloc(n, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        if (!s_ah_pb) s_ah_pb = orb_glass_alloc_only(n);
         if (!s_ah_pb) return false;                       /* the swap composes as before */
     }
     int live = -1;
@@ -2098,3 +2103,24 @@ static void gfx_commit_rows(int nj, const gfx_paint_ctx_t *jc, const uint16_t *c
         }
 #endif
 }
+
+/* §6.21: the glass region is short for content (a frame, a layer): the build-ahead's spare
+ * plane is an optimisation, so it gives its glass back unless a build is running. LVGL task
+ * only (orb_glass calls it there, where every other s_ah_pb touch runs). */
+void gfx_glass_yield(void)
+{
+    if (s_ah_pb && s_ah_state != AH_RUN && orb_glass_owns(s_ah_pb)) {
+        orb_glass_free(s_ah_pb);
+        s_ah_pb = NULL;
+        s_ah_state = AH_IDLE;
+        s_ah_yields++;
+    }
+}
+
+uint32_t gfx_ahead_glass_bytes(void)
+{
+    return (s_ah_pb && orb_glass_owns(s_ah_pb)) ? (uint32_t)CLK_SCR_W * CLK_SCR_H * 2u : 0u;
+}
+
+uint32_t gfx_ahead_yields(void) { return s_ah_yields; }
+

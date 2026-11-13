@@ -7,6 +7,7 @@
 #include "freertos/semphr.h"
 #include "freertos/task.h"
 #include "multi_heap.h"
+#include "orb_gfx.h"           /* gfx_glass_yield: the build-ahead gives way to content */
 
 static const char *TAG = "glass";
 
@@ -66,6 +67,12 @@ void *orb_glass_alloc_only(size_t n)
         lock();
         p = multi_heap_malloc(s_heap, n);
         unlock();
+        if (!p) {                          /* then the optimisations on it: content comes first */
+            gfx_glass_yield();
+            lock();
+            p = multi_heap_malloc(s_heap, n);
+            unlock();
+        }
     }
     return p;
 }

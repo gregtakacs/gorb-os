@@ -2670,7 +2670,7 @@ static esp_err_t h_status(httpd_req_t *req)
          * a 312 KB map refused) */
         "\"psram\":{\"largest\":%u,\"free_blocks\":%u,\"used_blocks\":%u,\"min_free\":%u},"
         /* §6.21: the glass buffers' own region; fallbacks counts asks it could not meet */
-        "\"glass\":{\"size\":%u,\"free\":%u,\"largest\":%u,\"fallbacks\":%u,\"tiles\":%d},"
+        "\"glass\":{\"size\":%u,\"free\":%u,\"largest\":%u,\"fallbacks\":%u,\"tiles\":%d,\"ahead\":%u,\"yields\":%u},"
         /* §64.1: the OS ring any app may set. The status gains a "ring" object, in the
          * shape "ring":{"owner":"slug","fraction":N,"effect":"steady|flash|breathe",
          * "on_glass":bool}: owner names the latest caller (null when none), fraction is
@@ -2769,7 +2769,7 @@ static esp_err_t h_status(httpd_req_t *req)
         (unsigned)ps_info.largest_free_block, (unsigned)ps_info.free_blocks,
         (unsigned)ps_info.allocated_blocks, (unsigned)ps_info.minimum_free_bytes,
         (unsigned)gl.size, (unsigned)gl.free, (unsigned)gl.largest, (unsigned)gl.fallbacks,
-        display_tiles(),
+        display_tiles(), (unsigned)gfx_ahead_glass_bytes(), (unsigned)gfx_ahead_yields(),
         rstat.owner ? rstat.owner : "null", rstat.fraction, rstat.effect,
         rstat.on_glass ? "true" : "false",
         rstat.alpha, rstat.sent, rstat.grid_ms, rstat.batch_us, (unsigned)rstat.batches,

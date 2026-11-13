@@ -279,6 +279,12 @@ bool gfx_prep_swap(const int16_t *x0, const int16_t *x1, const uint8_t *alp);
  * `back_alp`; the front's alpha `front_alp`), its changed rows x0/x1: composed ahead in the
  * slack (gfx_prep_idle) so that swap copies them. False when it cannot be (pre-paint off or
  * not lean, the job not found, no PSRAM for the planes): the swap composes as before. */
+/* §6.21: give the build-ahead's glass back to content (LVGL task), and what it holds there
+ * now and how often it gave way (/status glass.ahead, glass.yields). */
+void     gfx_glass_yield(void);
+uint32_t gfx_ahead_glass_bytes(void);
+uint32_t gfx_ahead_yields(void);
+
 bool gfx_prep_ahead(int layer, const int16_t *x0, const int16_t *x1, const uint8_t *front_alp,
                     const uint16_t *back_col, const uint8_t *back_alp, const uint8_t *back_pal_a);
 /* The live worker's half of gfx_prep_ahead (its LW_AHEAD job). */

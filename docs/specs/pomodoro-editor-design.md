@@ -55,8 +55,8 @@ no theme. One correction the plumbing chain must carry: `pomodoro-2-app.md:101` 
 slot 0 is refused outright (§3). No step of *this* chain edits `main.c`; the orchestrator moves that
 line in the app chain, and `bake_check.py` (§6) is what catches a theme that could not be played.
 
-`fit` is `{rows: 12, cap: 64}` — two plates, three fonts, five labels, the dots row. Values and sounds
-are rows too and the cap counts them: 12 + 3 + 1 = 16 against 64 is not close.
+`fit` is `{rows: 11, cap: 64}` — one plate, three fonts, five labels, the two dots rows. Values and sounds
+are rows too and the cap counts them: 11 + 3 + 1 = 15 against 64 is not close.
 
 ## 3. Why the chimes sit at 1, 2 and 3
 

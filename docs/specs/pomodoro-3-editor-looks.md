@@ -51,7 +51,7 @@ Create:
 - `apps/pomodoro/editor/pomodoro-editor.js`, registering `slug: 'pomodoro'`, `title: 'Pomodoro'`,
   `schema`, `check`, `complete`, `blank`, the eight `templates` **in §11's order**, `picture`,
   `steps` (`ground`, `dial`, `count`, `words`, `ring`), `parts`, `fields`, `views`, `draw`, `bake`,
-  `fit: {rows: 12, cap: 64}`, ending `if (root.OrbHost) root.OrbHost.register(app);`.
+  `fit: {rows: 11, cap: 64}`, ending `if (root.OrbHost) root.OrbHost.register(app);`.
 - `apps/pomodoro/editor/_fixtures/schema-1.orbdesign` — one design of schema 1, produced by
   `python3 apps/sdk/orbsdk.py check-migrations apps/pomodoro --save-current`, not hand-written.
 - `apps/pomodoro/editor/_selftest/bake.html` and `_selftest/bake_check.py`, honouring
@@ -62,7 +62,7 @@ Create:
 Modify `apps/pomodoro/app.json`: add `"editor": "editor"` and `"os_min": "v9.9.9"` (design §13 —
 that string is a placeholder the orchestrator replaces, and nothing in this step may "fix" it).
 
-The theme's layout this step bakes, row for row (design §10.1): plates 0 and 1; fonts 0 (96 px,
+The theme's layout this step bakes, row for row (design §10.1): one plate at slot 0, the ground with the furniture folded in (never a second plate: slot 1 is the OS's glass, painted over every row here); fonts 0 (96 px,
 editable 64..144), 1 (30 px) and 2 (24 px), each carrying `theme_schema.FONT_CHARSET`'s printable
 ASCII as the schema requires; labels at slots 8 (the time), 9 (the phase), 10 (the count), 11 (the
 state) and 12 (the header) with `str` naming their fonts by tone nibbles — tone 1 (accent) always
@@ -90,7 +90,7 @@ apps/README "Theme designs, schemas and migrations".
   theme the shipped projector refuses (`host_clock3_test.run(exe, "--dump3f", …)`, as radar does).
 - The editor's `views` reach the drawn frame: `phase` and `state` change what the labels say, and
   `count` moves the dots, so an author sees the four states the app can be in — including the
-  `00:00` of a finished one. `fit()` returns 12 rows against the cap of 64 and the host shows it.
+  `00:00` of a finished one. `fit()` returns 11 rows against the cap of 64 and the host shows it.
 - The kit does the rest. Grep the editor for the ban: no `StartSheet`, no `showOpenFilePicker`, no
   `type="color"`, no `<canvas>` calibration ruler of its own.
 

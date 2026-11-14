@@ -42,7 +42,7 @@ stands disagree, the note wins and this says so where it matters.
 - **Two of three at small size** (`orb-small-icons-two-of-three`), judged at **true size on a
   177 dpi monitor** (`user-monitor-177dpi`), never enlarged — hence the PNG evidence in §12.
 - **Row cost** (`gorb-os-row-cost`): ~16 B internal and ~500 B PSRAM per row, ceiling 64. The
-  face's 12 rows are ~190 B internal and ~6 KB PSRAM and cost no hot path: this glass is nearly
+  face's 11 rows are ~175 B internal and ~5.5 KB PSRAM and cost no hot path: this glass is nearly
   still (§7).
 - **The guest's native stack** (`gorb-os-guest-native-stack`): `orb_service` does its work in four
   small functions, none of them recursive.
@@ -409,15 +409,15 @@ pure function the host suite can pin (requirement 8's "what the ring should be f
 
 ### 10.1 What is on it, and the rows that carry it
 
-Everything is a theme row: a plate for the ground and the furniture, three fonts, five labels and
-one art row, plus the preview the kit bakes for the carousel: **12 rows of the 64 a theme may
+Everything is a theme row: one plate carrying the ground with the furniture folded into it, three
+fonts, five labels and one art row, plus the preview the kit bakes for the carousel: **11 rows of
+the 64 a theme may
 carry** (`gorb-os-row-cost`) — about 190 B of internal RAM and 6 KB of PSRAM, and no hot path,
 because this glass redraws once a second at most and only on the glass.
 
 | slot | kind | tag | what it is | the app sends |
 |---|---|---|---|---|
-| plate 0 | plate | — | the ground: the look's gradient, stars, paper or enamel | (baked) |
-| plate 1 | plate | — | the glass: the furniture drawn under the words — the chapter ring, the dial's 12 and 3, a title block, whatever the look is | (baked) |
+| plate 0 | plate | — | the ground — the look's gradient, stars, paper or enamel — with the furniture folded into it: the chapter ring, the dial's 12 and 3, a title block, whatever the look is, drawn under the words (the plate 1 slot is the OS's glass, painted over every row the app owns, so nothing here ships at it) | (baked) |
 | font 0 | text | — | the big figure: digits, colon, space, `%` spare — 96 px, editable 64..144 | — |
 | font 1 | text | — | the body face: the phase name, the header | — |
 | font 2 | text | — | the quiet face: the count and the state | — |
@@ -458,7 +458,7 @@ Reasons, in the order the rule book gives them:
    supposed to *not* spend while the owner is in Weather. The OS ring costs the app nothing at all
    off the glass.
 4. It is still the look's own dial. A theme may bake a **static** chapter ring, ticks, a bezel or a
-   track at its own alpha (`plate 1`), and a look may bake its own dots row; the OS ring then becomes
+   track at its own alpha (folded into `plate 0`), and a look may bake its own dots row; the OS ring then becomes
    the one moving thing on it, which is the sharpest version of the same design. Scope's chapter
    ring with the pomodoro's own steady arc over it is the shelf default for that reason.
 5. The `orb_stage_*` surface has no import that would draw a live arc in theme colours at a runtime

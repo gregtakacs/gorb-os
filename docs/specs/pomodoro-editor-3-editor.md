@@ -41,7 +41,7 @@ Create:
   — radar's runtime list without `maps@1`, with weather's `schema`. `schema` 1 means a fixture is owed.
 - `apps/pomodoro/editor/pomodoro-editor.js`, registering
   `{slug: 'pomodoro', title: 'Pomodoro', schema: 1, check, complete, blank, templates, picture,
-  pictureKey, steps, parts, fields, views, draw, bake, fit: {rows: 12, cap: 64}}`, ending
+  pictureKey, steps, parts, fields, views, draw, bake, fit: {rows: 11, cap: 64}}`, ending
   `if (root.OrbHost) root.OrbHost.register(app);`. `blank` is `{note, make: () => PomodoroBake.blank()}` (host.js:16-17), `templates` is
   `PomodoroBake.STARTERS` in that order, so the start sheet shows Scope first and Sectional last.
   `parts` is the design's furniture parts, named per look, each hideable; the step is a `S.Layers` list
@@ -88,7 +88,7 @@ choosing), `count` (1..4 of 4) and `other` (the ring seen over someone else's ap
   encoded bytes. Undo back to an uploaded chime must still play it.
 - The first open with nothing stored is the kit's start sheet, not a blank canvas: `blank()` answers a
   complete Scope design, and New answers the plain-greys face with every row and no furniture.
-- `fit` answers 12 rows against the cap of 64 and the host shows the number; the row cost note is
+- `fit` answers 11 rows against the cap of 64 and the host shows the number; the row cost note is
   `gorb-os-row-cost`.
 - Choosing a look resets its own defaults (furniture, dots shape, ring colours, chime, overlay) and leaves
   the author's face and size choices alone — a look is a starting point, not a lock.

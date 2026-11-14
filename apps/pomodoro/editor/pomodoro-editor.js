@@ -22,7 +22,7 @@
   var G = 466;
   var PHASES = [['focus', 'A focus ends'], ['short', 'A short break ends'], ['long', 'A long break ends']];
   var PHASE_TITLE = { focus: 'focus', short: 'short break', long: 'long break' };
-  var ROWS = 12;                                 // design §2: two plates, three fonts, five labels, the dots row
+  var ROWS = 11;                                 // design §2: one plate, three fonts, five labels, the two dots rows
   var CAP = 64;                                  // the ceiling; the values row and the three chimes ride too
   var clone = function (o) { return JSON.parse(JSON.stringify(o)); };
   var HEX6 = /^#[0-9a-f]{6}$/i;
@@ -322,7 +322,7 @@
       // §64.9: the OS reads no overlay colour off a theme yet (values ver 2, or a new scalar,
       // ships it), so this one is collected, stored and shown here and drawn nowhere.
       out.push(K.Nt('Overlay', 'The colour the orb’s own overlays — the ring, the battery, the notices — are drawn in over this look. It starts as the look’s first ring colour. Nothing on this base draws it, so it is a swatch and not a preview: the bake keeps it in the design where the next slice will find it.'));
-      out.push(K.Rd('Rows', ROWS + ' of ' + CAP, 'Two plates, three fonts, five labels and the dots row. The values and the three chimes are rows too (16 of them in all) and the ceiling is 64; the row cost is gorb-os-row-cost.'));
+      out.push(K.Rd('Rows', ROWS + ' of ' + CAP, 'The ground with its instrument folded into one plate, three fonts, five labels and the two dots rows. The values and the three chimes are rows too (15 of them in all) and the ceiling is 64; the row cost is gorb-os-row-cost.'));
     } else if (step === 'chimes') {
       out.push(K.H('The three phase ends'));
       out.push(K.Nt('Chimes', 'One strike as a phase ends, from the theme’s own sounds: a focus’s end, a short break’s end and a long break’s end each take their own row, and a break strikes the brighter variant of whatever a focus strikes. A design that changes nothing pays for two waves, not three. Every chime stays above 350 Hz for the 2 W speaker. Your own upload may run to ' + B.UPLOAD_MAX_S.toFixed(1) + ' s; a longer one is refused with its length, never cut short.'));

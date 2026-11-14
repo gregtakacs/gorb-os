@@ -3,10 +3,11 @@
  *
  * A design (schema 1) drawn on canvases and assembled by the OS's stage bake
  * (GorbBake.stage3) into what apps/pomodoro/main.c reads:
- *   - plate 0: the ground, the whole panel;
- *   - plate 1: the furniture — the look's instrument, masked, one plane, every part
- *             hideable and every look drawing its own (plan §64.4: two looks sharing a
- *             part is the failure this file exists to avoid);
+ *   - plate 0: the ground with the look's instrument folded into it — one plane, every
+ *             part hideable and every look drawing its own (plan §64.4: two looks sharing
+ *             a part is the failure this file exists to avoid). Nothing rides plate 1: the
+ *             OS paints that slot over every row, so an instrument baked there buries the
+ *             look's own words (see plateCanvas);
  *   - fonts 0 (the figures, d.px), 1 (the words, 30 px) and 2 (the small words, 24 px);
  *   - the labels: 8 the time `mm:ss`, 9 the phase, 10 the count, 11 the state,
  *             12 the choice (on a backing that hides the look's baked caption);
@@ -347,8 +348,8 @@
   }
 
   /* ---- the plates ---- */
-  // plate 0: the ground alone. Nothing drawn on it: the furniture is plate 1, and rule 1
-  // keeps a timer's ground free of numerals, hands and any twelve-hour ring.
+  // the ground alone, under the instrument plateCanvas folds into it. Nothing drawn here:
+  // rule 1 keeps a timer's ground free of numerals, hands and any twelve-hour ring.
   function groundCanvas(d) {
     var c = canvas(G, G), x = c.getContext('2d'), g = x.createLinearGradient(0, 0, 0, G);
     g.addColorStop(0, d.groundTop); g.addColorStop(1, d.groundFoot);
@@ -604,10 +605,21 @@
     x.save(); clipDisc(x); f(d, x, ctx); x.restore();
     return true;
   }
-  // plate 1: the whole instrument, one plane, all its parts that are showing
+  // the whole instrument as one transparent plane, all its parts that are showing
   function furnitureCanvas(d, ctx) {
     var c = canvas(G, G), x = c.getContext('2d'), fctx = Object.assign({ ctx: x }, ctx);
     PARTS[d.look].forEach(function (p) { frame(d, fctx, p); });
+    return c;
+  }
+  /* The ground with its instrument folded into it, which is what plate 0 carries. The
+   * stacking rule: plate 1 is the OS's glass overlay and rides above EVERY row — main/stage/
+   * orb_stage.c sorts a plate at slot 1 to the top of the stack and tags its widget above
+   * the glass' own rows — so furniture baked there paints over the look's own words and the
+   * digits vanish under the flaps (Station), the bars under the disc (Silver), the engraving
+   * under the figures (Brass). Statics belong in the plate the words stand on. */
+  function plateCanvas(d, ctx) {
+    var c = groundCanvas(d);
+    c.getContext('2d').drawImage(furnitureCanvas(d, ctx), 0, 0);
     return c;
   }
 
@@ -631,8 +643,7 @@
     // focus counts; a break's row keeps the word the bake's own table gives it.
     if (o.count && v === VIEWS.focus) v = Object.assign({}, v, { count: o.count + ' of 4', filled: o.count });
     var c = canvas(G, G), x = c.getContext('2d');
-    x.drawImage(groundCanvas(d), 0, 0);
-    x.drawImage(furnitureCanvas(d, ctx), 0, 0);
+    x.drawImage(plateCanvas(d, ctx), 0, 0);
     if (o.choosing) {                                   // the choice, on the backing the bake gives it
       var bw = 380, bh = WORD_PX * 2;
       x.fillStyle = groundAt(d, L.head); roundRect(x, CX - bw / 2, L.head - bh / 2, bw, bh, bh / 2); x.fill();
@@ -802,8 +813,10 @@
     var small = await font(d.quietFace, SMALL_PX, d.ink, {});
     var ctx = { cell: { w: fig.w, h: fig.h, adv: fig.adv, space: fig.space } };
 
-    St.row({ n: St.id(), class: PLATE, slot: 0, x: 0, y: 0, w: G, h: G, order: 0, alpha: 255, n_frames: 1 }, plane(groundCanvas(d)), false, true);
-    St.row({ n: St.id(), class: PLATE, slot: 1, x: 0, y: 0, w: G, h: G, order: 0, alpha: 255, n_frames: 1 }, plane(furnitureCanvas(d, ctx)), true, false);
+    // one plate: the ground and the instrument as one opaque panel. No plate at slot 1 —
+    // that slot is the OS's glass overlay, painted over every row this app owns, and the
+    // furniture is not an overlay (plateCanvas). The labels and dots ride above it.
+    St.row({ n: St.id(), class: PLATE, slot: 0, x: 0, y: 0, w: G, h: G, order: 0, alpha: 255, n_frames: 1 }, plane(plateCanvas(d, ctx)), false, true);
 
     // the dots at 13 and 14: a hollow track per cell count, a fill per count, the app
     // picking both off pm_dots and centring them with one shared pose offset
@@ -865,7 +878,7 @@
     STARTERS: STARTERS, STARTER_TITLES: STARTER_TITLES, STARTER_NOTES: STARTER_NOTES,
     VIEWS: Object.keys(VIEWS), PX_MIN: PX_MIN, PX_MAX: PX_MAX, UPLOAD_MAX_S: UPLOAD_MAX_S, PAD_ALPHA: PAD_ALPHA,
     preset: preset, blank: blank, complete: complete, scheme: scheme, frame: frame,
-    groundCanvas: groundCanvas, furnitureCanvas: furnitureCanvas, fontContext: fontContext,
+    groundCanvas: groundCanvas, plateCanvas: plateCanvas, furnitureCanvas: furnitureCanvas, fontContext: fontContext,
     dotFrame: dotFrame, dotTrack: dotTrack, dotFill: dotFill, picture: picture, shrink: shrink, font: font,
     valuesBytes: valuesBytes, soundPlan: soundPlan, serialOf: serialOf, overlayOf: overlayOf,
     overlayWord: overlayWord, bake: bake

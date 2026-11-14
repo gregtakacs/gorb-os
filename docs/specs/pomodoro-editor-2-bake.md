@@ -67,29 +67,39 @@ The rows `bake()` writes, in this order, with the kit's `stage3`:
 1. `St.sounds(...)` **first** — slots 1 (focus ends), 2 (break ends), 3 (long break ends), each from
    `design.chimes`, generated with `GorbBake.synth` or taken from `design.uploads`; a slot whose selection
    equals another's shares its plane; `valuesBytes(d)` writes `chime = [1, 2, 3]`.
-2. plate 0 — the ground: the look's gradient, stars, paper or enamel, full panel, `dither: true`.
-3. plate 1 — the furniture, masked, `alpha: 255`: what `furniture(id, L)` draws, ink only inside r 200.
-4. text 0 — `design.px` (default 96), **`{digits: true}`**, carrying `0-9`, `:`, ` ` and `%`; every other
+2. plate 0 — the ground with the furniture folded into it, `alpha: 255`, `dither: true`: the look's
+   gradient, stars, paper or enamel, then what `furniture(id, L)` draws over it, ink only inside r 200.
+   **Nothing ships at plate 1**: the stage sorts a plate above every other row (`orb_stage.c`'s
+   `pick_ord` 0xFFFF, `CLK_ROLE_GLASS`, user data `0x10000`), so furniture baked as an overlay paints over
+   the look's own words — Station's split-flaps buried its digits, every byte check green and the preview
+   right the whole time, because `picture()` flattens ground → furniture → text in the editor's order.
+3. text 0 — `design.px` (default 96), **`{digits: true}`**, carrying `0-9`, `:`, ` ` and `%`; every other
    `FONT_CHARSET` entry an empty plane.
-5. text 1 and text 2 at 30 and 24 px, printable ASCII whole.
-6. `St.values(valuesBytes(d), 1)`.
-7. `St.preview(...)` — `picture(d, 466, …)`, the whole glass as drawn.
-8. aux 8..12 as labels — the five, with `str` naming tone 0 = font 0 for the time, tone 1 (accent) always
+4. text 1 and text 2 at 30 and 24 px, printable ASCII whole.
+5. `St.values(valuesBytes(d), 1)`.
+6. `St.preview(...)` — `picture(d, 466, …)`, the whole glass as drawn.
+7. aux 8..12 as labels — the five, with `str` naming tone 0 = font 0 for the time, tone 1 (accent) always
    naming a font, `digit`/`end` as radar's do, and the boxes the looks table implies.
-9. aux 13 — the dots, an art row of **13 frames**, frame `f` drawing `f` filled dots of 10 px at 6 px
+8. aux 13 — the dots, an art row of **13 frames**, frame `f` drawing `f` filled dots of 10 px at 6 px
    gaps, in the look's shape and colours, hollow the rest.
 
-`fit` is `{rows: 12, cap: 64}`. `picture(d, px, o)` takes `o.view = {phase, state, count, choosing, other}`
+`fit` is `{rows: 11, cap: 64}`. `picture(d, px, o)` takes `o.view = {phase, state, count, choosing, other}`
 so one function serves the preview, the start sheet, the editor's views and the evidence.
 
 ## Behaviour and edge cases
 
 - **Every look is its own.** Nothing is shared between looks but the row *layout*. `bake_check.py` proves it
-  rather than trusting the reading: it decodes plate 1 of all nine and refuses any two looks whose furniture
-  plane is byte-identical, and refuses a `frame()` that ignores `design.parts` — hiding a part must change
-  the bytes.
-- **Rule 4 is measured, not asked**: for each look, every opaque pixel of plate 1 lies within r 200 of the
-  centre (the ring's band is 224–231). Blank's plate 1 is fully transparent, which passes.
+  rather than trusting the reading: it digests the furniture plane of all nine — which the page prints as an
+  FNV-1a on its `R4` line, since the plane ships folded into an opaque plate where its alpha is gone — and
+  refuses any two looks whose furniture plane is identical, and refuses a `frame()` that ignores
+  `design.parts` — hiding a part must change the bytes.
+- **Rule 4 is measured, not asked**: for each look, every pixel of the furniture plane at alpha 4 or more lies
+  within r 200 of the centre (the ring's band is 224–231), read off that same `R4` line. `New`'s plane is
+  nearly empty, which passes.
+- **Nothing paints over the words.** `stacking()` reads every row's real place in the stack — a plate at the
+  top (`orb_stage.c`), everything else at `depth_key(order)` — and refuses any row deeper than the labels whose
+  box overlaps a label's box. It is the check Station's blank glass needed: the theme was well-formed, inside
+  r 200, one plane, its own, and the preview was honest, and only the stack knew.
 - **Rule 3 is measured**: from the baked font-0 row the check reads the ten digit frames and refuses a
   differing cell width, or ink whose horizontal centre is more than 1 px off the cell's. Run it for at least
   one serif (Playfair or Cormorant) and one grotesque (Barlow), so a face with natural tabulars cannot hide

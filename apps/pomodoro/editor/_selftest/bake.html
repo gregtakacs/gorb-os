@@ -6,6 +6,13 @@
        B64 <name> <ms> <base64>   a theme, for the driver to check and (with KEEP) to keep
        PNG <name> <base64>        a true-size picture, with ?evidence=1
        WAV <name> <base64>        a chime, plain and brighter, with ?evidence=1
+       STAT <name> <json>         the bake's own meter: rows, bytes, cell, sounds
+       R4 <name> <radius> <ink> <digest>
+                                  the furniture plane's own ink: its furthest pixel from the
+                                  centre, how many pixels carry any, and an FNV-1a of the
+                                  plane's bytes (rule 4's measure and plan §64.4's reading,
+                                  taken off the plane the bake drew — it ships inside plate
+                                  0, where its alpha is gone)
        FAIL <key> <reason>        a refusal the bake was asked for and must give
        ERR  <name> <message>      something that went wrong
      then DONE. -->
@@ -91,6 +98,16 @@
       }
       say('B64 ' + name + ' ' + Math.round(performance.now() - t0) + ' ' + b64(r.bytes));
       say('STAT ' + name + ' ' + JSON.stringify({ rows: r.rows, meter: r.meter, cell: r.cell, sounds: r.sounds }));
+      const fx = B.furnitureCanvas(d, await B.fontContext(d)).getContext('2d').getImageData(0, 0, B.G, B.G).data;
+      let rad = 0, ink = 0, dig = 0x811c9dc5 >>> 0;               // FNV-1a over the plane
+      for (let i = 0; i < fx.length; i++) {
+        dig = Math.imul(dig ^ fx[i], 0x01000193) >>> 0;
+        if ((i & 3) !== 3 || fx[i] < 4) continue;                  // the driver's own ALPHA_INK floor
+        ink++;
+        const px = i >> 2, rr = Math.round(Math.hypot(px % B.G - 232.5, Math.floor(px / B.G) - 232.5));
+        if (rr > rad) rad = rr;
+      }
+      say('R4 ' + name + ' ' + rad + ' ' + ink + ' ' + dig.toString(16));
     } catch (e) {
       say('ERR ' + name + ' ' + (e && e.message ? e.message : e));
     }

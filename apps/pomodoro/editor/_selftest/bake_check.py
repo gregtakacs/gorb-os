@@ -4,18 +4,28 @@
     python3 apps/pomodoro/editor/_selftest/bake_check.py
 
 Stages bake.html beside the runtime's baker and fonts and this app's bake, runs it headless,
-and checks every theme it prints: the rows apps/pomodoro/main.c finds (plates 0 and 1, fonts
+and checks every theme it prints: the rows apps/pomodoro/main.c finds (one plate at slot 0 —
+the ground with the look's instrument folded into it — fonts
 0..2, the labels at 8..12, the dots as two picked rows at the one place — 13 the track, twelve
 hollow frames one per cell count, and 14 the fill, thirteen frames of n filled cells over it,
 frame 0 empty — three one-shot chimes at slots
 1, 2 and 3, sixteen bytes of pm_values_t at version 1 whose chime reads 1,2,3), the two rules
 the looks design can be held to — the furniture inside radius 200 and the ten figures of one
-width and centred — the plate's own offset in plate_off, the design region carried with its
+width and centred — that nothing the projector paints above the labels stands over a label's
+own box, the plate's own offset in plate_off, the design region carried with its
 overlay field, the room, and the shipped projector (orb_clock3.c under --dump3f) accepting the
 lot. It also checks what no single theme can: that the nine look differently from each other,
 that hiding a part changes the furniture, that the same design baked twice is the same bytes,
 and that an owner's uploaded wave survives the round trip unchanged and audible. A second pass
 runs the five refusals alone (?only=), so each is proven on its own.
+
+Rule 4 and the furniture's own digest come off the R4 lines, measured in the page off the
+plane the bake drew, not off the baked plate: once the instrument is folded into an opaque
+plate its alpha is gone and the plane's ink cannot be read back out of RGB565. The stacking
+guard is the byte check that replaces it: the stage sorts a PLATE row above every other row
+(main/stage/orb_stage.c's 0xFFFF, CLK_ROLE_GLASS, user data 0x10000), so Station's split-flap
+furniture baked as a plate 1 painted over its own digits and the theme read as blank glass —
+and the preview, which flattens ground then furniture then words, looked right the whole time.
 
 POMODORO_BAKE_KEEP=DIR keeps the .orbtheme files; POMODORO_EVIDENCE=DIR also keeps the PNGs and
 the WAVs the page prints (looks/ and wavs/), which is the run the looks are judged by eye from.
@@ -104,27 +114,45 @@ def rows(els, cls):
     return [e for e in els if int(e["class"]) == cls]
 
 
-def plate_alpha(sec, slot):
-    """A full-panel masked plate's alpha, as a dict of (x, y) -> byte (orb_disc.h spans)."""
-    r = [e for e in rows(sec["blob"]["elements"], ts.CLASS_PLATE) if int(e["slot"]) == slot]
-    if not r:
-        return None
-    art = sec["art"]
-    sp = sec["blob"]["sprites"][int(r[0]["frame0"])]
-    n = ts.disc_px()
-    if sp["size"] != n * 3:
-        return None
-    a = art[sp["off"] + 2 * n:sp["off"] + 3 * n]
-    out = {}, n
-    d = out[0]
-    at = 0
-    for y in range(ts.DISC_SIDE):
-        x0, x1 = ts.disc_span(y)
-        for x in range(x0, x1 + 1):
-            if a[at]:
-                d[(x, y)] = a[at]
-            at += 1
-    return d
+def stack_key(e):
+    """How high one row stands in the projector's stack, off its table entry. A PLATE rides
+    at the top whatever its order says — main/stage/orb_stage.c sorts it with pick_ord 0xFFFF
+    (:2022), builds it as CLK_ROLE_GLASS (:2091) and tags it 0x10000 above every widget (:2450)
+    — except the ground at slot 0, which is the plane the words stand on. Everything else
+    stands at depth_key(order, twin) = order * 2 + 1 (:1874), equal keys in table order."""
+    if int(e["class"]) == ts.CLASS_PLATE:
+        return 1 if int(e["slot"]) == 0 else 0xFFFF
+    return int(e["order"]) * 2 + 1
+
+
+PAINTS = (ts.CLASS_PLATE, ts.CLASS_AUX, ts.CLASS_BANK)
+
+
+def stacking(sec):
+    """The guard Station's blank glass teaches: no row the stack paints above the labels may
+    stand over a label's own box. The furniture as a plate 1 passed every byte check of the
+    old file — it was a well-formed masked panel, inside r 200, one plane, its own — and the
+    preview flattens ground, furniture and words in the editor's order, so the pictures were
+    right too. Only the stack knew the flaps were on top of the digits."""
+    els = sec["blob"]["elements"]
+    labs = [e for e in rows(els, ts.CLASS_AUX)
+            if int(e["kind"]) == ts.SHAPE_TEXT and 8 <= int(e["slot"]) <= 12]
+    if not labs:
+        return ["no text labels to keep clear"]
+    below = min(stack_key(l) for l in labs)
+    bad = []
+    for e in els:
+        if int(e["class"]) not in PAINTS or stack_key(e) <= below:
+            continue
+        x, y, w, h = (int(e[k]) for k in ("x", "y", "w", "h"))
+        for l in labs:
+            lx, ly, lw, lh = (int(l[k]) for k in ("x", "y", "w", "h"))
+            if x < lx + lw and lx < x + w and y < ly + lh and ly < y + h:
+                bad.append("the row at slot %d (class %d, order %d, key %d) paints over label %d's "
+                           "box at %d,%d %dx%d: the words would stand under it"
+                           % (int(e["slot"]), int(e["class"]), int(e["order"]), stack_key(e),
+                              int(l["slot"]), lx, ly, lw, lh))
+    return bad
 
 
 def digit_cells(sec, rec):
@@ -164,14 +192,19 @@ def digit_cells(sec, rec):
     return bad, w, worst, tabular
 
 
-def furniture_radius(sec, slot):
-    """Rule 4, measured: how far out the furniture's own ink stands, and how much of it there is."""
-    a = plate_alpha(sec, slot)
-    if a is None:
-        return None, None
-    r = max((int(round(((x - ts.DISC_SIDE // 2 + 0.5) ** 2 + (y - ts.DISC_SIDE // 2 + 0.5) ** 2) ** 0.5))
-             for (x, y), v in a.items() if v >= ALPHA_INK), default=0)
-    return r, sum(1 for v in a.values() if v >= ALPHA_INK)
+def rule4(name, r4):
+    """Rule 4, off the page's R4 line: the furniture plane's own ink — how far out it stands
+    and how much of it there is. Measured at the source because the plane ships folded into an
+    opaque plate, where its alpha no longer exists to read back."""
+    if r4 is None:
+        return ["the page printed no R4 line for this look: rule 4 went unmeasured"]
+    rad, ink = r4[0], r4[1]
+    bad = []
+    if rad > 200:
+        bad.append("furniture ink out to radius %d: the rim is the ring's (rule 4)" % rad)
+    if not ink and name != "no-parts":
+        bad.append("the look draws no furniture at all")
+    return bad
 
 
 def dot_cells(sec, rec, i):
@@ -216,7 +249,7 @@ def dot_cells(sec, rec, i):
     return bad, cells, filled, float(cols[0]), float(off)
 
 
-def check(name, raw, exe):
+def check(name, raw, exe, r4):
     """One theme, through the door's own reader and the projector that will run it."""
     bad = []
     path = os.path.join(tempfile.mkdtemp(prefix="pmb."), name + ".orbtheme")
@@ -240,8 +273,10 @@ def check(name, raw, exe):
     except ValueError as e:
         bad.append("the chimes: %s" % e)
     plates = sorted(int(e["slot"]) for e in rows(els, ts.CLASS_PLATE))
-    if plates != [0, 1]:
-        bad.append("plates %s: the ground and the furniture" % plates)
+    if plates != [0]:
+        bad.append("plates %s: the look is one plate — the ground with its instrument folded "
+                   "in — and nothing at slot 1, which is the OS's glass" % plates)
+    bad += stacking(sec)
     fonts = sorted(int(e["slot"]) for e in rows(els, ts.CLASS_TEXT))
     if fonts != [0, 1, 2]:
         bad.append("fonts: %s" % fonts)
@@ -333,13 +368,8 @@ def check(name, raw, exe):
         got = sec["blob"]["scalars"].get("plate_off")
         if got != off:
             bad.append("plate_off is %r and the plate's own plane offset is %r" % (got, off))
-    fr = furniture_radius(sec, 1)
-    if fr[0] is None:
-        bad.append("plate 1 is not a masked full panel")
-    elif fr[0] > 200:
-        bad.append("furniture ink out to radius %d: the rim is the ring's (rule 4)" % fr[0])
-    elif not fr[1] and name not in ("no-parts",):
-        bad.append("plate 1 carries no ink at all")
+    bad += rule4(name, r4)
+    fr = (r4[0], r4[1]) if r4 else (None, None)
     if b'"pm-design"' not in raw:
         bad.append("the design region carries no pm-design document")
     if b'"overlay"' not in raw:
@@ -355,17 +385,11 @@ def check(name, raw, exe):
     return bad, len(raw), ov, dg[1], dg[3], fr
 
 
-def plate1(raw):
-    """A theme's furniture as bytes (its masked disc, colour and alpha) and its digest, for
-    the gates that compare two themes' furniture rather than one theme's rows."""
-    hdr, secs = ob.read_bundle(_tmp(raw))
-    sec = secs[0]
-    e = [r for r in rows(sec["blob"]["elements"], ts.CLASS_PLATE) if int(r["slot"]) == 1]
-    if not e:
-        return None, None
-    sp = sec["blob"]["sprites"][int(e[0]["frame0"])]
-    b = sec["art"][sp["off"]:sp["off"] + sp["size"]]
-    return b, hash(b)
+def furn_digest(r4s, name):
+    """A look's furniture as the page measured its own plane: its digest for the gates that
+    compare two looks' instruments. The plate the bytes carry cannot answer these — the
+    instrument is folded into it, and the ground under it differs per look anyway."""
+    return r4s.get(name, [None, None, None])[2]
 
 
 def _tmp(raw):
@@ -390,7 +414,7 @@ def sound_peak(raw, slot):
     return 0
 
 
-def cross(themes, refused):
+def cross(themes, refused, r4s):
     """The gates one theme cannot state on its own."""
     bad = 0
     miss = [n for n in NAMES if n not in themes]
@@ -400,9 +424,9 @@ def cross(themes, refused):
     furn = {}
     for n in NAMES:
         if n in themes:
-            b, h = plate1(themes[n])
-            if b is None:
-                print("FAIL %s has no furniture plate" % n)
+            h = furn_digest(r4s, n)
+            if h is None:
+                print("FAIL %s printed no furniture plane to digest" % n)
                 bad += 1
                 continue
             if h in furn:
@@ -410,9 +434,8 @@ def cross(themes, refused):
                 bad += 1
             furn[h] = n
     for a, b in (("scope", "no-parts"), ("brass", "parts-off")):
-        if a in themes and b in themes:
-            ba, ha = plate1(themes[a])
-            bb, hb = plate1(themes[b])
+        ha, hb = furn_digest(r4s, a), furn_digest(r4s, b)
+        if ha is not None and hb is not None:
             if ha == hb:
                 print("FAIL %s and %s have the same furniture with its parts hidden" % (a, b))
                 bad += 1
@@ -480,7 +503,7 @@ def main():
         os.makedirs(os.path.join(evid, "looks"), exist_ok=True)
         os.makedirs(os.path.join(evid, "wavs"), exist_ok=True)
     themes, pngs, wavs, fails, seen = {}, {}, {}, 0, 0
-    refused, stats, errs = {}, {}, []
+    refused, stats, errs, r4s = {}, {}, {}, {}
     for line in re.sub(r"<[^>]+>", "\n", dom).splitlines():
         line = line.strip()
         if line.startswith("ERR "):
@@ -488,6 +511,9 @@ def main():
         elif line.startswith("FAIL "):
             _, key, why = line.split(" ", 2)
             refused[key] = why
+        elif line.startswith("R4 "):
+            _, name, rad, ink, dig = line.split(" ")
+            r4s[name] = (int(rad), int(ink), dig)
         elif line.startswith("STAT "):
             _, name, blob = line.split(" ", 2)
             stats[name] = json.loads(blob)
@@ -507,7 +533,7 @@ def main():
         seen += 1
         if keep:
             open(os.path.join(keep, name + ".orbtheme"), "wb").write(raw)
-        bad, n, ov, cell, tab, fr = check(name, raw, exe)
+        bad, n, ov, cell, tab, fr = check(name, raw, exe, r4s.get(name))
         st = stats.get(name)
         meter = "-"
         if not st:
@@ -546,7 +572,7 @@ def main():
         fails += 1
     if len(alone) == len(REFUSALS):
         print("refusals ok (%s, each refused alone)" % only)
-    fails += cross({k: v[1] for k, v in themes.items()}, refused)
+    fails += cross({k: v[1] for k, v in themes.items()}, refused, r4s)
     if evid:
         # the pictures and the waves are their own pass: one DOM carrying themes and PNGs
         # alike runs past what a headless dump-dom delivers whole, and a cut-off page is a

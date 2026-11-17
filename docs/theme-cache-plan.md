@@ -257,6 +257,15 @@ happens only when they are not. No first fit, no compaction, no MOVING state.
   16-27 fps with no LVGL flush, and no ring loan logged in the window). Likely the same
   internal-RAM shortfall that froze the panel (§6, "The freeze after it"); watch for it.
 
+- **Future work: sounds streamed from the card** (owner, 2026-11-17: shelved, not scheduled).
+  The voice bank's 1 MB an app (§2.6) is about 90 s of ADPCM at 22,050 Hz. Playing a sound
+  straight from its `.orbtheme` on the card instead would lift that bound: the card's ~1.5
+  MB/s in 1-bit SPI is far above a voice's 11-44 KB/s. It replaces the engine's play-from-
+  mapped-flash path (`orb_sound.h`: never copies, decodes or keeps a sound) with buffered card
+  reads, so it is a firmware slice of its own. **Ruled:** with the card missing, pulled, or
+  lent to a computer as a USB disk, a streamed sound simply does not play; nothing has to
+  keep working then.
+
 - **A trap not reproduced:** on the C0 bench day the radar failed with two faults, "wasm
   trapped in orb_input", at the first knob turns after a reboot, before any fill; three
   repeats of the same sequence did not trap. The fault record now names m3's trap message

@@ -159,7 +159,7 @@ esp_err_t setup_view_start(void)
     /* The round glass: lines sit where the circle is wide enough for them. */
     s_title = label(s_box, &lv_font_montserrat_28, 0xEDEDED, -150);
     s_hint  = label(s_box, &lv_font_montserrat_18, 0xEDEDED, 142);
-    s_alt   = label(s_box, &lv_font_montserrat_16, 0x8C8C8C, 172);
+    s_alt   = label(s_box, &lv_font_montserrat_14, 0x8C8C8C, 170);   /* 14, 18, 28, 48: the fonts sdkconfig.defaults ships */
 
     show_mode();
     lv_screen_load(s_scr);

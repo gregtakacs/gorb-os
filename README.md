@@ -72,7 +72,7 @@ questions and show-and-tell go in [Discussions](https://github.com/gregtakacs/go
 | Knob      | KY-040 on header H2 (A=18, B=17, SW=16): the orb's input |
 | IMU       | QMI8658 on the shared I2C bus (SDA=15, SCL=14): wakes the display when moved |
 | Audio     | ES8311 codec and NS4150B amplifier: clock ticks and chimes |
-| microSD   | SPI mode (MOSI=1, SCK=2, MISO=3, CS=41); shared over USB as a disk |
+| microSD   | SPI mode (MOSI=1, SCK=2, MISO=3, CS=41); shared over USB as a disk. Use a name-brand 4–32 GB FAT32 card (PNY verified): see [the user guide](docs/user-guide.md#which-microsd-card) |
 | USB       | native USB-Serial-JTAG on the USB-C port: flashing, console, SD sharing |
 
 The panel's touch layer is present but not driven yet. `main/board_config.h` is the pin

@@ -66,6 +66,25 @@ card, so an orb set up without one finishes with a note instead: everything else
 Put a card in (FAT32), then press **Install** on Clock on the **Apps** tab. The theme
 comes with it.
 
+### Which microSD card
+
+Use a **name-brand card of 4 to 32 GB, formatted FAT32**. A **PNY 32 GB** card is verified
+working, on more than one orb.
+
+Cheap no-name cards are the most common cause of "no card" trouble, and reformatting does
+not help. They fail in two ways:
+
+- **The card never answers.** The orb says *no card answered: push it fully into the
+  socket, or try another card*. Bargain-bulk **Eastbull 4 GB** cards (three of them, on two
+  orbs) and a **Cloudisk 4 GB** card did this.
+- **The card is not the size it claims.** It mounts and takes files, then corrupts them a
+  few megabytes in: themes go missing or fail to load. These cards report more space than
+  they hold. Check a card you are unsure of with **H2testw** (Windows) or **f3** (macOS and
+  Linux) before you trust it.
+
+Since firmware v1.8.2 the orb also mounts cards that refuse the checksum command at start-up,
+a quirk of some cheap cards that used to make the orb report no card at all.
+
 An orb that already runs gorb-os shows up on its own once it is on the same network as
 your computer. If your network blocks the orb's announcements, use **Add an orb by
 its address** and type the address the orb shows on its **ABOUT** page.
@@ -279,6 +298,7 @@ image has checked out.
 | The orb is not in the list | Check that the orb and the computer are on the same network. On Windows, allow Orb Manager through the firewall. Use **Add an orb by its address** if your router blocks multicast. |
 | **New orb** never appears for a plugged-in board | Try another cable (charge-only cables are common). On Linux, check the serial permission above. |
 | The window does not open | Install Chrome, Edge, Brave or Chromium. Orb Manager needs one of them. |
+| The orb says it has no card, or themes on the card go missing | Use a name-brand card: see [Which microSD card](#which-microsd-card). |
 | An app shows as failed on the dial | The orb stopped an app that misbehaved twice. Press **retry** on the dial, or reinstall it from the Apps tab. |
 | The orb is stuck or you want to start over | Plug it in by USB and use **Reset this orb** on its card. **Settings** forgets Wi-Fi and settings; **Firmware** also removes gorb-os, leaving a board you can set up again with **New orb**. |
 

@@ -1,0 +1,57 @@
+{
+ "format": "wc-design",
+ "schema": 2,
+ "app": "pomodoro",
+ "appVersion": "v1.8.2",
+ "made": "2026-11-17T08:16:53.325Z",
+ "design": {
+  "name": "Scope",
+  "look": "scope",
+  "groundTop": "#0a1f14",
+  "groundFoot": "#020805",
+  "figInk": "#b4ffd2",
+  "px": 96,
+  "face": "IBM Plex Mono",
+  "bodyFace": "IBM Plex Mono",
+  "quietFace": "IBM Plex Mono",
+  "cap": "T−",
+  "ink": "#b4ffd2",
+  "accent": "#e0b040",
+  "quiet": "#5fbf8a",
+  "parts": {
+   "graticule": true,
+   "scanline": true,
+   "caption": true
+  },
+  "dots": "square",
+  "ring": {
+   "focus": "#4BE38A",
+   "short": "#E0B040",
+   "long": "#5AD1E6"
+  },
+  "overlay": "#4BE38A",
+  "chimes": {
+   "focus": {
+    "rec": "sonar",
+    "upload": 0
+   },
+   "short": {
+    "rec": "sonar",
+    "variant": "brighter"
+   },
+   "long": {
+    "rec": "sonar",
+    "variant": "brighter"
+   }
+  },
+  "uploads": [
+   {
+    "name": "l0-chime.wav",
+    "ref": "u1",
+    "samples": 2205,
+    "wav": "data:audio/wav;base64,UklGRtgEAABXQVZFZm10IBQAAAARAAEAIlYAAGosAACEAAQAAgAAAWZhY3QEAAAAnQgAAGRhdGGkBAAAAAAAAHd3d3eDmam6rLurmhkxRUQzJDMiAKjMvL3Lq5uKGEJUM0QyMiGAub3Nu6y7qokRRFM0QyMjEYjKzLy8u6yZCSFENEQyMyIBqNvMvMu6q5kIMzY1NEMiEgCpzLzMuruqmSBTRFMyJCIRiLm9vby7rJqIIVNEQzMkEhGYu769y6sLWeU2AIoIMUVTMzQyEgGpzMzLu7u7mRBTNUQzJCMSgLrc27u8uqqIIEQ0NUMjEwKQyr3Mu6yrmggxVFMzNDIiAanbzLzLq6uZADNGQ0MzIyKAudy8zLq7qokgU0Q0QyMjEZC6zsvLu6ubCTFFU0MzJBIBmMvMy6y7upkIQkRTMzQyEgAJ1BsxALy+27q7uokQU0RDJDMjEpDJzNu7rLuaCSBEREMzQxIRmMrMy6y7q5oIMkVEMyQzEgGozMzLu8uaigBCREMkMyMSgbrNvMy6u6qIIGNTQzNDIhGYus28vLusmYgxY1MzNDIiAZjM27zLq6uZGEJEUzM0IiKAqczMy7usmokQQ0QDmf02ADQkIxGIus3bu7yqm4ghVEM0QzIiAZjL3Mu7y6qaGDFFNFMyIyKBqczMy7u7u5kgU1QzJTMjEoC6zcy7rLuaiSFjU0MzJCIBkMrMy6y7q5oZMUU0JUMiEgCY29vLu8uqiRgyNkQzJCMSAKq9va3LqpqJIFJTQzNDIhGIytu8vLsMruY4AJkJIVM0RDIzIgGYvL68vLurmhhCVENDMzMSganN28u7rJqJKEJEQyQzIwKAut3Ly7u7qogxRDVEMjMjAaDLzcusu6uaCDJFRDM0MhIBqcy8vcurqooAQ0Q0NEMiEYC5zLzMuqubiSBENDVDIyMBkMrMvLy7rJmIMUQ0RDIzIoEI1xwxANu8vcurq5kAQkQ0NDMkEYGpzLzMuruqiSBTRDRDMiMRgMrMvLy7rKkIIEQ0RDIzIhGo28zLrLuriggyNjU0MyQSganbzMu7y5qJGDM2NUMjIxKAybzNu7y6mokhRDQ1QyMiApjKzLy8y6qZCDFENEQyMxIBqMzMy7u7u5oQU0QENvs4AEMzIxKBus28zLq7mokgU0Q0QyMjEYjKzLy8y6qaCCFENEQyMyIBqNvMvMu6q5kYMjY1NEMiEgCpzLzMuruqmSBTRFMyJCIRiLm9vby7rJqIIVNEQzNDEhGYy8zLrLurihlBRFMzJDMSAanMzMu7u7uZEFNUMyUzIxKAuc3Mu7wKKeg3AJqJETRFQzNDEgKQyszLy7urmgkyRTREMjMiAKjbvby8u6uKGENUQyQzMxIAuty8zLq7qokgU0Q0QzIjEZC6zsvLu6uqCTFFU0MzJBIBmMvMy6y7upkIQkRTMzQyEgCpzMzLu8uaiRhDREMkMyMSiLrNzLu8upoJIEREQzNDEhEIrh0zALrN27qsqpkIMUQ0JTMkIQCZy728vLurmRBSRENDMyMSgLnNvK3LqpoJEFNTQzNDIgGQus28vLusmQkxY1MzNDIiAZjM27zLq6uZGEJEU4MAiACIAAiIAIiAAIgAiACIAIgAiAAICAiIgICQAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+   }
+  ],
+  "base": "scope"
+ }
+}

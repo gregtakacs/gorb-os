@@ -12,10 +12,14 @@
  * bake with nothing in between.
  *
  * An owner's uploaded wave is not undo history. The host snapshots the design by value, so the
- * design carries only `{name, ref, samples}` per upload and the Int16Array itself rides in `ups`
- * below, keyed by the ref — the clock host's answer, copied (clock-host.js:93-133). It goes back
- * into the design for the bake, for the document a save writes and for playback, so a design
- * saved with an uploaded chime, reopened and baked answers the same bytes. */
+ * design carries only `{name, ref, samples}` per upload — and, from L0 on, `{wav}` with art —
+ * while the file itself rides in `ups` below, keyed by the ref: the clock host's answer, copied
+ * (clock-host.js:93-133). L0 (docs/specs/l0-design.md §3) settled WHAT that file is: the orb's
+ * own encoding under §3.1's WAV header, made once at upload or at migration and kept verbatim
+ * from then on — never re-made from its samples, written back as it stands, and baked from its
+ * stored bytes. It goes back into the design for the bake, for the document a save writes and
+ * for playback, so a design saved with an uploaded chime, reopened and baked answers the same
+ * bytes. */
 (function (root) {
   'use strict';
   var B = root.PomodoroBake, S = root.OrbStudio;
@@ -28,35 +32,64 @@
   var HEX6 = /^#[0-9a-f]{6}$/i;
   var SR = function () { return (root.GorbBake && root.GorbBake.SOUND_RATE) || 22050; };
 
-  /* ---- the uploads: the waves, held by reference and never in a snapshot ---- */
+  /* ---- the uploads: the waves, held by reference and never in a snapshot ----
+   * L0 (l0-design §3.2): what is held per upload is §3.1's file and the samples it decodes to —
+   * `{wav, pcm}`, the file string exactly as it was read from a design or made at upload. The
+   * file is made ONCE, here; every play, check, readout and bake afterwards reads it through
+   * soundRead, so re-saving an unchanged sound never re-encodes it. */
   var ups = {}, upN = 0;
-  // a wave back to the Int16Array the bake reads: a JSON round trip leaves a typed array as
-  // {"0": v, "1": v, …}, and read back as that object every sample is silence (clock-host.js:116-127)
-  function pcmOf(p) {
-    if (!p || p instanceof Int16Array) return p;
-    if (Array.isArray(p)) return Int16Array.from(p, function (v) { return v | 0; });
-    if (typeof p !== 'object') return null;
-    var ks = Object.keys(p).filter(function (k) { return /^\d+$/.test(k); }).sort(function (a, c) { return a - c; });
-    if (!ks.length) return null;
-    var out = new Int16Array(ks.length);
-    ks.forEach(function (k, i) { out[i] = p[k] | 0; });
-    return out;
-  }
+  var GB = function () { return root.GorbBake; };
   // the wave in hand: keep it, and hand the design the stub that names it. The ref a document
-  // carries is kept, so an open, a save and an open again name the same wave.
-  function keep(pcm, name, ref) {
+  // carries is kept, so an open, a save and an open again name the same wave. A `wav` that
+  // soundRead accepts is held verbatim; without one, the file is made here once from the samples
+  // in hand, and what it decodes to becomes the sound this session knows (l0-design §3.1).
+  function keep(pcm, name, ref, wav) {
     var r = ref && /^u[0-9]+$/.test(ref) ? ref : 'u' + (++upN);
     if (ref && /^u[0-9]+$/.test(ref) && +ref.slice(1) > upN) upN = +ref.slice(1);
-    ups[r] = pcm;
-    return { name: name || 'your own', ref: r, samples: pcm.length };
+    var G = GB(), rd = typeof wav === 'string' ? G.soundRead(wav) : null;
+    if (!rd && pcm && pcm.length >= 2) rd = G.soundRead(wav = G.soundFileUrl(pcm));
+    ups[r] = { wav: wav, pcm: rd ? rd.pcm : null };
+    return { name: name || 'your own', ref: r, samples: (rd ? rd.pcm : pcm).length };
   }
-  function waveOf(u) { return u && u.ref && ups[u.ref] ? ups[u.ref] : null; }
-  // the design as the bake and the pane want it: the stubs back to their waves
+  function heldOf(u) { return u && u.ref ? (ups[u.ref] || null) : null; }
+  function waveOf(u) { var h = heldOf(u); return h && h.pcm ? h.pcm : null; }
+  // §3.1's coded pair for a held file — soundRead's enc and body, read once and kept with it —
+  // so the theme's plane for that chime IS the stored bytes (l0-design §3.1, "the bake uses the
+  // stored bytes"). The baker's own codedClip refuses a pair that does not add up.
+  function codedOf(h) {
+    if (!h || typeof h.wav !== 'string') return null;
+    if (h.coded === undefined) { var rd = GB().soundRead(h.wav); h.coded = rd ? { enc: rd.enc, body: rd.body } : null; }
+    return h.coded;
+  }
+  // the design as the bake and the pane want it: the stubs back to their waves, and an owner's
+  // chime travels with its stored pair so the bake encodes nothing again
   function artOf(d) {
     if (!d || !(d.uploads || []).length) return d;
     var n = Object.assign({}, d);
-    n.uploads = d.uploads.map(function (u) { var p = waveOf(u); return p ? { name: u.name, pcm: p } : { name: u.name }; });
+    n.uploads = d.uploads.map(function (u) {
+      var h = heldOf(u);
+      if (!h || !h.pcm) return { name: u.name };
+      var cd = codedOf(h), o = { name: u.name, pcm: h.pcm };
+      if (cd) o.coded = cd;
+      return o;
+    });
     return n;
+  }
+  /* L0's ONE step from design schema 1 to 2 (l0-design §3.2), pure as the clock's (step 3): the
+   * document handed in is never touched — a deep copy is answered; no DOM, no state, no sound
+   * stage; a design with no uploads comes back a copy equal to itself. Every upload entry's
+   * inline samples become §3.1's file, made once here and never again, with `samples` the count
+   * of what the file holds; `pcm` never survives. The host walks it (host@1 reads app.migrate)
+   * and the theme@1 session stamps the answer schema 2. */
+  function migrateSoundFiles(doc) {
+    var d = JSON.parse(JSON.stringify(doc)), list = d && d.design && d.design.uploads;
+    if (Array.isArray(list)) list.forEach(function (u) {
+      if (!u || typeof u !== 'object') return;
+      var pcm = GB().soundPcm(u.pcm);
+      if (pcm && pcm.length >= 2) { u.wav = GB().soundFileUrl(pcm); u.samples = pcm.length; }
+      delete u.pcm;
+    });
+    return d;
   }
   // what the kit's pane shows per slot: this owner's upload, with the wave behind it
   function uploadsFor(d) {
@@ -365,7 +398,8 @@
   // asked for the step's fields (host.js:580 then :586), and the eight sets are different words
   var cur = B.preset('scope');
   var app = {
-    slug: 'pomodoro', title: 'Pomodoro', schema: 1,
+    slug: 'pomodoro', title: 'Pomodoro', schema: 2,
+    migrate: { 1: migrateSoundFiles },
     check: checkDesign, complete: function (d) { return B.complete(d); },
     blank: { note: B.STARTER_NOTES.blank, make: function () { return B.blank(); } },
     templates: B.STARTERS.map(function (k) {
@@ -396,12 +430,15 @@
     fit: function () { return { rows: ROWS, cap: CAP }; },
     /* a wave is art and not history: it rides the document by reference, so the host's snapshots
      * (its undo stack, its live size, its unsent-changes check) carry a name and a length only,
-     * and an Undo — or a reopen — back to an uploaded chime still finds the wave to play and bake. */
+     * and an Undo — or a reopen — back to an uploaded chime still finds the wave to play and bake.
+     * With art, L0's file rides along verbatim: the bytes this session holds are the bytes the
+     * next theme bakes from, and a save writes them without touching them (l0-design §3.1). */
     toDoc: async function (d, withArt) {
       var n = clone(d);
       n.uploads = (d.uploads || []).map(function (u) {
         var o = { name: u.name, ref: u.ref, samples: u.samples };
-        if (withArt && waveOf(u)) o.pcm = Array.from(ups[u.ref]);
+        var h = withArt ? heldOf(u) : null;
+        if (h && h.wav) o.wav = h.wav;
         return o;
       });
       return { design: n };
@@ -411,9 +448,15 @@
       if (!d || typeof d !== 'object' || !d.look) return null;
       var n = Object.assign({}, d);
       n.uploads = (d.uploads || []).map(function (u) {
-        var pcm = pcmOf(u && (u.pcm !== undefined ? u.pcm : u.samples));
-        if (u && u.ref && !pcm && waveOf(u)) pcm = ups[u.ref];                 // the ref this session still holds
-        return pcm ? keep(pcm, u.name, u.ref) : { name: (u && u.name) || 'your own', ref: (u && u.ref) || '', samples: 0 };
+        var G = GB();
+        var rd = u && typeof u.wav === 'string' ? G.soundRead(u.wav) : null;      // §3.1's file, held verbatim
+        if (rd) return keep(rd.pcm, u.name, u.ref, u.wav);
+        var pcm = G.soundPcm(u && (u.pcm !== undefined ? u.pcm
+          : (u.samples && typeof u.samples === 'object') ? u.samples : null));     // a legacy inline sound; a length is not one
+        if (pcm) return keep(pcm, u.name, u.ref);                                  // encoded once, like the migration
+        var h = heldOf(u || {});                                                   // the ref this session still holds
+        if (h && h.pcm) return keep(h.pcm, u.name, u.ref, h.wav);
+        return { name: (u && u.name) || 'your own', ref: (u && u.ref) || '', samples: 0 };
       });
       return n;
     },

@@ -708,7 +708,10 @@
   /* ---- the chimes: the design's three phase ends, as the slots the values name ----
    * Slot 1 is a focus's end and strikes the recipe plain; slots 2 and 3 are the breaks' ends
    * and strike its brighter variant (owner question 2), so a design that changes nothing
-   * pays two waves — the kit's sounds() shares one plane between equal waveforms. */
+   * pays two waves — the kit's sounds() shares one plane between equal waveforms. An owner's
+   * upload carries §3.1's `coded` pair when the editor hands its stored file in (l0-design
+   * §3.1, "the bake uses the stored bytes"): its plane is those bytes as they stand, encoded
+   * nowhere again. A recipe the bake synthesizes has none, and encodes as it always did. */
   function pcmOf(u) {
     if (!u) throw new Error('an upload with nothing in it: a chosen upload names a wave this design carries');
     var a = u.pcm !== undefined ? u.pcm : u.samples !== undefined ? u.samples : u;
@@ -739,7 +742,7 @@
         if (pcm.length < 2) throw new Error('upload ' + s.upload + ' carries ' + pcm.length + ' samples: a chime is at least two');
         if (pcm.length > UPLOAD_MAX_S * rate())
           throw new Error('upload ' + s.upload + ' is ' + (pcm.length / rate()).toFixed(1) + ' s: a pomodoro chime is at most ' + UPLOAD_MAX_S.toFixed(1) + ' s');
-        return { slot: p.slot, pcm: pcm, name: u.name || ('upload ' + s.upload) };
+        return { slot: p.slot, pcm: pcm, name: u.name || ('upload ' + s.upload), coded: u.coded || null };
       }
       if (s.rec === undefined) throw new Error('chime ' + p.slot + ' names neither a recipe nor an upload');
       var rec = CHIMES[s.rec];
@@ -778,7 +781,12 @@
       if (s.rec === undefined && s.upload === undefined) throw new Error('the ' + ph + ' chime names neither a recipe nor an upload');
     });
     (d.uploads || []).forEach(function (u, k) { var p = pcmOf(u); if (p.length > UPLOAD_MAX_S * rate())
-      throw new Error('upload ' + k + ' is ' + (p.length / rate()).toFixed(1) + ' s: a pomodoro chime is at most ' + UPLOAD_MAX_S.toFixed(1) + ' s'); });
+      throw new Error('upload ' + k + ' is ' + (p.length / rate()).toFixed(1) + ' s: a pomodoro chime is at most ' + UPLOAD_MAX_S.toFixed(1) + ' s');
+      // L0 §3.1: an upload that rides in with its stored file must agree with it, refused here
+      // and not in the sound stage after the plan has moved
+      if (u && u.coded) { var cd = u.coded;
+        if ((cd.enc !== 0 && cd.enc !== 1) || !cd.body || cd.body.length !== root.GorbBake.soundBytes(cd.enc, p.length))
+          throw new Error('upload ' + k + ' carries a stored sound whose bytes do not match its length'); } });
   }
   function shrink(c, size) {
     var cur = c;
@@ -805,7 +813,7 @@
     // the chimes first: their planes go in at the head of the bank, which is what moves the
     // plate and sets plate_off (design §3), so this call runs before the first row()
     var chimes = soundPlan(d);
-    St.sounds(chimes.map(function (c) { return { slot: c.slot, pcm: c.pcm, name: c.name }; }), { pattern: 'none' });
+    St.sounds(chimes.map(function (c) { return { slot: c.slot, pcm: c.pcm, name: c.name, coded: c.coded || undefined }; }), { pattern: 'none' });
 
     await loadFaces(d);
     var fig = await font(d.face, d.px, figInk(d), { keep: FIGURES, figures: true });

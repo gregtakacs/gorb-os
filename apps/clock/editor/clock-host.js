@@ -115,22 +115,14 @@
   // ride under a ref (sounds.upRef) the snapshot carries, so an opened design, and Undo back
   // to it, keeps them
   var ups = {}, upN = 0;
-  // a file's samples back to the Int16Array the sound engine reads: JSON writes a typed array as
-  // {"0": v, "1": v, ...}, and read back as that object every sample was silence (Gold, 2026-11-08:
-  // a reopened design shipped its uploaded tick as zeros); a plain array is taken as well
-  var pcmOf = function (p) {
-    if (!p || p instanceof Int16Array) return p;
-    if (Array.isArray(p)) return Int16Array.from(p);
-    if (typeof p !== 'object') return p;
-    var n = 0; while (p[n] !== undefined) n++;
-    var o = new Int16Array(n); for (var i = 0; i < n; i++) o[i] = p[i];
-    return o;
-  };
-  var upsOf = function (up) {
-    var o = {};
-    Object.keys(up || {}).forEach(function (k) { o[k] = Object.assign({}, up[k], up[k] && up[k].pcm ? { pcm: pcmOf(up[k].pcm) } : {}); });
-    return o;
-  };
+  // a file's sound uploads back into what the class holds: the clock's own reader, the ONE place
+  // that decides what a stored sound is — its §3.1 file verbatim with the samples it decodes to
+  // beside them, a pre-L0 design's samples encoded once into a file of their own, and bytes that do
+  // not read keeping their name with no sound (clock-logic.js's soundEntry). Every form a file can
+  // carry samples in — the Int16Array an editor holds, a plain array, the {"0": v, …} object
+  // JSON.stringify makes of a typed array (read that as an object and every sample was silence:
+  // Gold, 2026-11-08) — is the baker's soundPcm's business, not this file's.
+  var upsOf = function (up) { return Base.soundEntries(up); };
   // the class's state from a snapshot (the watch only: selection and view are the class's)
   function stateOf(d) {
     var Ee = E();
@@ -329,8 +321,10 @@
   /* ---- what the host asks of the clock ---- */
   var presets = function () { return root.WatchEngine ? Object.keys(root.WatchEngine.PRESETS) : []; };
   var app = {
-    slug: 'clock', title: 'Clock', schema: 1,
-    migrate: {},
+    slug: 'clock', title: 'Clock', schema: 2,
+    // L0's one step, and the very function the class's own session walks (clock-logic.js): the hub's
+    // editor and an .orbdesign opened in the clock agree on what schema 1 to schema 2 means
+    migrate: { 1: Base.migrateSoundFiles },
     check: function (d) { return d && d.design && Array.isArray(d.design.comps) && root.WatchEngine && (d.scratch || root.WatchEngine.template(d.dial)) ? null : 'that design has no watch in it'; },
     blank: { note: 'Nothing yet: no dial, hands, case or glass', make: scratchSnap },
     get templates() {

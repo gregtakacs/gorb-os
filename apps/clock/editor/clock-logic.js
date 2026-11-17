@@ -783,7 +783,7 @@ class Component extends DCLogic {
       const r = this.sndRate().rate;
       if (d.tick === 'upload') {
         const u = d.up.tick_loop;
-        if (!u) return null;
+        if (!u || !u.pcm) return null;                           // gone, or bytes that would not read
         if (u.loop) return u.pcm;                           // a recorded loop, checked at upload
         const key = 'upl|' + u.name + '|' + r + '|' + d.seed;
         return this._snd[key] || (this._snd[key] = SE.loopFromTick(u.pcm, r, d.seed));
@@ -799,11 +799,24 @@ class Component extends DCLogic {
     const key = 'one|' + id + '|' + d.seed;
     return this._snd[key] || (this._snd[key] = SE.renderSound(id, d.seed));
   }
-  /* What the bake carries: every filled slot, the pattern, and the loop's beat. */
+  /* What the bake carries: every filled slot, the pattern, and the loop's beat. An owner's sound
+   * goes over as it is stored — §3.1's `coded` pair read out of the entry's own file, with the
+   * decoded samples beside it — so the plane bytes are the file's bytes and the bake encodes
+   * nothing again (l0-design §3.1). A loop derived from those samples has no file of its own: the
+   * baker encodes it as it always did. The pair is read once per held entry and kept with it. */
   sndBake() {
     const G = window.GorbBake, d = this.sndDesign(), out = [];
     if (!G || !G.SOUND_SLOTS || !window.SoundEngine) return {};   // a hub's baker older than D39 bakes no sound
     const rr = this.sndRate();
+    const codedOf = (u) => {
+      if (!u || typeof u.wav !== 'string') return null;
+      this._sndC = this._sndC || new WeakMap();
+      if (this._sndC.has(u)) return this._sndC.get(u);
+      const rd = G.soundRead ? G.soundRead(u.wav) : null;
+      const cd = rd ? { enc: rd.enc, body: rd.body } : null;
+      this._sndC.set(u, cd);
+      return cd;
+    };
     G.SOUND_SLOTS.forEach((slot) => {
       const pcm = this.sndPcm(slot);
       if (!pcm) return;
@@ -813,9 +826,20 @@ class Component extends DCLogic {
         o.beat_chz = (u && u.loop ? u.rate : rr.rate) * 100;
         o.first_beat = u && u.loop ? u.first : 0;
       }
+      const held = this.sndStoredEntry(slot), cd = held && codedOf(held);
+      if (cd) o.coded = cd;
       out.push(o);
     });
     return out.length ? { sounds: out, soundPattern: d.pattern || 'none' } : {};
+  }
+  /* The upload whose stored file IS the clip this slot bakes — a recorded loop, or a slot's own
+   * file — or null when the clip is a built-in voice or a loop the editor derived from the owner's
+   * tick, which the bake encodes as it always did. What the bake carries as `coded`, and what the
+   * pane quotes as the clip's cost, are the same file (l0-hub-3-clock). */
+  sndStoredEntry(slot) {
+    const d = this.sndDesign();
+    if (slot === 'tick_loop') return d.tick === 'upload' && d.up.tick_loop && d.up.tick_loop.loop ? d.up.tick_loop : null;
+    return d.slots[slot] === 'upload' ? (d.up[slot] || null) : null;
   }
   /* §59 (owner, 2026-11-07): every sound takes the owner's own file, and every one can go back
    * to the built-in. Back means the preset's own choice for that sound, or the first built-in
@@ -848,15 +872,31 @@ class Component extends DCLogic {
     ups.forEach((slot) => this.sndUnupload(slot));
     this.setState({ sndMsg: 'Your ' + ups.length + ' sound' + (ups.length > 1 ? 's are' : ' is') + ' gone from this theme; every one is back to its built-in' });
   }
-  /* The bytes a clip costs in the bake (ADPCM where it holds, else PCM16), cached per clip. */
-  sndBaked(pcm) {
+  /* The bytes a clip costs in the bake: an owner's own file, its body as it stands; anything else,
+   * ADPCM where it holds, else PCM16. Cached per clip. */
+  sndBaked(pcm, wav) {
     const G = window.GorbBake;
     if (!pcm) return 0;
-    if (!G || !G.soundEncode) return pcm.length * 2;
     this._sndB = this._sndB || new WeakMap();
     let b = this._sndB.get(pcm);
-    if (b === undefined) { b = G.soundEncode(pcm).bytes.length; this._sndB.set(pcm, b); }
+    if (b === undefined) {
+      const rd = wav && G && G.soundRead ? G.soundRead(wav) : null;
+      if (rd) b = rd.body.length;
+      else if (!G || !G.soundEncode) b = pcm.length * 2;
+      else b = G.soundEncode(pcm).bytes.length;
+      this._sndB.set(pcm, b);
+    }
     return b;
+  }
+  /* §3.1's file for a clip just taken from the owner: encoded ONCE, and the answer carries the URL
+   * the design holds from now on, the samples that file decodes to (what the orb will play, and all
+   * the editor plays and derives from now on), and the bytes the theme pays for. Without the
+   * baker's writer there is no file to hold, and the design keeps the samples as they came. */
+  sndTake(pcm) {
+    const G = window.GorbBake;
+    if (!G || !G.soundFile) return { wav: null, pcm: pcm, bytes: pcm.length * 2 };
+    const f = G.soundFile(pcm), rd = G.soundRead ? G.soundRead(f.bytes) : null;
+    return { wav: f.url, pcm: rd ? rd.pcm : pcm, bytes: f.body.length };
   }
   sndCtx() {
     if (!this._actx) this._actx = new (window.AudioContext || window.webkitAudioContext)();
@@ -908,7 +948,15 @@ class Component extends DCLogic {
       const off = new OfflineAudioContext(1, n, SR), src = off.createBufferSource();
       src.buffer = dec; src.connect(off.destination); src.start();
       const ren = await off.startRendering(), x = Float64Array.from(ren.getChannelData(0));
-      let pcm;
+      /* L0 §2's bound, which the OS sets for every owner's sound: the resampled file is what would
+       * be taken, so a recording over it is refused here rather than trimmed into the theme. */
+      const GB = window.GorbBake;
+      if (GB && GB.SOUND_MAX_SAMPLES && x.length > GB.SOUND_MAX_SAMPLES) {
+        this.setState({ sndMsg: f.name + ' is ' + (x.length / SR).toFixed(1) + ' s: a sound can be at most '
+          + GB.SOUND_MAX_S.toFixed(1) + ' s, so it was not taken' });
+        return;
+      }
+      let pcm, kb = 0;
       if (slot === 'tick_loop' && dec.duration >= 0.5) {
         const secs = Math.min(SE.LOOP_S, Math.floor(x.length / SR));
         if (secs < 1) throw new Error('a recorded loop needs at least one whole second');
@@ -927,17 +975,20 @@ class Component extends DCLogic {
         while (first < lp.length && Math.abs(lp[first]) < pk * 0.3) first++;
         first = first % Math.round(SR / rate);
         pcm = SE.finishLoop(lp);                          // a loop always takes the circular floor
-        this.sndUpd((d) => { d.tick = 'upload'; d.up.tick_loop = { name: f.name, pcm, loop: true, rate, first }; });
+        const file = this.sndTake(pcm); pcm = file.pcm;
+        this.sndUpd((d) => { d.tick = 'upload'; d.up.tick_loop = Object.assign({ name: f.name, pcm, loop: true, rate, first }, file.wav ? { wav: file.wav } : {}); });
+        kb = file.bytes;
       } else {
         pcm = this.state.sndCut ? SE.finish(x) : SE.finish(x, { raw: true });
+        const file = this.sndTake(pcm); pcm = file.pcm;
         this.sndUpd((d) => {
-          d.up[slot] = { name: f.name, pcm, loop: false };
+          d.up[slot] = Object.assign({ name: f.name, pcm, loop: false }, file.wav ? { wav: file.wav } : {});
           if (slot === 'tick_loop') d.tick = 'upload'; else d.slots[slot] = 'upload';
         });
+        kb = file.bytes;
       }
-      const secs = pcm.length / SR, kb = this.sndBaked(pcm) / 1024;
-      this.setState({ sndMsg: f.name + ' → ' + slot.replace(/_/g, ' ') + ' (' + secs.toFixed(2) + ' s, ' + kb.toFixed(0) + ' KB in the theme)'
-        + (secs > this.SND_LONG_S ? ' — that is a long sound: every second of it is room the art cannot use. Trim it if you can.' : '') });
+      const secs = pcm.length / SR;
+      this.setState({ sndMsg: f.name + ' → ' + slot.replace(/_/g, ' ') + ' (' + secs.toFixed(2) + ' s, ' + (kb / 1024).toFixed(0) + ' KB in the theme)' });
     } catch (err) {
       this.setState({ sndMsg: 'Not used: ' + (err && err.message ? err.message : String(err)) });
     }
@@ -3390,14 +3441,78 @@ class Component extends DCLogic {
    * window.__ORB_APP) and a schema this editor reads. Art rides along unless the author
    * leaves it out or the file would pass the orb's upload cap, when it goes without and
    * says so. The OS keeps the bytes and never reads them. */
-  DESIGN_SCHEMA = 1;
+  DESIGN_SCHEMA = 2;
   /* Compatibility (owner ruling, 2026-11-02, option b): a breaking change to the design
    * document bumps DESIGN_SCHEMA and adds ONE pure step here, DESIGN_MIGRATE[n](doc) -> the
    * same watch as schema n+1, so every theme ever baked stays editable. Steps are never
    * edited once shipped and never removed; a non-breaking change (a new field whose absence
-   * means the old behaviour, a new value, a new part) needs no step. Empty while schema 1 is
-   * the only schema. The session (theme@1) walks them and refuses what it cannot. */
-  DESIGN_MIGRATE = {};
+   * means the old behaviour, a new value, a new part) needs no step. The session (theme@1)
+   * walks them and refuses what it cannot.
+   * L0 step 3 (l0-hub-3-clock) is the first such change: an uploaded sound stops being a list
+   * of samples in the design and becomes the owner's own file, §3.1's WAV data URL, so the
+   * site's file, a download and the voice bank are one sound with no second encode. */
+  DESIGN_MIGRATE = { 1: Component.migrateSoundFiles };
+  /* The ONE 1 → 2 step, shared by the class's session and the hub's host (clock-host.js
+   * registers this very function as its app.migrate): every upload entry becomes what soundWrite
+   * writes — its samples encoded ONCE into the entry's own file, and no inline pcm left behind.
+   * Pure: the document it is handed is never touched (a plain deep copy is answered), it reads no
+   * DOM, no clock and no state, and a design with no uploads comes back a copy of itself. */
+  static migrateSoundFiles(doc) {
+    const d = JSON.parse(JSON.stringify(doc)), up = d.sounds && d.sounds.up;
+    if (up && typeof up === 'object') Object.keys(up).forEach((k) => { up[k] = Component.soundWrite(up[k] || {}); });
+    return d;
+  }
+  /* One uploaded sound as the running editor holds it — {name, loop, rate, first, …} plus the
+   * owner's file as `wav` and, while the page lives, the samples that file decodes to as
+   * `pcm`. Three cases, never an exception:
+   *   wav that soundRead accepts → the entry's own bytes stand, verbatim, with its samples;
+   *   only pcm (schema 1, a hand-written file) → the samples are encoded ONCE into wav, and
+   *     what the file decodes to is then the sound every later read sees;
+   *   bytes that do not read (not a WAV, an encoding the orb cannot play, nothing playable in
+   *     them) → the name is kept, `pcm: null`, and no wav is claimed: the slot owns no sound
+   *     and bakes none, and the pane still says whose file it was. */
+  static soundEntry(u) {
+    const G = window.GorbBake, out = Object.assign({}, u);
+    delete out.pcm; delete out.wav;
+    const rd = G && G.soundRead && typeof u.wav === 'string' ? G.soundRead(u.wav) : null;
+    if (rd) { out.wav = u.wav; out.pcm = rd.pcm; return out; }
+    if (out.wav) delete out.wav;                                  // unreadable bytes: the name, not the file
+    const pcm = G && G.soundPcm ? G.soundPcm(u.pcm)
+      : u.pcm instanceof Int16Array ? u.pcm : Array.isArray(u.pcm) ? Int16Array.from(u.pcm) : null;
+    if (!pcm || pcm.length < 2) { out.pcm = null; return out; }   // the baker refuses fewer than two samples
+    out.pcm = pcm;
+    if (G && G.soundFileUrl) { try { out.wav = G.soundFileUrl(pcm); } catch (e) { /* no file for these samples */ } }
+    return out;
+  }
+  /* A design's whole `up` map, read into the form the running editor holds: every entry through
+   * soundEntry, so opening is the one place a file's bytes become the sound the pane, the listen
+   * button and the bake all read. Used by the class (applyDesignContent) and the hub's host
+   * (clock-host.js's upsOf), which keeps a shared copy of the same function. */
+  static soundEntries(up) {
+    const o = {};
+    Object.keys(up || {}).forEach((k) => { o[k] = Component.soundEntry(up[k] || {}); });
+    return o;
+  }
+  /* One uploaded sound as a design file holds it: the entry's fields and its file, and never a
+   * copy of the samples. A wav that is there is written exactly as it stands — the bytes the
+   * owner's file arrived with are the bytes the next theme bakes from, so re-saving a design
+   * must not encode them again. Only an entry that holds samples and no file (schema 1, or a
+   * hand-written document) is encoded, once, through soundEntry. */
+  static soundWrite(u) {
+    const o = Object.assign({}, u);
+    delete o.pcm;
+    if (typeof o.wav === 'string') return o;
+    delete o.wav;
+    const r = Component.soundEntry(u);
+    if (typeof r.wav === 'string') o.wav = r.wav;
+    return o;
+  }
+  /* The whole `up` map of a design file: every sound the owner brought, in §3.1's form. */
+  static soundUp(up) {
+    const o = {};
+    Object.keys(up || {}).forEach((k) => { o[k] = Component.soundWrite(up[k] || {}); });
+    return o;
+  }
   migrateDesign(o) { return this.session.migrate(o); }
   appVersion() { return this.session.version(); }
   designDoc(withArt) { return this.session.doc(withArt); }
@@ -3408,7 +3523,7 @@ class Component extends DCLogic {
     const snd = this.sndDesign();
     return { dial: s.dial, design: D, cfg: this.cfg(), seeds: s.seeds, hands: s.hands, handFinish: s.handFinish, caseStyle: s.caseStyle, caseMetal: s.caseMetal,
       glassStyle: s.glassStyle, train: s.train, caseOpen: s.caseOpen, themeName: s.themeName,
-      sounds: withArt ? snd : Object.assign({}, snd, { up: {} }), art: withArt, assets };
+      sounds: withArt ? Object.assign({}, snd, { up: Component.soundUp(snd.up) }) : Object.assign({}, snd, { up: {} }), art: withArt, assets };
   }
   // Open a file: a baked .orbtheme (its design is read out of it) or a design file
   openFile(file) { return this.session.openFile(file); }
@@ -3431,7 +3546,7 @@ class Component extends DCLogic {
       ...(o.cfg ? { cfg: o.cfg } : {}), ...(o.seeds ? { seeds: o.seeds } : {}), ...(o.train ? { train: o.train } : {}),
       ...(o.caseStyle ? { caseStyle: o.caseStyle } : {}), ...(o.caseMetal ? { caseMetal: o.caseMetal } : {}), ...(o.glassStyle ? { glassStyle: o.glassStyle } : {}),
       ...(o.hands ? { hands: o.hands } : {}), ...(o.handFinish ? { handFinish: o.handFinish } : {}), ...(o.caseOpen ? { caseOpen: o.caseOpen } : {}),
-      ...(o.sounds ? { sounds: { ...st.sounds, [o.dial]: o.sounds } } : {}), themeName: o.themeName || '',
+      ...(o.sounds ? { sounds: { ...st.sounds, [o.dial]: Object.assign({}, o.sounds, { up: Component.soundEntries(o.sounds.up) }) } } : {}), themeName: o.themeName || '',
       sel: null, selKind: null, step: 'parts', tab: 'comps',
       status: 'Reopened \u201c' + (o.themeName || E.template(o.dial).name) + '\u201d' + (from ? ' from ' + from : '') + (o.art === false ? ' (it was saved without its art' + (refs.length ? ': ' + refs.length + ' image' + (refs.length > 1 ? 's' : '') + ' to load again' : '') + ')' : r.added ? ' with ' + r.added + ' art asset' + (r.added === 1 ? '' : 's') : '') + (miss.length && o.art !== false ? ' \u2014 ' + miss.length + ' missing' : '') + '. Send replaces it on the card.',
     }));
@@ -4277,7 +4392,7 @@ class Component extends DCLogic {
       const setSlot = (slot) => (v) => this.sndUpd((d) => { if (v) d.slots[slot] = v; else delete d.slots[slot]; });
       /* §59: every sound row carries its own file and its own way back. */
       const own = (slot) => {
-        const u = sd.up[slot], secs = u ? u.pcm.length / SE.SR : 0;
+        const u = sd.up[slot], secs = u && u.pcm ? u.pcm.length / SE.SR : 0;
         const ch = [{ v: 'p', label: '▶ ' + nice(slot) }, { v: 's', label: '■' }].concat(u ? [{ v: 'b', label: '↺ Back to built-in' }] : []);
         return [Ch('', '', ch, (v) => (v === 'p' ? this.sndPlay(slot) : v === 'b' ? this.sndUnupload(slot) : this.sndStop())),
           Fi('Your own', (e) => this.sndUpload(e, slot), u ? u.name + ' · ' + secs.toFixed(1) + ' s' + (secs > this.SND_LONG_S ? ' · long' : '') : '', 'audio/*')];
@@ -4317,7 +4432,8 @@ class Component extends DCLogic {
       const rows = G.SOUND_SLOTS.map((slot) => {
         const p = this.sndPcm(slot);
         if (!p) return null;
-        const b = this.sndBaked(p);
+        const h2 = this.sndStoredEntry(slot);
+        const b = this.sndBaked(p, h2 && h2.wav);
         total += b;
         if ((slot === 'tick_loop' ? sd.tick : sd.slots[slot]) === 'upload') mine += b;
         return nice(slot) + ' ' + (b / 1024).toFixed(0) + ' KB';

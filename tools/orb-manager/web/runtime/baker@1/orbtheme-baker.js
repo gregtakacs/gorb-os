@@ -2215,6 +2215,186 @@
     return { enc: SOUND_ENC_PCM16, bytes: pb8 };
   }
   function soundBytes(enc, n) { return enc === SOUND_ENC_ADPCM ? Math.ceil(n / ADPCM_BLOCK) * ADPCM_BLOCK_BYTES : 2 * n; }
+
+  /* L0 (docs/specs/l0-design.md §3.1, ruling 41): the one file form an owner's sound travels in.
+   * A design used to carry raw sample arrays, so every version and every remix stored them again,
+   * nothing counted them once and ruling 35 set them no limit. An editor now hands each of its own
+   * sounds over as one canonical WAV data URL, which the site splits out by sha256 exactly as art.
+   * The body of that file is the ORB'S OWN encoding — soundEncode's answer, ADPCM unless the round
+   * trip falls under the SNR floor — under §3.1's header, so the bytes the site stores are the
+   * bytes the voice bank holds and the bake needs no second encode. One encoder, always.
+   * The bytes are canonical on purpose: the same samples always give the same file, so the same
+   * sound is stored once across designs, remixes and re-saves. The bounds are §2's numbers — the
+   * OS caps neither a sound's length nor its bytes, so L0 sets 10.0 s and 1 MiB here, and the site
+   * and an editor's upload door enforce them. soundRead deliberately does not: an editor opens the
+   * design it was given, however long the chime its owner recorded in 2025 turns out to be. */
+  var SOUND_WAV_PREFIX = 'data:audio/wav;base64';
+  var SOUND_MAX_S = 10, SOUND_MAX_SAMPLES = SOUND_MAX_S * SOUND_RATE, SOUND_MAX_BYTES = 1048576;
+  /* §3.1's ADPCM average byte rate: 22,050 samples a second at 132 bytes per 256 of them. */
+  var SOUND_ADPCM_BPS = Math.round(SOUND_RATE * ADPCM_BLOCK_BYTES / ADPCM_BLOCK);   // 11370
+  /* base64 both ways, for node (which has had btoa/atob since 16) and the browser alike, and
+   * chunked on the encode the way theme@1's session chunks its own: a megabyte of samples handed
+   * to one String.fromCharCode.apply is a stack overflow, 32 KB at a time is not. */
+  function b64bytes(bytes) {
+    var s = '', CH = 32768;
+    for (var i = 0; i < bytes.length; i += CH) s += String.fromCharCode.apply(null, bytes.subarray(i, i + CH));
+    return btoa(s);
+  }
+  function unb64bytes(t) {
+    var b = atob(t), u = new Uint8Array(b.length);
+    for (var i = 0; i < b.length; i++) u[i] = b.charCodeAt(i);
+    return u;
+  }
+  /* §3.1's header for one encoding and n samples, with room for the body after it: the 44 bytes of
+   * PCM16 (a 16-byte fmt of PCM/mono/22050/44100/2/16 and a data chunk of 2n), or the 60 of the
+   * orb's ADPCM (a 20-byte fmt of tag 0x11, mono, 22050, 11370 bytes a second, block align 132,
+   * 4 bits, cbSize 2 and the orb's 256 samples a block, then a fact chunk naming the sample count,
+   * then a data chunk of exactly ceil(n/256)*132 bytes). All little-endian, like the layout. */
+  function wavHeader(enc, n, bodyB) {
+    var ad = enc === SOUND_ENC_ADPCM, out = new Uint8Array((ad ? 60 : 44) + bodyB), dv = new DataView(out.buffer);
+    var tag = function (o, s) { for (var i = 0; i < 4; i++) out[o + i] = s.charCodeAt(i); };
+    tag(0, 'RIFF'); dv.setUint32(4, (ad ? 52 : 36) + bodyB, true); tag(8, 'WAVE');
+    tag(12, 'fmt ');
+    if (ad) {
+      dv.setUint32(16, 20, true); dv.setUint16(20, 0x0011, true); dv.setUint16(22, 1, true);
+      dv.setUint32(24, SOUND_RATE, true); dv.setUint32(28, SOUND_ADPCM_BPS, true);
+      dv.setUint16(32, ADPCM_BLOCK_BYTES, true); dv.setUint16(34, 4, true);
+      dv.setUint16(36, 2, true); dv.setUint16(38, ADPCM_BLOCK, true);
+      tag(40, 'fact'); dv.setUint32(44, 4, true); dv.setUint32(48, n, true);
+      tag(52, 'data'); dv.setUint32(56, bodyB, true);
+    } else {
+      dv.setUint32(16, 16, true); dv.setUint16(20, 1, true); dv.setUint16(22, 1, true);
+      dv.setUint32(24, SOUND_RATE, true); dv.setUint32(28, SOUND_RATE * 2, true);
+      dv.setUint16(32, 2, true); dv.setUint16(34, 16, true);
+      tag(36, 'data'); dv.setUint32(40, bodyB, true);
+    }
+    return out;
+  }
+  /* The writer: the samples it is given, encoded once by soundEncode — the same choice the theme
+   * itself makes, ADPCM unless the round trip falls under ADPCM_MIN_SNR_DB — behind §3.1's header.
+   * Nothing clamped and nothing resampled: a value outside int16 wraps exactly as an Int16Array
+   * would store it, because these samples arrive from the owner's own file and the sound that goes
+   * in must be the sound that comes out. Answers {url, bytes, enc, n, body}; `bytes` is the whole
+   * file, `body` the soundEncode bytes the bake puts in the bank as they are. */
+  function soundFile(pcm) {
+    var n = (pcm && pcm.length) | 0;
+    if (n < 2) throw new Error('a sound is at least two samples');
+    var se = soundEncode(pcm), out = wavHeader(se.enc, n, se.bytes.length);
+    out.set(se.bytes, se.enc === SOUND_ENC_ADPCM ? 60 : 44);
+    return { url: SOUND_WAV_PREFIX + ',' + b64bytes(out), bytes: out, enc: se.enc, n: n, body: se.bytes };
+  }
+  // the whole URL an editor sends and a design carries: the prefix, a comma, the padded base64
+  function soundFileUrl(pcm) { return soundFile(pcm).url; }
+  // the four bytes at o as text — a chunk id — or '' when the file ends before they do
+  function riffAt(dv, o) {
+    if (o + 4 > dv.byteLength) return '';
+    return String.fromCharCode(dv.getUint8(o), dv.getUint8(o + 1), dv.getUint8(o + 2), dv.getUint8(o + 3));
+  }
+  /* the bytes of the sound someone handed us: a WAV's own bytes, an ArrayBuffer, or a
+   * `data:audio/…` URL of any subtype — a mpeg or an aac gets as far as the walk below, which is
+   * what refuses it, so the reader refuses a file the orb cannot play rather than a label. */
+  function wavBytes(x) {
+    if (x instanceof Uint8Array) return x;
+    if (x instanceof ArrayBuffer) return new Uint8Array(x);
+    if (typeof x !== 'string' || x.slice(0, 11) !== 'data:audio/') return null;
+    var c = x.indexOf(',');
+    if (c < 0 || x.slice(0, c).slice(-7) !== ';base64') return null;
+    try { return unb64bytes(x.slice(c + 1)); } catch (e) { return null; }   // atob throws on bad base64
+  }
+  /* The reader: §3.1's two layouts and nothing else, walked from byte 12 as id, u32 size and body,
+   * odd sizes padded by one byte, unknown chunks skipped on the way. PCM16 is a fmt of tag 1, one
+   * channel, 22,050 Hz, 16 bits and block align 2, with an even data chunk wholly inside the bytes;
+   * the orb's ADPCM is a fmt of at least 20 bytes — tag 0x11, one channel, 22,050 Hz, 4 bits, block
+   * align 132, cbSize at least 2 and the orb's OWN 256 samples a block, where the standard IMA-WAV
+   * block of that size holds 257 and names a different file (l0-design §5.3) — with a fact chunk
+   * before the data one naming at least one sample, and a data chunk of exactly ceil(n/256)*132
+   * bytes. The answer is {enc, n, body, pcm}: the data chunk's bytes as they are, so a bake can put
+   * them in its bank without encoding again, and the samples the orb will play — adpcmDecode's for
+   * a compressed file. Everything else is null and never an exception: the wrong type, a file cut
+   * short, a data chunk that lies past the bytes, data before fmt, a non-RIFF file, bad base64, 8
+   * bits or stereo or 44,100 Hz or a tag-3 float. It enforces no length and no byte bound — an
+   * editor opens the design it was given, however long the chime its owner recorded in 2025 is. */
+  function soundRead(x) {
+    var b = wavBytes(x);
+    if (!b || b.length < 12) return null;
+    var dv = new DataView(b.buffer, b.byteOffset, b.byteLength);
+    if (riffAt(dv, 0) !== 'RIFF' || riffAt(dv, 8) !== 'WAVE') return null;
+    var fmt = null, facts = -1, o = 12;
+    while (o + 8 <= b.length) {
+      var key = riffAt(dv, o), size = dv.getUint32(o + 4, true), body = o + 8;
+      if (size > b.length - body) {
+        if (key === 'data') return null;      // it names bytes this file does not hold
+        break;                              // a chunk cut short ends the walk
+      }
+      if (key === 'fmt ') {
+        if (size < 16) return null;
+        fmt = { size: size, tag: dv.getUint16(body, true), ch: dv.getUint16(body + 2, true),
+          rate: dv.getUint32(body + 4, true), align: dv.getUint16(body + 12, true), bits: dv.getUint16(body + 14, true),
+          cb: size >= 20 ? dv.getUint16(body + 16, true) : 0, spb: size >= 20 ? dv.getUint16(body + 18, true) : 0 };
+      } else if (key === 'fact') {
+        if (fmt && fmt.tag === 0x0011 && size >= 4) facts = dv.getUint32(body, true);
+      } else if (key === 'data') {
+        if (!fmt) return null;                // data before fmt: the file cannot say what it is
+        var pcm16 = fmt.tag === 1 && fmt.ch === 1 && fmt.rate === SOUND_RATE && fmt.bits === 16 &&
+          fmt.align === 2 && !(size & 1);
+        var ad = fmt.tag === 0x0011 && fmt.size >= 20 && fmt.ch === 1 && fmt.rate === SOUND_RATE &&
+          fmt.bits === 4 && fmt.align === ADPCM_BLOCK_BYTES && fmt.cb >= 2 && fmt.spb === ADPCM_BLOCK &&
+          facts >= 1 && size === soundBytes(SOUND_ENC_ADPCM, facts);
+        if (!pcm16 && !ad) return null;
+        var bytes = b.subarray(body, body + size), out;
+        if (pcm16) {
+          out = new Int16Array(size >> 1);
+          for (var i = 0; i < out.length; i++) out[i] = dv.getInt16(body + 2 * i, true);
+          return { enc: SOUND_ENC_PCM16, n: size >> 1, body: bytes, pcm: out };
+        }
+        return { enc: SOUND_ENC_ADPCM, n: facts, body: bytes, pcm: adpcmDecode(bytes, facts) };
+      }
+      o = body + size + (size & 1);
+    }
+    return null;                              // no playable data chunk in these bytes
+  }
+  /* The one normaliser for what a design's sound is: every form a file can carry it in — the
+   * Int16Array an editor holds, a plain array, the {"0": v, "1": v, …} object JSON.stringify makes
+   * of a typed array (clock-host.js:116-127: read that object as an object and every sample is
+   * silence), and the canonical WAV URL from L0 on — and null for anything else. Every editor and
+   * the migration check read a stored sound through here, so there is one answer to what a design's
+   * samples are. Numeric keys are taken in numeric order, whoever wrote them last. */
+  function soundPcm(v) {
+    if (v instanceof Int16Array) return v;
+    if (typeof v === 'string') {
+      if (v.slice(0, 11) !== 'data:audio/') return null;
+      var rd = soundRead(v);
+      return rd ? rd.pcm : null;
+    }
+    if (Array.isArray(v)) {
+      var a = new Int16Array(v.length);
+      for (var i = 0; i < v.length; i++) a[i] = v[i] | 0;
+      return a;
+    }
+    if (v && typeof v === 'object') {
+      var ks = Object.keys(v).filter(function (k) { return /^[0-9]+$/.test(k); })
+        .sort(function (p, q) { return p - q; });
+      if (!ks.length) return null;
+      var out = new Int16Array(ks.length);
+      for (var j = 0; j < ks.length; j++) out[j] = v[ks[j]] | 0;
+      return out;
+    }
+    return null;
+  }
+  /* L0 (l0-design §3.1): a sound a design already stores as a file reaches a bake as soundRead's
+   * answer — `coded: {enc, body}` beside the decoded samples — and the clip's plane bytes ARE that
+   * body: the site's stored file, a download and the voice bank carry one sound, with no second
+   * encode and no generation loss. The pair is refused when it does not add up: an encoding the orb
+   * does not play, or a body that is not the length that encoding gives for the clip's samples.
+   * `slot` names the sound in the refusal — the number to stage3().sounds, the clock's own slot
+   * name to bakeClock3, whose items carry their sound the same way. */
+  function codedClip(it, slot) {
+    var cd = it.coded, n = it.pcm ? it.pcm.length : 0;
+    if (!cd || (cd.enc !== SOUND_ENC_PCM16 && cd.enc !== SOUND_ENC_ADPCM) ||
+        !cd.body || cd.body.length !== soundBytes(cd.enc, n))
+      throw new Error('sound slot ' + slot + ' carries a stored sound whose bytes do not match its length');
+    return cd;
+  }
   function adpcmEncode(pcm) {
     var nb = Math.ceil(pcm.length / ADPCM_BLOCK), out = new Uint8Array(nb * ADPCM_BLOCK_BYTES), idx = 0;
     for (var b = 0; b < nb; b++) {
@@ -3994,12 +4174,18 @@
      * asserted from in here (the caller may have written raw bytes but no rows yet), so it
      * is stated here and proven by the app's own bake_check.py.
      *
-     * list = [{slot: 1..12, pcm: Int16Array, name}]; o = {pattern: 'none'}. In order:
-     * encode each with soundEncode, put the bytes at the head, remember the count; the
-     * SOUND rows are held back and appended LAST (in finish), so elems[0] stays the plate.
-     * Two slots whose pcm is byte-equal share one plane (one put, two rows naming it).
-     * A repeated slot is refused before the bank moves. finish merges plate_off into the
-     * caller's scalars unless the caller set plate_off itself. */
+     * list = [{slot: 1..12, pcm: Int16Array, name, coded: {enc, body}}]; o = {pattern: 'none'}.
+     * In order: encode each with soundEncode, put the bytes at the head, remember the count; the
+     * SOUND rows are held back and appended LAST (in finish), so elems[0] stays the plate. A slot
+     * that carries `coded` — L0's stored sound read back by soundRead, its `pcm` the decoded
+     * samples — is the exception: its plane is coded.body exactly, and its row names coded.enc,
+     * with NO second encode, so the site's file, a download and this bank are one sound (l0-design
+     * §3.1). Two slots whose pcm is byte-equal share one plane (one put, two rows naming it); two
+     * coded slots share one when their enc and their body bytes are equal, and a coded slot never
+     * shares with an uncoded one — a stored clip and a re-encoded one are two clips. A stored
+     * sound whose bytes are not the length its encoding gives for its samples is refused, like a
+     * repeated slot, before the bank moves. finish merges plate_off into the caller's scalars
+     * unless the caller set plate_off itself. */
     function sounds(list, o) {
       o = o || {};
       list = list || [];
@@ -4007,7 +4193,8 @@
       var patName = o.pattern || 'none', patIx = HOUR_PATTERNS.indexOf(patName);
       if (patIx < 0)
         throw new Error('hour pattern ' + q(String(patName)) + ': a theme\u2019s sounds name ' + HOUR_PATTERNS.join(', '));
-      // refuse a repeated slot, and an out-of-range one, before the bank moves
+      // refuse a repeated slot, an out-of-range one, and a stored sound that does not add up,
+      // before the bank moves
       var seen = {};
       for (var vi = 0; vi < list.length; vi++) {
         var it = list[vi], slot = it.slot | 0;
@@ -4018,14 +4205,22 @@
         seen[slot] = 1;
         if (!it.pcm || !(it.pcm.length >= 2))
           throw new Error('sound slot ' + slot + ' carries ' + (it.pcm ? it.pcm.length : 0) + ' samples: a sound plane is at least two samples');
+        if (it.coded) codedClip(it, slot);
       }
       // sort into slot order so the head layout is stable however the caller lists them
       var ordered = list.slice().sort(function (a, b) { return (a.slot | 0) - (b.slot | 0); });
       var placed = [], encOut = [], rows = [], headB = bank.size;
-      var foundPlane = function (pcm) {
+      var sameBytes = function (a, b) {
+        for (var y = 0; y < a.length; y++) if (a[y] !== b[y]) return false;
+        return true;
+      };
+      var foundPlane = function (pcm, coded) {
         for (var q = 0; q < placed.length; q++) {
           var pp = placed[q];
-          if (pp.n === pcm.length) {
+          if (!!pp.coded !== !!coded || pp.n !== pcm.length) continue;   // stored never shares with re-encoded
+          if (coded) {
+            if (pp.enc === coded.enc && pp.coded.length === coded.body.length && sameBytes(pp.coded, coded.body)) return pp;
+          } else {
             var same = true;
             for (var b = 0; b < pcm.length; b++) if (pp.pcm[b] !== pcm[b]) { same = false; break; }
             if (same) return pp;
@@ -4034,12 +4229,12 @@
         return null;
       };
       for (var si = 0; si < ordered.length; si++) {
-        var s = ordered[si], pcm = s.pcm;
-        var plane = foundPlane(pcm), se;
+        var s = ordered[si], pcm = s.pcm, cd = s.coded ? codedClip(s, s.slot | 0) : null;
+        var plane = foundPlane(pcm, cd);
         if (!plane) {
-          se = soundEncode(pcm);
+          var se = cd ? { enc: cd.enc, bytes: cd.body } : soundEncode(pcm);
           var f = put(se.bytes, pcm.length, 1);
-          plane = { frame0: f, enc: se.enc, n: pcm.length, pcm: pcm };
+          plane = { frame0: f, enc: se.enc, n: pcm.length, pcm: pcm, coded: cd ? cd.body : null };
           placed.push(plane);
         }
         rows.push({ slot: s.slot | 0, frame0: plane.frame0, enc: plane.enc });
@@ -4233,7 +4428,10 @@
      * every pixel plane after them moves by the same even amount. plate_off and, on
      * a delta plate, bg_key_off follow the plate past them — orb_sched seeds the
      * canvas from blob() + bg_key_off, so a zero left there would paint PCM.
-     * o.sounds: [{slot: name, pcm: Int16Array, beat_chz, first_beat}], o.soundPattern. */
+     * o.sounds: [{slot: name, pcm: Int16Array, beat_chz, first_beat, coded}], o.soundPattern. An
+     * item's `coded` is L0's stored sound as soundRead answers it (§3.1): the clip's plane bytes
+     * ARE that body and the row names that enc, with no second encode. Absent, the clip is encoded
+     * as always. */
     var sounds3 = (o.sounds || []).slice().sort(function (a, b) {
       return SOUND_SLOTS.indexOf(a.slot) - SOUND_SLOTS.indexOf(b.slot); });
     var soundB = 0, soundEnc = [];
@@ -4242,9 +4440,9 @@
       if (SOUND_SLOTS.indexOf(sn.slot) < 0) throw new Error('a sound for slot ' + q(String(sn.slot)) + ': the clock declares ' + SOUND_SLOTS.join(', '));
       var pcm = sn.pcm;
       if (!pcm || !(pcm.length >= 2)) throw new Error('the ' + sn.slot + ' sound carries no samples');
-      var se = soundEncode(pcm);
+      var se = sn.coded ? codedClip(sn, sn.slot) : soundEncode(pcm);
       soundEnc[si] = se.enc;
-      B.put(se.bytes, pcm.length, 1);
+      B.put(sn.coded ? se.body : se.bytes, pcm.length, 1);
     }
     soundB = bank.size;
     sc.plate_off = soundB;
@@ -5686,6 +5884,13 @@
     zlibFixed: zlibFixed,
     discSpan: discSpan, discPx: discPx, discBytes: discBytes, discPack: discPack, discPackMasked: discPackMasked,
     adpcmEncode: adpcmEncode, adpcmDecode: adpcmDecode, soundEncode: soundEncode, soundBytes: soundBytes,
+    // L0 (l0-design.md §3.1, §2): the one file an editor sends an owner's sound as — the orb's own
+    // encoding under §3.1's header — the reader that takes it back, the one normaliser for whatever
+    // form a design carries its samples in, and the bounds L0 sets — enforced by the site and by an
+    // upload door, never by the reader.
+    SOUND_WAV_PREFIX: SOUND_WAV_PREFIX, SOUND_MAX_S: SOUND_MAX_S, SOUND_MAX_SAMPLES: SOUND_MAX_SAMPLES,
+    SOUND_MAX_BYTES: SOUND_MAX_BYTES, soundFile: soundFile, soundFileUrl: soundFileUrl,
+    soundRead: soundRead, soundPcm: soundPcm,
     synth: synth, SYNTH_HP: SYNTH_HP, SOUND_RATE: SOUND_RATE,
     checkClockSounds: checkClockSounds
   };

@@ -29,7 +29,7 @@ const mk = () => {
   const sub = a.design().comps.find((c) => c.type === 'subdial').id;
   a.setComp(sub, { size: 47 }); a.setState({ caseStyle: 'none', caseOpen: 210, themeName: 'Field test', train: 'orbital', glassStyle: 'flat' });
   const doc = await a.designDoc(true);
-  ok(doc.format === 'wc-design' && doc.schema === 1 && doc.app === 'clock' && doc.appVersion === 'v1.2.2' && doc.art === true,
+  ok(doc.format === 'wc-design' && doc.schema === 2 && doc.app === 'clock' && doc.appVersion === 'v1.2.2' && doc.art === true,
     'the document names its format, schema, app and the app’s version', JSON.stringify([doc.format, doc.schema, doc.app, doc.appVersion]));
   const bare = await a.designDoc(false);
   ok(bare.art === false && bare.assets.length === 0 && Object.keys(bare.sounds.up || {}).length === 0, 'without art it carries no asset or uploaded-sound bytes');
@@ -56,16 +56,17 @@ const mk = () => {
   ok(sdoc.dial === 'scratch' && rs.applyDesignDoc(sdoc, 'the card') === null && rs.state.dial === 'scratch' && rs.design().noDial === true && rs.design().comps.length === 1 && rs.themeName() === 'Untitled',
     'a scratch design reopens as Untitled, its own watch, with no dial and its one hand', JSON.stringify([sdoc.dial, rs.state.dial, rs.themeName()]));
   ok(/an?other|not clock/.test(mk().applyDesignDoc(Object.assign({}, back, { app: 'hsb' })) || '') || /hsb app/.test(mk().applyDesignDoc(Object.assign({}, back, { app: 'hsb' })) || ''), 'another app’s design is refused by name');
-  const newer = mk().applyDesignDoc(Object.assign({}, back, { schema: 2, appVersion: 'v1.3.0' }));
-  ok(/clock v1\.3\.0/.test(newer || '') && /reads schema 1/.test(newer || '') && /update the app/.test(newer || ''), 'a newer schema names the version that made it and the fix', newer);
+  const newer = mk().applyDesignDoc(Object.assign({}, back, { schema: 3, appVersion: 'v1.3.0' }));
+  ok(/clock v1\.3\.0/.test(newer || '') && /reads schema 2/.test(newer || '') && /update the app/.test(newer || ''), 'a newer schema names the version that made it and the fix', newer);
   ok(/not one this editor wrote/.test(mk().applyDesignDoc({ format: 'wckit' }) || ''), 'a foreign document is refused');
-  // option b: an older schema walks forward through one pure step per bump (here a pretend schema 2 that renamed themeName)
+  // option b: an older schema walks forward through one pure step per bump (here a pretend schema 1
+  // that renamed themeName — the clock's own step is L0's, and its suite walks it)
   const m2 = mk(); m2.DESIGN_SCHEMA = 2; m2.DESIGN_MIGRATE = { 1: (d) => Object.assign(d, { title: d.themeName, themeName: undefined }) };
-  const mig = m2.migrateDesign(back);
-  ok(mig.doc && mig.doc.schema === 2 && mig.doc.title === 'Field test' && back.schema === 1 && back.themeName === 'Field test', 'an older design is migrated one step per bump, leaving the original untouched', JSON.stringify(mig.doc && [mig.doc.schema, mig.doc.title]));
+  const mig = m2.migrateDesign(Object.assign({}, back, { schema: 1 }));
+  ok(mig.doc && mig.doc.schema === 2 && mig.doc.title === 'Field test' && back.schema === 2 && back.themeName === 'Field test', 'an older design is migrated one step per bump, leaving the original untouched', JSON.stringify(mig.doc && [mig.doc.schema, mig.doc.title]));
   const m3 = mk(); m3.DESIGN_SCHEMA = 3; m3.DESIGN_MIGRATE = { 1: (d) => d };
   ok(/no step from schema 2 to 3/.test(m3.applyDesignDoc(back) || ''), 'and a missing step is refused by name, never guessed');
-  ok(Object.keys(mk().DESIGN_MIGRATE).length === 0, 'schema 1 needs no step');
+  ok(Object.keys(mk().DESIGN_MIGRATE).join(',') === '1', 'the clock declares its one step: schema 1 to 2, a sound is its owner\u2019s file (L0)');
   const later = mk().applyDesignDoc(Object.assign({}, back, { appVersion: 'v1.10.0' }));
   ok(later === null, 'a same-schema design from a newer clock opens: only the schema says what this editor reads (ruling 21)', later);
   ok(mk().applyDesignDoc(Object.assign({}, back, { appVersion: 'v1.2.1' })) === null, 'while one from an older clock opens');

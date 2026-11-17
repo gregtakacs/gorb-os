@@ -311,6 +311,20 @@ function spawnSync3(cmd, args, cwd) {
   return spawnSync(cmd, args, { cwd: cwd || REPO, encoding: 'utf8' });
 }
 
+// The go toolchain, found as tools/orb-manager/Makefile finds it (GO=, then PATH, then the
+// usual install dirs): a harness can run this gate without /usr/local/go/bin on PATH, and
+// spawnSync('go') answers ENOENT there while the Makefile's own gate passes.
+function goTool() {
+  const { spawnSync } = require('child_process');
+  const cands = [process.env.GO, 'go', '/usr/local/go/bin/go', '/snap/bin/go',
+    path.join(os.homedir(), 'go', 'bin', 'go')].filter(Boolean);
+  for (const c of cands) {
+    const r = spawnSync(c, ['version'], { encoding: 'utf8' });
+    if (!r.error && r.status === 0) return c;
+  }
+  return cands[0] || 'go';   // let the build itself say why nothing answered
+}
+
 // ---------- the ruling 38 probe apps ----------
 // Two third-party packages that differ in exactly one field: babeltest's editor.json
 // declares babel@7.29.0, plainprobe's declares only a runtime that needs none of it.
@@ -613,8 +627,9 @@ async function main() {
   try {
     // ---- build: hub and fake orb, from this tree, every run
     say('building hub and orbfake (go)…');
+    const GO = goTool();
     for (const [out, pkg] of [['orb-manager', '.'], ['orbfake', './cmd/orbfake']]) {
-      const r = spawnSync3(process.env.GO || 'go', ['build', '-o', path.join(dirs.bin, out), pkg], GO_ROOT);
+      const r = spawnSync3(GO, ['build', '-o', path.join(dirs.bin, out), pkg], GO_ROOT);
       if (r.status !== 0) throw new Error('go build ' + pkg + ': ' + String(r.stderr || r.error || '').slice(0, 400));
     }
 

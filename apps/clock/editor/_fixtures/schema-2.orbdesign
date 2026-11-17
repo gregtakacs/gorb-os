@@ -1,0 +1,143 @@
+{
+ "format": "wc-design",
+ "schema": 2,
+ "app": "clock",
+ "appVersion": "v1.8.1",
+ "made": "2026-11-17T07:44:11.167Z",
+ "dial": "skeleton",
+ "design": {
+  "comps": [
+   {
+    "id": "c1",
+    "type": "opening",
+    "host": "dial",
+    "angle": 0,
+    "dist": 0,
+    "rot": 0,
+    "size": 160,
+    "style": "lip",
+    "show": "free",
+    "hour": 12
+   },
+   {
+    "id": "c2",
+    "type": "subdial",
+    "host": "dial",
+    "angle": 135,
+    "dist": 80.6,
+    "rot": 0,
+    "size": 78.5,
+    "style": "enamel",
+    "open": 0
+   },
+   {
+    "id": "h1",
+    "type": "hand",
+    "host": "c2",
+    "shows": "second",
+    "length": 68.355,
+    "width": 2.041,
+    "cap": 2.6,
+    "scale": {
+     "style": "classic",
+     "gap": 10.145
+    }
+   },
+   {
+    "id": "h2",
+    "type": "hand",
+    "host": "dial",
+    "shows": "hour",
+    "length": 135.3,
+    "width": 10.25,
+    "cap": 6.97,
+    "scale": {
+     "style": "roman",
+     "gap": 80.7
+    }
+   },
+   {
+    "id": "h3",
+    "type": "hand",
+    "host": "dial",
+    "shows": "minute",
+    "length": 196.8,
+    "width": 7.79,
+    "cap": 6.97
+   }
+  ]
+ },
+ "cfg": {
+  "tick": "sweep",
+  "favour": "sweep",
+  "plan": "",
+  "shSmooth": 0,
+  "balance": "1",
+  "plate": "train",
+  "spokes": "train",
+  "etching": "none",
+  "pinion": "on",
+  "center": "jewel",
+  "finish": "train",
+  "glow": 1,
+  "temp": 2200,
+  "innerAngle": 90,
+  "outerLight": 1,
+  "outerAngle": 315,
+  "outerTemp": 2200,
+  "trainAngle": 0,
+  "plateAngle": 0,
+  "plateScale": 1,
+  "hue": 30,
+  "hueSat": 0,
+  "outerHue": 210,
+  "outerSat": 0,
+  "wb": 6500,
+  "orbD": 128,
+  "orbTip": 194,
+  "cageD": 107,
+  "rearFinish": "train",
+  "shAngle": -1,
+  "shDist": 1,
+  "shBlur": 1,
+  "shOp": 1,
+  "shMove": 1,
+  "shRelief": 1
+ },
+ "seeds": {
+  "spokes": 1,
+  "pinion": 1,
+  "center": 1,
+  "finish": 1,
+  "etching": 1
+ },
+ "hands": "auto",
+ "handFinish": "auto",
+ "caseStyle": "polished",
+ "caseMetal": "auto",
+ "glassStyle": "domed",
+ "train": "classic",
+ "caseOpen": 221.5,
+ "themeName": "",
+ "sounds": {
+  "tick": "classic",
+  "pattern": "count",
+  "slots": {
+   "chime_q1": "westminster_q1",
+   "chime_half": "westminster_q2",
+   "chime_q3": "westminster_q3",
+   "chime_hour": "upload",
+   "strike_hour": "bell_hour"
+  },
+  "up": {
+   "chime_hour": {
+    "name": "l0-chime.wav",
+    "loop": false,
+    "wav": "data:audio/wav;base64,UklGRtgEAABXQVZFZm10IBQAAAARAAEAIlYAAGosAACEAAQAAgAAAWZhY3QEAAAAnQgAAGRhdGGkBAAAAAAAAHd3d3eDmam6rLurmhkxRUQzJDMiAKjMvL3Lq5uKGEJUM0QyMiGAub3Nu6y7qokRRFM0QyMjEYjKzLy8u6yZCSFENEQyMyIBqNvMvMu6q5kIMzY1NEMiEgCpzLzMuruqmSBTRFMyJCIRiLm9vby7rJqIIVNEQzMkEhGYu769y6sLWeU2AIoIMUVTMzQyEgGpzMzLu7u7mRBTNUQzJCMSgLrc27u8uqqIIEQ0NUMjEwKQyr3Mu6yrmggxVFMzNDIiAanbzLzLq6uZADNGQ0MzIyKAudy8zLq7qokgU0Q0QyMjEZC6zsvLu6ubCTFFU0MzJBIBmMvMy6y7upkIQkRTMzQyEgAJ1BsxALy+27q7uokQU0RDJDMjEpDJzNu7rLuaCSBEREMzQxIRmMrMy6y7q5oIMkVEMyQzEgGozMzLu8uaigBCREMkMyMSgbrNvMy6u6qIIGNTQzNDIhGYus28vLusmYgxY1MzNDIiAZjM27zLq6uZGEJEUzM0IiKAqczMy7usmokQQ0QDmf02ADQkIxGIus3bu7yqm4ghVEM0QzIiAZjL3Mu7y6qaGDFFNFMyIyKBqczMy7u7u5kgU1QzJTMjEoC6zcy7rLuaiSFjU0MzJCIBkMrMy6y7q5oZMUU0JUMiEgCY29vLu8uqiRgyNkQzJCMSAKq9va3LqpqJIFJTQzNDIhGIytu8vLsMruY4AJkJIVM0RDIzIgGYvL68vLurmhhCVENDMzMSganN28u7rJqJKEJEQyQzIwKAut3Ly7u7qogxRDVEMjMjAaDLzcusu6uaCDJFRDM0MhIBqcy8vcurqooAQ0Q0NEMiEYC5zLzMuqubiSBENDVDIyMBkMrMvLy7rJmIMUQ0RDIzIoEI1xwxANu8vcurq5kAQkQ0NDMkEYGpzLzMuruqiSBTRDRDMiMRgMrMvLy7rKkIIEQ0RDIzIhGo28zLrLuriggyNjU0MyQSganbzMu7y5qJGDM2NUMjIxKAybzNu7y6mokhRDQ1QyMiApjKzLy8y6qZCDFENEQyMxIBqMzMy7u7u5oQU0QENvs4AEMzIxKBus28zLq7mokgU0Q0QyMjEYjKzLy8y6qaCCFENEQyMyIBqNvMvMu6q5kYMjY1NEMiEgCpzLzMuruqmSBTRFMyJCIRiLm9vby7rJqIIVNEQzNDEhGYy8zLrLurihlBRFMzJDMSAanMzMu7u7uZEFNUMyUzIxKAuc3Mu7wKKeg3AJqJETRFQzNDEgKQyszLy7urmgkyRTREMjMiAKjbvby8u6uKGENUQyQzMxIAuty8zLq7qokgU0Q0QzIjEZC6zsvLu6uqCTFFU0MzJBIBmMvMy6y7upkIQkRTMzQyEgCpzMzLu8uaiRhDREMkMyMSiLrNzLu8upoJIEREQzNDEhEIrh0zALrN27qsqpkIMUQ0JTMkIQCZy728vLurmRBSRENDMyMSgLnNvK3LqpoJEFNTQzNDIgGQus28vLusmQkxY1MzNDIiAZjM27zLq6uZGEJEU4MAiACIAAiIAIiAAIgAiACIAIgAiAAICAiIgICQAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+   }
+  },
+  "seed": 1
+ },
+ "art": true,
+ "assets": []
+}

@@ -119,18 +119,22 @@ check-rename-live:
 	@test -n "$(NODE)" || { echo 'no node on PATH (see BUILDING.md: the editor suites need node 20+)'; exit 1; }
 	$(NODE) tools/orb-manager/web/runtime/_selftest/rename-live.js
 
-## check-pictures: the studio kit's picture fitter, run in a headless Chromium: a picked
-## picture is scaled to fit 1024 x 1024 and an SVG rasterised before an editor stores it.
+## check-pictures: the studio kit's two fitters, run in a headless Chromium: a picked
+## picture is scaled to fit 1024 x 1024 and an SVG rasterised before an editor stores it,
+## and a picked sound becomes the orb's own 22,050 Hz file (L1, l1-design §3.2).
 ## Deliberately NOT part of `check`, like check-web: it needs Node and Chromium.
 check-pictures:
 	@test -n "$(NODE)" || { echo 'no node on PATH (see BUILDING.md: the editor suites need node 20+)'; exit 1; }
 	$(NODE) tools/orb-manager/web/runtime/_selftest/picture-fit.js
+	$(NODE) tools/orb-manager/web/runtime/_selftest/sound-fit.js
 
 ## check-web: the release's own web file, opened as a site would open it — unpack the
 ## archive, extract-editors the shelf out of it, and smoke every editor it unpacked in
-## headless Chromium (no GorbHost, hub host, web host). Deliberately NOT part of `check`:
-## it needs the Go toolchain, a Chromium on PATH and a few minutes, none of which the
-## board-free `make check` ladder asks of a contributor.
+## headless Chromium (no GorbHost, hub host, web host). Then the L1 gate on the same trees:
+## library-live.js drives the studio's library pickers under the site's GorbHost, on a
+## stand-in site that answers /studio-api/assets the way orb-os-net does. Deliberately NOT
+## part of `check`: it needs the Go toolchain, a Chromium on PATH and a few minutes, none of
+## which the board-free `make check` ladder asks of a contributor.
 check-web: web
 	$(MAKE) check-pictures
 	@test -n "$(NODE)" || { echo 'no node on PATH (see BUILDING.md: the editor suites need node 20+)'; exit 1; }
@@ -138,7 +142,8 @@ check-web: web
 	  tar -xzf "$$(ls tools/orb-manager/bin/web/orb-web-*.tar.gz | head -1)" -C "$$tmp"; \
 	  root=$$(find "$$tmp" -mindepth 1 -maxdepth 1 -type d | head -1); \
 	  tools/orb-manager/bin/orb-manager extract-editors "$$root/apps" "$$tmp/editors" && \
-	    $(NODE) tools/orb-manager/web/runtime/_selftest/editors-smoke.js --runtime "$$root/runtime" --editors "$$tmp/editors"; \
+	    $(NODE) tools/orb-manager/web/runtime/_selftest/editors-smoke.js --runtime "$$root/runtime" --editors "$$tmp/editors" && \
+	    $(NODE) tools/orb-manager/web/runtime/_selftest/library-live.js --runtime "$$root/runtime" --editors "$$tmp/editors"; \
 	  rc=$$?; rm -rf "$$tmp"; exit $$rc
 
 ## check-runner: the migration runner, checked against a scratch editor in headless Chromium.

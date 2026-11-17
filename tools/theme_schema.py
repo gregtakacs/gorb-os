@@ -698,6 +698,36 @@ SOUND_ENC_ADPCM = 1          # blocked IMA ADPCM (main/audio/orb_adpcm.h), what 
 SOUND_ENCODINGS = (SOUND_ENC_PCM16, SOUND_ENC_ADPCM)
 ADPCM_BLOCK = 256            # samples a block decodes from its own header
 ADPCM_BLOCK_BYTES = 132      # 4 B header + 255 nibbles, padded
+# theme-cache-plan §2.6 and l0-design §5's answer 2 (owner, 2026-11-17): a theme's sounds are
+# its app's voice bank, and a bank holds ORB_VOICE_CAP bytes. The orb refuses one that does not
+# fit at install (main/art/orb_theme.c); a baker says it first, in these words. The layout is
+# main/art/orb_voice.h's — its head, its record a sound, and every sound padded even.
+VOICE_BANK_MAX = 1024 * 1024
+VOICE_HEAD_BYTES = 32
+VOICE_REC_BYTES = 24
+VOICE_BANK_SOUNDS = 16
+
+
+def voice_bank_bytes(sizes):
+    """The bytes a voice bank holds for sounds of these byte sizes: orb_voice.c's arithmetic
+    (a 32-byte head, a 24-byte record apiece, every sound padded even). `sizes` is a sequence
+    of sound plane byte counts, one per SOUND row. None for a set no bank can be."""
+    sizes = list(sizes)
+    if not sizes:
+        return 0
+    if len(sizes) > VOICE_BANK_SOUNDS:
+        return None
+    at = sum((int(b) + 1) & ~1 for b in sizes)
+    return VOICE_HEAD_BYTES + len(sizes) * VOICE_REC_BYTES + at
+
+
+def voice_bank_refusal(total):
+    """The refusal the baker gives, in KB of 1024 bytes rounded up. GorbBake.voiceBankRefusal
+    writes the same sentence, and tools/host_adpcm_test.py pins the two equal."""
+    kb = lambda n: format(-(-int(n) // 1024), ",d")
+    return ("this theme's sounds come to %s KB: an app's voice bank holds at most %s KB, "
+            "so it is %s KB over" % (kb(total), kb(VOICE_BANK_MAX), kb(total - VOICE_BANK_MAX)))
+
 
 ADPCM_STEP = (7, 8, 9, 10, 11, 12, 13, 14, 16, 17, 19, 21, 23, 25, 28, 31, 34, 37, 41, 45, 50,
               55, 60, 66, 73, 80, 88, 97, 107, 118, 130, 143, 157, 173, 190, 209, 230, 253, 279,
@@ -1421,6 +1451,7 @@ def check_clock_sounds(recs, sprites, second_sweep, tick_rate):
                              % (int(r["n"]), int(r["w"]), int(r["h"])))
         at[slot] = r
     pattern = None
+    sizes = []
     for slot in sorted(at):
         r = at[slot]
         off, size, w, h = sprites[int(r["frame0"])][:4]
@@ -1464,6 +1495,18 @@ def check_clock_sounds(recs, sprites, second_sweep, tick_rate):
         elif vmax or vmin:
             raise ValueError("sound slot %d carries a beat: only the tick loop has one"
                              % slot)
+        sizes.append(size)
+    # theme-cache-plan §2.6 and l0-design §5's answer 2 (owner, 2026-11-17): these rows are the
+    # app's voice bank the moment the orb installs the theme, and a bank holds 1 MB. The orb says
+    # so at install; a baker that knows the answer says it first, with the numbers. One record per
+    # row — two slots naming one plane still pay for two copies, as orb_voice.c lays them out.
+    # orbtheme-baker.js's checkClockSounds mirrors this, sentence for sentence.
+    total = voice_bank_bytes(sizes)
+    if total is None:
+        raise ValueError("%d sounds: a voice bank holds at most %d"
+                         % (len(sizes), VOICE_BANK_SOUNDS))
+    if total > VOICE_BANK_MAX:
+        raise ValueError(voice_bank_refusal(total))
     if pattern is not None:
         name = HOUR_PATTERNS[pattern]
         has = lambda n: CLOCK_SOUND_SLOTS.index(n) in at

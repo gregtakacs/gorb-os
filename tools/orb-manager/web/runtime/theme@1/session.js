@@ -57,8 +57,10 @@
   // GorbHost: the page sets window.GorbHost before the editor loads; with no GorbHost, or
   // kind "hub", nothing changes (the Orb Manager default). Under kind "web" the hub's paths
   // sit under another base and Send to orb becomes a download; editors read the flags (send,
-  // publish, inbox, assets, designIds) through OrbTheme.hostInfo() and never kind
-  // (orb-os-net design §6.3).
+  // publish, inbox, assets, designIds, files, library) through OrbTheme.hostInfo() and never
+  // kind (orb-os-net design §6.3). L1 (l1-design §4.1) adds the last two: `files` is whether a
+  // picker may take a file from this computer (the site's studio says no), `library` is whether
+  // "Your library" is offered — so an online editor browses the owner's assets and takes no file.
   // ---- GorbHost: keep this block byte-identical in theme@1/send.js and theme@1/session.js
   OrbTheme.hostInfo = OrbTheme.hostInfo || function () {
     var raw = root.GorbHost;
@@ -69,13 +71,84 @@
       !raw.api.split('/').some(function (s) { return s === '.' || s === '..'; })
       ? raw.api : (kind === 'web' ? '/studio-api' : '/api');
     var send = typeof raw.send === 'boolean' ? raw.send : kind === 'hub';
-    return Object.freeze({ kind: kind, api: api, send: send, publish: raw.publish === true, inbox: raw.inbox === true, assets: raw.assets === true, designIds: raw.designIds === true });
+    var files = typeof raw.files === 'boolean' ? raw.files : kind === 'hub';
+    return Object.freeze({ kind: kind, api: api, send: send, publish: raw.publish === true, inbox: raw.inbox === true, assets: raw.assets === true, designIds: raw.designIds === true, files: files, library: raw.library === true });
   };
   // a hub path, its leading api segment removed, at this host's base
   OrbTheme.hostUrl = OrbTheme.hostUrl || function (p) { return OrbTheme.hostInfo().api + p; };
   // ---- end GorbHost
   // the host's words: an editor passes the hub's sentence and the site's, and never reads kind
   OrbTheme.hostText = OrbTheme.hostText || function (hub, web) { return OrbTheme.hostInfo().kind === 'web' ? web : hub; };
+
+  /* ---- the owner's asset library (l1-design §4.2, ruling 42): the pictures and sounds their
+   * own designs already hold, listed by the host and fetched one at a time. A picker that takes
+   * one stores nothing new: the bytes come back as the same data URL a design already carries,
+   * checked against the hash the listing named. Both calls answer {ok:true,…} or
+   * {ok:false, message} and never throw, so a row can print the host's own sentence.
+   *
+   *   OrbTheme.library.list()        // → Promise<{ok:true, assets:[…]} | {ok:false, message}>
+   *   OrbTheme.library.pick(asset)   // → Promise<{ok:true, url, name, sha256, kind, mediaType} | {ok:false, message}>
+   */
+  OrbTheme.library = OrbTheme.library || (function () {
+    var SHA = /^[0-9a-f]{64}$/;
+    var UNREACHABLE = 'Your library could not be reached';   // the host gave no usable answer
+    var NOFILE = 'That asset could not be fetched';          // its bytes did not come
+    var PARTIAL = 'That asset did not arrive whole';         // they came as another file
+    // base64 and hex, the session's art-by-hash helpers' own ways: chunked, because a megabyte
+    // handed to one String.fromCharCode.apply is a stack overflow
+    var toB64 = function (bytes) {
+      var s = '', CH = 32768;
+      for (var i = 0; i < bytes.length; i += CH) s += String.fromCharCode.apply(null, bytes.subarray(i, i + CH));
+      return btoa(s);
+    };
+    var toHex = function (buf) { var u = new Uint8Array(buf), s = ''; for (var i = 0; i < u.length; i++) s += (u[i] < 16 ? '0' : '') + u[i].toString(16); return s; };
+    var bad = function (message) { return { ok: false, message: message }; };
+    // the listing's door, bound here: like its singular sibling /asset this is a site door
+    // (l1-hub-1-library-kit.md §4.1), and the hub's own door with the fixture step that records
+    // it lands in hub step 2 — until then its contract scan must not read this call as a hub ask.
+    var ASSETS = '/assets';
+    // the one shape a listing answers with; anything else is the same nothing
+    var held = function (a) {
+      return !!a && typeof a === 'object' && typeof a.sha256 === 'string' && SHA.test(a.sha256) &&
+        (a.kind === 'picture' || a.kind === 'sound') && typeof a.prefix === 'string' && a.prefix.slice(0, 5) === 'data:';
+    };
+    return {
+      /* the host's listing: GET /assets. The site's studio door answers {ok:true, data:{assets}}
+       * and Orb Manager's pass-through the same, so one reader serves both; an ok:false carries
+       * the sentence to show, a 401 says what to do about it, and no answer at all is this page's
+       * own sentence. An entry whose hash, kind or data prefix does not add up is dropped: it is
+       * not a file this picker can fetch or a slot this row can hold. */
+      list: async function () {
+        try {
+          var r = await fetch(OrbTheme.hostUrl(ASSETS), { cache: 'no-store' });
+          if (!r) return bad(UNREACHABLE);
+          if (r.status === 401) return bad('Sign in to use your library');
+          var j = null;
+          try { j = await r.json(); } catch (e) { j = null; }
+          if (j && typeof j === 'object' && j.ok === false)
+            return bad(typeof j.error === 'string' && j.error ? j.error : UNREACHABLE);
+          if (!r.ok || !j || typeof j !== 'object' || j.ok !== true || !j.data || !Array.isArray(j.data.assets))
+            return bad(UNREACHABLE);
+          return { ok: true, assets: j.data.assets.filter(held) };
+        } catch (e) { return bad(UNREACHABLE); }
+      },
+      /* one asset's bytes, by the hash the listing named: GET /asset?sha256=. The answer is the
+       * data URL the design holds — the listing's own prefix, the bytes freshly encoded — and it
+       * is kept only when those bytes hash to that sha256. */
+      pick: async function (asset) {
+        try {
+          var h = asset && typeof asset.sha256 === 'string' ? asset.sha256 : '';
+          if (!SHA.test(h) || !asset || typeof asset.prefix !== 'string' || asset.prefix.slice(0, 5) !== 'data:')
+            return bad(NOFILE);
+          var r = await fetch(OrbTheme.hostUrl('/asset?sha256=' + h));
+          if (!r || !r.ok) return bad(NOFILE);
+          var bytes = new Uint8Array(await r.arrayBuffer());
+          if (toHex(await crypto.subtle.digest('SHA-256', bytes)) !== h) return bad(PARTIAL);
+          return { ok: true, url: asset.prefix + ',' + toB64(bytes), name: asset.name, sha256: asset.sha256, kind: asset.kind, mediaType: asset.mediaType };
+        } catch (e) { return bad(NOFILE); }
+      },
+    };
+  })();
 
   // a file the browser saves: the one download every editor's export goes through
   OrbTheme.download = function (blob, name) {

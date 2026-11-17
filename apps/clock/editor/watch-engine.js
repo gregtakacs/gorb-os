@@ -323,7 +323,7 @@
           const stem = (file.name.replace(/\.[a-z0-9]+$/i, '').replace(/[^\w.-]+/g, '-') || 'art').slice(0, 40);
           const a = assetPut({ id: stem + '-' + sha.slice(0, 8), name: file.name, mime: kept ? 'image/svg+xml' : 'image/png', dataUrl: url, sha, w: r.width, h: r.height });
           assetLoad(a, () => a.missing ? res({ error: 'That ' + (kept ? 'SVG' : 'PNG') + ' could not be decoded: ' + file.name }) : res(a));
-        }, (er) => res({ error: String((er && er.message) || er || 'That file is not a picture this browser can read') + ': ' + file.name }));
+        }, (er) => res({ error: String((er && er.message) || er || 'That file is not a picture this browser can read: a picture must be PNG, JPEG, GIF, WebP or SVG that this browser can decode, at most 1024 × 1024 px') + ': ' + file.name }));
         return;
       }
       if (file.size > MAX_ASSET_BYTES) { res({ error: file.name + ' is ' + (file.size / 1024).toFixed(0) + ' KB; the limit is ' + (MAX_ASSET_BYTES / 1e6).toFixed(1) + ' MB' }); return; }
@@ -338,6 +338,28 @@
         assetLoad(a, () => a.missing ? res({ error: (svg ? 'That SVG could not be decoded' : 'That PNG could not be decoded') + ': ' + file.name }) : res(a));
       };
       rd.readAsDataURL(file);
+    });
+  }
+  /* L1 (§4.4, ruling 42): the same front door for a picture the owner's library holds. The pick
+   * already carries the bytes as a data URL and the SHA-256 the site names them by, so the only
+   * thing this does the upload does not is keep them EXACTLY as they arrived — no fitPicture, no
+   * re-draw, no SVG stamping, no re-encode. On the next save theme@1 turns that URL back into the
+   * same `orb-asset:<sha256>` the design holds and the site stores nothing new. The id is the pick's
+   * name and the first eight of its own sha256; the `sha` stays the engine's 8-hex digest of the
+   * bytes, computed the way the file path computes it. A mediaType the dial cannot hold, or a
+   * picture that will not decode, answers `{ error }` like a refused upload. */
+  function assetFromUrl(pick) {
+    return new Promise((res) => {
+      const url = pick && typeof pick.url === 'string' ? pick.url : '';
+      const mime = String((pick && pick.mediaType) || '');
+      const png = mime === 'image/png', svg = mime === 'image/svg+xml';
+      if (!url || url.slice(0, 5) !== 'data:') { res({ error: 'That library picture holds no bytes' }); return; }
+      if (!png && !svg) { res({ error: 'Accepted types are image/png and image/svg+xml (got ' + (mime || 'unknown') + ')' }); return; }
+      let sha = 'unread'; try { sha = sha32(bytesOf(url)); } catch (e) { }
+      const sha256 = String((pick && pick.sha256) || '');
+      const stem = (String(pick.name || 'art').replace(/\.[a-z0-9]+$/i, '').replace(/[^\w.-]+/g, '-') || 'art').slice(0, 40);
+      const a = assetPut({ id: stem + '-' + sha256.slice(0, 8), name: pick.name || stem, mime, dataUrl: url, sha });
+      assetLoad(a, () => a.missing ? res({ error: (svg ? 'That SVG could not be decoded' : 'That PNG could not be decoded') + ': ' + (pick.name || '') }) : res(a));
     });
   }
   const assetGet = (id) => (id ? ASSETS.get(id) || null : null);
@@ -5351,6 +5373,6 @@
     bankFrames: (f) => window.DialRenderer.bankFrames(f), gearTempo: (g) => (Math.abs(g - 7.5) < 0.01 ? 8 : Math.round(g)), LENSES, DIAL_COLORS, COLOR_GROUPS, PLATES, BEZEL, canonDesign, overlayOf, overlayWord, faceFit, SCALE_STYLES, SCALE_GAP, TRACK_OF, FIGURES, scaleFamily, scaleRadius, CAL_DIMS, HAND_DIMS, caseMetalOf: (o) => caseMetal(o), TYPEFACES, OPENWORK, SEC_STYLES, NEW_COMP, TRAINS, HAND_STYLES, HAND_FINISHES, COMP_TYPES, COMP_STYLES, FRAME_COLORS, SHOWS, NUMERALS, SURFACES, COLOR_NAMES, SHAPES, SIZE_RANGE, TURN, CASE_STYLES, CASE_METALS, GLASS_STYLES, HAND_SHOWS, MARKERS, WHEEL_SHOWS, WHEEL_DIGITS, WHEEL_SRC, wheelSpec, CUT_LIES, WHEEL_TICKS, TICK_POS, wheelTicks, WHEEL_RIMS, RIM_POS, wheelRims, WHEEL_FINISHES, INDEX_STYLES, INDEX_SPANS, FACE_SNAPS, normDeg, prime, _holePts: holePts, WHEEL_FORMS, WHEEL_FACES, WHEEL_STYLES, LEGIBLE, LEGIBLE_PX, legible, PANEL, MM_PER_PX, pxMm, REAL_CSS, REAL_Z, RULER_MM, realCss, rulerPx, screenInch, handParts, caseLayer, glassLayer, movement, face, compose, composeLayers, topLayer, liveSeq, faceReach, punchHoles, drawCage, handPreview, moonPhase, cycleDate, previewDate, PREVIEW_MOON, isHex, fmtDate, features, aimAngle, trainAngle, tune, wb: whiteBalance, wbData, FONT_NAME, FONTS, FLARE_ICONS, IMAGES,
     // uploaded art: the registry the composer persists, and the two draw helpers
     // (drawAsset for a placed backdrop, handSpriteAsset for a sprite-backed hand)
-    assetFromFile, assetGet, assetReady, assetKnown, assetFits, assetBytes, assetDump, assetRestore, assetDrop, assetClear,
+    assetFromFile, assetFromUrl, assetGet, assetReady, assetKnown, assetFits, assetBytes, assetDump, assetRestore, assetDrop, assetClear,
     drawAsset, artInDial, finishOver, finishTex, keyMask, KEY_TOL_DEF, seeThrough, artSnap, SEE_TOL_DEF, SEE_EDGE_DEF, FINISH_BLENDS, handSpriteAsset, artBox, caseOpenR, faceScale, dynScale, artClipR, PANEL_R, CASE_OPEN_MIN, CASE_OPEN_MAX, handHit, handAngle, handXY, handZeroDeg, MOTION_PATHS, CADENCES, DRIVE_DOM, motionOn, driveUnits, motionPose, slideGeom, easeOf, inkCentroidOf, sha256Of, assetBytesOf: bytesOf, ASSETS, INVISIBLE_ALPHA, MAX_ASSET_BYTES, ASSET_TOTAL_BYTES };
 })();

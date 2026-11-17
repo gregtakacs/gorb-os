@@ -6,7 +6,7 @@
 // back: its `body` is the data chunk as stored and its `pcm` the samples the orb will play. One
 // encoder, so the site's stored bytes, a download and the theme's voice bank are one sound, and the
 // baker's sound stage puts those stored bytes in the bank as they are instead of encoding again. The
-// bounds (10.0 s, 1 MiB) are exported for the doors that enforce them — the reader does not, so a
+// bounds (20.0 s, 1 MiB) are exported for the doors that enforce them — the reader does not, so a
 // chime someone recorded before L0 still opens. The last checks read the committed schema-1 fixtures:
 // they are what the unchanged editors write, and the site's pre-L0 tests reuse them.
 //
@@ -234,7 +234,7 @@ const AD = (o) => {                                                   // the orb
 
 // ---- the bounds (§2): the numbers, and who is allowed to enforce them ----------------------------
 {
-  ok(G.SOUND_MAX_S === 10 && G.SOUND_MAX_SAMPLES === 220500 && G.SOUND_MAX_BYTES === 1048576
+  ok(G.SOUND_MAX_S === 20 && G.SOUND_MAX_SAMPLES === 441000 && G.SOUND_MAX_BYTES === 1048576
     && G.SOUND_WAV_PREFIX === 'data:audio/wav;base64',
     "the bounds are the design's numbers",
     G.SOUND_MAX_S + ' s · ' + G.SOUND_MAX_SAMPLES + ' samples · ' + G.SOUND_MAX_BYTES + ' B · ' + G.SOUND_WAV_PREFIX);
@@ -252,6 +252,81 @@ const AD = (o) => {                                                   // the orb
     ' samples in ' + (44 + 2 * 600000) + ' B, past both');
   ok(G.soundRead(G.soundFile(long).url).n === long.length,
     'a file the site would refuse at the door still round-trips through the reader that opens a design');
+}
+
+// ---- the voice bank at the bake (owner, 2026-11-17: l0-design §5's answer 2) ----------------------
+{
+  /* The bank is the orb's own arithmetic (main/art/orb_voice.h): a 32-byte head, a 24-byte record
+   * apiece, and every sound's bytes padded even so the next one starts aligned. Worked by hand here
+   * for two sounds — one ADPCM, one PCM16 — rather than by calling the code under test. */
+  const HEAD = 32, REC = 24, CAP = 1024 * 1024;
+  const even = (b) => (b + 1) & ~1;
+  const nA = 2205, nB = 441;                                   // 0.1 s of ADPCM chime, 0.02 s of tick
+  const bA = Math.ceil(nA / 256) * 132, bB = 2 * nB;           // 1,188 B and 882 B, by the layout
+  ok(G.voiceBankBytes([{ enc: 1, n: nA }, { enc: 0, n: nB }]) === HEAD + 2 * REC + even(bA) + even(bB)
+    && G.voiceBankBytes([{ bytes: bA }, { bytes: bB }]) === G.voiceBankBytes([{ enc: 1, n: nA }, { enc: 0, n: nB }])
+    && G.voiceBankBytes([]) === 0 && G.voiceBankBytes([{ bytes: 3 }, { bytes: 3 }]) === HEAD + 2 * REC + 4 + 4,
+    "the bake's bank size is the orb's",
+    'two sounds: ' + HEAD + ' + 2×' + REC + ' + ' + bA + ' + ' + bB + ' = '
+    + G.voiceBankBytes([{ enc: 1, n: nA }, { enc: 0, n: nB }]) + ' B, and an odd plane rounds up');
+  ok(G.VOICE_BANK_MAX === CAP, 'the bound is ORB_VOICE_CAP, the orb’s own bank ceiling',
+    G.VOICE_BANK_MAX + ' B');
+
+  /* The smallest set that overruns: two clips of exactly SOUND_MAX_S samples carried as PCM16,
+   * which is what a bright, short-noise-free chime encodes to (882,044 B of file each, inside the
+   * 1 MB file bound — §2's numbers say one clip fits, two do not). They ride in as stored bytes, so
+   * the bake pays for exactly what the arithmetic says, with no encoder in the way. */
+  const n20 = G.SOUND_MAX_SAMPLES;
+  const pcm20 = () => ({ pcm: new Int16Array(n20), coded: { enc: 0, body: new Uint8Array(n20 * 2) } });
+  const over = G.voiceBankBytes([{ enc: 0, n: n20 }, { enc: 0, n: n20 }]);
+  const want = 'this theme\'s sounds come to ' + Math.ceil(over / 1024).toLocaleString('en-US')
+    + ' KB: an app\'s voice bank holds at most 1,024 KB, so it is '
+    + Math.ceil((over - CAP) / 1024).toLocaleString('en-US') + ' KB over';
+  ok(over === CAP + 715504 && G.voiceBankRefusal(over) === want,
+    'the refusal states both numbers, rounded up in kilobytes', want);
+  const tooMany = [{ slot: 1, ...pcm20() }, { slot: 2, ...pcm20() }];
+  let why = 'accepted';
+  try { G.stage3({}).sounds(tooMany, { pattern: 'none' }); } catch (e) { why = e.message; }
+  ok(why === want, 'the bake refuses a voice bank over 1 MB with its numbers', why);
+  const many = [];
+  for (let k = 0; k < 17; k++) many.push({ enc: 0, n: 8 });
+  ok(G.voiceBankBytes(many) === null && G.voiceBankBytes([{ enc: 0, n: 8 }]) === HEAD + REC + 16,
+    'and a bank is a bank: seventeen records is not one, and one record is its own head',
+    '17 → ' + G.voiceBankBytes(many) + ' · 1 → ' + G.voiceBankBytes([{ enc: 0, n: 8 }]) + ' B');
+
+  /* Exactly the limit bakes: the same two PCM16 clips at 262,124 samples each, which is the
+   * bank's ceiling to the byte (32 + 48 + 4 × 262,124 = 1,048,576), and one sample fewer would not. */
+  const nFit = (CAP - HEAD - 2 * REC) / 4;
+  const fitClip = (slot, seed) => { const pcm = new Int16Array(nFit), body = new Uint8Array(nFit * 2);
+    pcm[0] = seed; body[0] = (seed * 2) & 0xff; body[1] = (seed * 2) >> 8; return { slot, pcm, coded: { enc: 0, body } }; };
+  const fits = [fitClip(3, 1), fitClip(4, 2)];
+  const F = G.stage3({});
+  let fmsg = '';
+  try { F.sounds(fits, { pattern: 'none' }); } catch (e) { fmsg = e.message; }
+  ok(!fmsg && G.voiceBankBytes([{ enc: 0, n: nFit }, { enc: 0, n: nFit }]) === CAP
+    && F.bank.sprites.length === 2 && F.bank.size === 2 * nFit * 2,
+    'a voice bank of exactly the limit bakes',
+    fmsg || ('two clips of ' + nFit.toLocaleString('en-US') + ' samples (' + (nFit / SR).toFixed(3)
+      + ' s) = ' + CAP.toLocaleString('en-US') + ' B, one sample fewer is under it'));
+  const nOne = nFit + 1;
+  let gmsg = '';
+  try { G.stage3({}).sounds([{ slot: 3, pcm: new Int16Array(nOne), coded: { enc: 0, body: new Uint8Array(nOne * 2) } },
+    fitClip(4, 3)], { pattern: 'none' }); } catch (e) { gmsg = e.message; }
+  ok(gmsg.indexOf('so it is 1 KB over') > 0, 'one sample past the limit is refused, and by 1 KB',
+    gmsg || 'accepted');
+
+  // the refusal is the bake's, not only the helper's: the clock's own layer throws it too
+  const flat = (w, h, rgb) => { const r = new Uint8Array(w * h * 4); for (let i = 0; i < w * h; i++) r.set([rgb[0], rgb[1], rgb[2], 255], i * 4); return { w, h, rgba: r }; };
+  const hand = Object.assign(flat(9, 120, [220, 200, 120]), { slot: 0, x: 229, y: 123, pivot_x: 4, pivot_y: 110 });
+  const base = { name: 'Big Bank', serial: 2, bakedMs: 1, plate: flat(466, 466, [20, 30, 40]), hands: [hand], order: [0],
+    scalars: { second_sweep: 0, tick_rate: 1 } };
+  let cmsg = '';
+  try {
+    G.bakeClock3(Object.assign({}, base, { sounds: [Object.assign({}, tooMany[0], { slot: 'chime_hour' }),
+      Object.assign({}, tooMany[1], { slot: 'chime_q1' })] }));
+  } catch (e) { cmsg = e.message; }
+  ok(cmsg === want, 'the clock’s layer refuses it with the same sentence, before the bytes are written',
+    cmsg.slice(0, 160));
 }
 
 // ---- the baker bakes a stored sound as it is ----------------------------------------------------
@@ -318,7 +393,7 @@ const AD = (o) => {                                                   // the orb
   const why = [];
   for (const [name, slot, p, cd, want] of rejs) {
     try { D.sounds([{ slot, pcm: p, coded: cd }]); why.push(name + ': accepted'); }
-    catch (e) { if (e.message !== want) why.push(name + ': ' + e.message); }
+    catch (e) { if (e.message.slice(0, want.length) !== want) why.push(name + ': ' + e.message); }
   }
   ok(!why.length && D.bank.size === before && D.bank.sprites.length === 0,
     'a stored sound with the wrong byte count is refused',

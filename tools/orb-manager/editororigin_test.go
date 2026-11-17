@@ -480,6 +480,10 @@ func TestEditorAPIOnlyTheListedRoutes(t *testing.T) {
 		{http.MethodGet, "/api/theme/upload-status", http.MethodPost},
 		{http.MethodGet, "/api/site/bundle", http.MethodPost},
 		{http.MethodPost, "/api/site/keep", http.MethodGet},
+		// L1: the library doors are mounted here too, for every editor token — the wrong
+		// verb proves the mount, and the right one reaches the link check whatever it says.
+		{http.MethodGet, "/api/assets", http.MethodPost},
+		{http.MethodGet, "/api/asset", http.MethodPost},
 		{http.MethodGet, "/api/maps/source", http.MethodPost},
 		{http.MethodGet, "/api/maps/fetch", http.MethodPost},
 	}

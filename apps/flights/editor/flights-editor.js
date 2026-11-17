@@ -264,7 +264,7 @@
       if (sc.ground === 'image') fields.push(K.Fi('Picture', function (e) {
         var f = e.target.files && e.target.files[0]; if (!f) return;
         readPicture(f, 932).then(function (v) { upd('scope.image', v); }, function (er) { say('Not read: ' + er.message); });
-      }, sc.image ? 'cut to fill the glass' : 'none yet'));
+      }, sc.image ? 'cut to fill the glass' : 'none yet', null, function (pk) { upd('scope.image', pk.url); }));
       if (sc.ground !== 'image') fields.push(C(sc.ground === 'brass' ? 'Enamel' : sc.ground === 'chart' || sc.ground === 'sectional' ? 'Paper' : sc.ground === 'galaxy' ? 'Space' : 'Face', 'scope.face'));
       if (dLabel) fields.push(C(dLabel, 'scope.detail'));
       if (sc.ground === 'galaxy') fields.push(onOff('Stars', 'scope.grid', 'Dense', 'Sparse'));
@@ -440,7 +440,10 @@
         fields.push(K.Fi('Picture', function (e) {
           var f = e.target.files && e.target.files[0]; if (!f) return;
           readPicture(f, 192).then(function (v) { upd('planes.custom.image', v); say('Your plane: one picture for every aircraft, turned to its track'); }, function (er) { say('Not read: ' + er.message); });
-        }, p.custom && p.custom.image ? 'drawn pointing up, nose to the top' : 'none yet: PNG, SVG or WebP, nose up', 'image/png,image/svg+xml,image/webp'));
+        }, p.custom && p.custom.image ? 'drawn pointing up, nose to the top' : 'none yet: PNG, SVG or WebP, nose up', 'image/png,image/svg+xml,image/webp', function (pk) {
+          upd('planes.custom.image', pk.url);
+          say('Your plane: one picture for every aircraft, turned to its track');
+        }));
         fields.push(K.Nt('', 'Your own picture is one plane for every aircraft: categories need a family’s drawings.'));
       } else fields.push(K.Nt('', p.form === 'single' ? a.families[p.family].single : a.families[p.family].band));
       fields.push(num('Size', 'planes.size', 30, 48, 1, function (v) { return (v * T.screen.MM_PER_PX).toFixed(1) + ' mm'; }));
@@ -520,7 +523,7 @@
         fields.push(K.Fi('Picture', function (e) {
           var f = e.target.files && e.target.files[0]; if (!f) return;
           readPicture(f, 1200).then(function (v) { upd('frames.image', v); }, function (er) { say('Not read: ' + er.message); });
-        }, Fr.image ? 'cut in nine to every frame' : 'none yet', 'image/png,image/svg+xml,image/webp'));
+        }, Fr.image ? 'cut in nine to every frame' : 'none yet', 'image/png,image/svg+xml,image/webp', function (pk) { upd('frames.image', pk.url); }));
         fields.push(K.Nt('', 'Best: a PNG about ' + fit[0] + ' × ' + fit[1] + ' px (three times the card), its corners in the outer sixth. The corners keep their shape; the edges and middle stretch to the card.'));
         fields.push(num('Corners', 'frames.corner', 4, 32, 1, function (v) { return v + ' px'; }));
         fields.push(num('Opacity', 'frames.opacity', 0.3, 1, 0.02, pct));

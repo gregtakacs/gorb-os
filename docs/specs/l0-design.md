@@ -59,7 +59,7 @@ sum, pinned by `tools/host_adpcm_test.py`). An app's voice bank holds at most 1 
 |---|---|---|
 | format | RIFF/WAVE holding either PCM16 (format tag 1, 16 bits, block align 2) or the orb's ADPCM (tag 0x11, 4 bits, block align 132, 256 samples a block, a `fact` sample count), 1 channel | the two encodings the orb plays |
 | sample rate | exactly 22,050 Hz | `ORB_SOUND_RATE`, the engine's one rate |
-| length | at most 10.0 s = 220,500 samples | the longest clip rule an editor states (the clock's 10 s line; its 8 s loops and the pomodoro's 4 s fit inside) — **owner question 1** |
+| length | at most 20.0 s = 441,000 samples | **answered (owner, 2026-11-17)** — the longer line §5 question 1 offered; the editors' own clip rules (the clock's 8 s loops, the pomodoro's 4 s fit) stay inside it |
 | byte size | at most 1 MB = 1,048,576 bytes (the whole file) | `ORB_VOICE_CAP`: one sound can never be bigger than the bank that has to hold it |
 
 ## 3. The contract both repos share
@@ -172,8 +172,18 @@ orb-os-net (`l0-site-chain.json`):
    as the site's bound, and the clock now refuses a chime past 10 s at upload (it only warned
    before). Alternatives: 8 s (the longest hard limit today, refusing clock chimes of 8–10 s), or
    a longer line such as 20 s if the owner wants long chimes (1 MB still bounds the bytes).
+
+   **Answered (owner, 2026-11-17):** 20.0 s. The site's bound, the editors' upload doors and the
+   baker's `SOUND_MAX_S` are all 20.0 s = 441,000 samples. The editors' own clip rules — the
+   clock's 8 s loops and the pomodoro's 4.0 s fit — stay where they are, inside the new line.
 2. **Largest sound file: 1 MB**, the voice bank's cap (`ORB_VOICE_CAP`). At 10 s no sound gets near
    it (PCM16 is 441 KB, ADPCM 114 KB); it stops a file padded with extra chunks.
+
+   **Answered (owner, 2026-11-17):** the 1 MB file bound stays. At 20.0 s one clip still fits
+   (PCM16 is 882 KB, ADPCM 227 KB), but two long clips together can overrun the bank the orb
+   plays them from, so the bake now weighs the whole voice bank as `orb_voice.c` sizes it — head,
+   records, even-padded planes — and refuses a theme over 1,024 KB with its numbers (§2's byte
+   bound was always one file; this is the bank).
 3. **The ADPCM file is the orb's block layout under a standard-looking header** (tag 0x11 with
    `samplesPerBlock` 256, where a standard IMA-WAV block of 132 bytes holds 257). A desktop player
    that honours `samplesPerBlock` plays it with one stray sample per block; one that assumes 257

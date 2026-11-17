@@ -156,6 +156,28 @@
       c.say('“' + file.name + '” is ' + (pcm.length / SR()).toFixed(1) + ' s of chime for the ' + PHASE_TITLE[at] + '’s end');
     }, function (e) { c.say('Not taken: ' + (e && e.message ? e.message : e)); });
   }
+  // L1 (§4.4): a chime the owner's library holds. The pick's url is kept EXACTLY as it is —
+  // keep()'s verbatim path, no decode, no re-encode — so the next save names the same sha256
+  // the site already stores. What the kit's soundRead cannot read, or runs past the pomodoro's
+  // own 4.0 s bound, is refused in the same words the upload path uses, and nothing lands.
+  function takeLibrary(at, pk, c) {
+    var G = GB(), rd = G && G.soundRead(pk.url);
+    if (!rd || !rd.pcm || !rd.pcm.length) { c.say('Not taken: that sound can\'t be read'); return; }
+    var secs = rd.pcm.length / SR();
+    if (secs > B.UPLOAD_MAX_S) {
+      c.say('Not taken: “' + pk.name + '” is ' + secs.toFixed(1) + ' s: a pomodoro chime is at most ' + B.UPLOAD_MAX_S.toFixed(1) + ' s');
+      return;
+    }
+    c.set(function (d) {
+      var n = clone(d);
+      n.uploads = (d.uploads || []).slice();
+      n.uploads.push(keep(null, pk.name, null, pk.url));
+      n.chimes = Object.assign({}, d.chimes);
+      n.chimes[at] = { upload: n.uploads.length - 1 };
+      return n;
+    });
+    c.say('“' + pk.name + '” is ' + secs.toFixed(1) + ' s of chime for the ' + PHASE_TITLE[at] + '’s end');
+  }
 
   /* ---- what the editor refuses, before the author sends. The host prints this sentence in its
    * own bar, so it says what to do and never how the stack fell. ---- */
@@ -370,6 +392,7 @@
         set: function (k, v) { c.set(function (o) { return chimeSet(o, k, v); }); },
         uploads: uploadsFor(d),
         upload: function (k, f) { takeUpload(k, f, c); },
+        library: function (k, pk) { takeLibrary(k, pk, c); },
         play: play,
         stop: stopPlay
       }));

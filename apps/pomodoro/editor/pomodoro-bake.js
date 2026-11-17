@@ -786,7 +786,10 @@
       // and not in the sound stage after the plan has moved
       if (u && u.coded) { var cd = u.coded;
         if ((cd.enc !== 0 && cd.enc !== 1) || !cd.body || cd.body.length !== root.GorbBake.soundBytes(cd.enc, p.length))
-          throw new Error('upload ' + k + ' carries a stored sound whose bytes do not match its length'); } });
+          throw new Error('upload ' + k + ' carries a stored sound whose bytes do not match its length: '
+            + p.length.toLocaleString('en-US') + ' samples in encoding ' + cd.enc + ' are '
+            + root.GorbBake.soundBytes(cd.enc, p.length).toLocaleString('en-US') + ' B, and the file carries '
+            + (cd.body ? cd.body.length : 0).toLocaleString('en-US')); } });
   }
   function shrink(c, size) {
     var cur = c;

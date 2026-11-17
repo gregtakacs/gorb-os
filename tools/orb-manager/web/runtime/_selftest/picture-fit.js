@@ -181,18 +181,18 @@ try {
     let msg = 'no rejection at all';
     try { await F(new File([new TextEncoder().encode('this is a text file, not a picture')], 'x.png', { type: 'image/png' })); }
     catch (e) { msg = String((e && e.message) || e); }
-    note(msg === 'That file is not a picture this browser can read', '8. a text file named x.png is refused', msg);
+    note(msg === 'That file is not a picture this browser can read: a picture must be PNG, JPEG, GIF, WebP or SVG that this browser can decode, at most 1024 × 1024 px (a bigger raster is scaled to fit)', '8. a text file named x.png is refused', msg);
     // fu2-2 (ruling 35, as amended): under 10 bytes no raster can state a size, so the
     // picker refuses such a file before reading it — and a 10-byte one still gets read,
     // so the floor is the floor and not a new over-eager rejection.
     msg = 'no rejection at all';
     try { await F(new File([new TextEncoder().encode('PNG!')], 'tiny.png', { type: 'image/png' })); }
     catch (e) { msg = String((e && e.message) || e); }
-    note(msg === 'That file is not a picture this browser can read', '8a. a 4-byte file named tiny.png is refused before it is read', msg);
+    note(msg === 'That file is not a picture this browser can read: a picture must be PNG, JPEG, GIF, WebP or SVG that this browser can decode, at most 1024 × 1024 px (a bigger raster is scaled to fit)', '8a. a 4-byte file named tiny.png is refused before it is read', msg);
     msg = 'no rejection at all';
     try { await F(new File([new TextEncoder().encode('0123456789')], 'ten.png', { type: 'image/png' })); }
     catch (e) { msg = String((e && e.message) || e); }
-    note(msg === 'That file is not a picture this browser can read', '8b. a 10-byte file is read and refused as unreadable, not by the floor', msg);
+    note(msg === 'That file is not a picture this browser can read: a picture must be PNG, JPEG, GIF, WebP or SVG that this browser can decode, at most 1024 × 1024 px (a bigger raster is scaled to fit)', '8b. a 10-byte file is read and refused as unreadable, not by the floor', msg);
     const E = window.WatchEngine;
     if (!E || !E.assetFromFile) note(false, '9. the clock engine loaded', 'no window.WatchEngine.assetFromFile on the page');
     else {

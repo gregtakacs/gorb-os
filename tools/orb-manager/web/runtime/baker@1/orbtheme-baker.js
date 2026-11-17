@@ -2225,11 +2225,68 @@
    * bytes the voice bank holds and the bake needs no second encode. One encoder, always.
    * The bytes are canonical on purpose: the same samples always give the same file, so the same
    * sound is stored once across designs, remixes and re-saves. The bounds are §2's numbers — the
-   * OS caps neither a sound's length nor its bytes, so L0 sets 10.0 s and 1 MiB here, and the site
+   * OS caps neither a sound's length nor its bytes, so L0 sets them here — 20.0 s and 1 MiB, the
+   * owner's answer of 2026-11-17 to the length being the longest clip rule an editor states (it
+   * first took the clock's 10 s "long sound" line; see §5 question 1) — and the site
    * and an editor's upload door enforce them. soundRead deliberately does not: an editor opens the
    * design it was given, however long the chime its owner recorded in 2025 turns out to be. */
   var SOUND_WAV_PREFIX = 'data:audio/wav;base64';
-  var SOUND_MAX_S = 10, SOUND_MAX_SAMPLES = SOUND_MAX_S * SOUND_RATE, SOUND_MAX_BYTES = 1048576;
+  var SOUND_MAX_S = 20, SOUND_MAX_SAMPLES = SOUND_MAX_S * SOUND_RATE, SOUND_MAX_BYTES = 1048576;
+  /* The owner's answer to L0's question 2 (docs/specs/l0-design.md §5, 2026-11-17) is the other
+   * half of the 20 s line: 1 MB stays, so one clip of any allowed length still fits an app's voice
+   * bank — but three long chimes do not. The orb refuses that at install (main/art/orb_theme.c:
+   * "this theme's sounds are more than an app's voice bank holds (1 MB)"), and a theme the bake
+   * knows it cannot say yes to should hear it at the bake, with its numbers. The sum below is the
+   * orb's own sum: main/art/orb_voice.h's 32-byte head, its 24-byte record a sound, and every
+   * sound's bytes padded even so the next one starts aligned. A theme the bake passes is a theme
+   * the orb accepts, and the other way round. */
+  var VOICE_BANK_MAX = 1048576, VOICE_HEAD_BYTES = 32, VOICE_REC_BYTES = 24, VOICE_BANK_SOUNDS = 16;
+  /* The bank's bytes for a theme's sounds: one record per SOUND ROW — two slots naming one plane
+   * still pay for two copies, which is what the orb lays out — over the items a bake is given. An
+   * item says its size as {enc, n}, {bytes}, {coded: {enc, body}} or {pcm}; an item this cannot
+   * price is a null answer, never a guess. */
+  function voiceBankBytes(list) {
+    var items = list || [];
+    if (!items.length) return 0;
+    if (items.length > VOICE_BANK_SOUNDS) return null;
+    function price(it) {
+      if (!it) return null;
+      if (typeof it.bytes === 'number' && isFinite(it.bytes)) return it.bytes;
+      var cd = it.coded, enc = cd ? cd.enc : it.enc, n;
+      if (cd && cd.body) return cd.body.length;
+      if (typeof it.n === 'number') n = it.n;
+      else if (it.pcm) n = it.pcm.length;
+      else return null;
+      if (enc !== SOUND_ENC_PCM16 && enc !== SOUND_ENC_ADPCM) return null;
+      return soundBytes(enc, n);
+    }
+    var at = 0;
+    for (var i = 0; i < items.length; i++) {
+      var b = price(items[i]);
+      if (b === null || b < 2) return null;
+      at += (b + 1) & ~1;                                  // the next one even, as orb_voice.c does
+    }
+    return VOICE_HEAD_BYTES + items.length * VOICE_REC_BYTES + at;
+  }
+  /* The refusal, in KB of 1024 bytes and rounded up: an owner reads a bank's size, not its byte
+   * count, and both numbers are in the sentence — how much the theme's sounds are and by how much
+   * that is past what an app's bank holds. */
+  function voiceBankRefusal(total) {
+    var kb = function (n) { return Math.ceil(n / 1024).toLocaleString('en-US'); };
+    return 'this theme\'s sounds come to ' + kb(total) + ' KB: an app\'s voice bank holds at most '
+      + kb(VOICE_BANK_MAX) + ' KB, so it is ' + kb(total - VOICE_BANK_MAX) + ' KB over';
+  }
+  /* The rule, in one place: the bank a set of sound items makes must be one a bank holds. Both
+   * JS bake paths call it (stage3().sounds as it places its clips, checkClockSounds over the rows
+   * it is shown), and theme_schema.check_clock_sounds mirrors it. */
+  function voiceBankCheck(items) {
+    var total = voiceBankBytes(items);
+    if (total === null)
+      throw new Error((items || []).length + ' sounds: a voice bank holds at most ' + VOICE_BANK_SOUNDS);
+    if (total > VOICE_BANK_MAX)
+      throw new Error(voiceBankRefusal(total));
+    return total;
+  }
   /* §3.1's ADPCM average byte rate: 22,050 samples a second at 132 bytes per 256 of them. */
   var SOUND_ADPCM_BPS = Math.round(SOUND_RATE * ADPCM_BLOCK_BYTES / ADPCM_BLOCK);   // 11370
   /* base64 both ways, for node (which has had btoa/atob since 16) and the browser alike, and
@@ -2391,8 +2448,13 @@
   function codedClip(it, slot) {
     var cd = it.coded, n = it.pcm ? it.pcm.length : 0;
     if (!cd || (cd.enc !== SOUND_ENC_PCM16 && cd.enc !== SOUND_ENC_ADPCM) ||
-        !cd.body || cd.body.length !== soundBytes(cd.enc, n))
-      throw new Error('sound slot ' + slot + ' carries a stored sound whose bytes do not match its length');
+        !cd.body || cd.body.length !== soundBytes(cd.enc, n)) {
+      var num = function (v) { return (v | 0).toLocaleString('en-US'); };
+      throw new Error('sound slot ' + slot + ' carries a stored sound whose bytes do not match '
+        + 'its length: ' + num(n) + ' samples in encoding ' + (cd ? cd.enc : '\u2014')
+        + ' are ' + num(cd ? soundBytes(cd.enc, n) : 0) + ' B, and the file carries '
+        + num(cd && cd.body ? cd.body.length : 0));
+    }
     return cd;
   }
   function adpcmEncode(pcm) {
@@ -3724,7 +3786,7 @@
    * w, h}); the tick loop's beat is held against the section's seconds cadence.
    * Returns the hour pattern the rows agree on, or -1 when there are none. */
   function checkClockSounds(elems, sprites, secondSweep, tickRate) {
-    var at = {}, i, slot;
+    var at = {}, i, slot, bankSizes = [];
     for (i = 0; i < elems.length; i++) {
       var r = elems[i];
       if ((r['class'] | 0) !== CLASS_SOUND) continue;
@@ -3767,7 +3829,14 @@
       } else if (vmax || vmin) {
         throw new Error('sound slot ' + slot + ' carries a beat: only the tick loop has one');
       }
+      bankSizes.push({ bytes: sp.size });
     }
+    /* theme-cache-plan §2.6 and l0-design §5's answer 2 (owner, 2026-11-17): these rows are the
+     * app's voice bank the moment the orb installs the theme, and a bank holds 1 MB. The orb says
+     * so at install; a bake that knows the answer says it first, with the numbers. One record per
+     * row — two slots naming one plane still pay for two copies, as orb_voice.c lays them out.
+     * theme_schema.check_clock_sounds mirrors this, sentence for sentence. */
+    voiceBankCheck(bankSizes);
     if (pattern >= 0) {
       var has = function (n) { return !!at[SOUND_SLOTS.indexOf(n)]; }, name = HOUR_PATTERNS[pattern];
       if ((name === 'count' || name === 'ships_bells') && !has('strike_hour'))
@@ -4209,7 +4278,7 @@
       }
       // sort into slot order so the head layout is stable however the caller lists them
       var ordered = list.slice().sort(function (a, b) { return (a.slot | 0) - (b.slot | 0); });
-      var placed = [], encOut = [], rows = [], headB = bank.size;
+      var placed = [], encOut = [], rows = [], bankItems = [], headB = bank.size;
       var sameBytes = function (a, b) {
         for (var y = 0; y < a.length; y++) if (a[y] !== b[y]) return false;
         return true;
@@ -4239,7 +4308,11 @@
         }
         rows.push({ slot: s.slot | 0, frame0: plane.frame0, enc: plane.enc });
         encOut.push({ slot: s.slot | 0, enc: plane.enc, n: plane.n });
+        bankItems.push({ enc: plane.enc, n: plane.n });
       }
+      /* theme-cache-plan §2.6 and l0-design §5's answer 2: say it at the stage that has just
+       * paid for the bytes, so the refusal arrives before the sound list returns. */
+      voiceBankCheck(bankItems);
       headB = bank.size - headB;
       pendingSounds = { rows: rows, patIx: patIx, bytes: headB };
       return { bytes: headB, rows: rows.length, enc: encOut };
@@ -5891,6 +5964,9 @@
     SOUND_WAV_PREFIX: SOUND_WAV_PREFIX, SOUND_MAX_S: SOUND_MAX_S, SOUND_MAX_SAMPLES: SOUND_MAX_SAMPLES,
     SOUND_MAX_BYTES: SOUND_MAX_BYTES, soundFile: soundFile, soundFileUrl: soundFileUrl,
     soundRead: soundRead, soundPcm: soundPcm,
+    // l1-hub 5: the same answer's other half — an app's voice bank, sized the way orb_voice.c sizes
+    // it, and the bake's refusal when a theme's sounds are more than it holds.
+    VOICE_BANK_MAX: VOICE_BANK_MAX, voiceBankBytes: voiceBankBytes, voiceBankRefusal: voiceBankRefusal,
     synth: synth, SYNTH_HP: SYNTH_HP, SOUND_RATE: SOUND_RATE,
     checkClockSounds: checkClockSounds
   };

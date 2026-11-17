@@ -26,7 +26,9 @@ const B = require('../baker@1/orbtheme-baker.js');
 
 const ROOT = path.resolve(__dirname, '..', '..', '..', '..', '..');
 const OUT = process.env.ORBTHEM_VEC || '/tmp/orbtheme_vectors';
-const PY = process.env.PY || '/tmp/bakevenv/bin/python3';
+// the venv the header names, when it is there; a system python3 that can import
+// pillow and numpy (the worker image's python3-pil python3-numpy) serves the same.
+const PY = process.env.PY || (fs.existsSync('/tmp/bakevenv/bin/python3') ? '/tmp/bakevenv/bin/python3' : 'python3');
 let fails = 0, checked = 0;
 const ok = (c, n, x) => { checked++; console.log((c ? 'PASS ' : 'FAIL ') + n + (x ? '  [' + x + ']' : '')); if (!c) fails++; };
 const eq = (a, b, n) => ok(JSON.stringify(a) === JSON.stringify(b), n, JSON.stringify(a).slice(0, 90) + ' vs ' + JSON.stringify(b).slice(0, 90));
@@ -39,7 +41,7 @@ const hex = (u8) => Buffer.from(u8.buffer.slice(u8.byteOffset, u8.byteOffset + u
 const run = spawnSync(process.env.VEC_PY || PY, [path.join(__dirname, 'orbtheme_vectors.py'), OUT],
                       { encoding: 'utf8', maxBuffer: 1 << 26 });
 if (run.status !== 0) {
-  console.log('the reference vectors could not be produced:\n' + (run.stderr || run.stdout).split('\n').slice(0, 12).join('\n'));
+  console.log('the reference vectors could not be produced:\n' + String(run.stderr || run.stdout || (run.error && run.error.message) || 'no output').split('\n').slice(0, 12).join('\n'));
   console.log('0 checks run — install the bake venv (see the header) and re-run');
   process.exit(1);
 }

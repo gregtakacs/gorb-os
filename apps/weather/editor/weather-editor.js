@@ -333,7 +333,12 @@
           im.src = rd.result;
         };
         rd.readAsDataURL(fl);
-      }, P.img ? 'on the ground' : '', 'image/png,image/jpeg,image/webp,image/svg+xml'));
+      }, P.img ? 'on the ground' : '', 'image/png,image/jpeg,image/webp,image/svg+xml', function (pk) {
+        // L1 (§4.4): a library picture is stored exactly as the library holds it — the url the
+        // pick carries is what the design holds, no canvas, no JPEG, no resize.
+        upP({ img: pk.url, imgScale: 1, imgX: 0, imgY: 0 });
+        say('The picture is the ground: the look’s markings and the wear draw over it');
+      }));
       if (P.img) {
         var isc = P.imgScale == null ? 1 : +P.imgScale;
         fields.push(K.Rg('Zoom', isc, 1, 4, 0.05, function (v) { upP({ imgScale: +v }); }, isc.toFixed(2) + '×'));

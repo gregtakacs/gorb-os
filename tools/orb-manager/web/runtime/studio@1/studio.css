@@ -160,3 +160,18 @@ html,body{height:100%;overflow:hidden}
 .hs-pace{display:flex;flex-wrap:wrap;gap:2px 12px}
 .hs-pace>.ui-mut{flex-basis:100%}
 .hs-pace i{font-style:normal;color:var(--mut)}
+
+/* ---- LibraryPicker (S.LibraryPicker): the shared browse-from-library modal ---- */
+.st-lib { display: flex; flex-direction: column; gap: 8px; max-height: 70vh; }
+.st-lib p.st-lib-note { color: var(--mut); font-size: 13px; margin: 0; }
+.st-lib .st-lib-hint { color: var(--mut); font-size: 12px; margin: 0; }
+.st-lib .st-lib-err { color: var(--danger); font-size: 13px; margin: 0; }
+.st-lib-list { display: flex; flex-direction: column; gap: 4px; overflow-y: auto; margin: 0; padding: 0; list-style: none; }
+.st-lib-a { display: grid; grid-template-columns: 48px 1fr auto auto auto auto; gap: 10px; align-items: center; width: 100%; text-align: left; background: var(--card); color: var(--fg); border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px; }
+.st-lib-a:hover { border-color: var(--focus); }
+.st-lib-a img, .st-lib-th { width: 48px; height: 48px; object-fit: cover; border-radius: 6px; border: 1px solid var(--line); background: var(--well); }
+.st-lib-nm { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.st-lib-sz { color: var(--mut); font-size: 12px; }
+.st-lib-dim { color: var(--mut); font-size: 12px; }
+.st-lib-use { color: var(--mut); font-size: 12px; white-space: nowrap; }
+.st-lib-play { align-self: center; white-space: nowrap; }

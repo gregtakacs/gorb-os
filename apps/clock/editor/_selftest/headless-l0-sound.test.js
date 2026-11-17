@@ -249,21 +249,21 @@ async function upload(i, slot, secs, hz) {
       'and saving it again writes the name with nothing to read back');
   }
 
-  // ---- 9. the door §2 sets: 10.1 seconds is refused in words, 10.0 goes in ------------
+  // ---- 9. the door §2 sets, at the owner's answer: 20.1 seconds is refused in words, 19.9 goes in
   {
     const i = mkSession();
     const before = JSON.stringify(i.state.sounds.skeleton || null);
     const e0 = enc.file + enc.url + enc.encode;
-    const msg = await upload(i, 'chime_q1', 10.1, 220);
-    ok(msg === 'marche.wav is 10.1 s: a sound can be at most 10.0 s, so it was not taken'
+    const msg = await upload(i, 'chime_q1', 20.1, 220);
+    ok(msg === 'marche.wav is 20.1 s: a sound can be at most 20.0 s, so it was not taken'
       && JSON.stringify(i.state.sounds.skeleton || null) === before && enc.file + enc.url + enc.encode === e0,
-      'a 10.1 s upload is refused with its length', msg);
-    const msg2 = await upload(i, 'chime_q1', 10.0, 220);
+      'a 20.1 s upload is refused with its length', msg);
+    const msg2 = await upload(i, 'chime_q1', 19.9, 220);
     const u = i.state.sounds.skeleton.up.chime_q1;
     const rd = G.soundRead(u.wav);
-    ok(/chime q1 \(10\.00 s, \d+ KB in the theme\)/.test(msg2) && u && u.loop === false && u.name === 'marche.wav'
+    ok(/chime q1 \(19\.90 s, \d+ KB in the theme\)/.test(msg2) && u && u.loop === false && u.name === 'marche.wav'
       && rd && rd.pcm.length === u.pcm.length && decibels(rd.pcm, u.pcm) === 0,
-      'and exactly ten seconds is taken, as one file', msg2);
+      'a 19.9 s upload is taken', msg2);
   }
 
   // ---- 10. the theme a pre-L0 design baked is the theme this one bakes ----------------

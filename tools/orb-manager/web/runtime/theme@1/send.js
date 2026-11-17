@@ -36,8 +36,10 @@
   // GorbHost: the page sets window.GorbHost before the editor loads; with no GorbHost, or
   // kind "hub", nothing changes (the Orb Manager default). Under kind "web" the hub's paths
   // sit under another base and Send to orb becomes a download; editors read the flags (send,
-  // publish, inbox, assets, designIds) through OrbTheme.hostInfo() and never kind
-  // (orb-os-net design §6.3).
+  // publish, inbox, assets, designIds, files, library) through OrbTheme.hostInfo() and never
+  // kind (orb-os-net design §6.3). L1 (l1-design §4.1) adds the last two: `files` is whether a
+  // picker may take a file from this computer (the site's studio says no), `library` is whether
+  // "Your library" is offered — so an online editor browses the owner's assets and takes no file.
   // ---- GorbHost: keep this block byte-identical in theme@1/send.js and theme@1/session.js
   OrbTheme.hostInfo = OrbTheme.hostInfo || function () {
     var raw = root.GorbHost;
@@ -48,7 +50,8 @@
       !raw.api.split('/').some(function (s) { return s === '.' || s === '..'; })
       ? raw.api : (kind === 'web' ? '/studio-api' : '/api');
     var send = typeof raw.send === 'boolean' ? raw.send : kind === 'hub';
-    return Object.freeze({ kind: kind, api: api, send: send, publish: raw.publish === true, inbox: raw.inbox === true, assets: raw.assets === true, designIds: raw.designIds === true });
+    var files = typeof raw.files === 'boolean' ? raw.files : kind === 'hub';
+    return Object.freeze({ kind: kind, api: api, send: send, publish: raw.publish === true, inbox: raw.inbox === true, assets: raw.assets === true, designIds: raw.designIds === true, files: files, library: raw.library === true });
   };
   // a hub path, its leading api segment removed, at this host's base
   OrbTheme.hostUrl = OrbTheme.hostUrl || function (p) { return OrbTheme.hostInfo().api + p; };

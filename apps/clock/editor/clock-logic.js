@@ -730,6 +730,18 @@ class Component extends DCLogic {
       this.setState({ status: a.name + ' → ' + slot + ' (' + a.kind + ', ' + (a.dataUrl.length / 1024).toFixed(0) + ' KB) · this session only until exported' });
     });
   }
+  /* L1 (§4.4): a picture taken from the owner's library, held to the same place an upload lands.
+   * The bytes go through WatchEngine.assetFromUrl (which keeps them verbatim) and then this is
+   * pickArt's tail exactly — apply the id, say the line — so a pick and a file read the same. */
+  pickLibraryArt(pick, slot, apply) {
+    const E = window.WatchEngine;
+    if (!pick || pick.ok === false || !pick.url) { this.setState({ status: (pick && pick.message) || 'That library picture was not usable' }); return; }
+    E.assetFromUrl(pick).then((a) => {
+      if (!a || a.error) { this.setState({ status: a && a.error ? a.error : 'That library picture was not usable' }); return; }
+      apply(a.id);
+      this.setState({ status: a.name + ' → ' + slot + ' (' + a.kind + ', ' + (a.dataUrl.length / 1024).toFixed(0) + ' KB) · this session only until exported' });
+    });
+  }
   resetTab(tab) {
     const drop = (keys) => this.setState((st) => { const c = { ...st.cfg }; keys.forEach((k) => delete c[k]); return { cfg: c }; });
     const P = this.preset(), say = (t) => this.setState({ status: t + ' reset' });
@@ -911,12 +923,22 @@ class Component extends DCLogic {
     const pcm = this.sndPcm(slot);
     this.sndStop();
     if (!pcm) { this.setState({ sndMsg: 'Nothing in ' + slot.replace('_', ' ') + ' to play' }); return; }
+    this.sndPlayPcm(pcm, slot === 'tick_loop', slot.replace(/_/g, ' '));
+  }
+  /* The clock's own play of a set of samples — the tail of sndPlay, split out (L1 §4.4) so
+   * the studio kit's library row can preview the file a pick names through the same speakers
+   * and the same orb-speaker floor. Samples arrive Int16 (a slot's clip, as sndPcm makes it)
+   * or Float32 (the kit's own decode of a picked file): the type says the scale. */
+  sndPlayPcm(pcm, loop, label) {
+    this.sndStop();
+    if (!pcm || !pcm.length) { this.setState({ sndMsg: 'Nothing to play' }); return; }
     const ctx = this.sndCtx(), SR = window.SoundEngine.SR;
+    const scale = pcm instanceof Float32Array || pcm instanceof Float64Array ? 1 : 1 / 32768;
     const buf = ctx.createBuffer(1, pcm.length, SR), ch = buf.getChannelData(0);
-    for (let i = 0; i < pcm.length; i++) ch[i] = pcm[i] / 32768;
+    for (let i = 0; i < pcm.length; i++) ch[i] = pcm[i] * scale;
     const src = ctx.createBufferSource();
     src.buffer = buf;
-    src.loop = slot === 'tick_loop';
+    src.loop = loop === true;
     let node = src;
     if (this.state.sndSim) {
       for (let k = 0; k < 2; k++) {
@@ -929,18 +951,19 @@ class Component extends DCLogic {
     if (ctx.state === 'suspended') ctx.resume();
     src.start();
     this._src = src;
-    this.setState({ sndMsg: 'Playing ' + slot.replace(/_/g, ' ') + (src.loop ? ' (looping — Stop to end)' : '') });
+    this.setState({ sndMsg: 'Playing ' + (label || 'sound') + (src.loop ? ' (looping — Stop to end)' : '') });
   }
   /* An owner's file for the chosen slot: any rate or channel count the browser decodes,
    * resampled to 22,050 Hz mono, trimmed, normalized to -1 dBFS and, unless the owner
    * turned it off, cut below 350 Hz. A tick shorter than half a second is one tick and
    * becomes a varied loop at the hand's rate; a longer one is a recorded loop, which is
    * trimmed to whole seconds, crossfaded at its seam, and refused if it does not beat at
-   * the rate the hand steps (§7 "uploaded ticks"). */
+   * the rate the hand steps (§7 "uploaded ticks"). L1 §4.4: everything after the decode
+   * lives in sndAdopt, which a library pick walks through too, so the rules exist once. */
   async sndUpload(e, slotArg) {
     const f = e && e.target && e.target.files && e.target.files[0];
     if (!f) return;
-    const slot = slotArg || 'tick_loop', SE = window.SoundEngine, SR = SE.SR;
+    const slot = slotArg || 'tick_loop', SR = window.SoundEngine.SR;
     try {
       const raw = await f.arrayBuffer();
       const dec = await this.sndCtx().decodeAudioData(raw.slice(0));
@@ -948,50 +971,84 @@ class Component extends DCLogic {
       const off = new OfflineAudioContext(1, n, SR), src = off.createBufferSource();
       src.buffer = dec; src.connect(off.destination); src.start();
       const ren = await off.startRendering(), x = Float64Array.from(ren.getChannelData(0));
-      /* L0 §2's bound, which the OS sets for every owner's sound: the resampled file is what would
-       * be taken, so a recording over it is refused here rather than trimmed into the theme. */
-      const GB = window.GorbBake;
-      if (GB && GB.SOUND_MAX_SAMPLES && x.length > GB.SOUND_MAX_SAMPLES) {
-        this.setState({ sndMsg: f.name + ' is ' + (x.length / SR).toFixed(1) + ' s: a sound can be at most '
-          + GB.SOUND_MAX_S.toFixed(1) + ' s, so it was not taken' });
-        return;
-      }
-      let pcm, kb = 0;
-      if (slot === 'tick_loop' && dec.duration >= 0.5) {
-        const secs = Math.min(SE.LOOP_S, Math.floor(x.length / SR));
-        if (secs < 1) throw new Error('a recorded loop needs at least one whole second');
-        /* The head blends with what followed the cut in the recording, so the wrap
-         * from the loop's last sample to its first is the recording's own join. */
-        const L = secs * SR, lp = x.slice(0, L), xf = Math.round(0.01 * SR);
-        for (let i = 0; i < xf; i++) {
-          const t = i / xf, after = L + i < x.length ? x[L + i] : lp[L - xf + i];
-          lp[i] = lp[i] * t + after * (1 - t);
-        }
-        const rate = this.sndBeatOf(lp, SR), want = this.sndRate();
-        if (!want.sweep && rate !== want.rate)
-          throw new Error('the recording beats ' + rate + ' times a second and the seconds hand steps ' + want.rate + ' — the sound would walk off the hand');
-        let first = 0, pk = 0;
-        for (const v of lp) pk = Math.max(pk, Math.abs(v));
-        while (first < lp.length && Math.abs(lp[first]) < pk * 0.3) first++;
-        first = first % Math.round(SR / rate);
-        pcm = SE.finishLoop(lp);                          // a loop always takes the circular floor
-        const file = this.sndTake(pcm); pcm = file.pcm;
-        this.sndUpd((d) => { d.tick = 'upload'; d.up.tick_loop = Object.assign({ name: f.name, pcm, loop: true, rate, first }, file.wav ? { wav: file.wav } : {}); });
-        kb = file.bytes;
-      } else {
-        pcm = this.state.sndCut ? SE.finish(x) : SE.finish(x, { raw: true });
-        const file = this.sndTake(pcm); pcm = file.pcm;
-        this.sndUpd((d) => {
-          d.up[slot] = Object.assign({ name: f.name, pcm, loop: false }, file.wav ? { wav: file.wav } : {});
-          if (slot === 'tick_loop') d.tick = 'upload'; else d.slots[slot] = 'upload';
-        });
-        kb = file.bytes;
-      }
-      const secs = pcm.length / SR;
-      this.setState({ sndMsg: f.name + ' → ' + slot.replace(/_/g, ' ') + ' (' + secs.toFixed(2) + ' s, ' + (kb / 1024).toFixed(0) + ' KB in the theme)' });
+      this.sndAdopt(x, slot, f.name);
     } catch (err) {
       this.setState({ sndMsg: 'Not used: ' + (err && err.message ? err.message : String(err)) });
     }
+  }
+  /* The shared post-decode path (L1 §4.4): normalised Float64 samples at the voice rate in, a
+   * slot entry and a status line out — the SOUND_MAX refusal, the tick's derived loop and the
+   * chime's finish all exactly as they sat under sndUpload. A library tick walks through here
+   * too (sndLibrary): the loop a tick needs is DERIVED from the sound (L0 §3.1), so it lands
+   * as a new file for a pick as it does for an upload, and the loop rules live in one copy.
+   * The tick-or-chime branch now measures the samples in hand rather than the decoder's
+   * declared duration — the same number to within the one sample the resample rounds to. */
+  sndAdopt(x, slot, name) {
+    const SE = window.SoundEngine, SR = SE.SR, GB = window.GorbBake;
+    /* L0 §2's bound, which the OS sets for every owner's sound: the resampled file is what would
+     * be taken, so a recording over it is refused here rather than trimmed into the theme. */
+    if (GB && GB.SOUND_MAX_SAMPLES && x.length > GB.SOUND_MAX_SAMPLES) {
+      this.setState({ sndMsg: name + ' is ' + (x.length / SR).toFixed(1) + ' s: a sound can be at most '
+        + GB.SOUND_MAX_S.toFixed(1) + ' s, so it was not taken' });
+      return;
+    }
+    let pcm, kb = 0;
+    if (slot === 'tick_loop' && x.length / SR >= 0.5) {
+      const secs = Math.min(SE.LOOP_S, Math.floor(x.length / SR));
+      if (secs < 1) throw new Error('a recorded loop needs at least one whole second');
+      /* The head blends with what followed the cut in the recording, so the wrap
+       * from the loop's last sample to its first is the recording's own join. */
+      const L = secs * SR, lp = x.slice(0, L), xf = Math.round(0.01 * SR);
+      for (let i = 0; i < xf; i++) {
+        const t = i / xf, after = L + i < x.length ? x[L + i] : lp[L - xf + i];
+        lp[i] = lp[i] * t + after * (1 - t);
+      }
+      const rate = this.sndBeatOf(lp, SR), want = this.sndRate();
+      if (!want.sweep && rate !== want.rate)
+        throw new Error('the recording beats ' + rate + ' times a second and the seconds hand steps ' + want.rate + ' — the sound would walk off the hand');
+      let first = 0, pk = 0;
+      for (const v of lp) pk = Math.max(pk, Math.abs(v));
+      while (first < lp.length && Math.abs(lp[first]) < pk * 0.3) first++;
+      first = first % Math.round(SR / rate);
+      pcm = SE.finishLoop(lp);                          // a loop always takes the circular floor
+      const file = this.sndTake(pcm); pcm = file.pcm;
+      this.sndUpd((d) => { d.tick = 'upload'; d.up.tick_loop = Object.assign({ name, pcm, loop: true, rate, first }, file.wav ? { wav: file.wav } : {}); });
+      kb = file.bytes;
+    } else {
+      pcm = this.state.sndCut ? SE.finish(x) : SE.finish(x, { raw: true });
+      const file = this.sndTake(pcm); pcm = file.pcm;
+      this.sndUpd((d) => {
+        d.up[slot] = Object.assign({ name, pcm, loop: false }, file.wav ? { wav: file.wav } : {});
+        if (slot === 'tick_loop') d.tick = 'upload'; else d.slots[slot] = 'upload';
+      });
+      kb = file.bytes;
+    }
+    const secs = pcm.length / SR;
+    this.setState({ sndMsg: name + ' → ' + slot.replace(/_/g, ' ') + ' (' + secs.toFixed(2) + ' s, ' + (kb / 1024).toFixed(0) + ' KB in the theme)' });
+  }
+  /* L1 (§4.4): a sound the owner's library holds, landed where the same file's upload would. A
+   * CHIME keeps the library's file verbatim: the url is the encoding theme@1 names it by on the
+   * next save, so it goes in untouched — no SE.finish, no sndTake, nothing re-encoded. A TICK
+   * is the exception by rule, not by taste: its loop is a construction from these samples, so
+   * it takes the shared post-decode path an upload takes and lands as the derived new file.
+   * The status line carries the same measured shape as the upload's. */
+  sndLibrary(pk, slot) {
+    const GB = window.GorbBake, SE = window.SoundEngine;
+    const rd = pk && pk.url && GB ? GB.soundRead(pk.url) : null;
+    if (!rd || !rd.pcm || !rd.pcm.length) { this.setState({ sndMsg: 'Not used: that sound can\'t be read' }); return; }
+    if (slot === 'tick_loop') {
+      try { this.sndAdopt(Float64Array.from(rd.pcm, (v) => v / 32768), slot, pk.name || 'library sound'); }
+      catch (err) { this.setState({ sndMsg: 'Not used: ' + (err && err.message ? err.message : String(err)) }); }
+      return;
+    }
+    const name = pk.name || 'library sound';
+    this.sndUpd((d) => {
+      d.up[slot] = { name, wav: pk.url, pcm: rd.pcm, loop: false };
+      d.slots[slot] = 'upload';
+    });
+    let kb = 0; try { kb = window.WatchEngine.assetBytesOf(pk.url).length; } catch (e) { kb = Math.round(String(pk.url).length * 0.75); }
+    const secs = rd.pcm.length / SE.SR;
+    this.setState({ sndMsg: name + ' → ' + slot.replace(/_/g, ' ') + ' (' + secs.toFixed(2) + ' s, ' + (kb / 1024).toFixed(0) + ' KB in the theme)' });
   }
   /* The beat of a recorded loop: the candidate rate whose period the onset envelope
    * repeats at most strongly. */
@@ -2366,7 +2423,7 @@ class Component extends DCLogic {
     if (!r.isMarker && !r.hasArt) F.push(Rg('Cap', r.capPx, 0, 16, 0.1, r.onCapPx, r.capPx ? r.capPx + 'px' : 'none'));
     F.push(Sl('Finish', selOf(r.finOpts, 'auto'), opts(r.finOpts), ev(r.onFinish)), Sl('Shading', selOf(r.shadeOpts, 'auto'), opts(r.shadeOpts), ev(r.onShade)),
       Sl('Lume', selOf(r.lumeOpts, 'auto'), opts(r.lumeOpts), ev(r.onLume)));
-    F.push(H('Artwork'), Fi('Picture', r.onArtFile, r.artLabel, 'image/png,image/svg+xml'), Nt('', r.artNote));
+    F.push(H('Artwork'), Fi('Picture', r.onArtFile, r.artLabel, 'image/png,image/svg+xml', r.onArtLib), Nt('', r.artNote));
     if (r.hasArt) {
       F.push(Cv('Pivot', r.artRef, 112, 96, r.onArtDown, r.onArtMove, 'Click or drag to set the pivot: the point the orb turns this hand about'),
         Rg('Facing', r.rot0, 0, 359, 1, (v) => r.onRot0({ target: { value: v } }), r.rot0 + '\u00b0'),
@@ -3878,7 +3935,8 @@ class Component extends DCLogic {
           selFields.push(Fi('Image', (e) => {
             const file = e.target.files && e.target.files[0]; if (!file) return;
             this.pickArt(file, partName(sel) + ' art', (id) => this.setComp(sel.id, { img: id }));
-          }, sel.img && E.assetReady(sel.img) ? 'loaded' : sel.img ? 'missing' : ''));
+          }, sel.img && E.assetReady(sel.img) ? 'loaded' : sel.img ? 'missing' : '', 'image/png,image/svg+xml',
+            (pk) => this.pickLibraryArt(pk, partName(sel) + ' art', (id) => this.setComp(sel.id, { img: id }))));
           const fa = sel.img && E.assetGet(sel.img);
           // the old wording promised the upload was gone at reload; it persists now, so
           // the line states what actually governs: the asset store, and the bundle
@@ -4120,7 +4178,12 @@ class Component extends DCLogic {
             const r = E.artSnap(aid, d[p + 'Fit'] || 'cover', null, d[p + 'Rot']);
             if (r && r.margin) { d[p + 'Size'] = r.size; d[p + 'X'] = r.x; d[p + 'Y'] = r.y; }
           }));
-        }, id ? (E.assetReady(id) ? 'loaded' : 'missing') : 'none yet')];
+        }, id ? (E.assetReady(id) ? 'loaded' : 'missing') : 'none yet', 'image/png,image/svg+xml',
+          (pk) => this.pickLibraryArt(pk, title.split(' · ')[0].toLowerCase(), (aid) => this.upd((d) => {
+            d[p + 'Art'] = aid;
+            const r = E.artSnap(aid, d[p + 'Fit'] || 'cover', null, d[p + 'Rot']);
+            if (r && r.margin) { d[p + 'Size'] = r.size; d[p + 'X'] = r.x; d[p + 'Y'] = r.y; }
+          })))];
       if (!id) { out.push(Nt('', blurb)); return out; }
       out.push(Sl('Fit', D[p + 'Fit'] || 'cover', [{ v: 'cover', label: 'Cover · fill the dial, crop the overflow' }, { v: 'contain', label: 'Contain · whole image inside the dial' }, { v: 'stretch', label: 'Stretch · ignore the aspect' }], ud(p + 'Fit')),
         Rg('Offset X', +D[p + 'X'] || 0, -220, 220, 1, ud(p + 'X'), (+D[p + 'X'] || 0) + 'px'),
@@ -4395,7 +4458,8 @@ class Component extends DCLogic {
         const u = sd.up[slot], secs = u && u.pcm ? u.pcm.length / SE.SR : 0;
         const ch = [{ v: 'p', label: '▶ ' + nice(slot) }, { v: 's', label: '■' }].concat(u ? [{ v: 'b', label: '↺ Back to built-in' }] : []);
         return [Ch('', '', ch, (v) => (v === 'p' ? this.sndPlay(slot) : v === 'b' ? this.sndUnupload(slot) : this.sndStop())),
-          Fi('Your own', (e) => this.sndUpload(e, slot), u ? u.name + ' · ' + secs.toFixed(1) + ' s' + (secs > this.SND_LONG_S ? ' · long' : '') : '', 'audio/*')];
+          Fi('Your own', (e) => this.sndUpload(e, slot), u ? u.name + ' · ' + secs.toFixed(1) + ' s' + (secs > this.SND_LONG_S ? ' · long' : '') : '', 'audio/*',
+            { pick: (pk) => this.sndLibrary(pk, slot), play: (pcm) => this.sndPlayPcm(pcm, false, 'picked sound') })];
       };
       const voices = Object.keys(SE.VOICES).filter((v) => {
         const r = SE.VOICES[v].rates;
@@ -4642,6 +4706,7 @@ class Component extends DCLogic {
           })(),
           artRef: this.cb('artEls', id, (i) => this.drawArtThumb(i)),
           onArtFile: (e) => { const file = e.target.files && e.target.files[0]; if (!file) return; this.pickArt(file, handLabel(id) + ' sprite', (aid) => this.setHand(id, { art: aid, pivotX: null, pivotY: null, rot0: null, zoom: null })); },
+          onArtLib: (pk) => this.pickLibraryArt(pk, handLabel(id) + ' sprite', (aid) => this.setHand(id, { art: aid, pivotX: null, pivotY: null, rot0: null, zoom: null })),
           onArtClear: () => this.setHand(id, { art: null, pivotX: null, pivotY: null, rot0: null, zoom: null }),
           // No lower clamp and no upper clamp: an arbour legitimately sits outside the
           // visible ink (a hand whose hub hides under a subdial, or one whose image

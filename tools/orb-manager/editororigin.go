@@ -210,16 +210,31 @@ func editorShim(token string) []byte {
 		"return XS.apply(s,arguments);};})();</script>")
 }
 
+// gorbHostHubScript is the second line an editor document gets, right after the shim,
+// while the hub holds a live site link: theme@1's hostInfo() reads window.GorbHost and
+// the library flag is what makes "Your library" appear in studio@1's file rows
+// (l1-design.md §4.1, §4.5). It is a constant — no request value goes into it — and it
+// rides only where the shim rides, because the documents that may ask for the library
+// are exactly the documents that can sign the ask. With no live link the insertion is
+// the shim alone and the document is byte-for-byte the unlinked one.
+var gorbHostHubScript = []byte(`<script>window.GorbHost={"kind":"hub","library":true}</script>`)
+
 // editorDoc hands an HTML document the editor listener serves the bytes it goes out as:
-// itself, with the shim first in its head. The template files are NOT edited —
-// host@1/page.html ships to orbs and to the migration runner, which refuses a template
-// action it does not know — so the insertion happens in the rendered bytes. An empty
-// slug means a request the guard never scoped, which is no document to sign.
+// itself, with the shim first in its head, and — while a live site link exists — the
+// GorbHost line naming this hub and its library right after the shim. The template files
+// are NOT edited — host@1/page.html ships to orbs and to the migration runner, which
+// refuses a template action it does not know — so the insertion happens in the rendered
+// bytes. An empty slug means a request the guard never scoped, which is no document to
+// sign.
 func (s *Server) editorDoc(slug string, body []byte) []byte {
 	if slug == "" {
 		return body
 	}
-	return insertEditorShim(body, editorShim(s.editorToken(slug)))
+	scripts := editorShim(s.editorToken(slug))
+	if s.liveSiteLink() != nil {
+		scripts = append(scripts, gorbHostHubScript...)
+	}
+	return insertEditorShim(body, scripts)
 }
 
 // insertEditorShim puts the script after the first <head ...> tag, after the doctype
@@ -576,6 +591,11 @@ func (s *Server) routesEditorListener(mux *http.ServeMux) {
 	// The site bundle an imported design bakes from, and the keep that files the bake.
 	mux.Handle("/api/site/bundle", editorMethod(http.MethodGet, s.editorScopeTicket(s.handleSiteBundle)))
 	mux.Handle("/api/site/keep", editorMethod(http.MethodPost, s.editorScopeTicket(s.handleSiteKeep)))
+	// The account's asset library (L1 §4.5): the list and one file's bytes, read through
+	// to the linked site's bearer doors. No app scope — the library is the account's, not
+	// an app's, and every editor token may open it (design §6's owner question 1).
+	mux.Handle("/api/assets", editorMethod(http.MethodGet, s.handleSiteAssets))
+	mux.Handle("/api/asset", editorMethod(http.MethodGet, s.handleSiteAsset))
 	// The map tool's source read and its tile relay. Setting the source stays a control
 	// act: an editor may fetch tiles, not point the hub at a tile server of its own.
 	mux.Handle("/api/maps/source", editorMethod(http.MethodGet, s.handleMapsSource))

@@ -40,6 +40,19 @@
     var T = root.OrbTheme;
     return !!(T && typeof T.hostInfo === 'function' && T.hostInfo().send === false);
   };
+  /* the host's two file flags (l1-design §4.1), read through theme@1's hostInfo like every other
+   * host flag: `files` is whether this editor may take a file from this computer at all, and
+   * `library` is whether the owner's own assets are offered beside it. With no theme@1 loaded —
+   * or a host that names neither — the editor is Orb Manager's, taking its own files and knowing
+   * no library, which is today's row exactly. */
+  var hostFlag = function (name, dflt) {
+    var T = root.OrbTheme, i = null;
+    if (!T || typeof T.hostInfo !== 'function') return dflt;
+    try { i = T.hostInfo(); } catch (e) { i = null; }
+    return i && typeof i[name] === 'boolean' ? i[name] : dflt;
+  };
+  var hostFiles = function () { return hostFlag('files', true); };
+  var hostLibrary = function () { return hostFlag('library', false); };
 
   // a segmented control: [{label, tip, cls, pick}]
   function Seg(p) {
@@ -369,6 +382,143 @@
         h('div', { className: 'st-mfoot' },
           h('button', { onClick: p.onCancel }, 'Cancel'),
           h('button', { className: 'ui-primary', onClick: p.onReplace }, 'Replace on the card'))));
+  };
+
+  /* ---- your library (l1-design §4.3, ruling 42): the modal a file row's "Your library…" button
+   * opens, and the only way an editor on the site takes a picture or a sound. It lists what
+   * OrbTheme.library.list() answers, kept to this row's kind and to the types this row accepts,
+   * and picking one hands the row those bytes exactly as the library holds them: nothing drawn
+   * smaller, nothing re-encoded, nothing stored again (§4.4). A picture's thumbnail is that same
+   * fetch, so what the row shows is what picking it gives.
+   * p: { open, kind: 'picture'|'sound', accept, onPick(pick), onClose(), play(pcm, name) }
+   * The three words a row prints, as one place so every picker prints them alike: */
+  var libSize = function (a) {
+    var n = Number(a && a.size);
+    if (!isFinite(n) || n < 0) return '';
+    if (n < 1024) return '< 1 KB';
+    if (n < 1048576) return Math.round(n / 1024) + ' KB';
+    return (n / 1048576).toFixed(1) + ' MB';
+  };
+  var libDim = function (a) {
+    if (!a) return '';
+    if (a.kind === 'sound') return typeof a.seconds === 'number' && isFinite(a.seconds) ? (Math.round(a.seconds * 10) / 10).toFixed(1) + ' s' : '';
+    var w = Number(a.width), h = Number(a.height);
+    return w > 0 && h > 0 ? Math.round(w) + ' × ' + Math.round(h) : '';
+  };
+  var libUses = function (a) {
+    var ds = list(a && a.designs), names = [];
+    ds.forEach(function (d) { if (d && typeof d.name === 'string' && d.name && names.length < 3) names.push(d.name); });
+    if (!names.length) return '';
+    var more = ds.length - names.length;
+    return 'In ' + names.join(', ') + (more > 0 ? ' +' + more : '');
+  };
+  S.LibraryPicker = function (p) {
+    var R = root.React;
+    var stS = R.useState(null), st = stS[0];              // null while opening, else {assets} or {error}
+    var thS = R.useState({}), thumbs = thS[0];            // sha256 → the data URL its thumbnail draws
+    var msgS = R.useState(''), msg = msgS[0];             // why the last press did not land
+    var asked = R.useRef({}), busy = R.useRef(false), listed = R.useRef(false), closer = R.useRef(null);
+    p = p || {};
+    if (!p.open) return null;
+    var LB = root.OrbTheme && root.OrbTheme.library;
+    var unreached = 'Your library could not be reached';
+    var kind = p.kind === 'sound' ? 'sound' : 'picture';
+    var want = String(p.accept || '').split(',').map(function (s) { return s.trim().toLowerCase(); }).filter(Boolean);
+
+    /* the listing, once per opening. The kit answers {ok:false, message} for every failure, so
+     * the body shows a sentence the host or the kit wrote and never a stack. */
+    R.useEffect(function () {
+      if (listed.current) return;
+      listed.current = true;
+      var go = LB && typeof LB.list === 'function' ? LB.list() : null;
+      var said = function (r) {
+        stS[1](r && r.ok ? { assets: list(r.assets) } : { error: (r && typeof r.message === 'string' && r.message) || unreached });
+      };
+      if (go && typeof go.then === 'function') go.then(said, function () { said({ ok: false, message: unreached }); });
+      else said({ ok: false, message: unreached });
+    }, []);
+    // Escape closes, the same way Cancel does, whoever has the focus
+    R.useEffect(function () { closer.current = p.onClose || null; });
+    R.useEffect(function () {
+      if (typeof root.addEventListener !== 'function') return undefined;
+      var key = function (e) { if (e && e.key === 'Escape' && closer.current) closer.current(); };
+      root.addEventListener('keydown', key);
+      return function () { if (typeof root.removeEventListener === 'function') root.removeEventListener('keydown', key); };
+    }, []);
+
+    var shown = st && st.assets ? st.assets.filter(function (a) {
+      if (!a || a.kind !== kind) return false;
+      if (!want.length) return true;
+      var t = String(a.mediaType || '').toLowerCase();
+      return want.some(function (w) { return w.slice(-2) === '/*' ? t.indexOf(w.slice(0, -1)) === 0 : t === w; });
+    }) : null;
+
+    /* a picture's thumbnail: fetched once per asset, because it IS the pick — the same bytes, the
+     * same hash check, the same URL the row would store. Until it lands the box stays empty. */
+    R.useEffect(function () {
+      if (!LB || typeof LB.pick !== 'function') return undefined;
+      list(shown).forEach(function (a) {
+        if (!a || a.kind !== 'picture' || asked.current[a.sha256]) return;
+        asked.current[a.sha256] = true;
+        LB.pick(a).then(function (r) {
+          if (!r || !r.ok) return;
+          thS[1](function (cur) { var n = Object.assign({}, cur); n[a.sha256] = r.url; return n; });
+        }, function () { /* no thumbnail: the row still says its name */ });
+      });
+      return undefined;
+    });
+
+    /* one press at a time: a second press while bytes are on their way is the same file asked
+     * for twice, and a row is picked once. A failure leaves the modal open with its sentence. */
+    var take = function (a) {
+      if (busy.current) return;
+      if (!LB || typeof LB.pick !== 'function') { msgS[1](unreached); return; }
+      busy.current = true;
+      LB.pick(a).then(function (r) {
+        busy.current = false;
+        if (r && r.ok) { if (p.onPick) p.onPick(r); if (p.onClose) p.onClose(); return; }
+        msgS[1]((r && typeof r.message === 'string' && r.message) || unreached);
+      }, function () { busy.current = false; msgS[1](unreached); });
+    };
+    // hearing a sound is the same fetch, read back through the baker and played by the app
+    var hear = function (a) {
+      if (busy.current || !p.play) return;
+      var G = root.GorbBake;
+      if (!LB || typeof LB.pick !== 'function' || !G || typeof G.soundRead !== 'function') { msgS[1](unreached); return; }
+      busy.current = true;
+      LB.pick(a).then(function (r) {
+        busy.current = false;
+        if (!r || !r.ok) { msgS[1]((r && typeof r.message === 'string' && r.message) || unreached); return; }
+        var rd = null;
+        try { rd = G.soundRead(r.url); } catch (e) { rd = null; }
+        if (!rd || !rd.pcm || !rd.pcm.length) { msgS[1]('That sound is not one the orb can play'); return; }
+        p.play(rd.pcm, r.name);
+      }, function () { busy.current = false; msgS[1](unreached); });
+    };
+    var row = function (a, i) {
+      var face = a.kind === 'sound'
+        ? (p.play ? h('button', { className: 'ui-ghost st-sm st-lib-play', title: 'Play it here first',
+            onClick: function (e) { if (e && e.stopPropagation) e.stopPropagation(); hear(a); } }, '▶ Play')
+          : h('span', { className: 'st-lib-th' }))
+        : (thumbs[a.sha256] ? h('img', { className: 'st-lib-th', src: thumbs[a.sha256], alt: '' }) : h('span', { className: 'st-lib-th' }));
+      return h('div', { key: String(a.sha256 || i), className: 'st-lib-a', role: 'button', tabIndex: 0,
+        title: 'Use it as it is', onClick: function () { take(a); },
+        onKeyDown: function (e) { if (e && e.key === 'Enter') take(a); } },
+        face, h('b', { className: 'st-lib-nm' }, String(a.name || '')),
+        h('span', { className: 'st-lib-sz ui-mono' }, libSize(a)),
+        h('span', { className: 'st-lib-dim ui-mono' }, libDim(a)),
+        h('span', { className: 'st-lib-use' }, libUses(a)));
+    };
+    return h('div', { className: 'st-modal', style: { zIndex: 65 }, onClick: p.onClose },
+      h('div', { className: 'st-lib', onClick: function (e) { if (e && e.stopPropagation) e.stopPropagation(); } },
+        h('div', { className: 'st-mtitle' }, 'Your library'),
+        !st ? h('div', { className: 'st-mbody' }, 'Opening your library…')
+          : st.error ? h('div', { className: 'st-mbody' }, st.error)
+            : !shown.length ? h('div', { className: 'st-mbody' }, kind === 'sound' ? 'No sounds in your library yet.' : 'No pictures in your library yet.')
+              : h('div', { className: 'st-mbody st-lib-list' }, shown.map(row)),
+        st && !st.error && !shown.length ? h('div', { className: 'st-hint' }, 'Add them on orb-os.net, under Assets.') : null,
+        msg ? h('div', { className: 'st-hint st-warn' }, msg) : null,
+        h('div', { className: 'st-mfoot' }, h('button', { onClick: p.onClose }, 'Cancel'))));
   };
 
   /* blocks: [{title, body, tip, over}] first, each a titled box (the live size, the frame rate)
@@ -738,7 +888,13 @@
     var quality = opts.quality == null ? 0.9 : +opts.quality;
     var src = String((file && file.type) || '').toLowerCase();
     return new Promise(function (ok, bad) {
-      var noPicture = function () { bad(new Error('That file is not a picture this browser can read')); };
+      var noPicture = function () {
+        /* l1-hub 5, contract 3: a format refusal names the formats, and the dimension bound the
+         * fit works to, in the sentence that refuses the file. */
+        bad(new Error('That file is not a picture this browser can read: a picture must be '
+          + 'PNG, JPEG, GIF, WebP or SVG that this browser can decode, at most '
+          + S.FIT_MAX + ' \u00d7 ' + S.FIT_MAX + ' px (a bigger raster is scaled to fit)'));
+      };
       if (!file || typeof FileReader === 'undefined' || !root.document) { noPicture(); return; }
       // fu2-2 (ruling 35, as amended): under 10 bytes no raster can state a size, so a
       // file that short is refused here, before it is read — a truncated download
@@ -796,6 +952,79 @@
       };
       rd.readAsDataURL(file);
     });
+  };
+
+  /* ---- picked sounds (L1, ruling 42, as l1-design §3.2 and §4.3 write it): the one helper a page
+   * calls with a sound its owner chose, the way fitPicture is the one for a picture. The orb plays
+   * exactly one kind of file — 22,050 Hz mono, encoded once by the baker — so a WAV that already is
+   * that file comes back byte for byte: re-encoding a sound the orb can already play only loses
+   * something. Anything else the browser can decode becomes that file, downmixed to mono and
+   * resampled by an OfflineAudioContext and written by GorbBake.soundFile — one encoder, the same
+   * one a design's chime goes through. Nothing here refuses a length or a weight: the site's shared
+   * check judges those, in its own sentences (l1-design §3.2), and a page that guessed first would
+   * only disagree with it. The editors' own upload paths do their own work still: this is the
+   * helper for a file that is on its way to the library rather than into one design.
+   * → Promise<{ dataUrl, seconds, samples, converted }> */
+  var b64of = function (bytes) {              // chunked: a megabyte in one apply is a stack overflow
+    var s = '', CH = 32768;
+    for (var i = 0; i < bytes.length; i += CH) s += String.fromCharCode.apply(null, bytes.subarray(i, i + CH));
+    return btoa(s);
+  };
+  S.fitSound = async function (file) {
+    var G = root.GorbBake, SR = (G && G.SOUND_RATE) || 22050;
+    /* Every refusal here names what a sound has to be (l1-hub 5, contract 3): the formats a
+     * browser can decode, the one rate the orb plays, and the length the owner set on 2026-11-17.
+     * The bound is read off the baker, whose SOUND_MAX_S is the one place it is written. */
+    var MUST = 'a sound must be audio the browser can decode (WAV, MP3, OGG \u2026), at most '
+      + (((G && G.SOUND_MAX_S) || 20).toFixed(1)) + ' s once converted';
+    var noSound = function () {
+      return new Error('That file is not a sound this browser can read: ' + MUST);
+    };
+    if (!file || typeof FileReader === 'undefined' || !G || !G.soundRead || !G.soundFile) throw noSound();
+    var bytes = await new Promise(function (ok, bad) {
+      var rd = new FileReader();
+      rd.onerror = function () { bad(noSound()); };
+      rd.onload = function () { ok(new Uint8Array(rd.result)); };
+      rd.readAsArrayBuffer(file);
+    });
+    if (!bytes || bytes.length < 12) throw noSound();   // no header in it: no orb can play it
+    var asIs = 'data:audio/wav;base64,' + b64of(bytes), rd = null;
+    try { rd = G.soundRead(asIs); } catch (e) { rd = null; }
+    if (rd && rd.pcm && rd.pcm.length)
+      return { dataUrl: asIs, seconds: rd.pcm.length / SR, samples: rd.pcm.length, converted: false };
+    var OC = root.OfflineAudioContext;
+    if (!OC) throw noSound();
+    // decoding runs on an OfflineAudioContext too: one that cannot open is a browser that
+    // cannot read the file either, and the one-file rule keeps the sentence. Offline means no
+    // sound device is ever asked for, which is also what a headless check needs.
+    var da = null, dec = null;
+    try { da = new OC(1, 1, SR); } catch (e) { da = null; }
+    if (!da) throw noSound();
+    try {
+      // decodeAudioData takes the buffer away, so it gets a copy of these bytes
+      dec = await da.decodeAudioData(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength));
+    } catch (e) { dec = null; }
+    try { await da.close(); } catch (e) { /* the decode ended it */ }   // one context in, one context out
+    if (!dec || !dec.length || !(dec.duration > 0)) throw noSound();
+    var n = Math.max(1, Math.ceil(dec.duration * SR)), off = new OC(1, n, SR), ren = null;
+    try {
+      var src = off.createBufferSource();
+      src.buffer = dec; src.connect(off.destination); src.start();
+      ren = await off.startRendering();
+    } catch (e) { ren = null; }
+    try { if (off.close) await off.close(); } catch (e) { /* rendering ended it */ }
+    if (!ren || !ren.length) throw noSound();
+    var ch = ren.getChannelData(0), pcm = new Int16Array(ren.length);
+    for (var i = 0; i < ren.length; i++) {
+      var v = ch[i];
+      v = v !== v ? 0 : v < -1 ? -1 : v > 1 ? 1 : v;   // the clamp, then the scale the baker expects
+      pcm[i] = Math.round(v * 32767);
+    }
+    if (pcm.length < 2) throw noSound();
+    var w = null;
+    try { w = G.soundFile(pcm); } catch (e) { w = null; }
+    if (!w || !w.url) throw noSound();
+    return { dataUrl: w.url, seconds: pcm.length / SR, samples: pcm.length, converted: true };
   };
 
   /* o: drafts (an object the app keeps, so a half-typed hex survives a render), refresh() (redraw
@@ -884,7 +1113,18 @@
     // a sample: `text` as it will read, style {color, background, fontFamily, fontSize, border}
     var Sa = function (label, text, style, note) { return mk({ label: label, isSample: true, value: text, style: style || {}, valText: note || '' }); };
     var Tx = function (label, value, onv) { return mk({ label: label, isText: true, value: value == null ? '' : String(value), on: function (e) { onv(e.target.value); } }); };
-    var Fi = function (label, onv, valText, accept) { return mk({ label: label, isFile: true, on: onv, valText: valText || '', accept: accept || 'image/png,image/svg+xml,image/jpeg,image/webp' }); };
+    /* a picked file (l1-design §4.3): the row every editor's picture and sound picker stands on.
+     * `lib` is how the owner's own library reaches it — a function (pick) or { pick: fn, play: fn }
+     * — and `kind` is what the row holds, read off the accept list, so the picker can offer only
+     * the assets this slot can hold. FieldRow draws the file input only when the host lets an
+     * editor take a file and the library button only when the host offers the library and `lib`
+     * is given: under the site a row with a library is a button, and a row with neither says its
+     * value and offers nothing. */
+    var Fi = function (label, onv, valText, accept, lib) {
+      var ac = accept || 'image/png,image/svg+xml,image/jpeg,image/webp';
+      return mk({ label: label, isFile: true, on: onv, valText: valText || '', accept: ac, lib: lib || null,
+        kind: String(ac).indexOf('audio/') >= 0 ? 'sound' : 'picture' });
+    };
     // a canvas the app draws into (a ref callback): a thumbnail to click or drag on
     var Cv = function (label, ref, size, css, onDown, onMove, tip) { return mk({ label: label, isCanvas: true, ref: ref, w: size, h: size, css: css || size, onDown: onDown, onMove: onMove, tip: tip || '' }); };
     // a reading: a value the author watches (a rate, a fit, a cost), always printed; its why rides as the hover
@@ -903,6 +1143,9 @@
   // one field row: its label (with the inherit link), its control, and its value
   function FieldRow(p) {
     var openS = root.React.useState(false), open = openS[0];
+    var libS = root.React.useState(false), libOpen = libS[0];        // this row's own library picker
+    var lib = p.f && p.f.isFile && p.f.lib ? (typeof p.f.lib === 'function' ? { pick: p.f.lib } : p.f.lib) : null;
+    var showLib = !!(lib && hostLibrary());
     var f = p.f, sw = function (x, i) { return h('button', { key: i, className: cx('st-sw', x.cls), onClick: x.pick, title: x.label, style: { background: x.bg, borderColor: x.bd } }, x.text); };
     /* a slider's reading: the number box already says the number (in px, degrees, a multiple
      * or a percentage of it), so only words ride, under the slider; nothing repeats it in a
@@ -936,14 +1179,27 @@
           h('input', { type: 'text', value: f.hexText, onChange: f.onHex, onBlur: f.onHexBlur, placeholder: '#rrggbb', title: f.hexTitle, style: { flex: '1 1 80px', fontFamily: 'var(--mono)' } }))
       : f.isSample ? h('div', { className: 'st-sample', style: f.style }, f.value)
       : f.isText ? h('input', { type: 'text', value: f.value, onChange: f.on })
-      : f.isFile ? h('input', { type: 'file', accept: f.accept, onChange: f.on })
+      : f.isFile ? (function () {
+          /* a file row (l1-design §4.3): the computer's picker only where the host lets an editor
+           * take a file, and "Your library…" wherever the host offers the library and the row can
+           * hold a pick. Under the site a row with a library is the button alone; a row with
+           * neither prints its value and offers nothing to press. */
+          var kids = [];
+          if (hostFiles()) kids.push(h('input', { type: 'file', accept: f.accept, onChange: f.on }));
+          if (showLib) kids.push(h('button', { className: 'ui-ghost st-sm', onClick: function () { libS[1](true); },
+            title: (f.kind === 'sound' ? 'Pick a sound' : 'Pick a picture') + ' from your orb-os.net library' }, 'Your library…'));
+          return kids.length ? h.apply(null, [root.React.Fragment, null].concat(kids)) : null;
+        })()
       : f.isCanvas ? h('canvas', { ref: f.ref, width: f.w, height: f.h, onMouseDown: f.onDown, onMouseMove: f.onMove, title: f.tip, className: 'st-cv', style: { width: f.css + 'px', height: f.css + 'px' } })
       : f.isNote ? h('span', { className: 'st-tip', title: f.note }, 'ⓘ') : null;
     return h('div', { className: cx('st-row', f.rowCls), 'data-a': f.anchor },
       h('label', { title: f.tip || f.label }, f.label, f.tip ? h('span', { className: 'st-tip' }, 'ⓘ') : null,
         f.hasLink ? h('span', { onClick: f.relink, title: f.linkTip, style: { color: f.linkFg, cursor: f.linkCursor } }, f.linkText) : null),
       h('div', { style: { minWidth: 0 } }, ctl, h('div', { className: 'st-cname' }, f.isRange ? capUnder : f.isColor && f.valText === f.hexText ? '' : f.valText)),
-      h('div', { className: 'st-val', title: f.valText }, f.valText));
+      h('div', { className: 'st-val', title: f.valText }, f.valText),
+      // the row's own picker: one at a time, however often the button is pressed
+      f.isFile && showLib && libOpen ? h(S.LibraryPicker, { open: true, kind: f.kind, accept: f.accept, play: lib && lib.play,
+        onPick: function (pk) { if (lib && lib.pick) lib.pick(pk); }, onClose: function () { libS[1](false); } }) : null);
   }
   // fields: the kit's rows; a slider keeps the value column, every other row reads its value under it.
   // A note is not printed (owner, 2026-11-04: the explanations were clutter): it becomes the
@@ -1074,7 +1330,7 @@
    * samples and the ADPCM bytes the samples will take in the theme. The generation is the
    * baker's (`GorbBake.synth`), the decoding lives here with the browser, and playback is the
    * app's (`o.play` / `o.stop`) so the kit itself never opens an AudioContext. Kit is the
-   * object from S.fieldKit(…); o: {recipes, slots, get, set, uploads, upload, play, stop}.
+   * object from S.fieldKit(…); o: {recipes, slots, get, set, uploads, upload, library, play, stop}.
    * An upload over 4.0 s is refused (the app's `o.upload` says so, naming the seconds), and a
    * pcm already pinned to full scale is called out — a warning row, never a refusal. */
   S.Sound = function (Kit, o) {
@@ -1117,10 +1373,13 @@
         if (v === 'stop') stop();
         else if (v === 'play' && pcm) play(pcm, nm);
       }));
-      // the owner's own upload
+      // the owner's own upload, and (L1, l1-design §4.3) the same file from their library: the
+      // pick arrives as the library holds it, so o.library is the only thing that knows where in
+      // the design it belongs. With no o.library the row is today's upload row and nothing more.
       rows.push(Kit.Fi('Your own', function (e) {
         if (o.upload && e && e.target && e.target.files && e.target.files[0]) o.upload(key, e.target.files[0]);
-      }, up ? up.name + ' · ' + (up.pcm.length / SR).toFixed(1) + ' s' : '', 'audio/*'));
+      }, up ? up.name + ' · ' + (up.pcm.length / SR).toFixed(1) + ' s' : '', 'audio/*',
+        typeof o.library === 'function' ? { pick: function (pk) { o.library(key, pk); }, play: o.play } : null));
       // the readout: seconds, samples, and the ADPCM bytes the theme will pay for them
       var rd = 'None';
       if (pcm) {

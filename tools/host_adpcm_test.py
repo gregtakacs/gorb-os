@@ -129,6 +129,20 @@ def js_encode(pcm):
     return bytes.fromhex(p.stdout)
 
 
+def js_bank(items):
+    """GorbBake.voiceBankBytes / voiceBankRefusal / VOICE_BANK_MAX, in one node call."""
+    js = ("const G=require(%s);"
+          "const items=JSON.parse(require('fs').readFileSync(0,'utf8'));"
+          "const size=G.voiceBankBytes(items.sizes.map(function (b) { return { bytes: b }; }));"
+          "process.stdout.write(JSON.stringify([size===null?'null':size,"
+          "size!==null?G.voiceBankRefusal(size):'',G.VOICE_BANK_MAX]));") % json.dumps(BAKER)
+    p = subprocess.run([NODE, "-e", js], input=json.dumps(items), capture_output=True, text=True)
+    if p.returncode:
+        raise SystemExit("node: " + p.stderr[-400:])
+    size, refusal, cap = json.loads(p.stdout)
+    return (None if size == "null" else size), refusal, cap
+
+
 def js_choose(pcm):
     js = ("const G=require(%s);const pcm=JSON.parse(require('fs').readFileSync(0,'utf8'));"
           "const r=G.soundEncode(pcm);process.stdout.write(r.enc+' '+Buffer.from(r.bytes).toString('hex'));"
@@ -193,6 +207,20 @@ def main():
               js_choose(pcm) == ts.sound_encode(pcm))
     check("3.9:1 against PCM16 for a whole block",
           ts.sound_bytes(ts.SOUND_ENC_ADPCM, 256) * 3.8 < ts.sound_bytes(ts.SOUND_ENC_PCM16, 256))
+    # l1-hub 5 (owner, 2026-11-17): the bank bound lives in both bakers, and the refusal is
+    # ONE sentence — the python half gives its sizes, the node half its bytes and its words.
+    if NODE:
+        sets = [[], [ts.sound_bytes(ts.SOUND_ENC_ADPCM, 2205), ts.sound_bytes(ts.SOUND_ENC_PCM16, 441)],
+                [ts.sound_bytes(ts.SOUND_ENC_PCM16, 8820)] * 2,
+                [ts.sound_bytes(ts.SOUND_ENC_ADPCM, n) for n in (256, 512, 1024, 2048, 4095)],
+                [ts.sound_bytes(ts.SOUND_ENC_PCM16, n) for n in (8,)] * 17]
+        agree = all(js_bank({"sizes": s})[0] == ts.voice_bank_bytes(s) for s in sets)
+        check("the bake sizes the bank as the schema does, empty to sixteen clips and past", agree)
+        over = [ts.sound_bytes(ts.SOUND_ENC_PCM16, 44100 * 20)] * 2       # two full 20 s clips
+        size, refusal, cap = js_bank({"sizes": over})
+        check("and the over-1 MB refusal is the same sentence in both bakers",
+              cap == ts.VOICE_BANK_MAX and size == ts.voice_bank_bytes(over)
+              and refusal == ts.voice_bank_refusal(size), refusal[:96])
     print("RESULT: %s" % ("pass" if not fails else "%d failed" % fails))
     return 1 if fails else 0
 

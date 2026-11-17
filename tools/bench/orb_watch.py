@@ -157,7 +157,7 @@ def main():
           % (cfg.get("ORB_LABEL"), ip, o["every"]), file=sys.stderr)
     try:
         while True:
-            st = get(base, "/api/v1/status")
+            st = get(base, "/api/v1/status?full=1")
             if st is None:
                 down += 1
                 if down in (1, 3, 10):

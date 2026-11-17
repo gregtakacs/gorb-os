@@ -88,7 +88,7 @@ static uint8_t s_ap_last_mac[6];    /* DIAGNOSTIC: the client we are watching */
 #include "orb_usb_mtp.h"   /* §13.3: the share window has no console, so status is its only witness */
 #include "orb_usb_msc.h"   /* D38 §14: same reason, other class — the field is the mode's witness */
 #endif
-#include "orb_app_scan.h"   /* h_apps: the /sd/apps listing and its disclosures */
+#include "orb_app_scan.h"   /* /api/v1/apps: the /sd/apps listing and its disclosures */
 #include "orb_app_install.h" /* h_apps_install: the POST that queues a card-to-flash copy */
 #include "orb_jobs.h"     /* h_sd: the job-busy witness the themes page polls after a press */
 #include "orb_log.h"      /* /api/v1/log + the status line's SD witness (§13.3) */
@@ -167,8 +167,7 @@ static const char *TAG = "orb_net";
  * places that touch the mode are the AP commands below. */
 enum { NET_CMD_CONNECT = 1,   /* retry esp_wifi_connect()                   */
        NET_CMD_JOIN,          /* apply credentials posted by /wifi/join      */
-       NET_CMD_AP_OPEN,       /* open the AP for a manual request           */
-       NET_CMD_AP_RESCUE,     /* open the AP because the creds are not working */
+       NET_CMD_RESCUE,        /* creds not working: reboot into setup (§66)   */
        NET_CMD_AP_HOLD,       /* AP already up: (re)arm its expiry            */
        NET_CMD_AP_EXPIRED,    /* close it, unless the STA still has no lease  */
        NET_CMD_SCAN,          /* start the async scan — driver calls, radio task */
@@ -265,8 +264,11 @@ static volatile bool s_ap_up;          /* SoftAP is actually broadcasting */
  * 157.5 s. The phone saw no SSID at all, which is how "I don't see the AP" was
  * produced twice. s_ap_hold_s is what the opener promised, so a short
  * backstop can never preempt a longer promise. */
-static volatile bool     s_ap_manual;
 static volatile uint32_t s_ap_hold_s;
+/* §66: this boot is a setup boot (no stored network, or a requested/rescue session).
+ * Set once by orb_net_start() before the radio runs; app_main reads the same answer
+ * earlier through orb_net_setup_boot(). The AP exists only in such a boot. */
+static bool s_setup_boot;
 static volatile int  s_rssi = -999;
 static char          s_ip[16] = "";
 
@@ -805,16 +807,14 @@ static void net_mode_load(void)
     s_mode[0] = '\0';
     size_t sz = sizeof(s_mode);
     if (nvs_get_str(s_nvs, NET_MODE_KEY, s_mode, &sz) != ESP_OK) s_mode[0] = '\0';
-    if (strcmp(s_mode, "ap") != 0) s_mode[0] = '\0';   /* only "ap" is a distinct mode */
-}
-
-bool orb_net_ap_isolated(void)
-{
-#if CONFIG_ORB_NET_AP_ISOLATED
-    return s_mode[0] == 'a';   /* "ap" */
-#else
-    return false;              /* mode feature compiled out; never report isolation */
-#endif
+    if (strcmp(s_mode, "ap") != 0) { s_mode[0] = '\0'; return; }
+    /* §66: the persistent AP-only mode is gone. A board that stored it is migrated
+     * once, loudly — it changes behaviour under its owner, so it says so. */
+    nvs_erase_key(s_nvs, NET_MODE_KEY);
+    nvs_commit(s_nvs);
+    s_mode[0] = '\0';
+    ESP_LOGW(TAG, "mode: the stored AP-isolated mode was cleared (the orb is a network "
+                  "device; the hotspot is only for setup)");
 }
 
 /* Validate, persist, mirror — the net_tz_set()/net_name_set() order, and it changes
@@ -823,9 +823,9 @@ bool orb_net_ap_isolated(void)
 static const char *net_mode_set(const char *mode)
 {
     bool to_ap = false;
-    if (!strcmp(mode, "ap")) to_ap = true;
+    if (!strcmp(mode, "ap")) return "the orb is a network device; the AP-only mode is gone";
     else if (!strcmp(mode, "sta") || !mode[0]) to_ap = false;
-    else return "mode must be 'ap' or 'sta'";
+    else return "mode must be 'sta'";
     if (to_ap) {
         if (nvs_set_str(s_nvs, NET_MODE_KEY, "ap") != ESP_OK) return "mode not stored (nvs)";
     } else {
@@ -1298,103 +1298,24 @@ static void ap_fill_config(wifi_config_t *ap)
     ap->ap.max_connection = 2;
 }
 
-/* RADIO TASK ONLY. */
-static void ap_open(uint32_t hold_s, const char *why)
+/* Declare the AP a captive portal — RFC 8910 DHCP option 114 — so a joined phone
+ * prompts instead of sitting on a network it silently grades "no internet". The
+ * probes and their 302 (h_captive) and the DNS responder already exist; this removes
+ * the dependence on each vendor's probe heuristic. Options are writable only with the
+ * server stopped, and the default AP glue starts it on netif ATTACH only, so the
+ * server is restarted here (measured: without the restart the AP had no DHCP at all).
+ * Called once, by the setup boot that creates the AP (§66: the AP exists only there;
+ * the runtime open this used to live in is gone). */
+static void ap_portal_option(void)
 {
-    if (!s_ap_netif) {
-        s_ap_netif = esp_netif_create_default_wifi_ap();
-        if (!s_ap_netif) { ESP_LOGE(TAG, "ap netif: out of memory"); return; }
-    }
-
-    /* Declare ourselves a captive portal — RFC 8910 DHCP option 114 — so a joined
-     * phone prompts instead of sitting on a network it silently grades "no
-     * internet". The probes and their 302 (h_captive) and the DNS responder
-     * already exist; this removes the dependence on each vendor's probe
-     * heuristic, which is what let a phone report "connected" with no prompt
-     * while holding a valid lease. Options are writable only with the server
-     * stopped; the default AP glue starts it again on WIFI_EVENT_AP_START. */
-    {
-        static const char portal_uri[] = "http://192.168.4.1/";
-        esp_netif_dhcps_stop(s_ap_netif);   /* already-stopped is expected here */
-        const esp_err_t oe = esp_netif_dhcps_option(
-            s_ap_netif, ESP_NETIF_OP_SET, ESP_NETIF_CAPTIVEPORTAL_URI,
-            (void *)portal_uri, sizeof(portal_uri) - 1);
-        /* Restart it ourselves. The default AP glue starts the server on netif
-         * ATTACH only — esp_netif_lwip_defaults.c has no AP_START handler that
-         * does it — so stopping it here to write the option would otherwise leave
-         * the AP with no DHCP server at all, which is exactly what the first
-         * restart-path test measured. Measured before the fix: option 114 logged
-         * OK, no `DHCP server started` line, phone got nothing. */
-        const esp_err_t se = esp_netif_dhcps_start(s_ap_netif);
-        ESP_LOGI(TAG, "ap open (%s): DHCP option 114 -> %s (server restart %s)", why,
-                 oe == ESP_OK ? portal_uri : esp_err_to_name(oe), esp_err_to_name(se));
-    }
-    wifi_config_t ap;
-    ap_fill_config(&ap);
-
-    /* Late promotion (set_mode on a running driver) is the ONE thing here that
-     * still needs the buffer trim above. Measured 2026-10-13: calling
-     * esp_wifi_disconnect() first does not help -- it frees general heap
-     * (free=12791 largest=7168 at the probe) while the static RX EBs stay carved
-     * since esp_wifi_init -- and set_mode(APSTA) still dies with
-     * `alloc eb len=752 type=4 fail` -> Guru in ieee80211_hostap. That 752 B
-     * type=4 EB is the beacon itself (the driver logs `Init max length of beacon:
-     * 752/752`), so static-rx=6 rather than 10 is what leaves it a slot.
-     *
-     * What this is NOT: a fix for the clean-flash boot loop. Bench 2026-10-26
-     * showed the boot-provisioning AP dies with the same `alloc eb len=752
-     * type=4 fail` -> Guru even with this trim in place and dma_free=4207 — that
-     * path is a cold-start pool race inside esp_wifi_start(), fixed separately in
-     * orb_net_start (provisioning now boots WIFI_MODE_AP; see prov_promote_apsta).
-     * The trim here only protects THIS runtime late promotion. */
-    if (esp_wifi_set_mode(WIFI_MODE_APSTA) != ESP_OK) {
-        ESP_LOGE(TAG, "ap open (%s): set_mode(APSTA) failed", why);
-        return;
-    }
-
-    /* Ask the driver what it is already carrying before writing anything.
-     * esp_wifi_set_config() on a RUNNING softAP is a restart, not an update, so
-     * writing it here unconditionally is what made every open in the earlier
-     * builds log AP_START twice and start the DHCP server twice (30261/30267 in
-     * the bench log). Beyond the noise, that restart deauths whoever is already
-     * attached — and the whole point of this AP is that a phone is sitting on it
-     * while its owner fills in the config page. The profile is deterministic
-     * (SSID from the MAC, open, channel 1), so once the driver holds it, it
-     * holds it: the write is only needed the first time after boot. */
-    wifi_config_t chk;
-    memset(&chk, 0, sizeof(chk));
-    const bool current =
-        esp_wifi_get_config(WIFI_IF_AP, &chk) == ESP_OK &&
-        chk.ap.ssid_len == ap.ap.ssid_len &&
-        chk.ap.channel  == ap.ap.channel &&
-        chk.ap.authmode == ap.ap.authmode &&
-        strcmp((const char *)chk.ap.ssid, (const char *)ap.ap.ssid) == 0;
-
-    if (!current) {
-        /* Deliberately no early return on failure: the AP IS up either way and
-         * must still have its expiry armed below, or a refused write would leak
-         * the AP open forever — the one failure this whole design forbids. */
-        if (esp_wifi_set_config(WIFI_IF_AP, &ap) != ESP_OK) {
-            ESP_LOGE(TAG, "ap open (%s): set_config failed — AP may advertise the "
-                          "driver default SSID", why);
-        } else {
-            /* Read it back rather than trust the write, for the same reason: a
-             * device on the wall advertising "espressif" instead of "orb-xxxxxx"
-             * is invisible to every check that runs on the device, and only the
-             * person holding the phone would notice it. */
-            wifi_config_t rb;
-            memset(&rb, 0, sizeof(rb));
-            if (esp_wifi_get_config(WIFI_IF_AP, &rb) == ESP_OK &&
-                strcmp((const char *)rb.ap.ssid, (const char *)ap.ap.ssid) != 0)
-                ESP_LOGE(TAG, "ap open (%s): SSID is \"%s\", not \"%s\"",
-                         why, (const char *)rb.ap.ssid, (const char *)ap.ap.ssid);
-        }
-    }
-
-    s_ap_hold_s = hold_s;     /* the promise NET_CMD_AP_HOLD must not break */
-    arm_oneshot(s_ap_timer, hold_s, "ap expiry");
-    ESP_LOGW(TAG, "SoftAP \"%s\" OPEN (%s) — join it, then open http://192.168.4.1/"
-                  " (%u s hold)", (const char *)ap.ap.ssid, why, (unsigned)hold_s);
+    static const char portal_uri[] = "http://192.168.4.1/";
+    esp_netif_dhcps_stop(s_ap_netif);   /* already-stopped is expected here */
+    const esp_err_t oe = esp_netif_dhcps_option(
+        s_ap_netif, ESP_NETIF_OP_SET, ESP_NETIF_CAPTIVEPORTAL_URI,
+        (void *)portal_uri, sizeof(portal_uri) - 1);
+    const esp_err_t se = esp_netif_dhcps_start(s_ap_netif);
+    ESP_LOGI(TAG, "setup AP: DHCP option 114 -> %s (server restart %s)",
+             oe == ESP_OK ? portal_uri : esp_err_to_name(oe), esp_err_to_name(se));
 }
 
 /* Provisioning boots the SoftAP alone — see orb_net_start(). A clean flash takes
@@ -1441,6 +1362,16 @@ static void ap_close(const char *why)
         return;
     }
     ESP_LOGI(TAG, "SoftAP down (%s)", why);
+    if (s_setup_boot) {
+        /* §66: setup ends at its one door, a lease. Nothing of the dial was started
+         * in this boot, so it is started the only clean way: a reboot into the normal
+         * branch. The credential write the lease authorised was posted to this same
+         * queue at on_ip(), ahead of the close, so it has already landed. */
+        ESP_LOGW(TAG, "setup done (%s): rebooting into the dial", why);
+        vTaskDelay(pdMS_TO_TICKS(300));      /* the page's close request gets its reply */
+        orb_svc_note_clean_reboot();
+        esp_restart();
+    }
 }
 
 /* --------------------------------------------------------------------------
@@ -1802,26 +1733,26 @@ static void net_task_loop(void *arg)
             pend_clear();
             break;
 
-        case NET_CMD_AP_OPEN:
-            /* A human asked for this AP, so it gets the hold the page promised. */
-            s_ap_manual = true;
-            ap_open((uint32_t)m.arg, "requested from the config page");
-            break;
-
-        case NET_CMD_AP_RESCUE:
-            s_ap_manual = false;   /* a door, not a request: the lease may close it */
-            ap_open((uint32_t)m.arg, "credentials not working");
+        case NET_CMD_RESCUE:
+            /* §66: the hotspot is a setup mode, never a door beside a running dial.
+             * Stored credentials keep being refused, so the orb reboots into one
+             * recovery setup boot (QR on the glass, nothing else loaded). That boot
+             * keeps the stored network as its fallback and its sojourn reboots back
+             * here after CONFIG_ORB_NET_PROV_SOJOURN_S, so an outage alternates a
+             * normal boot (which retries) with a setup boot (which offers the phone
+             * door) rather than parking the orb on either. The intent is set here,
+             * by the device, on purpose: the sojourn's own reboot never sets it, so
+             * the two can only alternate, never loop setup into setup. */
+            ESP_LOGW(TAG, "rescue: the stored network refused %u times; rebooting into "
+                          "setup", (unsigned)s_assoc_fails);
+            if (orb_net_request_provisioning()) {
+                orb_svc_note_clean_reboot();
+                esp_restart();
+            }
             break;
 
         case NET_CMD_AP_HOLD:
-            /* The lease backstop must never shorten a hold a user was promised.
-             * See the s_ap_manual note: this is the line that ate the manual AP
-             * at 120 s, twice, while the phone was still in the owner's pocket. */
-            if (s_ap_up && s_ap_manual && (uint32_t)m.arg < s_ap_hold_s) {
-                ESP_LOGI(TAG, "SoftAP hold kept at %u s (manual request beats the "
-                              "%u s lease backstop)",
-                         (unsigned)s_ap_hold_s, (unsigned)m.arg);
-            } else if (s_ap_up) {
+            if (s_ap_up) {
                 arm_oneshot(s_ap_timer, (uint32_t)m.arg, "ap expiry");
             }
             break;
@@ -2072,19 +2003,13 @@ static void on_wifi(void *arg, esp_event_base_t base, int32_t id, void *data)
                               (unsigned)delay);
         s_retry_pending = true;
         arm_oneshot(s_retry_timer, delay, "retry");
-        /* Credentials exist but are not working. Past the threshold, open the
-         * provisioning AP ALONGSIDE the retries: under APSTA the station can
-         * still associate (see the boot-path comment on exactly this), so a
-         * network that comes back on its own is still taken automatically while
-         * the door stays open for a phone. Without this the only exit from a
-         * changed router passphrase is serial + an NVS erase. */
-        if (refused && !s_ap_up && CONFIG_ORB_NET_AP_RESCUE_FAILS > 0 &&
-            attempt >= (unsigned)CONFIG_ORB_NET_AP_RESCUE_FAILS)
-            /* NET_CMD_AP_RESCUE, not NET_CMD_AP_OPEN: the two open the radio the
-             * same way but the log line differs, and "requested from the config
-             * page" next to an AP nobody asked for is exactly the misleading
-             * provenance a support call gets stuck on. */
-            net_post(NET_CMD_AP_RESCUE, NET_AP_RECHECK_S);
+        /* Credentials exist but are not working. Past the threshold the orb reboots
+         * into setup (NET_CMD_RESCUE, §66) so a phone can give it the new pair; a
+         * setup boot itself never rescues (it is already the door). Without this the
+         * only exit from a changed router passphrase is serial + an NVS erase. */
+        if (refused && !s_setup_boot && CONFIG_ORB_NET_AP_RESCUE_FAILS > 0 &&
+            attempt == (unsigned)CONFIG_ORB_NET_AP_RESCUE_FAILS)
+            net_post(NET_CMD_RESCUE, 0);
         break;
     }
 
@@ -2121,7 +2046,6 @@ static void on_wifi(void *arg, esp_event_base_t base, int32_t id, void *data)
         /* The driver's word that the AP is really gone, which is what makes
          * ap_close()'s early return honest. */
         s_ap_up = false;
-        s_ap_manual = false;    /* the promise expired with the AP, not before it */
         s_ap_hold_s = 0;
 #if CONFIG_ORB_NET_CAPTIVE_DNS
         dns_stop();                  /* the AP is down; take its resolver with it */
@@ -2369,7 +2293,7 @@ static esp_err_t h_status(httpd_req_t *req)
      * near 1123 B, which leaves about 410 B in this frame. Quote a range, never
      * one number: the width tracks uptime and recent drops. The frame grew from
      * 512 through 640 and 960 as fields joined it, and every addition was
-     * re-measured with `curl -s ORB/api/v1/status | wc -c`, never added up here.
+     * re-measured with `curl -s "ORB/api/v1/status?full=1" | wc -c`, never added up here.
      *
      * The "name" field is the one whose width a measurement cannot pin, because
      * the operator chooses it: the field costs 10 B unnamed and 42 B at the
@@ -2380,7 +2304,7 @@ static esp_err_t h_status(httpd_req_t *req)
      * headroom, and 36 B below the ~1165 B this comment estimated before the bench
      * run. Re-measure the same way when a field joins the frame: set a 32-character
      * name with `curl -X POST -d '{"name":"nnn…"}' ORB/api/v1/name`, then count
-     * `curl -s ORB/api/v1/status | wc -c`, and quote a range rather than one number
+     * `curl -s "ORB/api/v1/status?full=1" | wc -c`, and quote a range rather than one number
      * because the width still tracks uptime and recent drops.
      *
      * The fw field grew when the image began carrying a declared version rather than
@@ -2498,6 +2422,62 @@ static esp_err_t h_status(httpd_req_t *req)
     static char *panic_json;
     if (!panic_json) panic_json = heap_caps_malloc(PANIC_JSON_BYTES, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (panic_json) (void)orb_panic_json(panic_json, PANIC_JSON_BYTES);
+
+    /* The chip's BASE MAC, not the SoftAP one. esp_read_mac(ESP_MAC_WIFI_SOFTAP)
+     * returns base+1 on this target (mac_addr.c:366-387 derives it as memcpy(base)
+     * then mac[5] += 1, live because CONFIG_ESP_MAC_ADDR_UNIVERSE_WIFI_AP=y), and
+     * both of the hub's join keys are BASE: the USB serial-number descriptor
+     * (esprom/usbclass.go:22-25) and the flasher's eFuse read
+     * (esprom/commands.go:222-231, ROM targets/esp32s3.py). Reporting
+     * SOFTAP here would miss every cable/LAN correlation by one in the last
+     * octet, and would look entirely healthy on a bench with no radio. Lowercase
+     * hex with no separators, so the wire form is stable and the hub only has to
+     * canonicalize case. Empty on the impossible read failure, which the hub
+     * treats as "unidentified" rather than matching every other empty MAC. */
+    uint8_t base_mac[6] = { 0 };
+    char mac_str[13] = { 0 };
+    if (esp_read_mac(base_mac, ESP_MAC_BASE) == ESP_OK) {
+        snprintf(mac_str, sizeof(mac_str), "%02x%02x%02x%02x%02x%02x",
+                 base_mac[0], base_mac[1], base_mac[2],
+                 base_mac[3], base_mac[4], base_mac[5]);
+    }
+
+    /* app-platform-plan §65.4: the plain read is the hub's, and only what the hub reads.
+     * Every byte sent is copied into internal-RAM TCP segments until it is acked, and
+     * the full body (3.1 KB with seven apps) was mostly bench counters nobody on the
+     * hub decodes (orbnet.Status, the page's fw/state/rssi/name/mac). The bench asks
+     * for the full body with ?full=1; every field below is in both, in this order. */
+    bool full = false;
+    {
+        char q[32], v[4];
+        full = httpd_req_get_url_query_str(req, q, sizeof q) == ESP_OK &&
+               httpd_query_key_value(q, "full", v, sizeof v) == ESP_OK && v[0] == '1';
+    }
+    if (!full) {
+        const int sn = snprintf(json, sizeof(json),
+            "{\"state\":\"%s\",\"ip\":\"%s\",\"mac\":\"%s\",\"rssi\":%d,\"fw\":\"%s\","
+            "\"idf\":\"%s\",\"art_ready\":%s,\"art_bytes\":%u,\"slot\":\"%s\",\"img\":\"%s\","
+            "\"synced\":%s,\"epoch\":%lld,\"tz\":\"%s\",\"tz_offset\":%d,\"name\":\"%s\","
+            "\"ap\":%s,\"assoc_fails\":%u,\"wifi_reason\":%u,\"wifi_reason_name\":\"%s\","
+            "\"rst\":%d,\"rst_name\":\"%s\"}",
+            s_sta_up      ? "connected"    :
+            s_joining     ? "joining"      :
+            s_provisioning ? "provisioning" : "down",
+            s_ip, mac_str, rssi, app->version, app->idf_ver,
+            art_bank_ready() ? "true" : "false", (unsigned)art_bank_bytes(),
+            (slot ? slot->label : "?"), img_str,
+            s_time_synced ? "true" : "false", (long long)now,
+            s_tz[0] ? s_tz : "UTC", tz_offset_min(now), s_name,
+            s_ap_up ? "true" : "false", (unsigned)s_assoc_fails,
+            (unsigned)s_last_reason, rname, rst, rst_nm);
+        if (sn < 0 || (size_t)sn >= sizeof(json)) {
+            httpd_resp_set_status(req, "500 Internal Server Error");
+            return httpd_resp_sendstr(req, "{\"error\":\"status too large\"}");
+        }
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+        return httpd_resp_send(req, json, sn);
+    }
 
 #if CONFIG_ORB_IDLE_DIM_ENABLE
     /* Read once, before the format string, so the two booleans and the countdown
@@ -2619,24 +2599,6 @@ static esp_err_t h_status(httpd_req_t *req)
          * caller already sends for a refused frame buffer — same answer, honest. */
     }
 
-    /* The chip's BASE MAC, not the SoftAP one. esp_read_mac(ESP_MAC_WIFI_SOFTAP)
-     * returns base+1 on this target (mac_addr.c:366-387 derives it as memcpy(base)
-     * then mac[5] += 1, live because CONFIG_ESP_MAC_ADDR_UNIVERSE_WIFI_AP=y), and
-     * both of the hub's join keys are BASE: the USB serial-number descriptor
-     * (esprom/usbclass.go:22-25) and the flasher's eFuse read
-     * (esprom/commands.go:222-231, ROM targets/esp32s3.py). Reporting
-     * SOFTAP here would miss every cable/LAN correlation by one in the last
-     * octet, and would look entirely healthy on a bench with no radio. Lowercase
-     * hex with no separators, so the wire form is stable and the hub only has to
-     * canonicalize case. Empty on the impossible read failure, which the hub
-     * treats as "unidentified" rather than matching every other empty MAC. */
-    uint8_t base_mac[6] = { 0 };
-    char mac_str[13] = { 0 };
-    if (esp_read_mac(base_mac, ESP_MAC_BASE) == ESP_OK) {
-        snprintf(mac_str, sizeof(mac_str), "%02x%02x%02x%02x%02x%02x",
-                 base_mac[0], base_mac[1], base_mac[2],
-                 base_mac[3], base_mac[4], base_mac[5]);
-    }
 
     uint32_t lvm_total, lvm_free, lvm_biggest, lvm_peak;
     display_lv_mem(&lvm_total, &lvm_free, &lvm_biggest, &lvm_peak);
@@ -2969,10 +2931,9 @@ static esp_err_t h_config_post(httpd_req_t *req)
  *                                   zone, and the point itself), stored
  *                                   nowhere: the hub shows it on its map and
  *                                   beside its Set button before the owner commits
- * GET  /api/v1/home?code=8559CWXG%2B9C   the same for a full plus code, decoded
- *                                   here so the hub pins the point this orb
- *                                   would store, not its own reading of the code
- * POST /api/v1/home {"lat":..,"lon":..}   or {"code":"8559CWXG+9C"}
+ * GET  /api/v1/home?q=lond          up to 8 cities from the orb's table whose name, or a
+ *                                   word of it, starts with q (§67, the settings page)
+ * POST /api/v1/home {"lat":..,"lon":..}
  *      optional "tz" (a table key or rule, as /api/v1/config takes; "keep"
  *      leaves the zone alone; absent = the nearest city's), "zone" (the IANA
  *      name the tz stands for, for display), "place" (absent = from the city
@@ -3050,9 +3011,30 @@ static esp_err_t h_home_get(httpd_req_t *req)
     char qla[24] = "", qlo[24] = "";
     int32_t la, lo;
     const char *why;
-    if (q_param(req, "code", qla, sizeof qla)) {
-        why = orb_geo_olc_decode(qla, &la, &lo);
-    } else if (q_param(req, "lat", qla, sizeof qla) && q_param(req, "lon", qlo, sizeof qlo)) {
+    char qs[33] = "";
+    if (q_param(req, "q", qs, sizeof qs)) {
+        /* §67: the settings page's city search, from the orb's own table. Names are the
+         * table's (printable, no quote or backslash: make_cities.py), so they echo raw. */
+        for (char *c = qs; *c; c++) if (*c == '+') *c = ' ';   /* a form's space */
+        int hit[8];
+        const int n = orb_geo_city_search(qs, hit, 8);
+        char out[1024];
+        int o = snprintf(out, sizeof out, "{\"cities\":[");
+        for (int i = 0; i < n && o < (int)sizeof out - 160; i++) {
+            int32_t la = 0, lo = 0;
+            char cc[3], fla[16], flo[16];
+            orb_geo_city_ll(hit[i], &la, &lo);
+            orb_geo_city_cc(hit[i], cc);
+            orb_geo_fmt(la, fla, sizeof fla);
+            orb_geo_fmt(lo, flo, sizeof flo);
+            o += snprintf(out + o, sizeof out - (size_t)o, "%s{\"name\":\"%s\",\"cc\":\"%s\",\"lat\":%s,\"lon\":%s,\"zone\":\"%s\"}",
+                          i ? "," : "", orb_geo_city_name(hit[i]), cc, fla, flo,
+                          orb_geo_zone_iana(orb_geo_city_zone(hit[i])));
+        }
+        snprintf(out + o, sizeof out - (size_t)o, "]}");
+        return httpd_resp_sendstr(req, out);
+    }
+    if (q_param(req, "lat", qla, sizeof qla) && q_param(req, "lon", qlo, sizeof qlo)) {
         char both[52];
         snprintf(both, sizeof both, "%s,%s", qla, qlo);
         why = orb_geo_parse_coords(both, &la, &lo);
@@ -3102,12 +3084,9 @@ static esp_err_t h_home_post(httpd_req_t *req)
         why = orb_home_clear();
     } else {
         int32_t la = 0, lo = 0;
-        char code[24], tz[NET_TZ_MAX + 1], zone[ORB_HOME_ZONE_MAX], place[ORB_GEO_PLACE_MAX];
-        if (json_str(body, len, "code", code, sizeof code)) {
-            why = orb_geo_olc_decode(code, &la, &lo);
-        } else if (!json_deg_e6(body, len, "lat", &la) || !json_deg_e6(body, len, "lon", &lo)) {
-            why = "lat and lon (or code) required";
-        }
+        char tz[NET_TZ_MAX + 1], zone[ORB_HOME_ZONE_MAX], place[ORB_GEO_PLACE_MAX];
+        if (!json_deg_e6(body, len, "lat", &la) || !json_deg_e6(body, len, "lon", &lo))
+            why = "lat and lon required";
         /* The same escape rule as config's tz, for all three echoed strings:
          * json_str drops a backslash and keeps the next character. */
         for (const char *q = body; !why && *q; q++)
@@ -3507,6 +3486,47 @@ static esp_err_t h_units_post(httpd_req_t *req)
     return units_reply(req);
 }
 
+/* ------------------------------------------------------------------------
+ * GET/POST /api/v1/display — the dial's DISPLAY page on the LAN (app-platform-plan
+ * §67): dim after idle on or off, and the idle timeout. GET answers
+ * {"dim":1,"timeout_s":600}. POST takes either key or both, sound's rule: a key left
+ * out keeps its value, ints for the switch (0/1), and the timeout is clamped by
+ * idle_dim the way the dial's editor is. A body naming neither is refused.
+ * ------------------------------------------------------------------------ */
+static esp_err_t display_reply(httpd_req_t *req)
+{
+    char out[64];
+    snprintf(out, sizeof out, "{\"dim\":%d,\"timeout_s\":%lu}",
+             idle_dim_enabled() ? 1 : 0, (unsigned long)idle_dim_timeout_s());
+    return httpd_resp_sendstr(req, out);
+}
+
+static esp_err_t h_display_get(httpd_req_t *req)
+{
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    return display_reply(req);
+}
+
+static esp_err_t h_display_post(httpd_req_t *req)
+{
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    char *body = heap_caps_malloc(NET_SOUND_BODY_MAX + 1, MALLOC_CAP_SPIRAM);
+    if (!body) return sound_refuse(req, "no memory");
+    const int len = sound_body(req, body, NET_SOUND_BODY_MAX);
+    if (len < 0) { heap_caps_free(body); return ESP_OK; }
+    long dim = -1, to = -1;
+    const bool has_dim = json_int(body, (size_t)len, "dim", &dim);
+    const bool has_to  = json_int(body, (size_t)len, "timeout_s", &to);
+    heap_caps_free(body);
+    if (!has_dim && !has_to) return sound_refuse(req, "no display setting in body");
+    if (has_to && to <= 0) return sound_refuse(req, "timeout_s must be positive");
+    if (has_dim) idle_dim_set_enabled(dim != 0);
+    if (has_to)  idle_dim_set_timeout_s(idle_dim_clamp_timeout_s((uint32_t)to));
+    return display_reply(req);
+}
+
 /* POST /api/v1/name {"name":"Hall Clock"} — {"name":""} clears it.
  *
  * A separate endpoint rather than a second key on /api/v1/config, and the reason
@@ -3711,7 +3731,6 @@ static int prov_hex(const char *src, size_t n, char *out, size_t cap)
  * boot banner (see esprom.ParseAppInfo). */
 static const char *orb_state_token(void)
 {
-    if (orb_net_ap_isolated()) return "c-ap";
     if (s_provisioning)         return "b";
     return "c-sta";
 }
@@ -3829,11 +3848,6 @@ static bool dispatch_serial_cmd(char *line, size_t vlen)
          * serial verb: the reader must never touch flash (see s_serial_line). */
         size_t n = strlen(line);
         if (n < 5 || memcmp(line, "PROV ", 5) != 0) return true;   /* not our token */
-        if (orb_net_ap_isolated()) {                              /* refuse a silent no-op */
-            ESP_LOGW(TAG, "prov: refused while AP-isolated (send MODE sta first)");
-            ESP_LOGI(TAG, "PROV-NAK ap-isolated");
-            return true;
-        }
         char *save = NULL;
         char *f_ssid = strtok_r(line + 5, " ", &save);
         char *f_pass = strtok_r(NULL, " ", &save);
@@ -4332,12 +4346,6 @@ static esp_err_t h_wifi_join(httpd_req_t *req)
      * there is no radio task to hold the pair or commit it on a lease, so this
      * degenerate path keeps the old write-first behaviour and does the radio work
      * here rather than not do it at all. */
-    /* An orb sitting in AP-isolated mode that has just been handed credentials from
-     * its own page is being told, by the one person who can, to become a station
-     * again. Clear the mode BEFORE the join so a reboot after this lands on the
-     * network the page just chose instead of back in isolation, which would read as
-     * the join having been ignored. An empty/same mode is a no-op here. */
-    if (orb_net_ap_isolated()) net_mode_set("sta");
 
     if (!net_post_join(ssid, pass)) {
         ESP_LOGW(TAG, "join: no radio queue — applying from the httpd task");
@@ -4348,30 +4356,14 @@ static esp_err_t h_wifi_join(httpd_req_t *req)
     return sent;
 }
 
-/* POST /api/v1/wifi/mode — commit to the station branch or to AP isolation, and reboot.
+/* POST /api/v1/wifi/mode — kept as an answer, not a switch.
  *
- * The HTTP twin of the serial MODE verb, and the ONLY page exit from a persistent
- * isolation. That matters more here than anywhere: a board in AP-isolated mode is
- * reachable at exactly one address, its own 192.168.4.1, so if the page could only get
- * INTO the mode the mode would be a trap with one key. Joining a network from the page
- * also clears it (h_wifi_join), but an owner who wants their saved credentials back
- * without retyping them has to be able to say "station" and nothing else.
+ * It was the page's exit from the persistent AP-isolated mode, which §66 deleted (the
+ * orb is a network device; its hotspot is only for setup). Old hubs and pages may still
+ * call it, so it answers in a sentence rather than 404ing.
  *
- * Body: {"mode":"ap"} or {"mode":"sta"}. The mode is a boot-time choice — see
- * net_mode_set, which writes NVS and changes nothing live — so this answers, waits the
- * 750 ms h_reprov measured, and reboots. Refusals are complete: no partial mode, no
- * reboot on a rejected operand. */
-static void mode_timer_cb(void *arg)
-{
-    (void)arg;
-    /* A commanded reboot, not a crash — the same courtesy h_reprov and h_reprov pay, so
-     * the boot after an owner's MODE does not bill an app for the restart. */
-    orb_svc_note_clean_reboot();
-    ESP_LOGW(TAG, "rebooting into the %s branch on request (POST /api/v1/wifi/mode)",
-             s_mode[0] ? "AP-isolated" : "station");
-    esp_restart();
-}
-
+ * Body: {"mode":"sta"}. Since §66 the station is the only mode: "ap" is refused and
+ * "sta" is a no-op, nothing written and nothing rebooted. */
 static esp_err_t h_wifi_mode(httpd_req_t *req)
 {
     char body[64];
@@ -4393,67 +4385,37 @@ static esp_err_t h_wifi_mode(httpd_req_t *req)
     char mode[NET_MODE_MAX + 1];
     if (!json_str(body, (size_t)got, "mode", mode, sizeof(mode))) {
         httpd_resp_set_status(req, "400 Bad Request");
-        return httpd_resp_sendstr(req, "{\"error\":\"mode required (\\\"ap\\\" or \\\"sta\\\")\"}");
+        return httpd_resp_sendstr(req, "{\"error\":\"mode required (\\\"sta\\\")\"}");
     }
 
     httpd_resp_set_type(req, "application/json");
     httpd_resp_set_hdr(req, "Cache-Control", "no-store");
 
-#if !CONFIG_ORB_NET_AP_ISOLATED
-    httpd_resp_set_status(req, "409 Conflict");
-    return httpd_resp_sendstr(req, "{\"error\":\"AP-isolated mode is not in this build\"}");
-#else
-    const char *why = net_mode_set(mode);
-    if (why) {
-        /* The reason is one of net_mode_set's own fixed strings — no user text reaches
-         * the body, so this needs no escaping and cannot be made to close the object
-         * early. */
+    /* §66: the station is the only mode. "sta" is answered as the no-op it is (an old
+     * hub may still send it to leave a mode that no longer exists); "ap" is refused in
+     * the sentence the serial MODE verb uses. Nothing is written, nothing reboots. */
+    if (!strcmp(mode, "ap")) {
+        httpd_resp_set_status(req, "409 Conflict");
+        return httpd_resp_sendstr(req, "{\"error\":\"the orb is a network device; the AP-only mode is gone\"}");
+    }
+    if (net_mode_set(mode)) {
         httpd_resp_set_status(req, "400 Bad Request");
-        return httpd_resp_sendstr(req, "{\"error\":\"mode must be \\\"ap\\\" or \\\"sta\\\"\"}");
+        return httpd_resp_sendstr(req, "{\"error\":\"mode must be \\\"sta\\\"\"}");
     }
-    static esp_timer_handle_t s_mode_timer;
-    if (!s_mode_timer) {
-        const esp_timer_create_args_t ta = { .callback = mode_timer_cb };
-        if (esp_timer_create(&ta, &s_mode_timer) != ESP_OK) {
-            httpd_resp_set_status(req, "500 Internal Server Error");
-            return httpd_resp_sendstr(req, "{\"error\":\"reboot timer\"}");
-        }
-    }
-    if (esp_timer_start_once(s_mode_timer, 750 * 1000) != ESP_OK) {
-        httpd_resp_set_status(req, "500 Internal Server Error");
-        return httpd_resp_sendstr(req, "{\"error\":\"reboot schedule\"}");
-    }
-    ESP_LOGW(TAG, "mode: now %s, rebooting in 750 ms (POST /api/v1/wifi/mode)",
-             s_mode[0] ? "AP-isolated" : "station");
-    char out[80];
-    const int n = snprintf(out, sizeof out, "{\"state\":\"rebooting\",\"mode\":\"%s\"}",
-                           s_mode[0] ? "ap" : "sta");
-    return httpd_resp_sendstr(req, n > 0 ? out : "{\"state\":\"rebooting\"}");
-#endif
+    return httpd_resp_sendstr(req, "{\"state\":\"station\",\"mode\":\"sta\"}");
 }
 
-/* POST /api/v1/wifi/ap — raise or lower the provisioning AP by request.
+/* POST /api/v1/wifi/ap — lower the setup AP.
  *
- * The config page deliberately has NO button on the OPEN half, and the
- * reasoning is worth keeping with the code: whoever can load the page can
- * change the orb's network FROM the page, so an orb reachable enough to show
- * a button never needs a human pressing it to summon an AP; and an orb that
- * ISN'T reachable shows no button to press. (The device's own rescue path
- * posts NET_CMD_AP_RESCUE internally — it does not come through this
- * endpoint.) What remains genuinely useful, and what this endpoint is for:
- *   - the CLOSE half, which the config page posts when the user taps Copy /
- *     Open / Done on the confirmation. Not automatic on render: Android binds
- *     its captive-portal webview to the AP, so closing the AP unasked took the
- *     page -- and the new address on it -- away with it. The hold timer still
- *     covers a page that was never acknowledged, and
- *   - tooling/tests (e.g. /tmp/ap_cp_test.sh) summoning the AP with no page
- *     open at all.
- *
- * Body is optional: {} opens for CONFIG_ORB_NET_AP_MANUAL_S seconds;
- * {"on":"off"} closes it immediately, honoured only while a lease means there
- * is still another way in. The open path goes through the radio task exactly
- * like the rescue path — one code path, one set of log lines — and both arm
- * the AP's expiry, which is why no caller can leave it open by accident. */
+ * Close only (§66): the AP exists only in a setup boot, so there is nothing for a
+ * request to open. The open half was API-only (no page or hub ever sent it) and
+ * overflowed the radio task when it promoted a connected orb to APSTA (§65.5).
+ * What remains is the CLOSE half, which the provisioning page posts when the user
+ * taps Copy / Open / Done on the confirmation. Not automatic on render: Android binds
+ * its captive-portal webview to the AP, so closing the AP unasked took the page --
+ * and the new address on it -- away with it. The hold timer still covers a page that
+ * was never acknowledged. {"on":"off"} (or false) closes, honoured only while a lease
+ * means there is another way in; closing ends the setup boot with a reboot. */
 static esp_err_t h_wifi_ap(httpd_req_t *req)
 {
     char body[NET_CONFIG_BODY_MAX + 1];
@@ -4508,20 +4470,8 @@ static esp_err_t h_wifi_ap(httpd_req_t *req)
         net_post(NET_CMD_AP_EXPIRED, 0);   /* the one path that closes a leased AP */
         return httpd_resp_sendstr(req, "{\"state\":\"ap_closing\"}");
     }
-    net_post(NET_CMD_AP_OPEN, CONFIG_ORB_NET_AP_MANUAL_S);
-    char ssid[16];
-    uint8_t mac[6] = { 0 };
-    esp_read_mac(mac, ESP_MAC_WIFI_SOFTAP);
-    snprintf(ssid, sizeof(ssid), "orb-%02X%02X", mac[4], mac[5]);
-    /* Reports the SSID because the phone has to find it in a list of networks,
-     * and the seconds because "how long do I have" is the first question a
-     * person standing at a wall with a phone asks. */
-    char out[128];
-    const int m = snprintf(out, sizeof(out),
-                           "{\"state\":\"ap_opening\",\"ap_ssid\":\"%s\",\"seconds\":%d}",
-                           ssid, CONFIG_ORB_NET_AP_MANUAL_S);
-    if (m < 0 || (size_t)m >= sizeof(out)) return httpd_resp_sendstr(req, "{\"state\":\"ap_opening\"}");
-    return httpd_resp_sendstr(req, out);
+    httpd_resp_set_status(req, "409 Conflict");
+    return httpd_resp_sendstr(req, "{\"error\":\"the setup hotspot opens only when the orb has no working network\"}");
 }
 
 /* -------------------------------------------------------------------------
@@ -4913,8 +4863,8 @@ static esp_err_t h_factory(httpd_req_t *req)
  * Owner's call after provisioning first worked end to end: this page's job ends
  * at "the orb is on your network, here is where it went", and a zone dropdown
  * asking a first-time user mid-join to read POSIX rules served neither job. The
- * clock is set on its own page (/timezone, HTML_TZ below), which the success
- * confirmation links to. */
+ * clock follows the home location, which the settings page (HTML_SETTINGS, the
+ * connected orb's own page) and the hub set; the success confirmation links to it. */
 /* ===========================================================================
  * SD card + themes.
  *
@@ -6443,6 +6393,54 @@ static esp_err_t h_sd_preview(httpd_req_t *req)
         return httpd_resp_sendstr(req, body);
     }
     size_t bytes = (size_t)w * (size_t)h * 2u;
+    /* §67: thumb=N (2..8) answers the plane box-averaged down N times, [w/N][h/N][RGB565],
+     * for the settings page's theme carousel: 116 px at N=4 is 27 KB on the air instead of
+     * a ~118 KB deflated disc, a few seconds of this single-task server instead of twelve. */
+    char th[4] = "";
+    if (q_param(req, "thumb", th, sizeof th)) {
+        const int n = atoi(th);
+        if (n < 2 || n > 8) {
+            httpd_resp_set_status(req, "400 Bad Request");
+            httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+            return httpd_resp_sendstr(req, "{\"error\":\"thumb is 2 to 8\"}");
+        }
+        const uint16_t tw = (uint16_t)(w / n), tht = (uint16_t)(h / n);
+        uint8_t *full = heap_caps_malloc(bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        uint8_t *t = heap_caps_malloc((size_t)4 + (size_t)tw * tht * 2u, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        if (!full || !t || orb_theme_preview_read(id, full, bytes, &w, &h, why, sizeof why) != ORB_ASSET_OK) {
+            heap_caps_free(full);
+            heap_caps_free(t);
+            httpd_resp_set_status(req, "503 Service Unavailable");
+            httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+            return httpd_resp_sendstr(req, "{\"error\":\"the preview could not be read\",\"retry\":\"later\"}");
+        }
+        t[0] = (uint8_t)(tw & 0xff); t[1] = (uint8_t)(tw >> 8);
+        t[2] = (uint8_t)(tht & 0xff); t[3] = (uint8_t)(tht >> 8);
+        const uint16_t *src = (const uint16_t *)full;
+        uint8_t *o = t + 4;
+        for (int ty = 0; ty < tht; ty++)
+            for (int tx = 0; tx < tw; tx++) {
+                uint32_t r = 0, g = 0, b = 0;
+                for (int dy = 0; dy < n; dy++)
+                    for (int dx = 0; dx < n; dx++) {
+                        const uint16_t v = src[(size_t)(ty * n + dy) * w + (size_t)(tx * n + dx)];
+                        r += v >> 11; g += (v >> 5) & 63; b += v & 31;
+                    }
+                const uint32_t k = (uint32_t)(n * n);
+                const uint16_t v = (uint16_t)(((r / k) << 11) | ((g / k) << 5) | (b / k));
+                *o++ = (uint8_t)(v & 0xff);
+                *o++ = (uint8_t)(v >> 8);
+            }
+        heap_caps_free(full);
+        httpd_resp_set_type(req, "application/octet-stream");
+        httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+        size_t tleft = 0;
+        bool tbud = false;
+        const esp_err_t tr = send_paced(req, t, (size_t)4 + (size_t)tw * tht * 2u, &tleft, &tbud);
+        if (tleft) sock_abort_on_close(req);
+        heap_caps_free(t);
+        return tr;
+    }
     /* §60: a hub that asks enc=z takes a deflated preview as it lies, [w][h | 0x8000][zlib of
      * the disc], and inflates it itself: ~100 KB on the air instead of 434 KB. A preview
      * that is not deflated, or a hub that does not ask, gets the plane as it always has. */
@@ -8375,12 +8373,8 @@ orb does not answer. */
 "f.onclick=function(){ack('closing the setup network - you can close this page')};"
 "r.appendChild(c);r.appendChild(f);e.appendChild(r);"
 "var a=document.createElement('a');a.href=u;a.target='_blank';a.rel='noopener';a.style.color='#9cf';"
-"a.textContent='Open the orb page in a new tab';"
+"a.textContent='Open the orb\\'s settings in a new tab';"
 "a.onclick=function(){ack('opening the orb page - you can close this one')};e.appendChild(a);"
-"var k=document.createElement('div');k.style.marginTop='.35rem';"
-"var k2=document.createElement('a');k2.href='http://'+d.ip+'/timezone';k2.target='_blank';k2.rel='noopener';"
-"k2.style.color='#9cf';k2.textContent='orb clock: set your city';"
-"k2.onclick=function(){ack('opening the clock page - you can close this one')};k.appendChild(k2);e.appendChild(k);"
 "tip=document.createElement('div');tip.style.color='#9cf';tip.style.marginTop='.4rem';"
 "e.appendChild(tip)}"
 "document.getElementById('go').onclick=join;"
@@ -8392,467 +8386,58 @@ orb does not answer. */
 "status();scan();mainTmr=setInterval(function(){if(!sel&&!done)status()},3000);"
 "</script></body></html>";
 
+/* main/net/settings.html, embedded by the build (EMBED_TXTFILES adds the NUL). */
+extern const char settings_html_start[] asm("_binary_settings_html_start");
+extern const uint8_t icon_png_start[] asm("_binary_icon_png_start");
+extern const uint8_t icon_png_end[]   asm("_binary_icon_png_end");
+
+/* §67: the settings page as a home-screen app. A plain-http page cannot be a real PWA (no
+ * service worker, no install prompt: browsers keep those for secure origins), but the
+ * manifest and the icon still give iOS a full-screen home-screen app and Android a
+ * shortcut with the orb's own name and icon. The name is the orb's (s_name, already safe
+ * to echo: name_reject_reason refuses quotes and backslashes). */
+static esp_err_t h_manifest(httpd_req_t *req)
+{
+    char out[400];
+    const char *nm = s_name[0] ? s_name : "Orb";
+    snprintf(out, sizeof out,
+             "{\"name\":\"%s\",\"short_name\":\"%s\",\"start_url\":\"/\",\"scope\":\"/\","
+             "\"display\":\"standalone\",\"background_color\":\"#0d0e11\",\"theme_color\":\"#0d0e11\","
+             "\"icons\":[{\"src\":\"/icon.png\",\"sizes\":\"512x512\",\"type\":\"image/png\",\"purpose\":\"any\"}]}",
+             nm, nm);
+    httpd_resp_set_type(req, "application/manifest+json");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    return httpd_resp_sendstr(req, out);
+}
+
+extern const char orbmap_js_start[] asm("_binary_orbmap_js_start");
+
+/* §67.8: the map kit, for the settings page's Make maps (the hub's maps@1/orbmap.js). */
+static esp_err_t h_maps_js(httpd_req_t *req)
+{
+    httpd_resp_set_type(req, "application/javascript");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    return httpd_resp_send(req, orbmap_js_start, HTTPD_RESP_USE_STRLEN);
+}
+
+static esp_err_t h_icon(httpd_req_t *req)
+{
+    httpd_resp_set_type(req, "image/png");
+    httpd_resp_set_hdr(req, "Cache-Control", "max-age=86400");
+    return httpd_resp_send(req, (const char *)icon_png_start, icon_png_end - icon_png_start);
+}
+
+/* §67: one address, two pages. A setup boot (no working network, §66) serves the
+ * provisioning page, which is all a phone on the orb's own hotspot needs; a connected
+ * orb serves its settings page: the dial's SETTINGS menu and every app's settings. */
 static esp_err_t h_index(httpd_req_t *req)
 {
     httpd_resp_set_type(req, "text/html; charset=utf-8");
     httpd_resp_set_hdr(req, "Cache-Control", "no-store");
-    return httpd_resp_send(req, HTML_LANDING, HTTPD_RESP_USE_STRLEN);
+    return httpd_resp_send(req, s_setup_boot ? HTML_LANDING : settings_html_start,
+                           HTTPD_RESP_USE_STRLEN);
 }
 
-/* The clock page: /timezone, deliberately its own page and not a section of
- * provisioning (owner's call after the first successful phone test, with two
- * concrete complaints behind it: the dropdown listed IANA keys beside POSIX
- * rules no person reads, and the free-text "other" box expected someone to
- * type EST5EDT,M3.2.0,M11.1.0 correctly on a phone keyboard). Nothing here is
- * a technical decision any more: no <select> of keys, no POSIX ever, no
- * free-text at all. Cities are served by /api/v1/config (one source of truth
- * with the firmware that owns the rules) and rendered as
- * "GMT-06:00 - Chicago", the offset measured live by the browser — the one
- * place on this network with a full zoneinfo database. Tapping a city sets
- * it, one tap, no confirm button.
- *
- * On load the page reads the phone's own zone — Intl resolvedOptions, which
- * unlike the clipboard API is available on this insecure origin — and applies
- * it without being asked, then asks the only question that matters: is the
- * time on the orb's dial right? That question is the safety valve the config
- * endpoint's tz_offset echo exists for: a rule newlib silently degrades shows
- * up as a wrong GMT offset on screen, in words, immediately. If the phone's
- * zone is not in the (deliberately small) table, one honest extra row keeps
- * the phone's exact time as a fixed-offset rule and says out loud that it
- * will not follow DST — so the escape hatch is a tap, never typing rules. */
-static const char HTML_TZ[] =
-"<!doctype html><html><head><meta charset=utf-8>"
-"<meta name=viewport content='width=device-width,initial-scale=1'>"
-"<title>orb clock</title><style>"
-"body{font:16px system-ui;margin:0;padding:1.2rem;background:#111;color:#eee;max-width:32rem}"
-"h1{font-size:1.2rem}"
-"#msg{padding:.4rem .6rem;border-radius:.4rem;background:#222;margin:.5rem 0;position:sticky;top:0;z-index:3}"
-"#msg.ok{background:#14421f}#msg.bad{background:#4a1414}"
-"input{font:inherit;padding:.5rem;width:100%;box-sizing:border-box;background:#1b1b1b;color:#eee;border:1px solid #333;border-radius:.35rem;margin:.5rem 0}"
-"button{background:#1d3f6e;color:#fff;border:0;border-radius:.35rem;padding:.55rem .7rem;font:inherit;width:100%;text-align:left;margin:.15rem 0;display:block}"
-"button.cur{background:#14421f}"
-"</style></head><body>"
-"<h1>orb clock</h1>"
-"<div style='margin-bottom:.6rem'><a href=/themes style='color:#7ad'>themes on the card</a> &nbsp; <a href=/apps style='color:#7ad'>apps on the card</a></div>"
-"<div id=msg>loading&hellip;</div>"
-"<input id=q placeholder='Type your city' autocomplete=off>"
-"<div id=zs></div>"
-"<script>"
-"var zones=[],cur='',phone='',want='';"
-"function msg(t,c){var e=document.getElementById('msg');e.textContent=t;e.className=c||''}"
-"async function j(u,o){var r=await fetch(u,o);if(!r.ok)throw new Error((await r.json()).error||r.status);return r.json()}"
-/* Minutes east of UTC that the browser's own tz database says `zn` is in at a
-   given instant (DST included). The orb deliberately does not compute these:
-   its newlib has no zoneinfo, only the rules it ships, while every phone that
-   can open this page has the full IANA table. Measured via formatToParts
-   because there is no other honest way to ask a browser for a zone's offset.
-   Cached per zone+utc-day: synth() bisects hundreds of probes and building a
-   fresh DateTimeFormat per probe is the slow part of this page. */
-"var _oc={};"
-"function offAt(zn,ms){var k=zn+'|'+Math.floor(ms/864e5),c=_oc[k];if(c!==undefined)return c;var o=null;"
-"try{var a=new Intl.DateTimeFormat('en-US',{timeZone:zn,hourCycle:'h23',year:'numeric',month:'2-digit',"
-"day:'2-digit',hour:'2-digit',minute:'2-digit',second:'2-digit'}).formatToParts(new Date(ms));"
-"var p={};for(var i=0;i<a.length;i++)p[a[i].type]=a[i].value;"
-"var h=parseInt(p.hour,10);if(h==24)h=0;"
-"o=Math.round((Date.UTC(+p.year,p.month-1,+p.day,h,+p.minute,+p.second)-ms)/60000);}"
-"catch(e){o=null}_oc[k]=o;return o}"
-"function offMin(zn){return offAt(zn,Date.now())}"
-"function hm(m){if(m==null||isNaN(m))return 'GMT?';var s=m<0?'-':'+';m=Math.abs(m);"
-"return 'GMT'+s+('0'+Math.floor(m/60)).slice(-2)+':'+('0'+(m%60)).slice(-2)}"
-"function zname(z){return z.iana||z.name}"
-"function lbl(z){return hm(offMin(zname(z)))+' - '+(z.label||z.name)}"
-"function phoneTz(){try{var t=Intl.DateTimeFormat().resolvedOptions().timeZone;return t||''}catch(e){return''}}"
-/* Name first (exact against iana — Android says America/Chicago, never
-   US/Central); current offset second, but only when it names exactly one
-   zone: guessing between Denver and Phoenix is how clocks get quietly an
-   hour wrong in November, and a wrong guess here is auto-APPLIED. */
-"function matchPhone(){if(!phone)return null;var i;"
-"for(i=0;i<zones.length;i++)if(zones[i].iana==phone||zones[i].name==phone)return zones[i];"
-"var po=-(new Date()).getTimezoneOffset(),hit=null,n=0;"
-"for(i=0;i<zones.length;i++){var o=offMin(zname(zones[i]));if(o!=null&&o==po){n++;hit=zones[i]}}"
-"return n==1?hit:null}"
-/* Rule synthesis for a zone the table does not carry — the answer to "what if
-   the user is not one of the listed cities". The phone knows this zone's real
-   clock changes; we ask it (bisecting each monthly window to the minute by
-   offset — verified against an exhaustive scan over all 486 system IANA zones
-   by tools/host_tz_test.py) and assemble the POSIX rule the orb will run:
-   offsets counted west, rule1 into DST with /time in the pre-change local
-   clock, last-weekday-of-month encoded as the .5 C libraries read as "last".
-   The rule is cross-checked against the next two years too — a zone whose
-   clock does not follow the sun (Jerusalem's Hebrew-calendar DST, Ramadan-
-   suspended Casablanca) shifts week to week and fails, so it gets the honest
-   fixed-offset row rather than a rule that would drift silently. Everything
-   the phone can name, it can set; no one types a rule. Strings carry only
-   letters/digits/:,.-+ — nothing a localized city name could smuggle trips
-   the endpoint's printable-ASCII guard, and X/D are the last resort. */
-"function foff(e){var w=-e,x=w<0?'-':'';w=Math.abs(w);"
-"var h=Math.floor(w/60),r=w%60;return x+h+(r?':'+('0'+r).slice(-2):'')}"
-"function transY(zn,y){var out=[];"
-"for(var m=0;m<12;m++){var a0=Date.UTC(y,m,1)/6e4,a1=(m==11?Date.UTC(y+1,0,1):Date.UTC(y,m+1,1))/6e4;"
-"var o0=offAt(zn,a0*6e4),o1=offAt(zn,a1*6e4);if(o0==null||o1==null)return null;if(o0==o1)continue;"
-"var lo=a0,hi=a1;while(hi-lo>1){var mid=lo+((hi-lo)>>1);"
-"if(offAt(zn,mid*6e4)==o0)lo=mid;else hi=mid}out.push([hi*6e4,o0,o1])}return out}"
-"function mrule(t,pre){var d=new Date(t+pre*6e4);"
-"var day=d.getUTCDate(),dim=(new Date(Date.UTC(d.getUTCFullYear(),d.getUTCMonth()+1,0))).getUTCDate();"
-"var wd=d.getUTCDay(),wk=(day+7>dim)?5:Math.floor((day-1)/7)+1;"
-"var hh=d.getUTCHours(),mm=d.getUTCMinutes(),ss=d.getUTCSeconds();"
-"var tt=(hh==2&&mm==0&&ss==0)?'':(hh==0&&mm==0&&ss==0)?'/0':"
-"'/'+hh+(mm||ss?':'+('0'+mm).slice(-2):'')+(ss?':'+('0'+ss).slice(-2):'');"
-"return 'M'+(d.getUTCMonth()+1)+'.'+wk+'.'+wd+tt}"
-"function sym(zn){var c=(String(zn).split('/').pop()||'').replace(/[^A-Za-z0-9]/g,'').toUpperCase();"
-"return (c||'X').slice(0,5)}"
-"/* The no-DST shape, kept for zones synthesis refuses: their clocks move more"
-"   often than twice a year, so no static rule honestly describes them. */"
-"function gmtRule(m){var s=m>=0?'-':'+';m=Math.abs(m);var h=Math.floor(m/60),r=m%60;"
-"return 'GMT'+s+h+(r?':'+('0'+r).slice(-2):'')}"
-/* null = not honestly expressable (changes more or fewer than twice a year,
-   or the pattern moves between years). ok = the rule plus the phone's CURRENT
-   offset, which becomes the echo-verify target at the device. */
-"function synth(zn){var y=new Date().getUTCFullYear(),ts=transY(zn,y);"
-"if(!ts||ts.length!==2)return null;"
-"var a=ts[0],b=ts[1];"
-"var std=Math.min(a[1],a[2],b[1],b[2]),dst=Math.max(a[1],a[2],b[1],b[2]);"
-"if(std==dst)return null;"
-"var td=(a[2]==dst)?a:b,tsd=(a[2]==dst)?b:a,nm=sym(zn);"
-"var parts=[nm+foff(std)+nm+'D'+foff(dst),mrule(td[0],td[1]),mrule(tsd[0],tsd[1])];"
-"for(var k=1;k<=2;k++){var o=transY(zn,y+k);if(!o||o.length!==2)return null;"
-"var p0=o[0][2]>o[0][1]?[mrule(o[0][0],o[0][1]),mrule(o[1][0],o[1][1])]:[mrule(o[1][0],o[1][1]),mrule(o[0][0],o[0][1])];"
-"if(p0[0]!=parts[1]||p0[1]!=parts[2])return null}"
-"var r=parts[0]+','+parts[1]+','+parts[2];"
-"if(r.length>64)return null;return r}"
-"function mkrow(txt,on,cls){var b=document.createElement('button');b.textContent=txt;"
-"if(cls)b.className=cls;b.onclick=on;return b}"
-/* The response's tz_offset is read, never the echo of what was sent: the
-   question this page answers is what the dial now shows, not what was asked.
-   When `want` is given (anything chosen because it IS the phone's zone), the
-   device's measured offset must agree with the phone's: a rule the orb's
-   libc silently degraded reports itself as UTC, and lands here as 'did not
-   stick' in words — instead of a wrong dial the owner notices hours later. */
-"function setTz(v,txt,want){msg('setting '+txt+'...');"
-"j('/api/v1/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({tz:v})})"
-".then(function(d){cur=d.tz;render();"
-"if(want!=null&&d.tz_offset==want)msg('orb now shows '+hm(want)+' - matches your phone. If the dial is wrong, tap your city','ok');"
-"else if(want!=null)msg('orb shows '+hm(d.tz_offset)+', not your '+hm(want)+' - that zone did not stick; tap your city','bad');"
-"else msg('orb now shows '+hm(d.tz_offset)+' - is that the right time? If not, tap your city','ok')})"
-".catch(function(e){msg('the orb refused it: '+e.message,'bad')})}"
-"function render(){var box=document.getElementById('zs');box.innerHTML='';"
-"var f=want.toLowerCase();"
-"var list=zones.filter(function(z){return !f||(z.label||'').toLowerCase().indexOf(f)>=0"
-"||z.name.toLowerCase().indexOf(f)>=0||(z.iana||'').toLowerCase().indexOf(f)>=0});"
-"list.sort(function(a,b){var x=offMin(zname(a)),y=offMin(zname(b));if(x==null)x=-9999;if(y==null)y=-9999;"
-"return x-y||String(a.label||a.name).localeCompare(String(b.label||b.name))});"
-"list.forEach(function(z){box.appendChild(mkrow(lbl(z),function(){setTz(z.name,z.label||z.name)},z.name==cur?'cur':''))});"
-"if(phone&&!matchPhone()){var po=-(new Date()).getTimezoneOffset(),city=sym(phone);"
-"var r=synth(phone);"
-"if(r)box.appendChild(mkrow(hm(po)+' - '+city+' (your phone, follows its clock changes)',"
-"function(){setTz(r,city+' from your phone',po)},'phone'));"
-"else box.appendChild(mkrow(hm(po)+' - Same as your phone (does not follow DST automatically)',"
-"function(){setTz(gmtRule(po),'your phone time',po)},'phone'))}}"
-"async function boot(){var d;try{d=await j('/api/v1/config')}catch(e){msg('could not reach the orb','bad');return}"
-"zones=d.zones||[];cur=d.tz||'UTC';phone=phoneTz();render();"
-"var m=matchPhone();if(!m){if(phone)msg('the orb does not know '+phone+' - tap the '+sym(phone)+' row at the end of the list, or search for a city');"
-"else msg('tap your city');return}"
-"if(m.name==cur){msg('the orb is already on your phone time ('+hm(offMin(zname(m)))+') - if the dial is wrong, tap your city','ok');return}"
-"msg('your phone says '+(m.label||m.name)+' - setting the orb...');"
-"setTz(m.name,m.label||m.name,-(new Date()).getTimezoneOffset())}"
-"document.getElementById('q').oninput=function(){want=this.value;render()};"
-"boot();"
-"</script></body></html>";
-
-static esp_err_t h_timezone(httpd_req_t *req)
-{
-    httpd_resp_set_type(req, "text/html; charset=utf-8");
-    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
-    return httpd_resp_send(req, HTML_TZ, HTTPD_RESP_USE_STRLEN);
-}
-
-/* The themes page: what is on the card, and the three things a person does with
- * that list — put a file on it, load one, delete one.
- *
- * Three rules, all learned from these pages breaking on a real phone:
- *   - Every statement in the script ends with a semicolon. The C fragments below
- *     concatenate with NO newline between them (that is how the compiler builds the
- *     page), so anything relying on automatic semicolon insertion is a syntax error
- *     that only appears on a phone — and one error kills the whole <script>, which
- *     presents as a page stuck at "loading" with an empty list.
- *   - Nothing destructive happens without saying what it costs. Delete removes the
- *     FILE and states that the dial keeps drawing that theme until another is
- *     loaded, because otherwise delete looks like it did nothing.
- *   - The upload is the only long operation (3.7 MB at the ~1.5 MB/s this card can
- *     do), so it runs in an XHR with a real percentage: a fetch gives no upload
- *     progress, and a bar parked at 0% for four seconds reads as a hung device.
-  *   - A preview plane is a black square until its bytes arrive, so every drawn
- *     row starts with a spinner over the hidden canvas: the spinner clears to
- *     the picture, or to a retry chip when the orb had no plane for it.
- */
-static const char HTML_THEMES[] =
-"<!doctype html><html><head><meta charset=utf-8>"
-"<meta name=viewport content='width=device-width,initial-scale=1'>"
-"<title>orb themes</title><style>"
-"body{font:16px system-ui;margin:0;padding:1.2rem;background:#111;color:#eee;max-width:32rem}"
-"h1{font-size:1.2rem}"
-"#msg{padding:.4rem .6rem;border-radius:.4rem;background:#222;margin:.5rem 0;position:sticky;top:0;z-index:3}"
-"#msg.ok{background:#14421f}#msg.bad{background:#4a1414}"
-"#card{color:#8a8;font-size:.9rem;margin:.2rem 0 1rem}"
-"input{font:inherit;padding:.5rem;width:100%;box-sizing:border-box;background:#1b1b1b;color:#eee;border:1px solid #333;border-radius:.35rem;margin:.4rem 0}"
-"button{background:#1d3f6e;color:#fff;border:0;border-radius:.35rem;padding:.55rem .7rem;font:inherit;margin:.15rem 0}"
-"button.cur{background:#14421f}button.warn{background:#5a1d1d}"
-".row{border-bottom:1px solid #262626;padding:.5rem 0}"
-".nm{font-weight:600}.sub{color:#889;font-size:.85rem}"
-"a{color:#7ad}"
-".pvw{float:right;position:relative;width:84px;height:84px;margin:0 0 .3rem .5rem}"
-".pv{position:absolute;top:0;left:0;background:#000;border-radius:10px;visibility:hidden}"
-".psp{position:absolute;top:0;left:0;width:84px;height:84px;display:flex;align-items:center;justify-content:center;border-radius:10px;background:#1b1b1b}"
-".psp[hidden]{display:none}.psp i{width:26px;height:26px;border-radius:50%;border:3px solid #333;border-top-color:#7ad;animation:spin 1s linear infinite;display:block}"
-".pq{position:absolute;top:0;left:0;width:84px;height:84px;background:#1b1b1b;color:#7ad;border:0;border-radius:10px;font-size:1.4rem;display:flex;align-items:center;justify-content:center}"
-".pq[hidden]{display:none}@keyframes spin{to{transform:rotate(360deg)}}"
-"</style></head><body>"
-"<h1>orb themes</h1>"
-"<div id=msg>loading&hellip;</div>"
-"<div id=card></div>"
-"<div id=list></div>"
-"<div class=row>"
-"<input id=file type=file accept=.orbtheme>"
-"<button onclick=doUp()>Upload to card</button>"
-"</div>"
-"<div class=row>"
-"<button onclick=scan()>Rescan card</button> "
-"<a href=/timezone>clock setup</a> &nbsp; <a href=/>network</a>"
-"</div>"
-"<script>"
-"var data=null;"
-/* Only the id travels into onclick markup: a name may legally hold a quote, and the id is [0-9a-f]{12} by construction. */
-"var ROWS={};"
-/* Landed planes, keyed by id, as the raw [u16 w][u16 h][RGB565] bytes. The page
- * re-draws whenever a poll refreshes the rows (and a board that was unreachable
- * and came back re-draws the whole list); a plane already paid for once should
- * not dial the card again. pvRetry clears one row's entry so a retry really
- * re-fetches. */
-"var PVC={};"
-/* The re-poll on a dead answer: the hub's launch cable probe reboots every
- * attributable board it can name, and a page opened during that boot would
- * otherwise sit on its one-shot first fetch and say \"orb not reachable\"
- * forever. A miss retries on a fixed beat for a few minutes, stops when an
- * answer lands, and says so loudly when the budget runs out. */
-"var RF=0,RN=0;var LASTSG='';var KP=0;"
-/* The keep-alive poll. A page left open across a store (or across the hub's boot
- * probe) would otherwise freeze on the last frame it read and never learn the
- * board came back without a manual reload. It idles while the upload form holds
- * the card and while watch() is following a store job, and every answer that is
- * byte-identical to the last skips the re-draw, so the painted planes never
- * blink on a poll that changed nothing. */
-"function keepalive(){if(KP)return;KP=setInterval(function(){if(data&&data.uploading){return;}if(document.querySelector('#msg.bad')&&!RF){return;}refresh();},8000);}"
-"function say(t,c){var m=document.getElementById('msg');m.textContent=t;m.className=c||'';}"
-"function esc(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}"
-"function bytes(n){return n>1048576?(n/1048576).toFixed(2)+' MB':(n/1024).toFixed(0)+' KB';}"
-/* Every read carries a deadline: a fetch aimed at a socket a rebooting board
- * stopped serving can hang with no error at all, and an open hang is worse
- * than the timeout it hides. ms is the caller's own budget, default 15 s. */
-"function j(u,o,ms){o=o||{};var ac=new AbortController();o.signal=ac.signal;var tm=setTimeout(function(){ac.abort();},ms||15000);return fetch(u,o).then(function(r){clearTimeout(tm);return r.json().then(function(d){return{ok:r.ok,st:r.status,d:d};});},function(e){clearTimeout(tm);throw e;});}"
-"function qa(s){return document.querySelectorAll(s);}"
-"function draw(){"
-"var L=document.getElementById('list'),C=document.getElementById('card');"
-"if(!data){return;}"
-"if(data.uploading){say('upload in progress','');return;}"
-"if(!data.mounted){C.textContent='no card in the socket';L.innerHTML='';return;}"
-"C.textContent=data.card+' \\u2014 '+data.free_mb+' MB free of '+data.total_mb+' MB; dial is on '+data.source+' ('+(data.active||'baked-in')+')';"
-"var h='';"
-"h=h+'<div class=row><b>dial: '+(data.source=='slot'?'the stored theme':'the base face')+(data.active?' ('+esc(data.active)+')':'')+'</b>';"
-"h=h+'</div>';"
-"if(!data.themes.length){h=h+'<div class=row>No themes on the card yet. Upload a .orbtheme below.</div>';}"
-"if(data.bundle_ms){h=h+'<div class=row><span class=sub>last bundle store: '+bytes(data.bundle_bytes)+' in '+data.bundle_ms+' ms</span></div>';}"
-"if(data.job_busy){h=h+'<div class=row><b>a theme job is running</b> <span class=sub>the copy is on the worker; the rows update when it lands</span></div>';}"
-"for(var i=0;i<data.themes.length;i++){var t=data.themes[i];var nm=t.name||t.id;ROWS[t.id]=nm;"
-"h=h+'<div class=row>'+(t.ok?'<span class=pvw data-id='+esc(t.id)+'><span class=psp><i></i></span><canvas class=pv data-id='+esc(t.id)+\" width=84 height=84></canvas><button class=pq hidden onclick=pvRetry(this)>?</button></span>\":'')+'<div class=nm>'+esc(nm)"
-"+' <span class=sub>app bundle of '+(t.sects||'?')+' apps</span>'+(t.active?' <span class=sub>on the dial</span>':(t.changed?' <span class=sub>card copy changed since store</span>':''))+'</div>';"
-"h=h+'<div class=sub>'+esc(t.app||'?')+' \\u00b7 '+esc((t.id||'').split('-').slice(1,-1).join('-'))+' \\u00b7 '+esc((t.id||'').slice(-12))+(t.bytes?' \\u00b7 '+bytes(t.bytes):'')+(t.serial?' \\u00b7 #'+t.serial:'')+'</div>';"
-"if(data.try_id==t.id&&data.try_why){h=h+'<div class=sub>LAST TRY FAILED: '+esc(data.try_why)+'</div>';}"
-"if(data.staged_id==t.id&&data.staged_why){h=h+'<div class=sub>STORE NEVER COMMITTED: '+esc(data.staged_why)+'</div>';}"
-"if(t.ok){h=h+'<button onclick=\"store(\\''+t.id+'\\')\">Store on the dial</button>';}"
-"if(t.ok&&t.stored&&!t.active){h=h+' <span class=sub>stored, re-store to draw it</span>';}"
-"if(!t.ok){h=h+'<div class=sub>CANNOT LOAD: '+esc(t.why||'the card copy did not verify')+'</div>';}"
-"h=h+'<button class=warn onclick=\"del(\\''+t.id+'\\')\">Delete file</button></div>';}"
-"L.innerHTML=h;var pvx=L.querySelectorAll('.pv');PQ=[];for(var k=0;k<pvx.length;k++){var e2=pvx[k],iid=e2.getAttribute('data-id');if(PVC[iid])pvShow(e2,PVC[iid]);else PQ.push(e2);}PG++;pumpPV();}"
-
-
-"var PQ=[],PG=0,PR=0;"
-"function pumpPV(){if(PR||!PQ.length)return;PR=1;var e=PQ.shift();var g=PG;pv(e,e.getAttribute('data-id'),function(){PR=0;if(g===PG)pumpPV();});}"
-/* One plane, painted: little-endian [u16 w][u16 h][RGB565], the /preview wire
- * shape. Shared by the fetch path and the cache path so a re-draw cannot
- * invent a second decoding rule. */
-"function pvPaint(el,dv){var w=dv.getUint16(0,true),ht=dv.getUint16(2,true);el.width=w;el.height=ht;var cx=el.getContext('2d'),im=cx.createImageData(w,ht),p=im.data;for(var i=0,n=w*ht;i<n;i++){var v=dv.getUint16(4+i*2,true);p[i*4]=(v>>11)<<3;p[i*4+1]=((v>>5)&63)<<2;p[i*4+2]=(v&31)<<3;p[i*4+3]=255;}cx.putImageData(im,0,0);el.style.visibility='visible';var wr=el.parentNode,sp=wr?wr.querySelector('.psp'):null;if(sp)sp.hidden=true;}"
-"function pvShow(el,b){try{pvPaint(el,new DataView(b.buffer,b.byteOffset,b.byteLength));}catch(e){}}"
-"function pv(el,id,done){var wr=el.parentNode,ch=wr?wr.querySelector('.pq'):null;function fin(){var sp=wr?wr.querySelector('.psp'):null;if(sp)sp.hidden=true;if(done)done.call(null);}var ac=new AbortController(),tm=setTimeout(function(){ac.abort();},35000);fetch('/api/v1/sd/preview?id='+encodeURIComponent(id),{signal:ac.signal}).then(function(r){clearTimeout(tm);if(!r.ok){return null;}return r.arrayBuffer();}).then(function(b){clearTimeout(tm);if(!b||b.byteLength<4){if(ch)ch.hidden=false;return;}var dv=new DataView(b);var w=dv.getUint16(0,true),ht=dv.getUint16(2,true);if(w<1||ht<1||dv.byteLength<4+w*ht*2){if(ch)ch.hidden=false;return;}PVC[id]=new Uint8Array(b);pvPaint(el,dv);}).catch(function(){clearTimeout(tm);if(ch)ch.hidden=false;}).then(fin,fin)}"
-"function pvRetry(b){var wr=b.parentNode,cv=wr.querySelector('.pv'),sp=wr.querySelector('.psp');delete PVC[cv.getAttribute('data-id')];b.hidden=true;if(sp)sp.hidden=false;PQ.push(cv);pumpPV();}"
-/* The boot-window answer: a page that watched the board die and come back knows
- * every chip it carries was refused while the card was cold. Press each one once,
- * on the queue's own rules, one breath after the rows re-landed. A second refusal
- * leaves the chip up for the owner - the page does not hammer a card that means
- * it. */
-"function autoRetries(){[...qa('.pq')].filter(function(b){return !b.hidden;}).forEach(function(b){pvRetry(b);});}"
-"function refresh(){j('/api/v1/sd').then(function(r){if(!r.ok){rfail();return;}var wasDown=RN>0;RF=0;RN=0;keepalive();var m=document.getElementById('msg');if(m&&/not reachable|not answered/.test(m.textContent)){m.textContent='';m.className='';}data=r.d;var sg=JSON.stringify(data);if(sg!==LASTSG){LASTSG=sg;draw();}if(wasDown)setTimeout(autoRetries,6000);},rfail);}"
-"function rfail(){if(RF)return;clearInterval(KP);KP=0;RN++;if(RN>40){say('the orb has not answered for a few minutes - reload this page when it is back','bad');return;}say('orb not reachable - retrying in 4 s'+(RN>1?' (try '+RN+')':''),'bad');RF=setTimeout(function(){RF=0;refresh();},4000);}"
-"function store(id){var nm=ROWS[id]||id;"
-"if(!confirm('Store '+nm+' on the dial? It overwrites the current theme and the orb reboots onto it. A power cut during the copy leaves the base face, and storing again recovers it.')){return;}"
-"say('storing '+nm+' - the orb copies it into the slot and reboots onto it in a few seconds','');"
-"j('/api/v1/sd/bundle?id='+encodeURIComponent(id),{method:'POST'}).then(function(r){"
-"if(!r.ok){say('could not store '+nm+': '+((r.d&&r.d.error)?r.d.error:r.st),'bad');return;}"
-"watch('store',id,nm,0,0);}).catch(function(){say('the store request did not reach the orb - nothing was copied','bad');});}"
-/* The store door answers the moment the job is queued; the copy runs seconds later on
- * the worker, then the worker reboots the orb onto the theme it just wrote. So the press
- * is not over when the door answers: read the card until the job is quiet and the orb is
- * back on the new theme. A single slot leaves no second copy to nudge: storing once is the
- * whole action, and a torn copy leaves the base face to be re-stored. D11's failure-stays-
- * honest rule, applied to the button instead of the glass. */
-"function watch(kind,id,nm,n,down){"
-"j('/api/v1/sd').then(function(r){var d=r.d;"
-"if(d&&d.job_busy){if(n>120){say('still storing '+nm+' after two minutes - reload this page for the outcome','bad');return;}"
-"say('storing '+nm+' - copying, '+n+' s so far','');"
-"setTimeout(function(){watch(kind,id,nm,n+1,down);},1000);return;}"
-"data=d;LASTSG=JSON.stringify(d);draw();keepalive();"
-"if(d&&d.try_id==id&&d.try_why){say('could not store '+nm+': '+d.try_why,'bad');return;}"
-"if(d&&d.staged_id==id&&d.staged_why){say('store of '+nm+' never committed: '+d.staged_why,'bad');return;}"
-"if(d&&d.active==nm){say('the orb is back - dial on '+nm,'ok');return;}"
-"if(down||n>6){say('the orb answered but is not on '+nm+' - reload this page and check the row','bad');return;}"
-"setTimeout(function(){watch(kind,id,nm,n+1,down);},1500);},"
-"function(){if(n>120){say('the orb stopped answering - reload this page','bad');return;}"
-"setTimeout(function(){watch(kind,id,nm,n+1,1);},1500);});}"
-"function del(id){var nm=ROWS[id]||id;if(!confirm('Delete '+nm+' from the card? Its app wears its next theme - its plain face only if that was the last one.')){return;}"
-"j('/api/v1/sd/delete?id='+encodeURIComponent(id),{method:'POST'}).then(function(r){"
-"if(!r.ok){say('delete failed: '+((r.d&&r.d.error)?r.d.error:r.st),'bad');return;}refresh();},function(){rfail();});}"
-"function scan(){say('rescanning card\\u2026','');j('/api/v1/sd/rescan',{method:'POST'},30000).then(function(){refresh();},function(){say('the rescan request did not reach the orb or ran long - the page will re-read on its own','bad');});}"
-"function doUp(ow){var f=document.getElementById('file').files[0];"
-"if(!f){say('choose a .orbtheme file first','bad');return;}"
-
-"var x=new XMLHttpRequest();x.open('POST','/api/v1/sd/theme'+(ow?'?overwrite=1':''),true);x.timeout=900000;"
-"x.upload.onprogress=function(e){if(e.lengthComputable){say('copying to the card '+Math.floor(e.loaded*100/e.total)+'% of '+bytes(e.total),'');}};"
-"x.onload=function(){var d={};"
-"try{d=JSON.parse(x.responseText);}catch(e){}"
-"if(x.status==200){say('uploaded - it is on the card','ok');refresh();}"
-
-"else if(x.status==409&&d.overwrite===false&&!ow){if(confirm('A different theme with that name is already on the card. Replace it?')){if(d.commit){doCommit(d.commit);}else{doUp(true);}return;}say('not replaced: the existing theme is kept','bad');}"
-"else{say('rejected: '+(d.detail||d.error||x.status),'bad');}};"
-"x.onerror=function(){say('upload failed \\u2014 is the card locked or full?','bad');};"
-"x.ontimeout=function(){say('upload timed out','bad');};"
-"say('copying to the card\\u2026','');x.send(f);}"
-"function doCommit(tok){var x=new XMLHttpRequest();x.open('POST','/api/v1/sd/theme?commit='+encodeURIComponent(tok),true);x.timeout=300000;"
-"x.onload=function(){var d={};try{d=JSON.parse(x.responseText);}catch(e){}"
-"if(x.status==200){say('replaced from the copy already on the card - storing','ok');refresh();}"
-"else if(x.status==410){say('the staged copy is gone - uploading the file again','');doUp(true);return;}"
-"else{say('replace refused: '+(d.detail||d.error||x.status),'bad');}};"
-"x.onerror=function(){say('replace failed \\u2014 is the card locked?','bad');};"
-"x.ontimeout=function(){say('replace timed out','bad');};"
-"say('replacing from the copy already on the card\\u2026','');x.send();}"
-"refresh();"
-"</script></body></html>";
-
-static esp_err_t h_themes(httpd_req_t *req)
-{
-    httpd_resp_set_type(req, "text/html; charset=utf-8");
-    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
-    return httpd_resp_send(req, HTML_THEMES, HTTPD_RESP_USE_STRLEN);
-}
-
-/* --------------------------------------------------------------------------
- * /apps — the drop-zone card listing (plan P4, first surface).
- *
- * This is the owner's view of /sd/apps: one card per container the scan
- * surfaces, refused ones kept and named, exactly as the themes page lists a
- * damaged .orbtheme with its reason. The disclosure line is the page's whole
- * point under ruling D19 (§0.8): the declared capability list printed here
- * is the consent the install carries, from the same bits the gate will
- * consult — orbapp_caps_names() is that one source, and this page never
- * re-rolls a capability list of its own.
- *
- * The Install button queues the verify-then-header ladder (D9) against the apps
- * partition through the worker — it is the same orb_app_install() the boot ladder
- * mirrors from the slot side, so the page and the dial cannot disagree about what
- * installing means. The button is behind a confirm(): an install writes flash and
- * the plan's rule is that nothing destructive runs without the owner costing it
- * first. An accepted card says what it is and offers the copy; a refused one says
- * what to fix on the card and offers nothing, and the row's refusal never gains a
- * button.
- *
- * The script follows the themes page's rules — every statement ends in a
- * semicolon, nothing destructive skips its costing sentence — even though
- * this slice has nothing destructive to cost. (host_tz_test.py's linters
- * parse the landing and clock pages; this one is reviewed against the same
- * two rules by hand, and its data shape is pinned by the scan sentinel.)
- * ------------------------------------------------------------------------ */
-static const char HTML_APPS[] =
-"<!doctype html><html><head><meta charset=utf-8>"
-"<meta name=viewport content='width=device-width,initial-scale=1'>"
-"<title>orb apps</title><style>"
-"body{font:16px system-ui;margin:0;padding:1.2rem;background:#111;color:#eee;max-width:32rem}"
-"h1{font-size:1.2rem}"
-"#msg{padding:.4rem .6rem;border-radius:.4rem;background:#222;margin:.5rem 0;position:sticky;top:0;z-index:3}"
-"#msg.bad{background:#4a1414}"
-"#card{color:#8a8;font-size:.9rem;margin:.2rem 0 1rem}"
-"button{background:#1d3f6e;color:#fff;border:0;border-radius:.35rem;padding:.55rem .7rem;font:inherit;margin:.15rem 0}"
-".row{border-bottom:1px solid #262626;padding:.5rem 0}"
-".nm{font-weight:600}.sub{color:#889;font-size:.85rem}"
-".no{color:#c66;font-size:.85rem}"
-"a{color:#7ad}"
-"</style></head><body>"
-"<h1>apps on the card</h1>"
-"<div id=msg>loading&hellip;</div>"
-"<div id=card></div>"
-"<div id=inst></div>"
-"<div id=list></div>"
-"<div class=row>Pick a <b>.orbapp</b> to copy onto the card, or drop files into an <b>apps</b> folder and reload. Nothing installs until you confirm it.</div>"
-"<div class=row><input id=file type=file accept=.orbapp> <button onclick=doAppUp()>Upload to card</button></div>"
-"<div class=row><a href=/themes>themes on the card</a> &nbsp; <a href=/timezone>clock setup</a> &nbsp; <a href=/>network</a></div>"
-"<script>"
-"var data=null;"
-"function say(t,c){var m=document.getElementById('msg');m.textContent=t;m.className=c||'';}"
-"function esc(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}"
-"function bytes(n){return n>1048576?(n/1048576).toFixed(2)+' MB':(n/1024).toFixed(0)+' KB';}"
-"function j(u,o){return fetch(u,o).then(function(r){return r.json().then(function(d){return{ok:r.ok,st:r.status,d:d};});});}"
-"function draw(){"
-"var L=document.getElementById('list'),C=document.getElementById('card');"
-"if(!data){return;}"
-"drawInst();"
-"if(!data.mounted){C.textContent='no card in the socket';L.innerHTML='';return;}"
-"if(data.count<0){C.textContent=(data.card||'the card')+' \\u2014 the card has no apps folder';L.innerHTML='<div class=row>Copy .orbapp files into an <b>apps</b> folder in the card\\'s top-level directory, then reload.</div>';return;}"
-"C.textContent=data.card+' \\u2014 '+data.count+' file'+(data.count==1?'':'s')+' in apps/';"
-"if(!data.apps.length){L.innerHTML='<div class=row>No .orbapp files in apps/ yet.</div>';return;}"
-"var h='';"
-"for(var i=0;i<data.apps.length;i++){var a=data.apps[i];"
-"h=h+'<div class=row><div class=nm>'+(a.title?esc(a.title):'(no title claimed)')+'</div>';"
-"h=h+'<div class=sub>'+esc(a.slug)+(onDial(a.slug)?' \\u00b7 on the dial':'')+' \\u00b7 '+esc(a.app_id)+(a.serial?' \\u00b7 #'+a.serial:'')+(a.period_ms?' \\u00b7 every '+(a.period_ms/1000)+' s':' \\u00b7 no beat')+'</div>';"
-"h=h+'<div class=sub>may use: '+(a.caps?esc(a.caps):'nothing beyond its own settings')"
-"+(a.n_settings?' \\u00b7 '+a.n_settings+' setting'+(a.n_settings==1?'':'s'):'')"
-"+(a.art_size?' \\u00b7 art '+bytes(a.art_size):'')+' \\u00b7 file '+bytes(a.file_size)+'</div>';"
-"if(!a.ok){h=h+'<div class=no>CANNOT INSTALL: '+esc(a.why)+'</div>';}"
-"else{h=h+'<div style=\"margin-top:.3rem\"><button onclick=\"install(\\''+esc(a.stem)+'\\',this)\">Install on the dial</button></div>';}"
-"h=h+'</div>';}L.innerHTML=h;}"
-"function install(stem,btn){if(!confirm('Install '+stem+' from the card onto the dial? The copy takes a few seconds and the app stays off until you turn it on.')){return;}if(btn){btn.disabled=true;}say('installing '+stem+' from the card...','');j('/api/v1/apps/install?id='+encodeURIComponent(stem),{method:'POST'}).then(function(r){if(!r.ok){say('orb refused the install: '+(r.d&&r.d.error?r.d.error:r.st),'bad');refresh();return;}say('install queued for '+stem+' — reload to see whether it landed','');refresh();}).catch(function(){say('orb not reachable','bad');if(btn){btn.disabled=false;}});}"
-"function doAppUp(ow){var f=document.getElementById('file').files[0];if(!f){say('choose a .orbapp file first','bad');return;}var x=new XMLHttpRequest();x.open('POST','/api/v1/sd/app'+(ow?'?overwrite=1':''),true);x.timeout=900000;x.upload.onprogress=function(e){if(e.lengthComputable){say('copying to the card '+Math.floor(e.loaded*100/e.total)+'% of '+bytes(e.total),'');}};x.onload=function(){var d={};try{d=JSON.parse(x.responseText);}catch(e){}if(x.status==200){say('uploaded - the app is on the card','ok');refresh();}else if(x.status==409&&d.overwrite===false&&!ow){if(confirm('A different app with that name is already on the card. Replace it?')){doAppUp(true);return;}say('not replaced: the existing file is kept','bad');}else{say('rejected: '+(d.detail||d.error||x.status),'bad');}};x.onerror=function(){say('upload failed \\u2014 is the card locked or full?','bad');};x.ontimeout=function(){say('upload timed out','bad');};say('copying to the card\\u2026','');x.send(f);}"
-"function onDial(s){var x=data.installed||[];for(var i=0;i<x.length;i++){if(x[i].slug==s)return true;}return false;}"
-"function drawInst(){"
-"var I=document.getElementById('inst'),x=data.installed||[];"
-"if(!x.length){I.innerHTML='<div class=row><b>On the dial</b> \\u2014 nothing installed yet.</div>';return;}"
-"var h='<div class=row><b>On the dial</b>'+'</div>';"
-"for(var i=0;i<x.length;i++){var a=x[i];"
-"h=h+'<div class=row><div class=nm>'+(a.title?esc(a.title):esc(a.slug))+'</div>';"
-"h=h+'<div class=sub>'+esc(a.slug)+' \\u00b7 '+(a.compiled?'shell':'slot '+a.slot)+' \\u00b7 may use: '+(a.caps?esc(a.caps):'nothing')+(a.n_settings?' \\u00b7 '+a.n_settings+' settings':'')+(a.failed?' \\u00b7 FAILED':'')+(a.on_glass?' \\u00b7 on the glass':'')+'</div>';"
-"h=h+'<div class=sub>'+(a.failed?'stopped by the OS (faulted)':'on the carousel')+(a.period_ms?' \\u00b7 every '+(a.period_ms/1000)+' s':'')+(a.walkable?'':' \\u00b7 no behaviour module for it')+'</div>';"
-"h=h+'<div style=\"margin-top:.3rem\">';"
-"h=h+(a.failed?'<button onclick=\"clearFault(\\''+esc(a.slug)+'\\')\">Clear fault</button>':'')+(a.compiled?'':'<button onclick=\"unin(\\''+esc(a.slug)+'\\')\">Uninstall</button>')+(a.compiled&&!a.failed?'built into the firmware - always on':'')+'</div></div>';}"
-"I.innerHTML=h;"
-"}"
-"function unin(s){if(!confirm('Uninstall '+s+'? The dial erases its slot and forgets its permissions, settings and secrets.'+' The file stays on your card.')){return;}say('uninstalling '+s+'...','');j('/api/v1/apps/uninstall?id='+encodeURIComponent(s),{method:'POST'}).then(function(r){if(!r.ok){say('orb refused: '+(r.d&&r.d.error?r.d.error:r.st),'bad');refresh();return;}say('uninstalled '+s+' - the slot is free again','ok');refresh();}).catch(function(){say('orb not reachable','bad');});}"
-"function clearFault(s){if(!confirm('Clear the fault record for '+s+'? A reboot brings it back; WiFi and the card are untouched.')){return;}say('clearing the fault for '+s+'...','');j('/api/v1/apps/clear?id='+encodeURIComponent(s),{method:'POST'}).then(function(r){if(!r.ok){say('orb refused: '+(r.d&&r.d.error?r.d.error:r.st),'bad');refresh();return;}say('fault cleared - reboot the dial to rebuild it','ok');refresh();}).catch(function(){say('orb not reachable','bad');});}"
-"function refresh(){j('/api/v1/apps').then(function(r){if(!r.ok){say('orb refused the listing: '+(r.d&&r.d.error?r.d.error:r.st),'bad');return;}data=r.d;draw();}).catch(function(){say('orb not reachable','bad');});}"
-"refresh();"
-"</script></body></html>";
-
-static esp_err_t h_apps(httpd_req_t *req)
-{
-    httpd_resp_set_type(req, "text/html; charset=utf-8");
-    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
-    return httpd_resp_send(req, HTML_APPS, HTTPD_RESP_USE_STRLEN);
-}
 
 
 /* Captive-portal probes. A phone that joins an open AP with no internet
@@ -9058,8 +8643,10 @@ static esp_err_t net_start_httpd(void)
      * from the ceiling, so the next door raises it. radar-plan R0's /api/v1/debug/map_bench
      * and v1.2.19's /api/v1/apps/settings (§57) each took the ceiling to 64; with the radar's
      * places, maps and bench doors (radar-plan R1-R3c) and §59's /api/v1/carousel the merged
-     * table is 65 textual, so the ceiling moves to 72. */
-    cfg.max_uri_handlers  = 72;
+     * table is 65 textual, so the ceiling moves to 72. §66/§67 (v1.8.2) retired three
+     * pages and added the display pair, the manifest and the icon: 72 textual, so the
+     * ceiling moves to 76 (a slot is one pointer in httpd's table). */
+    cfg.max_uri_handlers  = 76;
     /* 8192, not the 4096 HTTPD_DEFAULT_CONFIG() ships (esp_http_server.h:57). The
      * theme routes put a FATFS file operation on this task: f_open/f_write walk the
      * FAT with their own buffers, and the OTA chunk and upload receive buffers are
@@ -9169,7 +8756,9 @@ static esp_err_t net_start_httpd(void)
 
     static const httpd_uri_t uris[] = {
         { .uri = "/",                .method = HTTP_GET,  .handler = h_index },
-        { .uri = "/timezone",          .method = HTTP_GET,  .handler = h_timezone },
+        { .uri = "/manifest.webmanifest", .method = HTTP_GET, .handler = h_manifest },
+        { .uri = "/icon.png",        .method = HTTP_GET,  .handler = h_icon },
+        { .uri = "/maps.js",         .method = HTTP_GET,  .handler = h_maps_js },
         { .uri = "/api/v1/status",   .method = HTTP_GET,  .handler = h_status },
         { .uri = "/api/v1/wifi/scan",.method = HTTP_GET,  .handler = h_wifi_scan },
         { .uri = "/api/v1/wifi/join",.method = HTTP_POST, .handler = h_wifi_join },
@@ -9190,6 +8779,8 @@ static esp_err_t net_start_httpd(void)
         { .uri = "/api/v1/sound/test", .method = HTTP_POST, .handler = h_sound_test },
         { .uri = "/api/v1/units",    .method = HTTP_GET,  .handler = h_units_get },
         { .uri = "/api/v1/units",    .method = HTTP_POST, .handler = h_units_post },
+        { .uri = "/api/v1/display",  .method = HTTP_GET,  .handler = h_display_get },
+        { .uri = "/api/v1/display",  .method = HTTP_POST, .handler = h_display_post },
         { .uri = "/api/v1/ota",      .method = HTTP_POST, .handler = h_ota },
         { .uri = "/api/v1/reboot",   .method = HTTP_POST, .handler = h_reboot },
         /* One-shot: reboot into the provisioning branch with the stored credential
@@ -9230,13 +8821,11 @@ static esp_err_t net_start_httpd(void)
         { .uri = "/api/v1/debug/card_bench", .method = HTTP_GET, .handler = h_debug_card_bench },
         { .uri = "/api/v1/debug/swap_band", .method = HTTP_GET, .handler = h_debug_swap_band },
 #endif
-        /* microSD + themes. /themes is the page; the routes under /api/v1/sd are its
-         * backing calls. Migration 1 deleted the flip and default doors: under the
-         * single slot the bundle store is the only theme-changing press, and it reboots. */
-        { .uri = "/themes",            .method = HTTP_GET,  .handler = h_themes },
-        /* The apps drop zone: /apps is the page, /api/v1/apps its backing
-         * call. Neither can touch anything but a read of the card. */
-        { .uri = "/apps",              .method = HTTP_GET,  .handler = h_apps },
+        /* microSD + themes: the routes under /api/v1/sd are Orb Manager's (the orb's own
+         * /themes page was retired in §67). Migration 1 deleted the flip and default
+         * doors: under the single slot the bundle store is the only theme-changing press. */
+        /* The apps drop zone: /api/v1/apps lists it (the /apps page was retired in §67).
+         * Neither can touch anything but a read of the card. */
         { .uri = "/api/v1/apps",       .method = HTTP_GET,  .handler = h_apps_list },
         { .uri = "/api/v1/apps/editor", .method = HTTP_GET, .handler = h_app_editor },
         { .uri = "/api/v1/apps/install",.method = HTTP_POST, .handler = h_apps_install },
@@ -9397,7 +8986,6 @@ esp_err_t orb_net_start(void)
      * intent flag forces the provisioning branch anyway, and is by definition a
      * recovery session with a network to go back to, so it gets the deadline. */
     const bool creds_in_flash = (ssid[0] != '\0');
-    const bool ap_isolated = orb_net_ap_isolated();
 #if CONFIG_ORB_NET_AP_FALLBACK
     const bool prov_forced = prov_intent_consume();
 #else
@@ -9410,34 +8998,23 @@ esp_err_t orb_net_start(void)
         ESP_LOGE(TAG, "provisioning requested but ORB_NET_AP_FALLBACK is disabled; "
                       "booting into the stored network instead");
 #endif
-    /* An AP-isolated boot needs the SoftAP, which this build may have compiled out.
-     * Refuse the mode loudly rather than boot a station-only orb that believes it is
-     * reachable by its own AP: a mode the firmware cannot honour is worse than one it
-     * rejects. The key stays set, so re-enabling the fallback brings the device back. */
-#if !CONFIG_ORB_NET_AP_FALLBACK
-    if (ap_isolated) {
-        ESP_LOGE(TAG, "AP-isolated mode set but ORB_NET_AP_FALLBACK is disabled; "
-                      "ignoring the mode and booting the stored network");
-    }
     const bool take_ap = (!creds_in_flash || prov_forced);
-#else
-    const bool take_ap = (!creds_in_flash || prov_forced || ap_isolated);
-#endif
     if (creds_in_flash && !take_ap) {
         ESP_RETURN_ON_ERROR(esp_wifi_set_mode(WIFI_MODE_STA), TAG, "mode");
     } else {
 #if CONFIG_ORB_NET_AP_FALLBACK
-        /* First boot / no credentials: come up as the provisioning AP. The
-         * 466x466 panel is too small and glossy to render a scannable QR, so
-         * pairing is by joining this AP from a phone instead. */
+        /* §66: a setup boot — no credentials, or a requested/rescue session. The
+         * glass shows a QR to join this AP (main/setup/setup_view.c) and nothing of
+         * the dial was started; the boot ends by rebooting once a lease lands. */
         s_provisioning = true;
+        s_setup_boot   = true;
         /* Latch the session kind here, once, where the decision is actually
          * derivable. The deadline itself is armed later in this function — the
          * timer handle does not exist yet at this point. A factory boot takes this
          * branch precisely because creds_in_flash is false, so it stays as it has
          * always been: AP open with no deadline, because there is nothing to fall
          * back to and rebooting would return here. */
-        s_prov_recovery_session = creds_in_flash && !ap_isolated;
+        s_prov_recovery_session = creds_in_flash;
 #if CONFIG_ORB_NET_MDNS
         /* Set before the AP comes up, so the very first announcement this boot
          * can make already says "provisioning" rather than making item 5's
@@ -9446,10 +9023,10 @@ esp_err_t orb_net_start(void)
         orb_mdns_set_provisioning(true);
 #endif
         s_ap_netif     = esp_netif_create_default_wifi_ap();
+        if (s_ap_netif) ap_portal_option();
 
         wifi_config_t ap;
-        ap_fill_config(&ap);   /* same builder the runtime rescue/manual paths use,
-                                * so the SSID scheme cannot drift between them */
+        ap_fill_config(&ap);   /* the one builder; orb_net_ap_ssid() reads the same */
 
         /* AP, not APSTA, at this cold instant. The station is genuinely needed
          * later — the page must scan and the submitted pair must join — but NOT
@@ -9466,13 +9043,7 @@ esp_err_t orb_net_start(void)
          * scan/join simply defer one radio-task hop. */
         ESP_RETURN_ON_ERROR(esp_wifi_set_mode(WIFI_MODE_AP), TAG, "mode");
         ESP_RETURN_ON_ERROR(esp_wifi_set_config(WIFI_IF_AP, &ap), TAG, "ap config");
-        if (ap_isolated)
-            /* The owner asked for isolation: this AP has no deadline and no stored
-             * network behind it, and the device will not associate this boot. */
-            ESP_LOGW(TAG, "AP-isolated mode — orb reachable ONLY at \"http://192.168.4.1/\" "
-                          "on its own AP \"%s\"; send MODE sta to rejoin Wi-Fi",
-                     (const char *)ap.ap.ssid);
-        else if (prov_forced)
+        if (prov_forced)
             /* Deliberately not the factory wording: credentials ARE stored, and
              * saying otherwise would send an operator hunting for a pairing they
              * never lost. The request is good for this boot only. */
@@ -9514,8 +9085,16 @@ esp_err_t orb_net_start(void)
      * orb_net_apply_pending_factory_reset() rather than growing this stack: the
      * 2026-10-27 bench showed +1 KB here starves the SoftAP's driver allocations
      * (alloc eb fail → ieee80211_hostap_attach NULL-derefs) on an unprovisioned
-     * boot, so every byte this task owns is spoken for. */
-    if (!s_net_q || xTaskCreate(net_task_loop, "orb_net", 3072, NULL, 4,
+     * boot, so every byte this task owns is spoken for.
+     *
+     * 4 KB since v1.8.2 (2026-11-16): at 3 KB a connected orb asked for its AP
+     * (POST /api/v1/wifi/ap) overflowed this stack inside the promotion to APSTA and
+     * panicked; v1.8.1 as shipped did it on Gold, on IDF 5.4.0 and 5.5.6 alike. The
+     * extra 1 KB is paid by the static RX trim of the same release (6 -> 4, ~3.2 KB of
+     * internal DMA RAM returned); 748 B was left after that open. §66 then removed the
+     * open itself (the AP exists only in a setup boot), and the 4 KB stays as margin
+     * for the setup boot's promotion and the rescue reboot that run here. */
+    if (!s_net_q || xTaskCreate(net_task_loop, "orb_net", 4096, NULL, 4,
                                 &s_net_task) != pdPASS) {
         /* Not fatal: without the queue the association retry simply stops
          * firing, which the log says plainly. The boot-path join below is
@@ -9672,6 +9251,37 @@ bool orb_net_request_provisioning(void)
 #endif
 }
 
+/* §66's gate, asked by app_main before anything expensive runs and before
+ * orb_net_start(): would this boot take the setup branch? Read-only and side-effect
+ * free — it peeks the RTC intent word (orb_net_start consumes it) and reads the one
+ * key that decides it, so the two answers cannot disagree. */
+bool orb_net_setup_boot(void)
+{
+#if CONFIG_ORB_NET_AP_FALLBACK
+    if (prov_intent_armed(s_prov_intent)) return true;
+    esp_err_t e = nvs_flash_init_partition(NET_NVS_PARTITION);
+    if (e != ESP_OK) return true;            /* no readable credentials: setup */
+    nvs_handle_t h;
+    if (nvs_open_from_partition(NET_NVS_PARTITION, NET_NVS_NAMESPACE, NVS_READONLY, &h) != ESP_OK)
+        return true;                         /* namespace never written: a fresh board */
+    char ssid[NET_SSID_MAX + 1] = "";
+    size_t sz = sizeof ssid;
+    if (nvs_get_str(h, "ssid", ssid, &sz) != ESP_OK) ssid[0] = '\0';
+    nvs_close(h);
+    return ssid[0] == '\0';
+#else
+    return false;
+#endif
+}
+
+/* The setup AP's SSID, from the same builder the radio uses. */
+void orb_net_ap_ssid(char *out, size_t cap)
+{
+    wifi_config_t ap;
+    ap_fill_config(&ap);
+    snprintf(out, cap, "%s", (const char *)ap.ap.ssid);
+}
+
 const char *orb_net_ip_str(void)
 {
     return s_ip;
@@ -9694,7 +9304,9 @@ bool orb_net_is_up(void) { return false; }
 
 bool orb_net_is_provisioning(void) { return false; }
 
-bool orb_net_ap_isolated(void) { return false; }   /* no SoftAP in a disabled build */
+bool orb_net_setup_boot(void) { return false; }    /* no SoftAP in a disabled build */
+
+void orb_net_ap_ssid(char *out, size_t cap) { if (cap) out[0] = '\0'; }
 
 /* D2's setter, disabled build: there is no SoftAP to force, so this refuses the way
  * the enabled build refuses when ORB_NET_AP_FALLBACK=n. Without the stub any caller

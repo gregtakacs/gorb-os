@@ -202,6 +202,7 @@ static bool card_usable(void)
 /* What a park stands aside for (radar-plan §7.3): the card's last priority. */
 static const char *write_waits_for(void)
 {
+    if (orb_sd_hushed()) return "a fetch";             /* §7.11 */
     if (orb_strip_active()) return "the carousel";
     if (theme_strip_active()) return "the theme carousel";
     if (input_router_switching()) return "an app switch";
@@ -409,6 +410,13 @@ static bool run_job(int a, int i)
         orb_sd_unlock();
         uint32_t off = 0;
         while (fd >= 0 && off < len && still(b, i, gen) && card_usable()) {
+            /* §7.11: an app fetch waiting on a quiet card, or in its handshake, goes
+             * first; a load is the app's to wait for (the radar loop holds its frame) */
+            if (orb_sd_hushed()) {
+                if (!said) { ESP_LOGI(TAG, "a load stands aside for a fetch"); said = true; }
+                vTaskDelay(pdMS_TO_TICKS(100));
+                continue;
+            }
             const uint32_t n = len - off < PIECE ? len - off : PIECE;
             orb_sd_lock();
             const ssize_t r = read(fd, jb + off, n);

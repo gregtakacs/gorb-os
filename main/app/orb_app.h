@@ -556,6 +556,8 @@ bool orb_app_open_switcher(const orb_app_t *from, int step);
 /** Put the home entry's system pages up (plan §54, the carousel's gear). The router
  *  has already switched to the home entry. False when the home entry has none. */
 bool orb_app_open_settings(void);
+/** §67.9: put the shell on its Phone page (the settings page's QR). */
+bool orb_app_open_phone(void);
 /** The cursor landed on row idx (app's own numbering). A NULL opt_focus hook is
  *  the pre-preview ABI: the shell moves its highlight and the app never hears.
  *  The hook runs on the LVGL task from the painter; like every answer here it

@@ -123,6 +123,17 @@ int64_t orb_sd_lock_held_ms(void);
  *  reads this, not lock_held_ms. */
 int64_t orb_sd_lock_idle_ms(void);
 
+/** The card's deferrable users stand aside (radar-plan §7.11). An app fetch waits for
+ *  the card to go quiet (orb_app_net.c NET_CARD_QUIET_MS), and an app's own kept bodies
+ *  loading under a playing loop never let it: on Gold the radar loaded a parked frame
+ *  every ~400 ms and its list fetch was refused for ten hours (2026-11-16). A fetch raises
+ *  the hush while it waits and runs; the blob mover holds between pieces while it is up.
+ *  Display readers (theme pages, maps) ignore it. It lapses on its own at `until_us`
+ *  (esp_timer µs), so a fetch that never lowers it cannot hold the card for good. */
+void orb_sd_hush_until(int64_t until_us);
+void orb_sd_hush_end(void);
+bool orb_sd_hushed(void);
+
 /** Writers mark the card as being written, once a chunk: the file manager, the theme
  *  upload and the app upload. A background reader (the OS's map reads, radar-plan
  *  §2.12) asks how long since the last write and stands aside while one is under way,

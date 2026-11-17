@@ -1273,6 +1273,14 @@ bool orb_app_open_settings(void)
     return true;
 }
 
+/* §67.9: the carousel's Phone card. The registry names the menu's view, the router does
+ * not (the views are the registry's to name); the shell is already on the glass. */
+bool orb_app_open_phone(void)
+{
+    menu_view_open_phone();
+    return true;
+}
+
 bool orb_app_open_switcher(const orb_app_t *from, int step)
 {
     const orb_app_t *home = orb_app_home();

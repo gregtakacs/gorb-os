@@ -122,11 +122,17 @@ static TaskHandle_t s_task;
 
 /* ---- the gate ------------------------------------------------------------------ */
 
+/* §7.11: how long a fetch may hold the card's deferrable users aside, from its first
+ * wait to its last byte: the gate's wait and a slow request's two timeouts. The hush
+ * lapses there even if nothing lowers it. */
+#define NET_HUSH_MS (NET_GATE_WAIT_MS + 2 * NET_TIMEOUT_MS)
+static const char WHY_CARD[] = "the card is busy";
+
 static const char *gate(void)
 {
     if (!orb_net_is_up()) return "no network";
     if (orb_jobs_busy()) return "a job is running";
-    if (orb_sd_lock_idle_ms() < NET_CARD_QUIET_MS) return "the card is busy";
+    if (orb_sd_lock_idle_ms() < NET_CARD_QUIET_MS) return WHY_CARD;
     if (heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL) < NET_MIN_LARGEST)
         return "internal heap is thin";
     return NULL;
@@ -174,8 +180,13 @@ static void fetch(net_slot_t *n)
     const int64_t t0 = esp_timer_get_time();
     const char *why;
     while ((why = gate()) != NULL) {
+        /* §7.11: a card kept busy by app bodies (a radar loop's parked frames) never went
+         * quiet for NET_CARD_QUIET_MS, and the fetch was refused every time: the movers
+         * stand aside while it waits, and the quiet it needs comes */
+        if (why == WHY_CARD) orb_sd_hush_until(t0 + (int64_t)NET_HUSH_MS * 1000);
         if (esp_timer_get_time() - t0 > (int64_t)NET_GATE_WAIT_MS * 1000) {
             ESP_LOGI(TAG, "%s: not fetched: %s", n->slug, why);
+            orb_sd_hush_end();
             n->err = ESP_ERR_TIMEOUT;
             return;
         }
@@ -219,8 +230,11 @@ static void fetch(net_slot_t *n)
     }
     orb_https_result_t r;
     memset(&r, 0, sizeof r);
+    /* the quiet the gate waited for, kept through the handshake it protects */
+    orb_sd_hush_until(esp_timer_get_time() + (int64_t)2 * NET_TIMEOUT_MS * 1000);
     const esp_err_t e = orb_https_request(n->cli, (orb_https_method_t)n->method, n->path,
                                           n->req_body, n->req_len, sink, n, &r);
+    orb_sd_hush_end();
     snprintf(n->resph, sizeof n->resph, "%s", orb_https_resp_headers(n->cli));
     for (int i = 0; i < nn; i++) (void)orb_https_del_header(n->cli, names[i]);
     heap_caps_free(n->req_body);
@@ -249,6 +263,7 @@ static void net_task(void *arg)
             n->queued = false;
             any = true;
             fetch(n);
+            orb_sd_hush_end();                 /* §7.11: every way out of a fetch lowers it */
             if (__atomic_load_n(&n->dead, __ATOMIC_ACQUIRE)) {
                 net_unreap(n);                 /* released mid-fetch: freed here, once */
                 net_free(n);

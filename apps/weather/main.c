@@ -727,6 +727,16 @@ static int32_t map_key(void)
     return (int32_t)(s_where_os[s_sel] | (s_home_gen & 0x3FF) << 2 | (s_places_gen & 0x3FF) << 12 | (orb_maps_gen() & 0xFF) << 22);
 }
 
+/* §67: a place with no map yet shows no map: the last view (home's, or the place before)
+ * is closed and its layer wiped, so it is never drawn under a place it does not belong to. */
+static void map_drop(void)
+{
+    if (s_view > 0) { orb_map_close(s_view); s_view = 0; }
+    s_view_key = -1;
+    if (s_layer && s_map_drawn) orb_stage_live(0, V.map_order, 0);
+    s_map_drawn = false;
+}
+
 static void map_step(void)
 {
     if (!V.role_on || !s_nwhere || !s_visible) return;
@@ -757,6 +767,7 @@ static void map_step(void)
                 const bool absent = s_view_next == ORB_MAP_ABSENT || s_view_next == ORB_MAP_NOCARD;
                 s_map_retry_ms = up_ms() + (absent ? 20000 : 3000);
                 s_view_next = 0; s_next_key = -1;
+                if (absent) map_drop();
             }
         }
     }
@@ -766,6 +777,7 @@ static void map_step(void)
             orb_map_close(s_view_next);
             s_view_next = 0; s_next_key = -1;
             s_map_retry_ms = up_ms() + (r == ORB_MAP_ABSENT || r == ORB_MAP_NOCARD ? 20000 : 3000);
+            if (r == ORB_MAP_ABSENT || r == ORB_MAP_NOCARD) map_drop();
         } else if (r > 0) {
             if (s_view > 0) orb_map_close(s_view);
             s_view = s_view_next; s_view_key = s_next_key;

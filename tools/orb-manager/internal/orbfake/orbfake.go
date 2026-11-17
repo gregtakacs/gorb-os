@@ -288,7 +288,7 @@ func (o *Orb) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	o.record(r)
 	switch {
 	case r.URL.Path == "/api/v1/status" && r.Method == http.MethodGet:
-		o.serveStatus(w)
+		o.serveStatus(w, r)
 	case r.URL.Path == "/api/v1/wifi/scan" && r.Method == http.MethodGet:
 		o.serveWifiScan(w, r)
 	case r.URL.Path == "/api/v1/wifi/join" && r.Method == http.MethodPost:
@@ -323,6 +323,10 @@ func (o *Orb) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		o.serveUnits(w)
 	case r.URL.Path == "/api/v1/units" && r.Method == http.MethodPost:
 		o.serveUnitsPost(w, r)
+	case r.URL.Path == "/api/v1/display" && r.Method == http.MethodGet:
+		o.serveDisplay(w)
+	case r.URL.Path == "/api/v1/display" && r.Method == http.MethodPost:
+		o.serveDisplayPost(w, r)
 	case r.URL.Path == "/api/v1/reboot" && r.Method == http.MethodPost:
 		o.serveReboot(w)
 	case r.URL.Path == "/api/v1/ota" && r.Method == http.MethodPost:

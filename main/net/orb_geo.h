@@ -43,12 +43,6 @@ bool orb_geo_valid(int32_t lat_e6, int32_t lon_e6);
  * else the reason, worded for the dial. */
 const char *orb_geo_parse_coords(const char *s, int32_t *lat_e6, int32_t *lon_e6);
 
-/* A full Open Location Code ("8M48FWX3+QQ", "85GCQ2XC+2V", padded "7FG49Q00+")
- * to the centre of its cell. Case-insensitive. Short codes ("FWX3+QQ Phoenix")
- * need a reference point the orb does not have and are refused with that
- * reason. NULL on success. */
-const char *orb_geo_olc_decode(const char *code, int32_t *lat_e6, int32_t *lon_e6);
-
 /* Great-circle distance in metres. */
 uint32_t orb_geo_dist_m(int32_t lat1_e6, int32_t lon1_e6, int32_t lat2_e6, int32_t lon2_e6);
 
@@ -56,6 +50,12 @@ uint32_t orb_geo_dist_m(int32_t lat1_e6, int32_t lon1_e6, int32_t lat2_e6, int32
  * (optional) gets its distance. */
 int orb_geo_nearest(int32_t lat_e6, int32_t lon_e6, uint32_t *dist_m);
 
+/* Cities whose name, or a word of it, starts with q (ASCII case-insensitive): names that
+ * start with q first, in table order, then word matches. Up to max indices into out;
+ * returns how many. app-platform-plan §67: the settings page's search. */
+int orb_geo_city_search(const char *q, int *out, int max);
+/* A city's position, millionths of a degree (the table holds hundredths). */
+void orb_geo_city_ll(int city, int32_t *lat_e6, int32_t *lon_e6);
 const char *orb_geo_city_name(int city);
 int         orb_geo_city_zone(int city);           /* -1 for a bad index */
 /* The city's ISO country into out ("US"); "" for a bad index. */

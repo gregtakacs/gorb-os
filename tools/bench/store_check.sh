@@ -32,7 +32,7 @@ run() {
   python3 tools/capf.py 150 "$OUT" >/dev/null 2>&1 &
   local cp=$!
   for _ in $(seq 1 60); do      # wait for the capture's own reset to land
-    u=$(curl -s -m 3 "http://$IP/api/v1/status" | python3 -c 'import json,sys;print(json.load(sys.stdin)["idle"]["since_s"])' 2>/dev/null)
+    u=$(curl -s -m 3 "http://$IP/api/v1/status?full=1" | python3 -c 'import json,sys;print(json.load(sys.stdin)["idle"]["since_s"])' 2>/dev/null)
     [ -n "$u" ] && [ "$u" -lt 60 ] && break
     sleep 2
   done

@@ -24,7 +24,7 @@ import theme_schema  # noqa: E402
 
 C_OUT = os.path.join(ROOT, "main", "assets", "orb_ui_icons.c")
 ICON_OUT = os.path.join(ROOT, "apps", "color_picker", "icon.png")
-CARDS = (("settings", 466), ("back", 300))
+CARDS = (("settings", 466), ("back", 300), ("phone", 300))
 
 
 def rgb565_disc(im, side):

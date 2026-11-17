@@ -366,7 +366,13 @@ static void map_failed(int32_t why)
     s_view_next = 0;
     if (why == ORB_MAP_OFF_GLASS) return;               /* not now: on_glass opens it */
     const bool absent = why == ORB_MAP_ABSENT || why == ORB_MAP_NOCARD;
-    if (absent) { s_map_absent = true; s_map_dirty = true; }
+    if (absent) {
+        /* §67: a place with no map yet shows no map, never the last one: the view kept
+         * from home (or the place before) would draw under "No map yet" as if it were here's */
+        if (s_view > 0) { orb_map_close(s_view); s_view = 0; }
+        s_map_absent = true;
+        s_map_dirty = true;
+    }
     s_map_retry_ms = up_ms() + (absent ? 20000 : 3000);
     orb_logf("radar: the map did not open (%d), again in %d s", (int)why, absent ? 20 : 3);
 }
@@ -809,7 +815,52 @@ static bool in_window(int k, int cur, int ahead)
 }
 
 /* §7.4, once a service pass: what the window keeps is loaded, the rest parked. A window too big
- * for the 768 KB with room for a landing keeps the wanted frame and the next alone. */
+ * for the 768 KB with room for a landing keeps the wanted frame and the next alone.
+ *
+ * §7.12: and every frame past the window stays in PSRAM too while it fits, nearest first in the
+ * order the loop (or the dial) will reach it, under the 768 KB less a landing's room. Only what
+ * does not fit is parked. The window alone parked every other frame as it landed, and on Gold's
+ * dry sky (18 frames of 1,096 B) the loop read one back from the card every ~400 ms with 1.18 MB
+ * of PSRAM free: the card never went quiet, and the list fetch was refused for ten hours
+ * (2026-11-16). */
+static void keep_plan(int cur, int ahead, bool keep[RD_FRAMES])
+{
+    const int n = s_npast + s_nnow;
+    const uint32_t need = s_biggest ? s_biggest + s_biggest / 4 : FRAME_MAX;
+    const uint32_t cap = BLOB_BUDGET > need ? BLOB_BUDGET - need : 0;
+    bool seen[RD_FRAMES] = { false };
+    uint32_t used = 0;
+    for (int k = 0; k < n; k++) {                    /* the window, whatever it costs */
+        keep[k] = F[k].slot >= 0 && in_window(k, cur, ahead);
+        if (keep[k]) { seen[k] = true; used += orb_blob_len((uint32_t)F[k].slot); }
+    }
+    /* then the loop's (or the dial's) way from the playhead, one pass round */
+    bool full = false;
+    for (int a = 1, j = cur; a <= n && j >= 0 && !full; a++) {
+        j = s_play ? (j >= idx_newest() ? 0 : j + 1) : j + s_scrub_dir;
+        if (j < 0 || j >= n || (!s_play && !s_scrub_dir)) break;
+        if (seen[j]) continue;
+        seen[j] = true;
+        if (F[j].slot < 0) continue;
+        const uint32_t len = orb_blob_len((uint32_t)F[j].slot);
+        if (used + len > cap) { full = true; break; }
+        used += len;
+        keep[j] = true;
+    }
+    /* then the rest (behind a scrub, the nowcast while playing), nearest the playhead first */
+    for (int d = 1; d < n && !full; d++)
+        for (int side = 0; side < 2 && !full; side++) {
+            const int k = side ? cur + d : cur - d;
+            if (k < 0 || k >= n || seen[k]) continue;
+            seen[k] = true;
+            if (F[k].slot < 0) continue;
+            const uint32_t len = orb_blob_len((uint32_t)F[k].slot);
+            if (used + len > cap) { full = true; break; }
+            used += len;
+            keep[k] = true;
+        }
+}
+
 static void frames_tend(void)
 {
     s_parkable = false;
@@ -823,11 +874,13 @@ static void frames_tend(void)
     for (int k = 0; k < s_npast + s_nnow; k++)
         if (F[k].slot >= 0 && in_window(k, cur, 2)) win += orb_blob_len((uint32_t)F[k].slot);
     const int ahead = win + (s_biggest ? s_biggest : FRAME_MAX) > BLOB_BUDGET ? 1 : 2;   /* 2-3 frames in PSRAM */
+    bool kp[RD_FRAMES];
+    keep_plan(cur, ahead, kp);
     int calls = 0;
     for (int k = 0; k < s_npast + s_nnow && calls < 4; k++) {
         const int st = fstate(&F[k]);
         if (st != ORB_BLOB_RAM && st != ORB_BLOB_CARD) continue;
-        const bool keep = in_window(k, cur, ahead);
+        const bool keep = kp[k];
         if (keep && st == ORB_BLOB_CARD) {
             calls++;
             (void)orb_blob_load((uint32_t)F[k].slot);   /* NO_MEM: the parks below free it */

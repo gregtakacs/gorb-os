@@ -805,14 +805,11 @@ def _calls(js_):
     return set(re.findall(r"(?<![.\w$])([a-z][A-Za-z0-9_$]*)\s*\(", t))
 
 def landing_page_js():
-    # Two pages ship in firmware now: the provisioning landing page and the
-    # clock page (/timezone, HTML_TZ). The timezone UI was MOVED, not restyled
-    # — owner's call after provisioning worked: the network page must not show
-    # zone settings at all, and the old dropdown of IANA keys + POSIX free
-    # text was unusable for a person (and the phone's own zone was never
-    # auto-applied, so it usually was not touched at all). So the pins below
-    # enforce BOTH halves of that decision: tz UI is FORBIDDEN on the landing
-    # page, and the clock page is pinned to the human-readable shape.
+    # The provisioning landing page (HTML_LANDING), served in a setup boot. The
+    # clock page (/timezone, HTML_TZ) was retired in app-platform-plan §67: the
+    # home location drives the zone, and the connected orb's settings page
+    # (main/net/settings.html, tools/host_settings_page_test.py) replaced it. The
+    # pins below keep tz UI FORBIDDEN on the landing page.
     try:
         import esprima
     except ImportError:
@@ -820,7 +817,7 @@ def landing_page_js():
         return 0
     rc = 0
     pages = {}
-    for sym in ('HTML_LANDING', 'HTML_TZ'):
+    for sym in ('HTML_LANDING',):
         page, js, err = c_page(sym)
         if err:
             print(f'FAIL landing page: {err}'); return 1
@@ -834,7 +831,6 @@ def landing_page_js():
             return 1
         pages[sym] = (page, js)
     lpage, ljs = pages['HTML_LANDING']
-    cpage, cjs = pages['HTML_TZ']
 
     # ---- landing: the shipped product decisions (see the h_wifi_ap and
     # HTML_LANDING comments for the reasoning behind each) ----
@@ -865,7 +861,7 @@ def landing_page_js():
             print(f'FAIL landing page: missing {k!r} — {why}'); rc = 1
     for k, why in {"createElement('a')": 'the open-in-new-tab link',
                    "a.target='_blank'": 'that link opens a new tab, not over this page',
-                   'orb clock: set your city': 'the link to the clock page',
+                   "settings in a new tab": 'the link to the orb\'s settings page',
                    'Copy address': 'the copy button',
                    'close setup network': 'the explicit user ack that closes the AP',
                    'Switch your phone back to your own wifi': 'instructions to leave the AP',
@@ -896,50 +892,11 @@ def landing_page_js():
         if got != want:
             print(f'FAIL landing page: {k!r} appears {got}x, want {want}x — {why}'); rc = 1
 
-    # ---- clock page: human-readable, phone-driven, zero typing ----
-    for k, why in {'posix': 'POSIX shown on the clock page',
-                   'POSIX': 'POSIX named on the clock page',
-                   '<select': 'dropdown (the list is tap-one-row buttons now)',
-                   '__c__': 'custom-rule case',
-                   'tzx': 'free-text rule box',
-                   'EST5EDT': 'a POSIX rule example on the page',
-                   'Set zone': 'the old confirm button'}.items():
-        if k in cpage:
-            print(f'FAIL clock page: contains {k!r} — {why}'); rc = 1
-    for k, why in {'Type your city': 'search box in the markup',
-                   'id=msg': 'one plain status line',
-                   'id=zs': 'the city list container'}.items():
-        if k not in cpage:
-            print(f'FAIL clock page: missing {k!r} — {why}'); rc = 1
-    for k, why in {'resolvedOptions().timeZone': 'reads the phone\'s own zone',
-                   'formatToParts': 'measures zone offsets in the browser',
-                   'function matchPhone': 'phone-to-table matching before asking',
-                   'your phone says ': 'announces the auto-set it is about to do',
-                   'is that the right time': 'asks the one question that catches a bad rule',
-                   'does not follow DST': 'the refused-synth row admits its limit',
-                   'function synth': 'phone-side POSIX rule derivation for unlisted zones',
-                   'function transY': "finds the phone zone's clock changes by bisect",
-                   'function mrule': 'encodes a transition as an M rule',
-                   'function offAt': 'offset probes at arbitrary instants',
-                   'function gmtRule': 'the fixed-offset shape synthesis refuses to fake',
-                   'function sym': 'a phone zone name becomes a safe rule token',
-                   'for(var k=1;k<=2;k++)': 'the rule must hold for the NEXT TWO YEARS too',
-                   'follows its clock changes': 'the synthesized row promises DST tracking it makes good on',
-                   'matches your phone': 'the device echo agreed with the phone',
-                   'did not stick': 'the device echo disagreed — said out loud',
-                   'd.tz_offset==want': 'set-time compares the dial, not the echo of the request',
-                   'return n==1?hit:null': 'offset matching only ever applies a UNANIMOUS answer',
-                   'could not reach the orb': 'says so when the fetch dies',
-                   'GMT': 'labels lead with the offset',
-                   'oninput': 'the search box filters live'}.items():
-        if k not in cjs:
-            print(f'FAIL clock page: missing {k!r} — {why}'); rc = 1
-
     # A call to a function that does not exist is a RUNTIME fault: esprima
     # parses it happily and every string pin still passes while the phone just
     # shows a dead button. One real edit here dropped gmtRule's definition
     # while leaving its call site; only this check catches that class.
-    for tag, js_ in (('landing', ljs), ('clock', cjs)):
+    for tag, js_ in (('landing', ljs),):
         defs = set(re.findall(r'function ([A-Za-z_$][\w$]*)\s*\(', js_))
         used = _calls(js_)
         undef = sorted(used - defs - {'fetch', 'if', 'for', 'while', 'switch',
@@ -955,9 +912,6 @@ def landing_page_js():
     for k, why in {'s_joining': 'the joining state distinct from provisioning',
                    '"joining"': 'the joining state string the page keys on',
                    'wifi_reason_name': 'the reason rendered as a word',
-                   'HTML_TZ': 'the clock page bytes',
-                   'h_timezone': 'the clock page handler',
-                   '"/timezone"': 'the clock page route',
                    'const char *iana': 'the canonical-name column the phone matches',
                    'const char *label': 'the city column a person reads',
                    '\\"iana\\":\\"': 'config serves the iana column (when it differs from the key)',
@@ -1069,7 +1023,7 @@ def landing_page_js():
 
     if rc:
         return rc
-    print(f'ok    landing ({len(ljs)} B) + clock ({len(cjs)} B) JS parse + call linter; '
+    print(f'ok    landing ({len(ljs)} B) JS parse + call linter; '
           f'tz UI off the network page, {len(rows)} zone rows, {nroutes} routes in cap, '
           f'config body fits')
     return 0

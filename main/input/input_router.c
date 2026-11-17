@@ -690,6 +690,15 @@ esp_err_t input_router_show(const orb_app_t *app)
     return set_screen(app, true);
 }
 
+void input_router_open_phone(void)
+{
+    orb_carousel_cancel();
+    disarm_all();
+    if (set_screen(orb_app_home(), true) != ESP_OK) return;
+    if (!orb_app_open_phone()) return;
+    ESP_LOGI(TAG, "phone card from the carousel");
+}
+
 void input_router_open_settings(void)
 {
     orb_carousel_cancel();

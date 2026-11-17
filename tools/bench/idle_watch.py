@@ -59,7 +59,7 @@ def status():
     err = None
     for _ in range(3):
         try:
-            with urllib.request.urlopen(BASE + "/api/v1/status", timeout=8) as r:
+            with urllib.request.urlopen(BASE + "/api/v1/status?full=1", timeout=8) as r:
                 return json.load(r)
         except Exception as e:
             err = e

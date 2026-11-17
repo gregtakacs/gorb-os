@@ -2059,7 +2059,9 @@ a frame is drawn from (`orb_cv_png8`), and the app says which bodies it wants th
 
 - **3 fps**: a loop step every 333 ms (was 250), Now held 2 s.
 - **What stays in PSRAM**: the frame on the glass, the next two the loop (or the dial) will
-  show, and the newest; every other frame is parked as it lands. Before a step, the next frame
+  show, and the newest; then every other frame that fits, nearest the playhead first, under the
+  768 KB less a landing's room; only the rest is parked (§7.12: parking them all as they landed
+  read a frame back from the card every step on a dry day). Before a step, the next frame
   must be in RAM: its load is asked two steps ahead, and a step waits for it rather than skip.
 - **Room for a landing**: before a frame is fetched there must be room for 256 KB; else the
   farthest frame from the playhead is parked and the fetch waits for its PSRAM to go.
@@ -2216,3 +2218,49 @@ carousel opens) and London.
   worst second in one blip; interlaced ~16.0, 12-13 at the worst; the step's biggest commit
   61 → 53 ms. The rest of a step is PF composed at the swap, still in one commit: the next
   place to spread it, with care that no fast job reads a half-swapped PF.
+
+### 7.11 A fetch gets its quiet card (2026-11-16, Gold, OS v1.8.2)
+
+**Seen:** Gold's radar said "updated 588 min ago". The list fetch was refused every ten
+minutes with `appnet: radar: not fetched: the card is busy`, and flights the same. RainViewer
+answered fine from the bench. An app fetch waits up to 20 s for the card lock to have been
+idle 2 s (`NET_CARD_QUIET_MS`, the ring refund's tail), and the radar's loop, with its frames
+parked, loaded one back from the card about every 400 ms (11-17 KB, ~45 ms each). The card
+never went quiet, so the radar's own loop locked out its own list for ten hours.
+
+**Built (owner, 2026-11-16: the OS side, so every app's fetch is covered):** the card has a
+*hush* (`orb_sd_hush_until` / `orb_sd_hush_end` / `orb_sd_hushed`). The appnet worker raises
+it when its gate finds the card busy, and again through the request (the handshake is what
+the quiet protects). It lowers it after every fetch, however the fetch ends. While it is up,
+the blob mover holds between pieces: loads wait (the radar loop holds its frame, as it already
+does for a load in flight), and a park stands aside as it does for the carousel. Theme pages,
+maps, uploads and installs ignore it. It lapses on its own at 40 s (the gate's wait plus two
+request timeouts), so a fetch that never lowers it cannot hold the card. Cost: the loop pauses
+a few seconds once a list (every 10 min), only while frames are on the card.
+
+**Bench (Gold, OS v1.8.2 pre-release, radar on the glass 13 min):** the 10-minute list landed on its first
+try (`weather-maps.json -> 200 in 2153 ms`, `list 12 past + 6 nowcast`). The load in hand stood
+aside 4.4 s for it, and the loop held one frame that long. Frame fetches ran with parks standing
+aside 15 times. None was refused.
+
+**Seen beside it:** the loop re-loaded its parked frames from the card every pass: 788 loads in
+13 min of 1,096 B frames (a dry sky), with 1.18 MB of PSRAM free. So it was not size that sent
+them to the card. That thrash is what kept the card busy. Fixed in §7.12.
+
+### 7.12 Park only what does not fit (2026-11-16, Gold, radar v1.8.1)
+
+**Seen (§7.11):** §7.4 parked every frame outside a three-frame window as it landed, whatever
+room there was. On a dry day the loop read one back from the card about every 400 ms.
+
+**Built (owner, 2026-11-16: "fix the radar bug too"):** `keep_plan` keeps the window as before,
+whatever it costs. It then keeps the frames the loop (or the dial, the way it turns) will reach,
+in that order, while they fit under the 768 KB less a landing's room (the biggest frame +25%,
+else 256 KB). Then it keeps the rest (behind a scrub, the nowcast while playing), nearest the
+playhead first, under the same cap. Only what does not fit is parked. A frame that fits and is on
+the card is loaded back once. Re-parking a frame whose card copy is kept costs no write
+(`orb_blob_park` drops the PSRAM). On a wet loop past the budget the behaviour is §7.4's, with the
+window wider by what fits.
+
+**Bench (Gold, the same dry sky, radar on the glass 13 min):** 0 loads and 0 parks (was 788
+loads in 13 min). All 18 frames stay in PSRAM (kept 19,728 B). After the list, the nowcast
+recheck came back 304, and flights fetched beside it, never refused.

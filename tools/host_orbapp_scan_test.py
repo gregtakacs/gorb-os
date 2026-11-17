@@ -592,7 +592,9 @@ def lint():
     mn = read(MAIN_C)
     assert "orb_app_scan_init()" in mn, "main.c no longer registers the drop zone"
     nn = read(NET_C)
-    assert '{ .uri = "/apps",              .method = HTTP_GET,  .handler = h_apps },' in nn
+    # §67 retired the orb's /apps page (the settings page lists the apps); the listing
+    # door stays, and the page must not come back on the side
+    assert '.handler = h_apps }' not in nn, "the retired /apps page is registered again"
     assert '{ .uri = "/api/v1/apps",       .method = HTTP_GET,  .handler = h_apps_list },' in nn
     # the row block must live in PSRAM, not .bss: the first board build with
     # these buffers as internal statics starved either httpd_start
@@ -634,7 +636,7 @@ def lint():
     # in cannot turn an app off before a trip without the card.
     assert nn.count("apps_send_installed(req, row, APPS_ROW_MAX);") == 3, \
         "the installed tier stopped riding one of the three response paths"
-    assert "no card in the socket" in nn and "no apps folder" in nn
+    # (§67 retired the /apps page whose "no card in the socket" / "no apps folder" text was pinned here)
     # the chunked-encoding contract: repeated httpd_resp_send is NOT the
     # documented stream; the chunk API closed with a zero-length chunk is.
     # A handler that drops the terminator hangs every client waiting for a
@@ -674,38 +676,8 @@ def lint():
     for word in ("power", "sd_read"):
         assert word not in body, \
             "orb_net.c spelled a capability word (%r) beside its one source" % word
-    # the page's only source of refusal text is the row's why, verbatim.
-    assert "CANNOT INSTALL: '+esc(a.why)" in nn
-    # the page must actually draw what the endpoint answered — anchored to
-    # this page's own refresh body, because the themes page draws with the
-    # same two statements and would mask a mutation of ours.
-    assert "'bad');return;}data=r.d;draw();" in nn
-    # the page parses as JavaScript. The C fragments concatenate with NO
-    # newline between them, so one missing semicolon is a page stuck at
-    # "loading" on a phone — the exact failure the themes page documents, and
-    # the same esprima gate host_tz_test.py runs on its two pages. Only
-    # column-0 whole-string fragments count as page bytes: a line with a
-    # stray quote would otherwise be silently dropped from the test.
-    try:
-        import esprima
-        m = re.search(r'static const char HTML_APPS\[\] =(.*?);\s*\n', nn, re.S)
-        assert m, "HTML_APPS not found in orb_net.c"
-        frags = []
-        for ln in m.group(1).splitlines():
-            t = ln.strip()
-            if not t or t.startswith('/*') or t.startswith('//'):
-                continue
-        # the C terminator (;") is stripped before the quotes; a JS semicolon
-        # may sit inside the last quote, and dropping it would silently alter
-        # the program under test.
-            assert re.fullmatch(r'"(?:[^"\\]|\\.)*";?', t), \
-                "page line is not a whole C string fragment: " + t[:80]
-            frags.append(t.rstrip(';')[1:-1])
-        page = ''.join(f.encode('utf-8').decode('unicode_escape') for f in frags)
-        js = page[page.index('<script>') + 8:page.index('</script>')]
-        esprima.parseScript(js)
-    except ImportError:
-        pass                             # same rule as host_tz_test: no esprima, no parse
+    # (§67 retired the /apps page: its refusal text, its draw and its JS parse were pinned here;
+    #  the settings page has its own suite, tools/host_settings_page_test.py)
     # the row bound: recompute the handler's worst-case row from the sizes the
     # scan header and the manifest header actually ship, against the scratch it
     # actually allocates. Every field is at its double-escaped worst; the

@@ -94,6 +94,8 @@ void menu_view_switcher(const orb_app_t *from, int step);
 /** The system pages (plan §54): the top page, armed, cursor on its first row. The
  *  registry's settings hook, reached from the carousel's gear. */
 void menu_view_open_settings(void);
+/** §67.9: open the Phone page (the settings page's QR) from the carousel. LVGL task only. */
+void menu_view_open_phone(void);
 
 /**
  * D38: the USB share window's claim on the dial. Call from the router's poll,

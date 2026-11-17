@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"regexp"
 	"strconv"
 	"strings"
@@ -63,7 +64,7 @@ func TestDeviceVerbBodiesAreTheFirmwaresOwnWords(t *testing.T) {
 	}{
 		{"scan", []string{`{"status":"scanning"}`, `{"error":"busy", "detail":"association in progress"}`, `{"error":"scan timed out"}`, `{"error":"scan failed"}`}},
 		{"join", []string{`{"state":"joining"}`, `{"error":"ssid required or too long"}`, `{"error":"body too large"}`, `{"error":"content-length required"}`, `{"error":"tz rejected"}`}},
-		{"ap", []string{`{"state":"ap_closing"}`, `{"error":"no lease — the AP is the only way in"}`, `"state\":\"ap_opening\"`, `"ap_ssid\"`, `"seconds"`}},
+		{"ap", []string{`{"state":"ap_closing"}`, `{"error":"no lease — the AP is the only way in"}`, `{"error":"the setup hotspot opens only when the orb has no working network"}`}},
 		{"confP", []string{`{"state":"zoned"`, `"tz\"`, `"posix\"`, `"tz_offset\"`, `{"error":"tz rejected"}`}},
 		// The name door's four bodies, including the two rejections that are identical
 		// to config's because they come from the same read-bounded-body preamble, and
@@ -392,9 +393,10 @@ func TestJoinRejectsWhatTheFirmwareRejects(t *testing.T) {
 }
 
 // Closing the AP is refused while there is no lease: an orb with neither a lease nor
-// an AP is precisely the lockout the rescue path exists for, so "ok, closed" there
-// would be actively harmful (orb_net.c:2363-2372).
-func TestAPCloseNeedsALeaseAndOpenReportsTheSSID(t *testing.T) {
+// an AP is precisely the lockout the setup boot exists for, so "ok, closed" there would
+// be actively harmful. Opening is refused outright (§66: the AP exists only in a setup
+// boot), in the firmware's own sentence.
+func TestAPCloseNeedsALeaseAndOpenIsRefused(t *testing.T) {
 	f := orbfake.New()
 	f.SetSTA(false)
 	srv := httptest.NewServer(f)
@@ -402,25 +404,21 @@ func TestAPCloseNeedsALeaseAndOpenReportsTheSSID(t *testing.T) {
 	c := orbnet.NewClient(2 * time.Second)
 	ip := strings.TrimPrefix(srv.URL, "http://")
 
-	if _, err := c.PostAP(ip, false); err == nil {
+	if _, err := c.CloseAP(ip); err == nil {
 		t.Error("AP closed with no lease: the hub accepted a body that strands an orb")
 	}
 	f.SetSTA(true)
-	if _, err := c.PostAP(ip, false); err != nil {
+	if _, err := c.CloseAP(ip); err != nil {
 		t.Errorf("close with a lease: %v", err)
 	}
-	b, err := c.PostAP(ip, true)
+	resp, err := http.Post(srv.URL+"/api/v1/wifi/ap", "application/json", strings.NewReader(`{}`))
 	if err != nil {
 		t.Fatalf("open AP: %v", err)
 	}
-	// The SSID comes from the MAC's last four hex digits, so a hub that tells the
-	// owner which network to join is telling them the orb's real one.
-	_, mac, _, _, _, _, _, _, _, _ := f.Device()
-	if want := `"ap_ssid":"orb-` + strings.ToUpper(mac[len(mac)-4:]) + `"`; !strings.Contains(string(b), want) {
-		t.Errorf("AP body = %s, want it to name %s", b, want)
-	}
-	if !strings.Contains(string(b), `"seconds":900`) {
-		t.Errorf("AP body = %s, want the manual hold the owner needs", b)
+	b, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusConflict || !strings.Contains(string(b), "opens only when the orb has no working network") {
+		t.Errorf("open AP -> %d %s, want the 409 refusal", resp.StatusCode, b)
 	}
 }
 
@@ -578,7 +576,7 @@ func TestFakeStatusCarriesEveryFieldTheFirmwareFormats(t *testing.T) {
 	f := orbfake.New()
 	srv := httptest.NewServer(f)
 	defer srv.Close()
-	b, err := clientGet(t, srv, "/api/v1/status")
+	b, err := clientGet(t, srv, "/api/v1/status?full=1")
 	if err != nil {
 		t.Fatalf("GET status: %v", err)
 	}
@@ -595,6 +593,57 @@ func TestFakeStatusCarriesEveryFieldTheFirmwareFormats(t *testing.T) {
 		}
 		if _, ok := flat[k]; !ok {
 			t.Errorf("h_status formats %q but the fake omits it, so every test on it sees a silent zero", k)
+		}
+	}
+}
+
+// The plain status read is the hub's slim body (app-platform-plan §65.4): the keys h_status
+// formats on its !full path, no more. The fake must answer exactly those, and every
+// field the hub decodes (orbnet.Status) must be among them, or the hub reads a silent
+// zero off a real orb the moment the debug body stopped being the default.
+func TestSlimStatusCarriesWhatTheHubReads(t *testing.T) {
+	src := firmwareFile(t, orbNet)
+	body := cFunction(t, src, "h_status")
+	i := strings.Index(body, "if (!full) {")
+	if i < 0 {
+		t.Fatal("h_status has no slim path (if (!full) {)")
+	}
+	j := strings.Index(body[i:], "if (sn < 0")
+	if j < 0 {
+		t.Fatal("h_status's slim path has no overflow check after its format")
+	}
+	fw := map[string]bool{}
+	for _, k := range regexp.MustCompile(`\\"([a-z_0-9]+)\\":`).FindAllStringSubmatch(body[i:i+j], -1) {
+		fw[k[1]] = true
+	}
+	if len(fw) < 15 {
+		t.Fatalf("only %d keys parsed from h_status's slim path", len(fw))
+	}
+	srv := httptest.NewServer(orbfake.New())
+	defer srv.Close()
+	b, err := clientGet(t, srv, "/api/v1/status")
+	if err != nil {
+		t.Fatalf("GET status: %v", err)
+	}
+	var flat map[string]any
+	if json.Unmarshal(b, &flat) != nil {
+		t.Fatalf("the fake's slim status is not JSON: %s", b)
+	}
+	for k := range fw {
+		if _, ok := flat[k]; !ok {
+			t.Errorf("h_status's slim body formats %q but the fake's omits it", k)
+		}
+	}
+	for k := range flat {
+		if !fw[k] {
+			t.Errorf("the fake's slim status reports %q, which h_status's slim body does not", k)
+		}
+	}
+	st := reflect.TypeOf(orbnet.Status{})
+	for n := 0; n < st.NumField(); n++ {
+		tag := strings.Split(st.Field(n).Tag.Get("json"), ",")[0]
+		if tag != "" && tag != "-" && !fw[tag] {
+			t.Errorf("orbnet.Status decodes %q, which the slim status no longer carries", tag)
 		}
 	}
 }

@@ -85,7 +85,7 @@ def read_serial():
 
 
 def status():
-    with urllib.request.urlopen("http://%s/api/v1/status" % ip, timeout=8) as r:
+    with urllib.request.urlopen("http://%s/api/v1/status?full=1" % ip, timeout=8) as r:
         return json.load(r)
 
 

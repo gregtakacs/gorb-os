@@ -89,6 +89,16 @@ CONFIG_LWIP_MAX_SOCKETS=16
 # 2026-10-31: ~5.7 KB held ~110 s, every preview torn behind it).
 CONFIG_LWIP_SO_LINGER=y
 
+# TCP window and send buffer: 2 segments, not IDF's 4 (5760). With the radio and lwIP
+# in internal RAM (TRY_ALLOCATE off, below), lwIP holds each received Wi-Fi buffer
+# (1.7 KB) by reference until the socket is read, and copies everything sent into
+# internal segments until it is acked, so each connection could pin ~6.8 KB in and
+# 5.7 KB out. A heap hook on Gold (2026-11-16, app-platform-plan §65) found every new
+# internal low set there: 792 B under a radar run with 4 segments. Halving costs only
+# bulk transfers (OTA 27.3 -> 29.9 s), which everyday operation does not use.
+CONFIG_LWIP_TCP_WND_DEFAULT=2880
+CONFIG_LWIP_TCP_SND_BUF_DEFAULT=2880
+
 # CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP stays OFF. v1.1.41 shipped it for runtime
 # internal-RAM headroom (a harsh preview/scan stress: 12/12 previews whole with it,
 # 9/12 without), and v1.1.42 took it back out, because it costs the board its
@@ -146,33 +156,32 @@ CONFIG_LWIP_SNTP_MAX_SERVERS=3
 CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y
 
 
-# WiFi driver buffer counts: TRIMMED to 6/12/12/12 (from IDF defaults 10/32/32/32).
-# This is the trim bafcd4e proved for the RUNTIME late promotion (POST /wifi/ap,
-# ap_open() promoting a connected STA to APSTA): the beacon's dedicated type-4 EB
-# had no free slot once the STA's buffers held the pool, and the smaller pool left
-# it one. Kept for that path. It is NOT what fixes the clean-flash boot loop — the
-# bench (2026-10-26, orb 44:bd:78:26:18) showed the boot-provisioning AP still
-# dying with `alloc eb len=752 type=4 fail` at dma_free=4207 / largest=7168 (both
-# well above 752), so the boot failure is a cold-start pool race inside
-# esp_wifi_start(), not a buffer-count shortage. The boot fix is in orb_net.c: the
-# provisioning branch now comes up WIFI_MODE_AP and promotes to APSTA on the radio
-# task (prov_promote_apsta). Revisit these four counts only if the runtime late
-# promotion regresses.
-CONFIG_ESP_WIFI_STATIC_RX_BUFFER_NUM=6
+# WiFi driver buffer counts: 4/12/12/12 (IDF defaults 10/32/32/32).
+#
+# What each one costs. STATIC RX is the only reservation: 1.6 KB each of internal DMA
+# RAM, carved at esp_wifi_init and never freed. The dynamic RX/TX and mgmt-short counts
+# are CAPS on buffers allocated per frame and freed after (dynamic RX ~1.7 KB, held
+# until the socket reads it, see the TCP note below), so they return nothing at idle;
+# they only bound a burst's peak. A heap hook on Gold (2026-11-16) saw bursts of 3
+# dynamic RX, well under 12, so those caps are left alone. RX_BA_WIN (6) must stay
+# <= 2 x STATIC_RX, which 4 allows.
+#
+# History, because the old comment had it backwards. bafcd4e (2026-10-13) trimmed
+# 10/32/32/32 -> 6/12/12/12 to stop a SoftAP open dying with "alloc eb len=752 type=4
+# fail"; fa5e955c the same day dropped the trim as a misdiagnosis (the cause was the
+# 64 KB static LVGL pool, below; defaults then opened the AP 5/5); 3d114422 (10-26)
+# put it back "for the runtime late promotion" without a measurement. v1.8.2 measured
+# it (app-platform-plan §65.3): STATIC_RX 6 -> 4 returned ~2.4 KB of internal low-water
+# and ~570 B of the DMA low over a 15-minute radar run (4,368 -> 6,736 B; 172 -> 744 B),
+# OTA 29.9 -> 31.8 s, ping loss 0.8%. The SoftAP opens with it on every path: a
+# connected orb promoted to APSTA 3/3 (after the radio task got its 4 KB, orb_net.c),
+# a forced provisioning boot, and a blank-NVS boot with full RF calibration (both
+# partitions erased), each with AP -> APSTA and the boot scan, no "alloc eb". Before
+# going lower, measure throughput under a radar storm; the frames land in these first.
+CONFIG_ESP_WIFI_STATIC_RX_BUFFER_NUM=4
 CONFIG_ESP_WIFI_DYNAMIC_RX_BUFFER_NUM=12
 CONFIG_ESP_WIFI_DYNAMIC_TX_BUFFER_NUM=12
 CONFIG_ESP_WIFI_MGMT_SBUF_NUM=12
-# Why the trim holds for the runtime promotion: the EB pool is carved once at
-# esp_wifi_init out of internal DMA RAM and a disconnect does not return the
-# static RX EBs, so the 752 B beacon EB only has a slot if a static-RX slot was
-# left free. 6 rather than 10 leaves it. Two unrelated faults were once pinned on
-# these four counts and are NOT them: the SoftAP no-IP / no-captive-prompt symptom
-# and an "alloc eb" at a connected promotion were both CONFIG_LV_MEM_SIZE
-# (a 64 KB static LVGL array in internal DRAM) starving the driver — see that
-# symbol's comment below. The distinct cold-boot provisioning panic is fixed in
-# orb_net.c (WIFI_MODE_AP at the cold esp_wifi_start, late promote on the radio
-# task), which holds even if these counts move, so the trim stays belt-and-braces
-# for the runtime promotion path and is otherwise left alone.
 
 # WiFi IRAM optimizations stay ON (the IDF defaults). Do not "fix" this based on
 # `idf.py size` reporting IRAM 16,383 / 16,384 (99.99%): that row is a fixed

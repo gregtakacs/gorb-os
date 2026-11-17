@@ -8226,3 +8226,254 @@ On the pomodoro design's owner questions (`docs/specs/pomodoro-design.md`):
   with mutants, the counter's wrap included.
 - The knob rule's exception (app-design-rules.md) now names the double press.
 
+
+## 65. Internal RAM under the network stack — 2026-11-16 (Gold, OS v1.8.2)
+
+### 65.1 What was asked, and the comparison that answered it
+
+The IDF move to v5.5.6 (for the CMD59 retry, radar-plan §7.11's bundle) looked like it cost
+internal RAM: static D/IRAM +6,792 B over v5.4.0 (`idf.py size`, same tree), and one Gold
+reading of 1,224 B internal low-water against v5.4.0's 6,947 B. Tuning v5.5.6's new
+`*_IN_IRAM` options recovered 728 B at most (`I2C_MASTER_ISR_HANDLER_IN_IRAM`; the RTC and
+REGI2C ones are re-selected by other options, the rest need `SPI_FLASH_AUTO_SUSPEND`).
+
+The 6,947 B was a short run that caught no fetch. The same tree built three ways, 15 minutes
+each on Gold with radar on the glass:
+
+| IDF | static D/IRAM | internal low | DMA low |
+|---|---|---|---|
+| v5.4.0 | 211,831 B | 2,315 B | 1,227 B |
+| v5.4.4 | 215,167 B | 1,831 B | 459 B |
+| v5.5.6 | 218,607 B | 1,224 B | 620 B |
+
+The low is not the IDF's: every version runs near empty once fetches start, and v5.5.6 costs
+~1 KB of it, not 6.8. v5.5.6 stays.
+
+### 65.2 Who sets the low
+
+A heap hook (`CONFIG_HEAP_USE_HOOKS`, scratch build only, since removed) recorded every
+internal allocation that set a new all-time low, with task and backtrace. All of them were
+the network stack: 1.7 KB Wi-Fi RX buffers (`wDev_ProcessRxSucData → esf_buf_alloc_dynamic`)
+and lwIP's references to them, TCP send segments (`tcp_write → tcp_pbuf_prealloc`, 1.5 KB),
+and hardware AES-GCM bouncing a PSRAM TLS record through 1.6 KB of internal DMA RAM. One run
+went to 792 B. Two mechanisms make it so with `SPIRAM_TRY_ALLOCATE_WIFI_LWIP` off (a ruling
+kept, sdkconfig.defaults): lwIP holds a received Wi-Fi buffer by reference until the socket
+is read, so a connection pins up to its TCP window; and everything sent is copied into
+internal segments until acked, up to the send buffer.
+
+### 65.3 What changed
+
+- **TCP window and send buffer 5,760 → 2,880** (2 segments). OTA upload 27.3 → 29.9 s; the
+  owner ruled slower firmware and theme uploads acceptable, everyday operation never moves
+  bulk.
+- **Wi-Fi static RX buffers 6 → 4.** The only Wi-Fi count that reserves memory (1.6 KB each,
+  internal DMA, held from `esp_wifi_init`); the dynamic RX/TX caps return nothing at idle
+  and the hook saw bursts of 3 under their 12. The old comment's history was backwards
+  (bafcd4e trimmed, fa5e955c dropped the trim as an LVGL misdiagnosis, 3d114422 restored it
+  unmeasured); sdkconfig.defaults now records it.
+
+15-minute radar runs on v5.5.6: 4-segment window 792 / 2,504 / 1,360 B internal low (three
+runs); 2-segment 4,368 B (172 B DMA), but 1,772 B (912 B DMA) after ~40 minutes; 2-segment
+with 4 static RX 6,736 B (744 B DMA), ping loss 0.8 % of 250, OTA 31.8 s, no missed poll.
+
+### 65.4 `/api/v1/status` is the hub's, `?full=1` the bench's
+
+The status body was 3,133 B, 59 % the apps ledger, and the hub decodes 16 fields of it
+(`orbnet.Status`); every byte sent is copied into internal segments. The plain read is now
+those fields plus `epoch`, the Wi-Fi reason pair and the reset pair (~360 B); `?full=1` is
+the old body unchanged. The fake mirrors the split, `TestSlimStatusCarriesWhatTheHubReads`
+pins it against `h_status`, and the bench scripts that read debug fields ask for `?full=1`
+(`heap_watch.py`, `idle_watch.py`, `orb_watch.py`, `scan_preview_stress.sh`,
+`store_check.sh`).
+
+### 65.5 The radio task overflowed on a requested AP
+
+Testing the static RX trim found `POST /api/v1/wifi/ap` on a connected orb overflowing the
+3 KB `orb_net` stack inside the promotion to APSTA ("stack overflow in task orb_net", panic,
+reboot, no AP). Not the trim and not v5.5.6: v5.5.6 at 4 and 6 static RX, v5.4.0, and
+**v1.8.1 as shipped** all did it. Nothing in the hub or the config page sends that open (the
+page only closes), which is why it went unseen; the rescue open after 8 refused
+associations runs the same call on the same task and likely overflowed too (not
+reproduced). The task now has 4 KB, paid by §65.3's static RX return; headroom after a
+connected AP open measures 748 B (the open needs ~3.35 KB). Verified: connected open and
+close 3/3; a forced provisioning boot (`/api/v1/reprov`); and a blank boot, both NVS
+partitions erased (full RF calibration), the 2026-10-27 case where +1 KB here once starved
+the SoftAP — AP up, AP → APSTA, boot scan of 5 networks, no `alloc eb`. Gold's two
+partitions were backed up twice (identical) before the erase and written back after,
+verified byte for byte.
+
+### 65.6 Owner ruling: the hotspot is a setup mode
+
+The SoftAP exists only for provisioning (no stored network) and rescue (stored network
+refused). In that mode nothing else needs to run: the apps, the clock and their memory can
+be down and freed, and the glass shows a QR code to join the hotspot. Built in v1.8.2, §66.
+
+### 65.7 Still open
+
+- A long run (overnight, hub up) of §65.3; one 15-minute run per setting is thin, and the
+  2-segment number already drifted from 4.4 to 1.8 KB over 40 minutes before the RX trim.
+- Gold's quiet spells: HTTP unanswered for seconds to minutes with no reset, seen under the
+  lowest lows. Not proved to be refused buffers.
+
+## 66. The setup boot: the hotspot is a setup mode — 2026-11-16 (Gold, OS v1.8.2)
+
+`docs/history/provisioning-first-plan.md` (2026-10-29) designed this and was never built;
+§65.6's ruling revived it. The owner chose its P1 and P3 for v1.8.2, phone-only (P2, a
+knob keyboard for the passphrase, is not built), rescue by reboot, and the manual open
+removed.
+
+### 66.1 Rulings
+
+- **The AP exists only in a setup boot**: no stored network (provisioning), or a requested
+  or rescue session (`/api/v1/reprov`, or §66.3). Nothing opens it beside a running dial.
+- **A setup boot starts nothing of the dial.** `app_main` asks `orb_net_setup_boot()` (the
+  RTC intent word, peeked, and the stored SSID) right after the panel comes up; a setup boot
+  runs the panel, the knob, the radio and `main/setup/setup_view.c`, and returns. No theme,
+  no apps, no services, no carousel, no card, no sound, no idle dim, and its own LVGL loop.
+- **One door out: a lease.** The provisioning page's Done (or the lease hold timer) closes
+  the AP, and closing it in a setup boot reboots into the normal branch.
+- **The persistent AP-only mode is deleted** (`CONFIG_ORB_NET_AP_ISOLATED`, `MODE ap`, the
+  `c-ap` state). A board that stored `mode=ap` has it cleared once at boot, logged.
+  `POST /api/v1/wifi/mode` stays as an answer: `ap` 409 "the orb is a network device; the
+  AP-only mode is gone", `sta` a no-op 200.
+- **`POST /api/v1/wifi/ap` closes only.** An open is 409 "the setup hotspot opens only when
+  the orb has no working network". `CONFIG_ORB_NET_AP_MANUAL_S` is gone.
+
+### 66.2 The screen
+
+Black glass; the AP's SSID at 28 px above, a QR of `WIFI:T:nopass;S:orb-XXXX;;` (the ZXing
+Wi-Fi code; the AP is open, nothing secret in it) at whole-pixel modules within 224 px,
+"Scan to set up this orb" and "hold for http://192.168.4.1/" below. Holding the knob swaps
+the code to the page's address and back. Two minutes untouched blanks the glass (AMOLED
+black is off); any turn or press wakes it, and the first event only wakes. The captive
+page's DHCP option 114 is set by the setup boot (it used to live in the runtime open).
+
+### 66.3 Rescue
+
+Eight consecutive refused associations (`CONFIG_ORB_NET_AP_RESCUE_FAILS`) in a normal boot
+arm the RTC intent and reboot into a recovery setup boot, which keeps the stored network as
+its fallback; its sojourn (`CONFIG_ORB_NET_PROV_SOJOURN_S`, 600 s) reboots back into the
+normal boot without the intent. An outage therefore alternates a normal boot that retries
+with a setup boot that offers the phone door; neither can loop into itself.
+
+### 66.4 Bench (Gold)
+
+- Normal boot (stored network): unchanged, dial and radar.
+- Forced setup boot (`/api/v1/reprov`): setup screen 1.29 s after reset, AP with option
+  114 at 1.40 s, AP → APSTA and the boot scan at 4.2 s; no theme, app, carousel or clock
+  line in the log. Glass blanked at 121 s. The sojourn rebooted it into the dial at 600 s.
+  (The first build waited 6 s for the dial's frame counter before starting the radio;
+  a setup boot now starts the radio first.)
+- `wifi/ap` open → 409, `wifi/mode` `ap` → 409, `sta` → 200, the station untouched.
+- End to end by the owner with a phone (2026-11-16): the camera read the glass's code first
+  time and offered the join, the setup page opened by itself after joining, the network
+  and passphrase were entered there, and Done took Gold straight to the dial on its stored
+  name and zone. Nothing on the glass was hard to read.
+- Not yet: the rescue path from real refusals (it needs a router that refuses the orb).
+
+## 67. The orb's own page is its settings — 2026-11-16 (Gold, OS v1.8.2)
+
+### 67.1 Rulings
+
+- **`/` on a connected orb is the settings page** (owner: the old page was "deeply out of
+  date"; serve "the options menu of the Orb including the app options"). A setup boot (§66)
+  still serves the provisioning page at `/`; one handler picks by `s_setup_boot`.
+- **The old pages are retired**: `/timezone` (the zone follows the home location since
+  2026-11-01), `/themes` and `/apps` (Orb Manager's). Their routes, HTML and the hub's
+  allowlist entries are gone; the provisioning page's success screen links the settings.
+- **Plus codes are gone** (owner: "there is no way users will enter those"):
+  `orb_geo_olc_decode`, `/api/v1/home?code=`, `{"code":…}` on POST, and the hub's search
+  boxes. A location is a city, coordinates, a map pin or the browser's position.
+
+### 67.2 The page
+
+`main/net/settings.html`, embedded by the build (`EMBED_TXTFILES`), ~20 KB, no cache, no
+browser storage. In order: the orb's name (editable, `/api/v1/name`), firmware and address;
+**Display** (dim after idle, timeout; the new `GET/POST /api/v1/display`, the dial's
+DISPLAY page); **Units** (`/api/v1/units`, orb_units.c's keys); **Sound** (volume,
+`/api/v1/sound`); **Location** (read-only: the place and zone, set on Orb Manager's map);
+**Apps** (each installed app's declared settings shown off the dial, `show` hub or both,
+drawn from `/api/v1/apps/settings` and written through `/api/v1/apps/cfg`: int, enum,
+toggle, multi, colour with specials, text, secret; a place is read-only); **Wi-Fi** (signal,
+and "Set up again", which is `/api/v1/reprov`, a setup boot). Themes, installing apps and the
+map stay Orb Manager's. The URI table is at 70 of its 72.
+
+### 67.3 Bench (Gold)
+
+`tools/host_settings_page_test.py` parses the script, finds calls to undefined functions,
+and pins every door against the URI table (its two mutations bite). In real Chrome driven
+over CDP at a 390 px phone viewport: no horizontal scroll with the page or an app open; the
+name, display, units and location read back right; Dim off/on, speed to knots and back, and
+Pomodoro's chime toggle both ways each landed on the orb and were checked on the API; every
+app's settings drew (Pomodoro's 15 shown, Flights' secret row). The hub's suite carries
+`/api/v1/display` in its allowlist and fake.
+
+### 67.4 Locations from the phone (owner, 2026-11-16)
+
+Home and places 1-3 are set on the page too. Each editor proposes a point from a city in the
+orb's own table (new: `GET /api/v1/home?q=`, `orb_geo_city_search`, names or a later word
+starting with the query, 8 at most; host_geo_test pins it, 12 mutants), typed coordinates,
+or a click on a map; the orb names it and finds its zone (`?lat=&lon=`, stores nothing), and
+Set stores it (`POST /api/v1/home`, `/api/v1/places`). The map is Leaflet 1.9.4 over
+OpenStreetMap, as on the hub's Home card, loaded from the internet when an editor opens.
+**Maps for radar and flights stay Orb Manager's** (owner agreed): the hub builds them in its
+browser from vector tiles it fetches as gorb-os through its own proxy, from the Map tiles
+source set there, with a 42 KB builder; the page says to open Orb Manager after a change.
+A page function named `leaflet` was overwritten by Leaflet's UMD global and hung every map
+after the first in a visit; renamed, and the host test refuses a global named leaflet or L.
+
+### 67.5 Themes from the phone (owner, 2026-11-16)
+
+A swipeable carousel per app of the themes on the card (`/api/v1/sd`), the worn one ringed
+and first; a tap wears one (`POST /api/v1/sd/bundle?id=`, polled until `chosen`). Previews
+come from `GET /api/v1/sd/preview?thumb=4` (new: the plane box-averaged to 116 px, 27 KB,
+0.55 s, where the whole deflated disc took 12 s), are fetched only once the section is on
+screen, and are kept in localStorage as JPEGs keyed by the theme id with `serial:baked`, so
+a re-baked or re-stored theme misses and one gone from the card is pruned (the Cache API is
+not offered to a plain-http page). Making themes stays Orb Manager's.
+
+### 67.6 One request at a time
+
+The first build fired eight requests at once and streamed previews behind them; Gold's
+internal low fell to 500 B (§65's network buffers, one connection's worth each). Every page
+request now waits for the one before it; the low held at 10.9-12.4 KB through the runs.
+
+### 67.7 Bench (Gold, real Chrome at 390 px over CDP)
+
+First visit: 9 of 9 previews in 7.2 s; reload: all from the cache in 1.2 s; a stale entry
+refetched and restamped; a theme no longer on the card pruned. Place 1 set to London from
+the city search (on the orb with its zone), then removed; Home's map opened a second time
+in the visit and a map click was placed ("near Dallas"), Cancel left home untouched;
+Pomodoro wore Scope from the carousel and went back to Station. Locations and themes were
+restored after.
+
+### 67.8 Maps made on the phone (owner, 2026-11-17)
+
+The settings page makes a location's maps itself: the hub's builder (`maps@1/orbmap.js`,
+embedded from the hub's own file and served at `/maps.js`, so the two cannot drift) runs in
+the browser, the vector tiles come straight from OpenFreeMap (its TileJSON and tiles answer
+`Access-Control-Allow-Origin: *`, checked), each of the six levels is built as the hub
+builds it, and the files go onto the card through `/api/v1/sd/write`; maps no location names
+are removed and the OS is told (`/api/v1/places/maps`). The page always uses OpenFreeMap: a
+different source set in Orb Manager lives in the hub. Bench, Gold, real Chrome: East
+Lansing, Lisbon and Budapest, 18 levels from 232 tiles, made and sent in 32 s; Radar and
+Flights drew them at once (Győr in its own letters); the internal low held at 11.7 KB.
+
+Beside it, every map app now shows **no map** for a location whose maps are not on the card,
+never the last one it drew (owner: "if a location has no map loaded yet, remove the home
+location's map"). Radar kept its home view open and drew it under "No map yet"; Weather left
+home's map on its layer after a failed render; Flights cleared on a failed render but not on
+a refused open. Radar, Flights and Weather v1.8.1; checked on the glass at two places with
+no maps and at home.
+
+### 67.9 A Phone card in the carousel (owner, 2026-11-17)
+
+To find the orb from a phone without knowing its address, the carousel carries a Phone card
+beside Settings (apps…, Phone, Settings), drawn by `tools/ui_icons` like the gear: a steel
+phone with amber QR finders on its screen. It is a strip item with no registry row, as the
+gear is, so no app index moves. Choosing it opens the menu's `PG_PHONE` (appended to the
+page enum: stored page numbers keep their meaning; not restorable): the settings page's QR,
+the address under it, "scan with a phone on this Wi-Fi", and one row whose press leaves for
+the app it came from. The router reaches it through `orb_app_open_phone()` (the registry
+names the views, host_menu_test). Bench, Gold: hold, turn to Phone, open: "strip: opened
+phone", the page drew, a press returned to Radar.

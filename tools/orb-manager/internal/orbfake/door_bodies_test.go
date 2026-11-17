@@ -125,7 +125,7 @@ func TestLedgerSplitMatchesTheDevice(t *testing.T) {
 			t.Errorf("built-in %q carries a version key the device omits: %s", slug, row)
 		}
 	}
-	_, sb := appDo(t, srv, http.MethodGet, "/api/v1/status", nil)
+	_, sb := appDo(t, srv, http.MethodGet, "/api/v1/status?full=1", nil)
 	for _, slug := range builtInSlugs {
 		if !strings.Contains(sb, `"slug":"`+slug+`"`) {
 			t.Errorf("ledger omitted the built-in %q: %s", slug, sb)

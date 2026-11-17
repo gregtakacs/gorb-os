@@ -12,7 +12,7 @@ ROUNDS=${2:-12}
 ID=${3:-clock-skeleton-209c630ff17d}
 
 heap() {
-  curl -s -m 8 "http://$IP/api/v1/status" |
+  curl -s -m 8 "http://$IP/api/v1/status?full=1" |
     python3 -c 'import json,sys;d=json.load(sys.stdin);print("free=%d largest=%d" % (d["heap_internal"],d["heap_internal_largest"]))' 2>/dev/null ||
     echo "status: no answer"
 }

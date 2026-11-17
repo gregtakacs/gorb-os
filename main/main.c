@@ -37,6 +37,7 @@
 #include "orb_sound.h"     /* D39: the sound engine, after the I2C bus */
 #include "idle_dim.h"
 #include "orb_net.h"
+#include "setup_view.h"     /* §66: the setup boot's one screen */
 #include "orb_sd.h"
 #include "orb_usb_mtp.h"   /* the file-share mode's one-shot claim; stub false when off */   /* D37: the MTP mode's, on the same boot-ladder terms  */
 #include "orb_usb_msc.h"   /* D38: the disk mode's claim, same seam, opposite mount rule  */
@@ -75,6 +76,73 @@ static void lvgl_task(void *arg)
                                (uint32_t)(esp_timer_get_time() - t_s));
     }
 }
+
+/* The rollback guard's proof of life, shared by both boots: a setup boot draws too,
+ * and an OTA that lands on an orb with no network must still be kept. */
+static void mark_image_valid(void)
+{
+#if CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE
+    /* Rollback handshake. With the safety net compiled in, the bootloader boots a
+     * freshly OTA'd image in PENDING_VERIFY and REVERTS it at the next reboot
+     * unless the app confirms itself workable. "Workable" here means the dial
+     * actually drew, so wait for a couple of real flushes from the LVGL task
+     * instead of confirming the instant we reach this line: an image that comes
+     * up, wedges the display, and leaves a frozen clock is exactly the case the
+     * net exists for, and a blind delay would wave it through. */
+    for (int waited_ms = 0; waited_ms < 6000; waited_ms += 100) {
+        uint32_t frames = 0;
+        uint64_t us_total = 0;
+        uint32_t us_max = 0;
+        display_bench_snapshot(&frames, &us_total, &us_max);
+        if (frames >= 2) break;
+        vTaskDelay(pdMS_TO_TICKS(100));
+    }
+    const esp_err_t rb = esp_ota_mark_app_valid_cancel_rollback();
+    if (rb != ESP_OK) {
+        /* Not fatal: the clock is running. But this image stays unconfirmed, so a
+         * reboot sends it back to the previous slot — say so loudly. */
+        ESP_LOGE(TAG, "rollback not cancelled (%s) — next reboot may revert to previous image",
+                 esp_err_to_name(rb));
+    }
+#endif
+}
+
+#if CONFIG_ORB_NET_ENABLE
+/* §66's loop: LVGL and the display's own upkeep, nothing of the dial (no arc, no
+ * ring, no idle dim: none of them was started in this boot). */
+static void setup_lvgl_task(void *arg)
+{
+    (void)arg;
+    while (1) {
+        uint32_t sleep_ms = lv_timer_handler();
+        display_lvgl_pass_mark();
+        display_dma_service();
+        if (sleep_ms > 50) sleep_ms = 50;
+        if (sleep_ms < 5) sleep_ms = 5;
+        vTaskDelay(pdMS_TO_TICKS(sleep_ms));
+    }
+}
+
+/* app-platform-plan §66: a board with no working network is not a clock yet, it is a
+ * pairing page. Only the panel, the knob, the radio and the setup screen run: no
+ * theme, no apps, no services, no carousel, no card, no sound, no idle dim. The boot
+ * ends at its one door, a lease, which reboots into the normal branch (orb_net.c). */
+static void setup_boot(void)
+{
+    ESP_LOGW(TAG, "setup boot: no working network — the join code only, nothing else starts");
+    ESP_ERROR_CHECK(display_init());
+    orb_boot_overlay_release();
+    ESP_ERROR_CHECK(knob_init());
+    ESP_ERROR_CHECK(setup_view_start());
+    xTaskCreatePinnedToCore(setup_lvgl_task, "lvgl", 8192, NULL, 5, NULL, DISPLAY_LCD_CORE);
+    /* The radio first: the hotspot is the point of this boot. The rollback wait after
+     * it reads the dial's frame counter, which nothing advances here, so it runs out
+     * its 6 s and confirms the image anyway; the screen above is the proof it drew. */
+    if (orb_net_start() != ESP_OK)
+        ESP_LOGE(TAG, "networking down in a setup boot — the serial door is the way in");
+    mark_image_valid();
+}
+#endif
 
 void app_main(void)
 {
@@ -139,6 +207,13 @@ void app_main(void)
      * could paint is created after it. */
     ESP_ERROR_CHECK(display_panel_early());
     orb_boot_overlay("starting", 0, 0, 0);
+#if CONFIG_ORB_NET_ENABLE
+    /* §66: one read decides the boot before anything expensive runs. */
+    if (orb_net_setup_boot()) {
+        setup_boot();
+        return;
+    }
+#endif
 
     /* Resolve the theme: orb_theme_boot() maps the one slot's bundle through
      * art_bank_map() — mechanism A at the call since C3, no arena copy and no
@@ -306,30 +381,7 @@ void app_main(void)
 
     ESP_LOGI(TAG, "gorb-os running — knob: turn swaps apps, push opens, hold returns to the menu");
 
-#if CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE
-    /* Rollback handshake. With the safety net compiled in, the bootloader boots a
-     * freshly OTA'd image in PENDING_VERIFY and REVERTS it at the next reboot
-     * unless the app confirms itself workable. "Workable" here means the dial
-     * actually drew, so wait for a couple of real flushes from the LVGL task
-     * instead of confirming the instant we reach this line: an image that comes
-     * up, wedges the display, and leaves a frozen clock is exactly the case the
-     * net exists for, and a blind delay would wave it through. */
-    for (int waited_ms = 0; waited_ms < 6000; waited_ms += 100) {
-        uint32_t frames = 0;
-        uint64_t us_total = 0;
-        uint32_t us_max = 0;
-        display_bench_snapshot(&frames, &us_total, &us_max);
-        if (frames >= 2) break;
-        vTaskDelay(pdMS_TO_TICKS(100));
-    }
-    const esp_err_t rb = esp_ota_mark_app_valid_cancel_rollback();
-    if (rb != ESP_OK) {
-        /* Not fatal: the clock is running. But this image stays unconfirmed, so a
-         * reboot sends it back to the previous slot — say so loudly. */
-        ESP_LOGE(TAG, "rollback not cancelled (%s) — next reboot may revert to previous image",
-                 esp_err_to_name(rb));
-    }
-#endif
+    mark_image_valid();
 
 #if CONFIG_ORB_NET_ENABLE
     /* Start the network AFTER the LVGL task exists, so the dial is already

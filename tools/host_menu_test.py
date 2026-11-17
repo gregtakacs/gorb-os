@@ -2826,8 +2826,8 @@ def main():
     check("the table rows name every page id exactly once",
           sorted(entry_ids) == sorted(["LANDING", "TOP", "APP", "DISPLAY", "CAPS",
                                        "APPS", "APPACT",
-                                       "ABOUT", "SHARE", "UNITS", "GO"])
-          and len(entry_ids) == 11, ",".join(entry_ids))
+                                       "ABOUT", "SHARE", "UNITS", "GO", "PHONE"])
+          and len(entry_ids) == 12, ",".join(entry_ids))
     # The retired page keeps its number, so a stored menu position keeps its
     # meaning, and is neither a page nor restorable; CAPS needs a selected app,
     # which a stored page id cannot re-derive.

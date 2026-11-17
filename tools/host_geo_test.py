@@ -7,11 +7,6 @@ arithmetic (flight-tracker-design §6.4).
 
 orb_geo.c and orb_cities.c are compiled as is (no IDF) with a C driver:
 
-  olc       full plus codes decode to the official library's cell centres
-            (the vectors below came from openlocationcode 1.0, seeded, and
-            include grid digits, padding, both poles and lower case); short
-            codes, misplaced '+', bad padding and off-the-globe first pairs
-            are refused with a reason
   coords    "lat, lon" in its spellings parses to exact millionths; a missing
             separator, past-the-pole values and trailing junk are refused
   nearest   picks the right city, wraps the antimeridian, names it in the
@@ -28,75 +23,16 @@ SRC = os.path.join(ROOT, "main", "net", "orb_geo.c")
 TABLE = os.path.join(ROOT, "main", "net", "orb_cities.c")
 INC = [os.path.join(ROOT, "main", "net")]
 
-OLC = [
-    ('8559CWXG+9C', 33448437, -112073938),
-    ('8FVC9G8F+6X', 47365562, 8524938),
-    ('4RRH46J5+FPM', -33868787, 151209297),
-    ('4VMP5Q26+2222', -36849998, 174760004),
-    ('CVXXXXXX+XX', 89999938, 179999938),
-    ('22222222+22', -89999938, -179999938),
-    ('6FG22222+22', 62, 62),
-    ('9C3XGV4C+XV834', 51507400, -127800),
-    ('8Q7XMMG2+F4M4343', 35676200, 139650300),
-    ('99X6R269+65X35', 69810600, -35982017),
-    ('7Q7XJFG3+2G5F9FV', 15625012, 139453858),
-    ('6GJGR4GG+9F', 2825938, 30126188),
-    ('2P73HV7H+MRQGH2V', -84435788, 101879615),
-    ('9QC5FF28+J3', 58451562, 123465188),
-    ('67W8Q924+3P3', 8750138, -73643203),
-    ('CRPR48HR+42', 84127812, 156340062),
-    ('5JHMMR3Q+R92', -18345488, 73838391),
-    ('3CC95J9G+G9', -61831188, -12374062),
-    ('6J4GPMMP+9R78P', -7266592, 70687052),
-    ('26X3QG8V+PHW68', -70233144, -98456058),
-    ('5JXVWRFV+74', -10076812, 77842812),
-    ('28X97PHM+JX', -70720938, -52265062),
-    ('7CF7JPFX+38X4', 19622728, -14251637),
-    ('37MC4MP7+WH', -56862688, -71336062),
-    ('9GFF5X78+CMCPG', 59163568, 29966646),
-    ('8JCMXR3G+738', 38953163, 73825203),
-    ('27H4P775+7V', -78286812, -77740312),
-    ('5587CWFM+GQ5Q3', -23576234, -114065505),
-    ('8GQ65MCM+2Q6P3', 45170040, 24684394),
-    ('9JFXP5Q9+RF', 59739562, 79168688),
-    ('23HRW8MG+JWF', -78065938, -143672703),
-    ('32H2CFG7+F65335F', -58573875, -179536895),
-    ('9QXJM43J+6M2R', 69653023, 132131629),
-    ('7FG49Q00+', 20375000, 2775000),
-    ('47000000+', -40000000, -70000000),
-    ('8FVC0000+', 47500000, 8500000),
-    ('8FVC9G00+', 47375000, 8525000),
-    ('8m48fwx3+qq', 32499438, 86904438),
-]
-
-OLC_BAD = [
-    ("FWX3+QQ", "short code"),
-    ("FWX3+QQ Phoenix", "short code"),
-    ("8559CWXG9C", "no +"),
-    ("8559CWXG9+C", "8th"),
-    ("8559CWXGA+9C", "plus-code character"),
-    ("8559CWXG+9", "one digit"),
-    ("8559CWXG+9C+", "more than one"),
-    ("8F000000+00", "padding"),
-    ("8F0C0000+", "after the 0"),
-    ("8F00000+", "short code"),
-    ("X2222222+22", "pole"),
-    ("2X222222+22", "180"),
-]
-
 DRIVER = r"""
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include "orb_geo.h"
 
 static int fails, checks;
 #define CHECK(cond, ...) do { checks++; if (!(cond)) { fails++; printf("FAIL "); printf(__VA_ARGS__); printf("\n"); } } while (0)
 
-struct olc { const char *c; int la, lo; };
-static const struct olc OK[] = { %(olc)s };
-struct bad { const char *c, *why; };
-static const struct bad BAD[] = { %(bad)s };
 
 static void place_is(double la, double lo, const char *want, const char *what)
 {
@@ -121,17 +57,31 @@ static void coords_bad(const char *s, const char *why)
 
 int main(void)
 {
-    /* ---- olc ---- */
-    for (size_t i = 0; i < sizeof OK / sizeof OK[0]; i++) {
+    /* ---- search (app-platform-plan §67) ---- */
+    {
+        int hit[8];
+        int n = orb_geo_city_search("lond", hit, 8);
+        CHECK(n >= 1 && !strncmp(orb_geo_city_name(hit[0]), "London", 6), "search lond leads with London: %%d %%s", n, n ? orb_geo_city_name(hit[0]) : "-");
+        n = orb_geo_city_search("LONDON", hit, 8);
+        CHECK(n >= 1 && !strcmp(orb_geo_city_name(hit[0]), "London"), "search is case-insensitive");
+        n = orb_geo_city_search("york", hit, 8);
+        int ny = 0;
+        for (int i = 0; i < n; i++) if (!strcmp(orb_geo_city_name(hit[i]), "New York City")) ny = 1;
+        CHECK(ny, "a later word matches: york finds New York");
+        n = orb_geo_city_search("ork", hit, 8);
+        int mid = 0;
+        for (int i = 0; i < n; i++) if (!strcmp(orb_geo_city_name(hit[i]), "New York City")) mid = 1;
+        CHECK(!mid, "the middle of a word does not match: ork misses New York");
+        CHECK(orb_geo_city_search("", hit, 8) == 0 && orb_geo_city_search("   ", hit, 8) == 0, "an empty query finds nothing");
+        CHECK(orb_geo_city_search("a", hit, 3) == 3, "max caps the answer");
         int32_t a = 0, b = 0;
-        const char *e = orb_geo_olc_decode(OK[i].c, &a, &b);
-        CHECK(!e && abs(a - OK[i].la) <= 1 && abs(b - OK[i].lo) <= 1,
-              "olc %%s -> %%s %%d %%d, want %%d %%d", OK[i].c, e ? e : "ok", (int)a, (int)b, OK[i].la, OK[i].lo);
-    }
-    for (size_t i = 0; i < sizeof BAD / sizeof BAD[0]; i++) {
-        int32_t a = 0, b = 0;
-        const char *e = orb_geo_olc_decode(BAD[i].c, &a, &b);
-        CHECK(e && strstr(e, BAD[i].why), "olc %%s refused for \"%%s\": got %%s", BAD[i].c, BAD[i].why, e ? e : "accepted");
+        n = orb_geo_city_search("Phoenix", hit, 1);
+        orb_geo_city_ll(hit[0], &a, &b);
+        CHECK(n == 1 && abs(a - 33450000) <= 10000 && abs(b + 112070000) <= 10000, "Phoenix's position: %%d %%d", (int)a, (int)b);
+        n = orb_geo_city_search("san ", hit, 8);
+        int starts = 1;
+        for (int i = 0; i < n; i++) if (strncasecmp(orb_geo_city_name(hit[i]), "san ", 4)) starts = 0;
+        CHECK(n > 0 && starts, "a trailing space keeps to whole words: every san hit starts San ");
     }
 
     /* ---- coords ---- */
@@ -223,9 +173,7 @@ int main(void)
 
 
 def driver():
-    olc = ", ".join('{"%s", %d, %d}' % v for v in OLC)
-    bad = ", ".join('{"%s", "%s"}' % v for v in OLC_BAD)
-    return DRIVER % {"olc": olc, "bad": bad}
+    return DRIVER.replace("%%", "%")
 
 
 def build(src, out):
@@ -257,12 +205,10 @@ def main():
     if "--mutations" in sys.argv:
         src = open(SRC).read()
         mutants = [
-            ("olc lat/lon swapped", "lat += olc_val(d[i]) * PAIR[i / 2];", "lon += olc_val(d[i]) * PAIR[i / 2];"),
-            ("olc no half-cell centre", "(double)(2 * lat + lat_cell)", "(double)(2 * lat)"),
-            ("olc grid rows/cols swapped", "lat += (v / 4) * lat_cell;", "lat += (v % 4) * lat_cell;"),
-            ("olc short codes accepted", 'if (plus + pad < 8) return "short code: needs the full 8 before the +";', ""),
-            ("olc case-sensitive", "if (c >= 'a' && c <= 'z') c = (char)(c - 'a' + 'A');", ""),
-            ("olc pole not checked", 'if (olc_val(d[0]) > 8) return "first character is past the pole";', ""),
+            ("search case-sensitive", "static int fold(int c) { return (c >= 'A' && c <= 'Z') ? c - 'A' + 'a' : c; }", "static int fold(int c) { return c; }"),
+            ("search no later words", "if (pass == 0 ? starts : (!starts && word_prefix(nm, q))) out[n++] = c;", "if (pass == 0 ? starts : (!starts && word_prefix(nm, q) && 0)) out[n++] = c;"),
+            ("search mid-word", "if (w != name && w[-1] != ' ' && w[-1] != '-' && w[-1] != '\\'') continue;", ""),
+            ("search ignores max", "for (int c = 0; c < ORB_GEO_N_CITIES && n < max; c++) {", "for (int c = 0; c < ORB_GEO_N_CITIES; c++) { if (n >= 8) break;"),
             ("coords float rounding", "for (int k = nf; k < 6; k++) frac *= 10;", "for (int k = nf; k < 5; k++) frac *= 10;"),
             ("coords lose the sign", "*out = (int32_t)(neg ? -v : v);", "*out = (int32_t)v;"),
             ("coords no range check", 'if (la < -90000000 || la > 90000000) return "latitude is past +-90";', ""),

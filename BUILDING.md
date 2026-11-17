@@ -23,7 +23,7 @@ toolchains only for the part you change.
 |---|---|
 | the hub (`tools/orb-manager`) | Go 1.27.2 or newer (`go.mod`) |
 | apps (`apps/`) | Python 3.10+, clang and lld with the wasm32 target (clang 21 is what the shelf is baked with) |
-| the firmware (`main/`) | ESP-IDF v5.4, target `esp32s3` |
+| the firmware (`main/`) | ESP-IDF v5.5.6, target `esp32s3` |
 | the host test suites (`tools/host_*_test.py`) | Python 3, gcc, Pillow and NumPy |
 | the theme editor tests | Node 20+, plus Python with Pillow and NumPy |
 
@@ -32,7 +32,7 @@ On Debian or Ubuntu:
 ```sh
 sudo apt install build-essential python3 python3-pil python3-numpy clang lld
 # Go: https://go.dev/dl/   Node: https://nodejs.org/   (or your package manager)
-# ESP-IDF v5.4: https://docs.espressif.com/projects/esp-idf/en/v5.4/esp32s3/get-started/
+# ESP-IDF v5.5.6: https://docs.espressif.com/projects/esp-idf/en/v5.5.6/esp32s3/get-started/
 ```
 
 On macOS, Homebrew's `llvm` and `lld` provide a wasm-capable clang (set
@@ -51,7 +51,7 @@ first. CI runs the same targets on every pull request. Each piece runs on its ow
 too: `make check-host`, `check-apps`, `check-hub`, `check-editor`.
 
 **In a delegate worker's sandbox, run `make check-sandbox`** (the image is
-`tools/delegate/worker.Dockerfile`: clang 21, Go, ESP-IDF v5.4, tzdata). It builds the
+`tools/delegate/worker.Dockerfile`: clang 21, Go, ESP-IDF v5.5.6, tzdata). It builds the
 firmware first, then runs everything `check` runs except the suites named in the
 Makefile's `SANDBOX_SKIP`, each printed as SKIP with its reason (an older glibc, a WSL2
 sanitizer flake). Nothing is weakened: `make check` stays the full gate, run on the host
@@ -165,7 +165,7 @@ Two workflows live in `.github/workflows/`:
   and used to build a fresh app from the template outside the tree
 - **orb-manager**: `make check-hub`
 - **theme editor**: `make check-editor`
-- **firmware build and host suites**: `idf.py build` in the `espressif/idf:v5.4`
+- **firmware build and host suites**: `idf.py build` in the `espressif/idf:v5.5.6`
   container, then `make check-host` in the same tree. The suites need what a configured
   firmware tree has: `build/config/sdkconfig.h` and ESP-IDF's NVS generator. The image is
   kept as a run artifact.

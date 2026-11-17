@@ -43,6 +43,7 @@
 #pragma once
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 #include <time.h>
 
@@ -91,11 +92,14 @@ bool orb_net_is_up(void);
  *  orb_net_request_provisioning(). */
 bool orb_net_is_provisioning(void);
 
-/** True when the orb is in the persistent AP-isolated mode: it serves its own open
- *  SoftAP and web page and never associates with any Wi-Fi network, so the only way in
- *  is that AP. The mode lives in NVS (orb.net "mode" = "ap") and survives reboot until
- *  a MODE command (serial or page) changes it. */
-bool orb_net_ap_isolated(void);
+/** §66: true when this boot is a setup boot — no stored network, or a requested or
+ *  rescue session. Read-only; app_main asks it before anything expensive, and
+ *  orb_net_start() takes the same branch. In a setup boot only the panel, the knob,
+ *  the radio and the setup screen run, and the boot ends by rebooting on a lease. */
+bool orb_net_setup_boot(void);
+
+/** The setup AP's SSID ("orb-XXXX"), NUL-terminated into out. */
+void orb_net_ap_ssid(char *out, size_t cap);
 
 /**
  * D2: ask the NEXT boot to come up in provisioning even though credentials are

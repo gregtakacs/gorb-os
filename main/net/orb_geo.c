@@ -62,79 +62,6 @@ const char *orb_geo_parse_coords(const char *s, int32_t *lat_e6, int32_t *lon_e6
     return NULL;
 }
 
-/* ---- Open Location Code ------------------------------------------------------
- * The public spec (github.com/google/open-location-code): base 20 over
- * "23456789CFGHJMPQRVWX". Ten digits are five lat/lon pairs (20 deg down to
- * 1/8000 deg); each digit after that splits the cell 5 rows by 4 columns. '+'
- * sits after the eighth; '0' pads a code shorter than eight. Worked in integer
- * units of 1/(8000*3125*...) per step so the centre is exact before the one
- * final division. */
-static const char OLC_ALPHA[] = "23456789CFGHJMPQRVWX";
-
-static int olc_val(char c)
-{
-    if (c >= 'a' && c <= 'z') c = (char)(c - 'a' + 'A');
-    const char *f = c ? strchr(OLC_ALPHA, c) : NULL;
-    return f ? (int)(f - OLC_ALPHA) : -1;
-}
-
-const char *orb_geo_olc_decode(const char *code, int32_t *lat_e6, int32_t *lon_e6)
-{
-    char d[16];
-    int n = 0, plus = -1, pad = 0;
-    for (const char *p = code; *p; p++) {
-        if (*p == ' ') { if (plus >= 0) break; continue; }   /* "XXXX+XX City" stops here */
-        if (*p == '+') {
-            if (plus >= 0) return "more than one +";
-            plus = n;
-            continue;
-        }
-        if (*p == '0') {
-            if (plus >= 0) return "padding after the +";
-            pad++;
-            continue;
-        }
-        if (olc_val(*p) < 0) return "not a plus-code character";
-        if (pad) return "a digit after the 0 padding";
-        if (n >= 15) return "too many digits";
-        d[n++] = *p;
-    }
-    if (plus < 0) return "no + in the code";
-    if (plus + pad < 8) return "short code: needs the full 8 before the +";
-    if (plus + pad > 8) return "+ is not after the 8th character";
-    if (pad && (pad % 2 || n != plus)) return "bad padding";
-    if (n == 9) return "one digit after the + is not a code";
-    if (n < 2) return "too few digits";
-    if (olc_val(d[0]) > 8) return "first character is past the pole";
-    if (olc_val(d[1]) > 17) return "second character is past 180";
-
-    /* Pairs: lat/lon in units of 1/8000 deg (the 5th pair's resolution). */
-    static const int64_t PAIR[5] = { 160000, 8000, 400, 20, 1 };   /* 20 deg .. 1/8000 deg */
-    int64_t lat = 0, lon = 0;
-    int i = 0;
-    for (; i < n && i < 10; i += 2) {
-        lat += olc_val(d[i]) * PAIR[i / 2];
-        if (i + 1 < n) lon += olc_val(d[i + 1]) * PAIR[i / 2];
-    }
-    /* Cell size so far, same units; then the grid digits refine it. Every
-     * step multiplies the units by 5 (lat) / 4 (lon) so the sums stay exact. */
-    int64_t lat_cell = PAIR[(n < 10 ? n : 10) / 2 - 1], lon_cell = lat_cell;
-    int64_t lat_den = 8000, lon_den = 8000;
-    for (; i < n; i++) {
-        const int v = olc_val(d[i]);
-        lat *= 5; lat_den *= 5;
-        lon *= 4; lon_den *= 4;
-        lat += (v / 4) * lat_cell;
-        lon += (v % 4) * lon_cell;
-    }
-    /* centre: origin + half a cell, then shift from the (-90, -180) origin */
-    const double la = (double)(2 * lat + lat_cell) / (double)(2 * lat_den) - 90.0;
-    const double lo = (double)(2 * lon + lon_cell) / (double)(2 * lon_den) - 180.0;
-    *lat_e6 = (int32_t)llround((la > 90.0 ? 90.0 : la) * 1e6);
-    *lon_e6 = (int32_t)llround(lo * 1e6);
-    return NULL;
-}
-
 /* ---- the city table ---------------------------------------------------------- */
 
 /* Single precision on purpose: the S3's FPU is single-only, and double trig
@@ -178,6 +105,46 @@ const char *orb_geo_city_name(int city)
 {
     if (city < 0 || city >= ORB_GEO_N_CITIES) return "";
     return ORB_GEO_NAMES + ORB_GEO_CITIES[city].name;
+}
+
+/* ASCII case fold; bytes past 0x7f (an accented letter's UTF-8) compare as they are. */
+static int fold(int c) { return (c >= 'A' && c <= 'Z') ? c - 'A' + 'a' : c; }
+
+/* Does `name` have a word starting with `q`? "york" finds "New York"; "san j" finds
+ * "San Jose". Words start at the name's start or after a space, hyphen or apostrophe. */
+static bool word_prefix(const char *name, const char *q)
+{
+    for (const char *w = name; *w; w++) {
+        if (w != name && w[-1] != ' ' && w[-1] != '-' && w[-1] != '\'') continue;
+        const char *a = w, *b = q;
+        while (*b && *a && fold((unsigned char)*a) == fold((unsigned char)*b)) { a++; b++; }
+        if (!*b) return true;
+    }
+    return false;
+}
+
+int orb_geo_city_search(const char *q, int *out, int max)
+{
+    while (q && *q == ' ') q++;
+    if (!q || !q[0] || max <= 0) return 0;
+    int n = 0;
+    /* two passes: names that START with the query first, then any word in them */
+    for (int pass = 0; pass < 2 && n < max; pass++)
+        for (int c = 0; c < ORB_GEO_N_CITIES && n < max; c++) {
+            const char *nm = ORB_GEO_NAMES + ORB_GEO_CITIES[c].name;
+            const char *a = nm, *b = q;
+            while (*b && *a && fold((unsigned char)*a) == fold((unsigned char)*b)) { a++; b++; }
+            const bool starts = !*b;
+            if (pass == 0 ? starts : (!starts && word_prefix(nm, q))) out[n++] = c;
+        }
+    return n;
+}
+
+void orb_geo_city_ll(int city, int32_t *lat_e6, int32_t *lon_e6)
+{
+    if (city < 0 || city >= ORB_GEO_N_CITIES) { *lat_e6 = *lon_e6 = 0; return; }
+    *lat_e6 = (int32_t)ORB_GEO_CITIES[city].lat * 10000;
+    *lon_e6 = (int32_t)ORB_GEO_CITIES[city].lon * 10000;
 }
 
 int orb_geo_city_zone(int city)

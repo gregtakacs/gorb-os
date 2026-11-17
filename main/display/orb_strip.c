@@ -53,8 +53,10 @@ static const char *TAG = "strip";
 /* One place on the strip: an app, or the gear (app NULL). The picture is a square in
  * wire order: the theme's preview (PV), the glass as the carousel found it (W, the app
  * it opened on, until the strip moves off it), or the gear. */
+typedef enum { IT_APP = 0, IT_SETTINGS, IT_PHONE } it_kind_t;
 typedef struct {
     const orb_app_t *app;
+    it_kind_t        kind;      /* app NULL: the Settings or the Phone card (§67.9) */
     const uint16_t  *px;
     int              side;
     uint16_t        *name;      /* NAME_W x NAME_H, wire order, black ground */
@@ -94,6 +96,7 @@ static volatile bool s_hi_drop;     /* the strip closed: the preview task frees 
 static char      s_hi_want[24];
 static TaskHandle_t s_pv_th;
 static uint16_t *s_gear;        /* PV x PV wire order, made at open, freed at close */
+static uint16_t *s_phone;       /* §67.9: the Phone card, the same way              */
 static volatile bool s_thumbs_want; /* the carousel is open: build its thumbnails */
 /* Owner, 2026-11-09: three thumbnails at most, whatever the apps — and then, with previews
  * the first thing the cache evicts and so often read off the card, one more: the app after
@@ -594,7 +597,8 @@ static void make_names(void)
     lv_canvas_set_draw_buf(cv, db);
     for (int i = 0; i < s_n; i++) {
         const orb_app_t *a = s_it[i].app;
-        const char *txt = a ? (a->title ? a->title : a->slug) : "Settings";
+        const char *txt = a ? (a->title ? a->title : a->slug) :
+                          s_it[i].kind == IT_PHONE ? "Phone" : "Settings";
         lv_canvas_fill_bg(cv, lv_color_black(), LV_OPA_COVER);
         lv_layer_t layer;
         lv_canvas_init_layer(cv, &layer);
@@ -839,6 +843,8 @@ static void strip_give_back(void)
     for (int i = 0; i < MAX_ITEMS; i++) s_it[i].px = NULL;
     heap_caps_free(s_gear);
     s_gear = NULL;
+    heap_caps_free(s_phone);
+    s_phone = NULL;
     for (int i = 0; i < MAX_ITEMS; i++) s_it[i].name = NULL;
     heap_caps_free(s_names);
     s_names = NULL;
@@ -902,16 +908,21 @@ bool orb_strip_open(const orb_app_t *from, int step)
 
     s_n = 0;
     s_from_i = 0;
-    for (size_t i = 0; i < orb_app_count() && s_n < MAX_ITEMS - 1; i++) {
+    /* §67.9: the Phone card beside Settings, the settings page's QR for a phone; drawn by
+     * tools/ui_icons like the gear, made per open and freed at close */
+    if (!s_phone) s_phone = card_plane(orb_ui_icon_phone_z, orb_ui_icon_phone_n, orb_ui_icon_phone_side);
+    for (size_t i = 0; i < orb_app_count() && s_n < MAX_ITEMS - 2; i++) {
         const orb_app_t *a = orb_app_at(i);
         if (!a || a->kind == ORB_APP_KIND_SHELL) continue;
         item_t *it = &s_it[s_n];
         it->app = a;
+        it->kind = IT_APP;
         item_face(it);                          /* its thumbnail when built, else its icon */
         if (a == from) s_from_i = s_n;
         s_n++;
     }
-    s_it[s_n] = (item_t){ .app = NULL, .px = s_gear, .side = PV };
+    if (s_phone) s_it[s_n++] = (item_t){ .app = NULL, .kind = IT_PHONE, .px = s_phone, .side = PV };
+    s_it[s_n] = (item_t){ .app = NULL, .kind = IT_SETTINGS, .px = s_gear, .side = PV };
     if (from == NULL || from->kind == ORB_APP_KIND_SHELL) s_from_i = s_n;
     s_n++;
 
@@ -958,10 +969,13 @@ static void finish(int64_t now)
         orb_app_cover(false);                  /* but it was suspended under the carousel */
     } else if (it->app) {
         input_router_show(it->app);
+    } else if (it->kind == IT_PHONE) {
+        input_router_open_phone();
     } else {
         input_router_open_settings();
     }
-    ESP_LOGI(TAG, "opened %s", it->app && it->app->slug ? it->app->slug : "settings");
+    ESP_LOGI(TAG, "opened %s", it->app && it->app->slug ? it->app->slug :
+                                it->kind == IT_PHONE ? "phone" : "settings");
     s_t0 = now;
     s_st = ST_SETTLE;
     if (s_out_z < 1.0f) {

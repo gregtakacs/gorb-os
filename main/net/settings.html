@@ -1,0 +1,934 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Orb settings</title>
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="icon" href="/icon.png">
+<link rel="apple-touch-icon" href="/icon.png">
+<meta name="theme-color" content="#0d0e11">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black">
+<meta name="apple-mobile-web-app-title" content="Orb">
+<!-- The connected orb's own page (app-platform-plan §67): the dial's SETTINGS menu
+     and every app's settings, on a phone or a laptop on the same network. Served from
+     flash by h_index when the orb has a network; a setup boot serves the provisioning
+     page instead. Everything here talks to the orb's own /api/v1 doors, the same ones
+     Orb Manager uses; nothing is cached and nothing is stored in the browser.
+     tools/host_settings_page_test.py parses the script and pins its doors. -->
+<style>
+:root{color-scheme:dark;--bg:#0d0e11;--card:#16181d;--line:#262a31;--fg:#e8e9ec;--dim:#8d929b;--acc:#f0a63a;--bad:#ff7a6b}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.4 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+main{max-width:640px;margin:0 auto;padding:16px 16px 48px}
+header{padding:8px 0 14px}
+#nm{font:600 26px/1.25 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;background:transparent;border:0;border-bottom:1px solid transparent;color:var(--fg);width:100%;padding:2px 0}
+#nm:focus{outline:none;border-bottom-color:var(--acc)}
+.sub{color:var(--dim);font-size:14px}
+section{background:var(--card);border:1px solid var(--line);border-radius:14px;margin:0 0 14px;padding:2px 16px}
+h2{font-size:12px;letter-spacing:.09em;text-transform:uppercase;color:var(--dim);margin:14px 0 2px;font-weight:600}
+.row{display:flex;align-items:center;justify-content:space-between;gap:10px 14px;padding:12px 0;border-top:1px solid var(--line);flex-wrap:wrap}
+h2+.row,h2+div>.row:first-child{border-top:0}
+.lab{flex:1 1 170px;min-width:0}
+.help{color:var(--dim);font-size:13px;margin-top:2px}
+.ctl{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+select,input[type=number],input[type=text],input[type=password]{background:#0f1115;color:var(--fg);border:1px solid var(--line);border-radius:8px;padding:8px 10px;font:inherit;max-width:100%}
+input[type=number]{width:5.5em}
+input[type=range]{width:150px;accent-color:var(--acc)}
+input[type=color]{width:3.2em;height:2.3em;padding:2px;background:#0f1115;border:1px solid var(--line);border-radius:8px}
+.seg{display:inline-flex;border:1px solid var(--line);border-radius:9px;overflow:hidden}
+.seg button{background:transparent;color:var(--dim);border:0;padding:8px 14px;font:inherit;cursor:pointer}
+.seg button+button{border-left:1px solid var(--line)}
+.seg button.on{background:var(--acc);color:#1a1205}
+button.act{background:transparent;color:var(--acc);border:1px solid var(--acc);border-radius:9px;padding:8px 14px;font:inherit;cursor:pointer}
+details{border-top:1px solid var(--line)}
+h2+div>details:first-child{border-top:0}
+summary{list-style:none;cursor:pointer;padding:14px 0;display:flex;align-items:center;gap:10px}
+summary::-webkit-details-marker{display:none}
+summary .t{flex:1}
+summary::after{content:"\203A";color:var(--dim);font-size:22px;line-height:1;transition:transform .15s}
+details[open] summary::after{transform:rotate(90deg)}
+details .body{padding:0 0 6px}
+details .body .row:first-child{border-top:0}
+.msg{font-size:13px;color:var(--dim);flex-basis:100%}
+.msg:empty{display:none}
+.bad{color:var(--bad)}
+.foot{color:var(--dim);font-size:13px;text-align:center;margin-top:18px}
+a{color:var(--acc)}
+.ed{border-top:1px solid var(--line);padding:12px 0 14px}
+.ed input[type=text]{width:100%}
+.hits{display:flex;flex-direction:column;margin-top:6px}
+.hits button{text-align:left;background:transparent;border:0;border-bottom:1px solid var(--line);color:var(--fg);padding:9px 2px;font:inherit;cursor:pointer}
+.hits button span{color:var(--dim);font-size:13px}
+.map{height:260px;border-radius:10px;margin-top:10px;background:#0f1115;border:1px solid var(--line);display:flex;align-items:center;justify-content:center;color:var(--dim);font-size:13px;overflow:hidden}
+.prop{margin-top:10px}
+.btns{display:flex;gap:8px;margin-top:10px;flex-wrap:wrap}
+button.pri{background:var(--acc);color:#1a1205;border:1px solid var(--acc);border-radius:9px;padding:8px 16px;font:inherit;cursor:pointer}
+button.pri:disabled{opacity:.4;cursor:default}
+.app{padding:10px 0 4px;border-top:1px solid var(--line)}
+h2+div>.app:first-child{border-top:0}
+.car{display:flex;gap:12px;overflow-x:auto;scroll-snap-type:x mandatory;padding:8px 2px 10px;-webkit-overflow-scrolling:touch}
+.th{flex:0 0 auto;width:118px;scroll-snap-align:start;background:transparent;border:0;color:var(--fg);font:inherit;padding:0;cursor:pointer;text-align:center}
+.th .disc{width:110px;height:110px;margin:0 auto;border-radius:50%;background:#000;border:2px solid var(--line);overflow:hidden;display:flex;align-items:center;justify-content:center;color:var(--dim);font-size:12px}
+.th.on .disc{border-color:var(--acc)}
+.th img{width:100%;height:100%;display:block}
+.th .nm{font-size:13px;margin-top:6px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.th .st{font-size:12px;color:var(--acc);min-height:1.2em}
+</style>
+</head>
+<body>
+<main>
+<header>
+  <input id="nm" maxlength="32" placeholder="Name this orb" aria-label="Orb name" autocomplete="off">
+  <div class="sub" id="sub">loading&#8230;</div>
+  <div class="msg" id="nmmsg"></div>
+</header>
+
+<section>
+  <h2>Display</h2>
+  <div class="row">
+    <div class="lab">Dim when idle<div class="help">The dial dims after the timeout; turning or pressing the knob wakes it.</div></div>
+    <div class="ctl" id="dim"></div>
+  </div>
+  <div class="row">
+    <div class="lab">Timeout</div>
+    <div class="ctl"><input type="number" id="to" min="1" max="120" step="1" aria-label="Timeout in minutes"><span class="sub">min</span></div>
+    <div class="msg" id="dmsg"></div>
+  </div>
+</section>
+
+<section>
+  <h2>Units</h2>
+  <div id="units"></div>
+</section>
+
+<section>
+  <h2>Sound</h2>
+  <div class="row">
+    <div class="lab">Volume</div>
+    <div class="ctl"><input type="range" id="vol" min="0" max="100" step="5" aria-label="Volume"><span class="sub" id="volv"></span></div>
+    <div class="msg" id="smsg"></div>
+  </div>
+</section>
+
+<section>
+  <h2>Locations</h2>
+  <div id="locs"><div class="row"><div class="lab sub">loading&#8230;</div></div></div>
+  <div class="row">
+    <div class="lab">Maps<div class="help" id="mapst">Radar, Flights and Weather draw a map around each location. This page makes them on this phone or computer from OpenFreeMap and sends them to the orb.</div></div>
+    <button class="act" id="mk" type="button">Make maps</button>
+    <div class="msg" id="mkmsg"></div>
+  </div>
+  <div class="row"><div class="lab help">Home sets the orb's time zone.</div></div>
+</section>
+
+<section>
+  <h2>Themes</h2>
+  <div id="themes"><div class="row"><div class="lab sub">loading&#8230;</div></div></div>
+  <div class="row"><div class="lab help">Tap a theme to wear it. Making and editing themes is Orb Manager's.</div></div>
+</section>
+
+<section>
+  <h2>Apps</h2>
+  <div id="apps"><div class="row"><div class="lab sub">loading&#8230;</div></div></div>
+</section>
+
+<section>
+  <h2>Wi-Fi</h2>
+  <div class="row">
+    <div class="lab"><span id="wifi">&#8230;</span><div class="help">To move the orb to another network, set it up again: it restarts as its own hotspot and shows a code to scan.</div></div>
+    <button class="act" id="rp" type="button">Set up again</button>
+    <div class="msg" id="wmsg"></div>
+  </div>
+</section>
+
+<p class="foot" id="home"></p>
+<p class="foot">Installing apps and making themes are in Orb Manager.</p>
+</main>
+<script>
+"use strict";
+var $ = function (id) { return document.getElementById(id); };
+function el(tag, cls, text) {
+  var e = document.createElement(tag);
+  if (cls) e.className = cls;
+  if (text !== undefined) e.textContent = text;
+  return e;
+}
+// One request at a time. The orb's web server is a single task, and every open connection
+// holds network buffers in its internal RAM (app-platform-plan §65): a page that opened
+// eight at once took Gold's internal low to 500 B. So every request here, previews
+// included, waits for the one before it.
+var lane = Promise.resolve();
+function queued(fn) {
+  var p = lane.then(fn, fn);
+  lane = p.then(null, function () { });
+  return p;
+}
+// Every door answers JSON; a refusal is {"error":"..."} with a 4xx, said in the orb's words.
+function call(url, opt) {
+  return queued(function () { return fetch(url, opt || {}); }).then(function (r) {
+    return r.text().then(function (t) {
+      var j = null;
+      try { j = t ? JSON.parse(t) : {}; } catch (e) { j = null; }
+      if (!r.ok) throw new Error((j && j.error) || ("HTTP " + r.status));
+      if (j === null) throw new Error("the orb's answer was not readable");
+      return j;
+    });
+  });
+}
+function postJSON(url, body) {
+  return call(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+}
+function say(m, text, bad) {
+  m.textContent = text || "";
+  m.className = "msg" + (bad ? " bad" : "");
+}
+function saving(m, p, done) {
+  say(m, "saving…");
+  return p.then(function (j) { say(m, done || "saved"); return j; },
+                function (e) { say(m, "the orb refused it: " + e.message, true); throw e; });
+}
+function seg(choices, now, pick) {
+  var box = el("span", "seg"), btns = [];
+  choices.forEach(function (c, i) {
+    var b = el("button", "", c);
+    b.type = "button";
+    b.onclick = function () { if (i !== now) pick(i); };
+    box.appendChild(b);
+    btns.push(b);
+  });
+  box.mark = function (v) { now = v; btns.forEach(function (b, i) { b.className = i === v ? "on" : ""; }); };
+  box.mark(now);
+  return box;
+}
+
+// ---- the header: the orb's name, firmware, address ----
+var NAME = "";
+function loadStatus() {
+  return call("/api/v1/status").then(function (s) {
+    NAME = s.name || "";
+    $("nm").value = NAME;
+    document.title = (NAME || "Orb") + " settings";
+    $("sub").textContent = (s.fw || "") + " · " + (s.ip || location.hostname);
+    var q = s.rssi >= -60 ? "strong" : s.rssi >= -70 ? "good" : s.rssi >= -80 ? "weak" : "poor";
+    homeTip(s);
+    $("wifi").textContent = s.state === "connected" ? "Connected, " + q + " signal (" + s.rssi + " dBm)" : "Not connected (" + s.state + ")";
+  });
+}
+// The home-screen tip. An icon added from an IP address breaks when the router hands the orb
+// a new one. The orb also answers to orb-<last six of its MAC>.local (orb_mdns), which
+// iPhones resolve and many Android phones do not, so the page asks once whether this phone
+// reaches that name (an opaque no-cors request: it only has to arrive) and suggests it if
+// so; otherwise it suggests a fixed address from the router.
+function homeTip(s) {
+  var standalone = window.navigator.standalone ||
+                   (window.matchMedia && window.matchMedia("(display-mode: standalone)").matches);
+  if (standalone || !s.mac) return;
+  var p = $("home"), host = "orb-" + String(s.mac).slice(-6) + ".local";
+  p.textContent = "Add this page to your home screen to open it like an app.";
+  if (!/^\d+\.\d+\.\d+\.\d+$/.test(location.hostname)) return;
+  var done = false;
+  // after the page's own requests, but outside the lane: a name that never resolves can
+  // take many seconds to fail, and nothing else may wait behind it
+  var ask = lane.then(function () { return fetch("http://" + host + "/api/v1/status", { mode: "no-cors", cache: "no-store" }); });
+  setTimeout(function () { if (!done) { done = true; noName(); } }, 4000);
+  ask.then(function () {
+    if (done) return;
+    done = true;
+    p.textContent = "Add this page to your home screen to open it like an app: open ";
+    var a = el("a", "", "http://" + host + "/");
+    a.href = "http://" + host + "/";
+    p.appendChild(a);
+    p.appendChild(document.createTextNode(" first, so the icon keeps working if the orb's address changes."));
+  }, function () { if (!done) { done = true; noName(); } });
+  function noName() {
+    p.textContent = "Add this page to your home screen to open it like an app. Give the orb a fixed " +
+                    "address in your router first, so the icon keeps working.";
+  }
+}
+$("nm").onchange = function () {
+  var v = $("nm").value.trim();
+  saving($("nmmsg"), postJSON("/api/v1/name", { name: v }), v ? "named" : "name cleared").then(function (j) {
+    NAME = j.name || "";
+    $("nm").value = NAME;
+    document.title = (NAME || "Orb") + " settings";
+  }, function () { $("nm").value = NAME; });
+};
+
+// ---- display: the dial's DISPLAY page ----
+function loadDisplay() {
+  return call("/api/v1/display").then(function (d) {
+    var box = $("dim");
+    box.innerHTML = "";
+    var s = seg(["Off", "On"], d.dim ? 1 : 0, function (i) {
+      saving($("dmsg"), postJSON("/api/v1/display", { dim: i })).then(function (j) { s.mark(j.dim ? 1 : 0); });
+    });
+    box.appendChild(s);
+    $("to").value = Math.max(1, Math.round(d.timeout_s / 60));
+  });
+}
+$("to").onchange = function () {
+  var m = Math.round(+$("to").value);
+  if (!(m >= 1 && m <= 120)) { say($("dmsg"), "between 1 and 120 minutes", true); return; }
+  saving($("dmsg"), postJSON("/api/v1/display", { timeout_s: m * 60 })).then(function (j) {
+    $("to").value = Math.max(1, Math.round(j.timeout_s / 60));
+  });
+};
+
+// ---- units: one OS setting every app reads (orb_units.c's keys and labels) ----
+var UNITS = [
+  ["temp", "Temperature", [["c", "°C"], ["f", "°F"]]],
+  ["speed", "Speed", [["kmh", "km/h"], ["mph", "mph"], ["kn", "kn"]]],
+  ["dist", "Distance", [["km", "km"], ["mi", "mi"], ["nm", "nm"]]],
+  ["time", "Time", [["24h", "24-hour"], ["12h", "12-hour"]]],
+  ["pressure", "Pressure", [["hpa", "hPa"], ["inhg", "inHg"], ["mmhg", "mmHg"]]]
+];
+var DIST = "km";
+function loadUnits() {
+  return call("/api/v1/units").then(function (u) {
+    DIST = u.dist || "km";
+    var box = $("units");
+    box.innerHTML = "";
+    UNITS.forEach(function (k) {
+      var row = el("div", "row"), msg = el("div", "msg"), sel = el("select");
+      sel.setAttribute("aria-label", k[1]);
+      k[2].forEach(function (c) { var o = el("option", "", c[1]); o.value = c[0]; sel.appendChild(o); });
+      sel.value = u[k[0]];
+      sel.onchange = function () {
+        var b = {};
+        b[k[0]] = sel.value;
+        saving(msg, postJSON("/api/v1/units", b)).then(function (j) { sel.value = j[k[0]]; if (j.dist) DIST = j.dist; });
+      };
+      var ctl = el("div", "ctl");
+      ctl.appendChild(sel);
+      row.appendChild(el("div", "lab", k[1]));
+      row.appendChild(ctl);
+      row.appendChild(msg);
+      box.appendChild(row);
+    });
+  });
+}
+
+// ---- sound ----
+function loadSound() {
+  return call("/api/v1/sound").then(function (s) {
+    $("vol").value = s.volume;
+    $("volv").textContent = s.volume ? s.volume + "%" : "silent";
+  });
+}
+$("vol").oninput = function () { var v = +$("vol").value; $("volv").textContent = v ? v + "%" : "silent"; };
+$("vol").onchange = function () {
+  saving($("smsg"), postJSON("/api/v1/sound", { volume: +$("vol").value })).then(function (j) {
+    $("vol").value = j.volume;
+    $("volv").textContent = j.volume ? j.volume + "%" : "silent";
+  });
+};
+
+// ---- locations: home and the three places (app-platform-plan §67) ----
+// Every source only proposes a point: a city from the orb's own table (GET /api/v1/home?q=),
+// typed coordinates, or a click on the map. The orb names it and finds its zone
+// (GET /api/v1/home?lat=&lon=, which stores nothing); Set stores it. Home also moves the
+// clock's zone. The map is Leaflet over OpenStreetMap, the hub's Home map, loaded from the
+// internet only when an editor opens: the phone has the internet, the orb does not serve it.
+var COORDS = /^\s*([-+]?\d*\.?\d+)\s*[, ]\s*([-+]?\d*\.?\d+)\s*$/;
+var LEAFLET = "https://unpkg.com/leaflet@1.9.4/dist/leaflet.";
+var leafletP = null;
+// Not named "leaflet": Leaflet's UMD build assigns window.leaflet, and a page function of
+// that name is overwritten the moment the script lands (Gold, 2026-11-17: every map after
+// the first in a visit hung on "loading the map").
+function loadLeaflet() {
+  if (leafletP) return leafletP;
+  leafletP = new Promise(function (ok, no) {
+    var css = el("link");
+    css.rel = "stylesheet"; css.href = LEAFLET + "css";
+    document.head.appendChild(css);
+    var sc = el("script");
+    sc.src = LEAFLET + "js";
+    sc.onload = function () { ok(window.L); };
+    sc.onerror = function () { leafletP = null; no(new Error("the map could not load (is the phone online?)")); };
+    document.head.appendChild(sc);
+  });
+  return leafletP;
+}
+var editing = null;   // the open editor's close function
+function editor(row, title, cur, isPlace, store) {
+  if (editing) editing();
+  var ed = el("div", "ed"), q = el("input"), hits = el("div", "hits"), map = el("div", "map", "loading the map…"),
+      prop = el("div", "prop sub", "Search, type coordinates, or tap the map."), nm = el("input"),
+      btns = el("div", "btns"), set = el("button", "pri", "Set"), cancel = el("button", "act", "Cancel"),
+      msg = el("div", "msg"), pick = null, ask = 0, lmap = null, pin = null;
+  q.type = "text"; q.placeholder = "a city, or 33.4484, -112.074"; q.autocomplete = "off";
+  q.setAttribute("aria-label", "Find a city or type coordinates");
+  nm.type = "text"; nm.maxLength = 23; nm.placeholder = "Name"; nm.setAttribute("aria-label", "Name");
+  set.type = cancel.type = "button";
+  set.disabled = true;
+  ed.appendChild(q); ed.appendChild(hits); ed.appendChild(map); ed.appendChild(prop);
+  if (isPlace) ed.appendChild(nm);
+  btns.appendChild(set); btns.appendChild(cancel);
+  ed.appendChild(btns); ed.appendChild(msg);
+  row.parentNode.insertBefore(ed, row.nextSibling);
+  editing = function () { ed.parentNode && ed.parentNode.removeChild(ed); editing = null; };
+  cancel.onclick = function () { editing(); loadLocs(); };
+  function propose(lat, lon, name) {
+    var my = ++ask;
+    pick = null; set.disabled = true;
+    say(msg, "");
+    prop.textContent = "asking the orb…";
+    if (lmap) {
+      if (pin) pin.setLatLng([lat, lon]); else pin = L.marker([lat, lon]).addTo(lmap);
+      lmap.setView([lat, lon], Math.max(lmap.getZoom(), 9));
+    }
+    call("/api/v1/home?lat=" + (+lat).toFixed(6) + "&lon=" + (+lon).toFixed(6)).then(function (d) {
+      if (my !== ask) return;
+      var p = d.proposal || {};
+      pick = { lat: p.lat, lon: p.lon };
+      prop.textContent = (name || p.place || "here") + " · " + (p.zone || "") + " (" + (+p.lat).toFixed(4) + ", " + (+p.lon).toFixed(4) + ")";
+      if (isPlace && (name || !nm.value)) nm.value = (name || p.place || "").replace(/^near /, "").slice(0, 23);
+      set.disabled = false;
+    }, function (e) { if (my === ask) prop.textContent = "the orb could not place that: " + e.message; });
+  }
+  q.oninput = function () {
+    var v = q.value.trim();
+    hits.innerHTML = "";
+    if (!v || COORDS.test(v)) return;
+    var my = ++ask;
+    call("/api/v1/home?q=" + encodeURIComponent(v)).then(function (d) {
+      if (my !== ask) return;
+      (d.cities || []).forEach(function (c) {
+        var b = el("button");
+        b.type = "button";
+        b.appendChild(document.createTextNode(c.name + " "));
+        b.appendChild(el("span", "", c.cc + " · " + c.zone));
+        b.onclick = function () { hits.innerHTML = ""; q.value = c.name; propose(c.lat, c.lon, c.name); };
+        hits.appendChild(b);
+      });
+      if (!(d.cities || []).length) hits.appendChild(el("div", "sub", "no city by that name in the orb's list; try coordinates or the map"));
+    });
+  };
+  q.onkeydown = function (e) {
+    if (e.key !== "Enter") return;
+    var m = COORDS.exec(q.value);
+    if (m) { hits.innerHTML = ""; propose(+m[1], +m[2]); }
+    else if (hits.firstChild && hits.firstChild.onclick) hits.firstChild.onclick();
+  };
+  set.onclick = function () {
+    if (!pick) return;
+    set.disabled = true;
+    saving(msg, store(pick, nm.value.trim()), "set").then(function () { editing && editing(); loadLocs(); loadMaps(); },
+                                                       function () { set.disabled = false; });
+  };
+  loadLeaflet().then(function (L) {
+    if (!ed.parentNode) return;
+    map.textContent = "";
+    var at = cur && cur.set ? [cur.lat, cur.lon] : [20, 0];
+    lmap = L.map(map, { attributionControl: true }).setView(at, cur && cur.set ? 9 : 2);
+    L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png",
+                { maxZoom: 18, attribution: "© OpenStreetMap" }).addTo(lmap);
+    if (cur && cur.set) pin = L.marker(at).addTo(lmap);
+    lmap.on("click", function (e) { propose(e.latlng.lat, e.latlng.lng); });
+  }, function (e) { map.textContent = e.message; });
+  q.focus();
+}
+function locRow(box, title, rec, isPlace, store, clear) {
+  var row = el("div", "row"), lab = el("div", "lab"), ctl = el("div", "ctl"), msg = el("div", "msg");
+  lab.appendChild(el("div", "", title));
+  var line = rec && rec.set ? (rec.place || rec.name || "set") + (rec.zone ? " · " + rec.zone : "") : "Not set";
+  lab.appendChild(el("div", "help", line));
+  var ch = el("button", "act", rec && rec.set ? "Change" : "Add");
+  ch.type = "button";
+  ch.onclick = function () { editor(row, title, rec, isPlace, store); };
+  ctl.appendChild(ch);
+  if (clear && rec && rec.set) {
+    var rm = el("button", "act", "Remove");
+    rm.type = "button";
+    rm.onclick = function () {
+      if (!confirm("Remove " + (rec.name || title) + "?")) return;
+      saving(msg, clear(), "removed").then(function () { loadLocs(); loadMaps(); });
+    };
+    ctl.appendChild(rm);
+  }
+  row.appendChild(lab); row.appendChild(ctl); row.appendChild(msg);
+  box.appendChild(row);
+}
+function loadLocs() {
+  return Promise.all([call("/api/v1/home"), call("/api/v1/places")]).then(function (r) {
+    var h = r[0], box = $("locs");
+    // a reload never closes an editor the owner has open; Set and Cancel reload on close
+    if (editing) return;
+    box.innerHTML = "";
+    var home = h.home || {};
+    if (home.set && !home.zone) home.zone = h.zone_label;
+    locRow(box, "Home", home, false, function (p) { return postJSON("/api/v1/home", { lat: p.lat, lon: p.lon }); });
+    (r[1].places || []).forEach(function (pl, i) {
+      locRow(box, "Place " + (i + 1) + (pl.set && pl.name ? ": " + pl.name : ""), pl, true,
+             function (p, name) {
+               var b = { i: pl.i, lat: p.lat, lon: p.lon };
+               if (name) b.name = name;
+               return postJSON("/api/v1/places", b);
+             },
+             function () { return postJSON("/api/v1/places", { i: pl.i, clear: 1 }); });
+    });
+  });
+}
+
+// ---- maps: made here, sent to the orb (app-platform-plan §67.8) ----
+// The hub's own builder (maps@1/orbmap.js, served by the orb at /maps.js) runs in this
+// browser: the vector tiles come straight from OpenFreeMap, which lets any page fetch them,
+// each level is built as the hub builds it, and the files go onto the orb's card through its
+// file doors. Six levels (z6-z11) per location, named for its position, so a moved location
+// misses and its old files are removed; then the OS is told (POST /api/v1/places/maps).
+var MAPS_DIR = "System/Maps", TILES = "https://tiles.openfreemap.org/planet";
+var kitP = null, mapsBusy = false;
+function loadKit() {
+  if (kitP) return kitP;
+  kitP = new Promise(function (ok, no) {
+    if (window.GorbMaps) return ok(window.GorbMaps);
+    var sc = el("script");
+    sc.src = "/maps.js";
+    sc.onload = function () { window.GorbMaps ? ok(window.GorbMaps) : no(new Error("the map kit did not load")); };
+    sc.onerror = function () { kitP = null; no(new Error("the orb did not serve the map kit")); };
+    document.head.appendChild(sc);
+  });
+  return kitP;
+}
+function mapsPlaces() {
+  return Promise.all([call("/api/v1/home"), call("/api/v1/places")]).then(function (r) {
+    var out = [];
+    function e6(v) { return Math.round(+v * 1e6); }
+    if (r[0].home && r[0].home.set) out.push({ place: 0, label: "Home", latE6: e6(r[0].home.lat), lonE6: e6(r[0].home.lon) });
+    (r[1].places || []).forEach(function (q) {
+      if (q.set) out.push({ place: q.i + 1, label: q.name || "Place " + (q.i + 1), latE6: e6(q.lat), lonE6: e6(q.lon) });
+    });
+    return out;
+  });
+}
+function mapsListing() {
+  return queued(function () { return fetch("/api/v1/sd/ls?path=" + encodeURIComponent(MAPS_DIR)); }).then(function (r) {
+    return r.json().then(function (d) {
+      if (!r.ok) { if (/no such directory/.test(d.error || "")) return {}; throw new Error(d.error || "the card answered " + r.status); }
+      var files = {};
+      (d.entries || []).forEach(function (e) { if (!e.dir) files[e.name] = e.size; });
+      return files;
+    });
+  });
+}
+function mapsCompute() {
+  return loadKit().then(function (G) {
+    return Promise.all([mapsPlaces(), mapsListing()]).then(function (r) {
+      var places = r[0], files = r[1], want = {};
+      places.forEach(function (pl) {
+        pl.names = G.ZOOMS.map(function (z) { return G.mapName(pl.place, pl.latE6, pl.lonE6, z); });
+        pl.have = pl.names.filter(function (n) { return files[n]; }).length;
+        pl.names.forEach(function (n) { want[n] = 1; });
+      });
+      var stale = Object.keys(files).filter(function (n) { return /\.orbmap$/.test(n) && !want[n]; });
+      return { G: G, places: places, stale: stale, need: places.filter(function (pl) { return pl.have < pl.names.length; }) };
+    });
+  });
+}
+// A tile, or null where the host has none (open sea); a gzipped body is unwrapped.
+function tile(url) {
+  return fetch(url).then(function (r) {
+    if (r.status === 204 || r.status === 404) return null;
+    if (!r.ok) throw new Error("the tile host answered " + r.status);
+    return r.arrayBuffer().then(function (buf) {
+      var b = new Uint8Array(buf);
+      if (b.length > 1 && b[0] === 0x1f && b[1] === 0x8b)
+        return new Response(new Blob([b]).stream().pipeThrough(new DecompressionStream("gzip"))).arrayBuffer()
+          .then(function (x) { return new Uint8Array(x); });
+      return b;
+    });
+  });
+}
+function tileTemplate() {
+  return fetch(TILES).then(function (r) {
+    if (!r.ok) throw new Error("OpenFreeMap answered " + r.status);
+    return r.json();
+  }).then(function (tj) {
+    if (!tj.tiles || !tj.tiles.length) throw new Error("OpenFreeMap named no tiles");
+    return { url: tj.tiles[0], maxzoom: tj.maxzoom === undefined ? 14 : +tj.maxzoom };
+  });
+}
+// One level of one place: its tiles four at a time (straight from the tile host, not the
+// orb, so the lane is not held), then the builder.
+function level(G, tmpl, pl, z, onTile) {
+  var lat = pl.latE6 / 1e6, lon = pl.lonE6 / 1e6;
+  if (z > tmpl.maxzoom) return Promise.reject(new Error("the tile source stops at z" + tmpl.maxzoom));
+  var want = G.tilesFor(lat, lon, z), tiles = [], next = 0;
+  function worker() {
+    if (next >= want.length) return Promise.resolve();
+    var t = want[next++];
+    return tile(tmpl.url.replace("{z}", t.z).replace("{x}", t.x).replace("{y}", t.y)).then(function (b) {
+      if (b) tiles.push({ x: t.ox, y: t.y, layers: G.readTile(b) });
+      onTile();
+      return worker();
+    });
+  }
+  return Promise.all([worker(), worker(), worker(), worker()]).then(function () { return G.build(tiles, lat, lon, z).bytes; });
+}
+// A card write, retried while the card is busy (a theme job holds it).
+function cardPost(url, body, tries) {
+  return queued(function () { return fetch(url, { method: "POST", body: body }); }).then(function (r) {
+    if (r.status === 503 && (tries || 0) < 10)
+      return new Promise(function (ok) { setTimeout(ok, 2000); }).then(function () { return cardPost(url, body, (tries || 0) + 1); });
+    return r.text().then(function (t) {
+      if (!r.ok) { var j = null; try { j = JSON.parse(t); } catch (e) { } throw new Error((j && j.error) || "HTTP " + r.status); }
+    });
+  });
+}
+function mapsShow(st) {
+  var need = st.need.length;
+  $("mk").textContent = need ? "Make maps" : "Make maps again";
+  $("mapst").textContent = !st.places.length ? "Set a location first." :
+    need ? need + " location" + (need === 1 ? " has" : "s have") + " no maps yet: " + st.need.map(function (p) { return p.label; }).join(", ") + "." :
+    "Every location has its maps.";
+}
+function loadMaps() {
+  return mapsCompute().then(mapsShow, function (e) { $("mapst").textContent = "the maps could not be read: " + e.message; });
+}
+$("mk").onclick = function () {
+  if (mapsBusy) return;
+  mapsBusy = true;
+  var btn = $("mk"), m = $("mkmsg");
+  btn.disabled = true;
+  var keep = function (t) { say(m, t); };
+  mapsCompute().then(function (st) {
+    if (!st.places.length) throw new Error("set a location first");
+    var todo = st.need.length ? st.need : st.places, G = st.G, n = todo.length * G.ZOOMS.length, step = 0, tiles = 0;
+    keep("reading OpenFreeMap…");
+    return tileTemplate().then(function (tmpl) {
+      return cardPost("/api/v1/sd/mkdir?path=" + encodeURIComponent(MAPS_DIR)).then(null, function () { }).then(function () {
+        var chain = Promise.resolve();
+        todo.forEach(function (pl) {
+          G.ZOOMS.forEach(function (z) {
+            chain = chain.then(function () {
+              step++;
+              var tell = function () { keep("Step " + step + " of " + n + ": " + pl.label + ", level " + z + " (" + tiles + " tiles)"); };
+              tell();
+              return level(G, tmpl, pl, z, function () { tiles++; tell(); }).then(function (bytes) {
+                var name = G.mapName(pl.place, pl.latE6, pl.lonE6, z);
+                keep("Step " + step + " of " + n + ": sending " + pl.label + " level " + z + " (" + Math.round(bytes.length / 1024) + " KB)");
+                return cardPost("/api/v1/sd/write?overwrite=1&path=" + encodeURIComponent(MAPS_DIR + "/" + name), bytes);
+              });
+            });
+          });
+        });
+        return chain.then(function () {
+          var rm = Promise.resolve();
+          st.stale.forEach(function (name) {
+            rm = rm.then(function () { return cardPost("/api/v1/sd/rm?path=" + encodeURIComponent(MAPS_DIR + "/" + name)); });
+          });
+          return rm;
+        }).then(function () { return call("/api/v1/places/maps", { method: "POST" }); }).then(function () {
+          keep("Done: " + todo.map(function (p) { return p.label; }).join(", ") + " — " + n + " levels from " + tiles + " tiles" +
+               (st.stale.length ? ", " + st.stale.length + " old file" + (st.stale.length === 1 ? "" : "s") + " removed" : "") + ".");
+        });
+      });
+    });
+  }).then(null, function (e) { say(m, "Maps stopped: " + e.message, true); })
+    .then(function () { mapsBusy = false; btn.disabled = false; loadMaps(); });
+};
+
+// ---- themes: a carousel per app, previews cached in this browser (app-platform-plan §67) ----
+// The orb sends each preview paced so its radio keeps up, seconds each, one at a time.
+// This page keeps a small JPEG of each in localStorage under the
+// theme's id with its serial and bake stamp, so a theme that changes (re-baked, re-stored)
+// or leaves the card misses or is pruned, and every other visit draws at once. Cache API is
+// not offered to a plain-http page; localStorage is, and a few dozen 10 KB thumbnails fit.
+var PREV = "orbprev:";
+function prevGet(t) {
+  try {
+    var v = JSON.parse(localStorage.getItem(PREV + t.id) || "null");
+    return v && v.v === t.serial + ":" + t.baked ? v.img : null;
+  } catch (e) { return null; }
+}
+function prevPut(t, img) {
+  try { localStorage.setItem(PREV + t.id, JSON.stringify({ v: t.serial + ":" + t.baked, img: img })); } catch (e) { }
+}
+function prevPrune(themes) {
+  try {
+    var keep = {};
+    themes.forEach(function (t) { keep[PREV + t.id] = t.serial + ":" + t.baked; });
+    for (var i = localStorage.length - 1; i >= 0; i--) {
+      var k = localStorage.key(i);
+      if (k && k.indexOf(PREV) === 0 && !keep[k]) localStorage.removeItem(k);
+    }
+  } catch (e) { }
+}
+// thumb=4 asks the orb for its preview box-averaged to 116 px ([w][h][RGB565], 27 KB): a few
+// seconds of the orb's one web task, where the whole 466 px disc took twelve.
+function previewImg(t) {
+  return queued(function () { return fetch("/api/v1/sd/preview?thumb=4&id=" + encodeURIComponent(t.id)); }).then(function (r) {
+    if (r.status === 503) throw new Error("busy");
+    if (!r.ok) throw new Error("none");
+    return r.arrayBuffer();
+  }).then(function (buf) {
+    var b = new Uint8Array(buf), w = b[0] | (b[1] << 8), h = b[2] | (b[3] << 8);
+    if (!w || w !== h || b.length < 4 + w * h * 2) throw new Error("none");
+    var c = el("canvas"); c.width = c.height = w;
+    var g = c.getContext("2d"), im = g.createImageData(w, w), d = im.data;
+    for (var i = 0, at = 4; i < w * w; i++, at += 2) {
+      var v = b[at] | (b[at + 1] << 8), o = i * 4;
+      d[o] = ((v >> 11) & 31) * 255 / 31; d[o + 1] = ((v >> 5) & 63) * 255 / 63; d[o + 2] = (v & 31) * 255 / 31; d[o + 3] = 255;
+    }
+    g.putImageData(im, 0, 0);
+    return c.toDataURL("image/jpeg", 0.85);
+  });
+}
+var prevQ = [], prevBusy = false, prevGo = false;
+function prevNext() {
+  if (!prevGo || prevBusy || !prevQ.length) return;
+  prevBusy = true;
+  var job = prevQ.shift();
+  previewImg(job.t).then(function (img) {
+    prevPut(job.t, img); job.show(img);
+  }, function (e) {
+    if (e.message === "busy" && (job.tries = (job.tries || 0) + 1) < 4) setTimeout(function () { prevQ.push(job); prevNext(); }, 3000);
+    else job.show(null);
+  }).then(function () { prevBusy = false; prevNext(); });
+}
+var TITLES = {};
+function wear(t, card, box) {
+  var st = card.querySelector(".st");
+  st.textContent = "putting it on…";
+  call("/api/v1/sd/bundle?id=" + encodeURIComponent(t.id), { method: "POST" }).then(function () {
+    var tries = 0;
+    var poll = function () {
+      call("/api/v1/sd").then(function (d) {
+        var me = (d.themes || []).filter(function (x) { return x.id === t.id; })[0];
+        if (me && me.chosen) { loadThemes(); return; }
+        if (d.try_id === t.id && d.try_why) { st.textContent = "refused: " + d.try_why; return; }
+        if (++tries > 60) { st.textContent = "still storing; check the dial"; return; }
+        setTimeout(poll, 1500);
+      }, function () { setTimeout(poll, 2000); });
+    };
+    poll();
+  }, function (e) { st.textContent = "refused: " + e.message; });
+}
+function loadThemes() {
+  return call("/api/v1/sd").then(function (d) {
+    var box = $("themes"), themes = (d.themes || []).filter(function (t) { return t.ok; });
+    prevPrune(themes);
+    box.innerHTML = "";
+    if (!d.mounted) { box.appendChild(el("div", "row sub", "No card in the orb, so no themes to choose.")); return; }
+    var by = {};
+    themes.forEach(function (t) { (by[t.app] = by[t.app] || []).push(t); });
+    var apps = Object.keys(by).sort(function (x, y) { return String(TITLES[x] || x).localeCompare(String(TITLES[y] || y)); });
+    if (!apps.length) { box.appendChild(el("div", "row sub", "No themes on the card.")); return; }
+    apps.forEach(function (slug) {
+      var sec = el("div", "app"), car = el("div", "car");
+      sec.appendChild(el("div", "", TITLES[slug] || slug));
+      by[slug].sort(function (x, y) { return (y.chosen ? 1 : 0) - (x.chosen ? 1 : 0) || String(x.name).localeCompare(String(y.name)); });
+      by[slug].forEach(function (t) {
+        var card = el("button", "th" + (t.chosen ? " on" : "")), disc = el("div", "disc", "…");
+        card.type = "button";
+        card.appendChild(disc);
+        card.appendChild(el("div", "nm", t.name));
+        card.appendChild(el("div", "st", t.chosen ? "wearing" : ""));
+        card.setAttribute("aria-label", (TITLES[slug] || slug) + " theme " + t.name + (t.chosen ? ", wearing" : ""));
+        var show = function (img) {
+          disc.textContent = "";
+          if (img) { var i = el("img"); i.src = img; i.alt = ""; disc.appendChild(i); } else disc.textContent = "no preview";
+        };
+        var cached = prevGet(t);
+        if (cached) show(cached); else { prevQ.push({ t: t, show: show }); }
+        card.onclick = function () { if (!t.chosen) wear(t, card, box); };
+        car.appendChild(card);
+      });
+      sec.appendChild(car);
+      box.appendChild(sec);
+    });
+    // previews only once the Themes section is on screen: a visit that never scrolls there
+    // costs the orb nothing
+    var go = function () { prevGo = true; prevNext(); };
+    if (prevGo || !window.IntersectionObserver) go();
+    else new IntersectionObserver(function (es, ob) { if (es[0].isIntersecting) { ob.disconnect(); go(); } }).observe(box);
+  });
+}
+
+// ---- apps: each installed app's declared settings (app-platform-plan §57) ----
+// The orb answers the schema and the values; this page draws what is shown off the
+// dial ("hub" or "both"), in the manifest's order, the way Orb Manager's App settings
+// tab does, and writes through POST /api/v1/apps/cfg, the orb's one settings door.
+var PALETTE = [["Ruby", 0xd62828], ["Ember", 0xf77f00], ["Amber", 0xffc300], ["Lime", 0x80b918],
+  ["Emerald", 0x0fa36b], ["Teal", 0x0fbfb1], ["Sky", 0x2e93e4], ["Sapphire", 0x2d5bd0],
+  ["Indigo", 0x5b4bff], ["Violet", 0x9b43e0], ["Magenta", 0xd93b8e], ["Pearl", 0xededf3]];
+function cfgURL(slug, id) {
+  return "/api/v1/apps/cfg?id=" + encodeURIComponent(slug) + "&key=" + encodeURIComponent(id);
+}
+function choiceText(c) { return c && typeof c === "object" ? (c[DIST] || c.km) : String(c); }
+function pad6(v) { var h = (Math.max(0, Math.min(0xffffff, v | 0))).toString(16); while (h.length < 6) h = "0" + h; return h; }
+function numText(s, v) {
+  var d = s.decimals || 0, u = s.unit || "";
+  return (d ? (v / Math.pow(10, d)).toFixed(d) : String(v)) + (u && u !== "%" && u !== "°" ? " " : "") + u;
+}
+function settingRow(app, s, value) {
+  var row = el("div", "row"), lab = el("div", "lab", s.label || s.id), ctl = el("div", "ctl"), msg = el("div", "msg");
+  if (s.help) lab.appendChild(el("div", "help", s.help));
+  row.appendChild(lab);
+  row.appendChild(ctl);
+  row.appendChild(msg);
+  var url = cfgURL(app.slug, s.id), now = value;
+  function write(v) {
+    return saving(msg, call(url + "&value=" + encodeURIComponent(String(v)), { method: "POST" }),
+                  "saved; the app reads it at once").then(function () { now = v; return v; });
+  }
+  if (s.type === "int" || s.type === "number") {
+    var k = Math.pow(10, s.decimals || 0), rng = el("input"), num = el("input");
+    rng.type = "range"; num.type = "number";
+    [rng, num].forEach(function (x) {
+      x.min = s.min / k; x.max = s.max / k; x.step = (s.step || 1) / k; x.value = now / k;
+      x.setAttribute("aria-label", s.label || s.id);
+    });
+    rng.oninput = function () { num.value = rng.value; };
+    num.oninput = function () { rng.value = num.value; };
+    var commit = function (x) {
+      var v = Math.round(+x.value * k);
+      if (!isFinite(v) || v < s.min || v > s.max) { say(msg, "between " + numText(s, s.min) + " and " + numText(s, s.max), true); return; }
+      if (v !== now) write(v);
+    };
+    rng.onchange = function () { commit(rng); };
+    num.onchange = function () { commit(num); };
+    ctl.appendChild(rng);
+    ctl.appendChild(num);
+    if (s.unit) ctl.appendChild(el("span", "sub", s.unit));
+  } else if (s.type === "enum") {
+    var sel = el("select");
+    sel.setAttribute("aria-label", s.label || s.id);
+    (s.choices || []).forEach(function (c, i) { var o = el("option", "", choiceText(c)); o.value = String(i); sel.appendChild(o); });
+    sel.value = String(now);
+    sel.onchange = function () { write(+sel.value).then(null, function () { sel.value = String(now); }); };
+    ctl.appendChild(sel);
+  } else if (s.type === "toggle") {
+    var t = seg((s.choices || ["off", "on"]).map(choiceText), now, function (i) { write(i).then(function () { t.mark(i); }); });
+    ctl.appendChild(t);
+  } else if (s.type === "multi") {
+    (s.choices || []).forEach(function (c, i) {
+      var l = el("label"), cb = el("input");
+      cb.type = "checkbox";
+      cb.checked = !!((now >> i) & 1);
+      cb.onchange = function () {
+        write(cb.checked ? now | (1 << i) : now & ~(1 << i)).then(null, function () { cb.checked = !cb.checked; });
+      };
+      l.appendChild(cb);
+      l.appendChild(document.createTextNode(" " + choiceText(c)));
+      ctl.appendChild(l);
+    });
+  } else if (s.type === "color") {
+    var pick = el("input"), chip = el("span", "sub");
+    pick.type = "color";
+    pick.setAttribute("aria-label", s.label || s.id);
+    var specials = (s.specials || []).slice(0, 4);
+    var sp = specials.length ? seg(specials.map(String), -1, function (i) { write(-(i + 1)).then(mark); }) : null;
+    var mark = function () {
+      pick.value = "#" + pad6(now < 0 ? 0 : now);
+      pick.style.opacity = now < 0 ? ".35" : "1";   // a special is not a colour: the swatch steps back
+      var hit = PALETTE.filter(function (p) { return p[1] === now; })[0];
+      chip.textContent = now < 0 ? (specials[-now - 1] || "custom") : (hit ? hit[0] : "custom");
+      if (sp) sp.mark(now < 0 ? -now - 1 : -1);
+    };
+    pick.onchange = function () { write(parseInt(pick.value.substring(1), 16)).then(mark, mark); };
+    ctl.appendChild(pick);
+    if (sp) ctl.appendChild(sp);
+    ctl.appendChild(chip);
+    mark();
+  } else if (s.type === "text") {
+    var tx = el("input"), sv = el("button", "act", "Save");
+    tx.type = "text"; sv.type = "button";
+    tx.setAttribute("aria-label", s.label || s.id);
+    call(url).then(function (d) { tx.value = d.value || ""; }, function (e) { say(msg, "unreadable: " + e.message, true); });
+    sv.onclick = function () { write(tx.value.trim()); };
+    ctl.appendChild(tx);
+    ctl.appendChild(sv);
+  } else if (s.type === "place") {
+    var pl = el("span", "sub", "…");
+    call(url).then(function (d) {
+      var m = /^([^|]+)\|(-?[\d.]+),(-?[\d.]+)$/.exec(d.value || "");
+      pl.textContent = m ? m[1] + " (" + m[2] + ", " + m[3] + ")" : "not set";
+    }, function () { pl.textContent = "unreadable"; });
+    ctl.appendChild(pl);
+    lab.appendChild(el("div", "help", "Pick it in Orb Manager, on its map."));
+  } else if (s.type === "secret") {
+    var cur = el("div", "help"), key = el("input"), set = el("button", "act", "Save"), clr = el("button", "act", "Remove");
+    key.type = "password"; key.autocomplete = "off"; key.placeholder = "paste the " + (s.label || s.id);
+    set.type = clr.type = "button";
+    lab.appendChild(cur);
+    var line = function (d) {
+      cur.textContent = d && d.set ? "set (…" + d.tail + "), sent only to " + d.host
+                                   : "not set; sent only to " + ((d && d.host) || "the app's own host");
+    };
+    var post = function (body, done) {
+      saving(msg, postJSON(url, body), done).then(function () { key.value = ""; return call(url).then(line); });
+    };
+    set.onclick = function () {
+      var v = key.value.trim();
+      if (!v) { say(msg, "paste the value first", true); return; }
+      post(s.header ? { value: v, header: s.header } : { value: v }, "saved");
+    };
+    clr.onclick = function () { post({ value: "" }, "removed"); };
+    call(url).then(line, function (e) { cur.textContent = "unreadable: " + e.message; });
+    ctl.appendChild(key);
+    ctl.appendChild(set);
+    ctl.appendChild(clr);
+  } else {
+    ctl.appendChild(el("span", "sub", String(now)));
+  }
+  return row;
+}
+function openApp(app, body) {
+  body.innerHTML = "";
+  body.appendChild(el("div", "row", "loading…"));
+  call("/api/v1/apps/settings?id=" + encodeURIComponent(app.slug)).then(function (d) {
+    body.innerHTML = "";
+    if (d.dist) DIST = d.dist;
+    var shown = (d.settings || []).filter(function (s) { return s.show === "hub" || s.show === "both"; });
+    if (!shown.length) {
+      body.appendChild(el("div", "row sub", "No settings to change here."));
+      return;
+    }
+    var vals = d.values || {};
+    shown.forEach(function (s) { body.appendChild(settingRow(app, s, vals[s.id])); });
+  }, function (e) {
+    body.innerHTML = "";
+    body.appendChild(el("div", "row bad", "The orb did not answer: " + e.message));
+  });
+}
+function loadApps() {
+  return call("/api/v1/apps").then(function (d) {
+    (d.installed || []).forEach(function (a) { TITLES[a.slug] = a.title || a.slug; });
+    var apps = (d.installed || []).filter(function (a) { return !a.compiled; });
+    apps.sort(function (x, y) { return String(x.title || x.slug).localeCompare(String(y.title || y.slug)); });
+    var box = $("apps");
+    box.innerHTML = "";
+    if (!apps.length) { box.appendChild(el("div", "row sub", "No apps installed.")); return; }
+    apps.forEach(function (a) {
+      var det = el("details"), sum = el("summary"), body = el("div", "body");
+      sum.appendChild(el("span", "t", a.title || a.slug));
+      if (a.failed) sum.appendChild(el("span", "sub bad", "failed: " + (a.reason || "unknown")));
+      else if (a.on_glass) sum.appendChild(el("span", "sub", "on the dial"));
+      det.appendChild(sum);
+      det.appendChild(body);
+      det.addEventListener("toggle", function () { if (det.open) openApp(a, body); });
+      box.appendChild(det);
+    });
+  });
+}
+
+// ---- Wi-Fi: set up again (a setup boot, §66) ----
+$("rp").onclick = function () {
+  if (!confirm("Set up Wi-Fi again?\n\nThe orb restarts as its own hotspot and shows a code to scan. " +
+               "If nobody sets it up within 10 minutes it goes back to this network.")) return;
+  saving($("wmsg"), call("/api/v1/reprov", { method: "POST" }),
+         "restarting into setup: scan the code on the orb's glass");
+};
+
+function fail(e) { $("sub").textContent = "could not reach the orb: " + e.message; }
+[loadStatus, loadDisplay, loadUnits, loadSound, loadLocs].forEach(function (f) { f().then(null, fail); });
+loadMaps();
+// the theme rows want the apps' titles, so the apps answer first
+loadApps().then(loadThemes, function (e) { fail(e); return loadThemes(); }).then(null, fail);
+</script>
+</body>
+</html>

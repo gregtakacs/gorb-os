@@ -352,11 +352,11 @@ $("#un-go").onclick = async () => {
 //     tools/make_cities.py from the rows orb_cities.c is baked from),
 //   * this browser's location,
 //   * a click on the map,
-//   * typed coordinates or a full plus code.
-// The orb previews it (GET /api/v1/home?lat=&lon= or ?code=): the place and zone
-// it would store, and the point itself, which is what the map pins — a plus code
-// is decoded by the orb, not here, so the pin is the point Set home stores. Set
-// home then posts that point, and the orb takes the zone with it.
+//   * typed coordinates.
+// The orb previews it (GET /api/v1/home?lat=&lon=): the place and zone it would
+// store, and the point itself, which is what the map pins. Set home then posts that
+// point, and the orb takes the zone with it. (Plus codes were accepted until v1.8.2;
+// the owner dropped them, app-platform-plan §67.1: nobody will type one.)
 const homeURL = (q) => "/orb/" + encodeURIComponent(current.ip) + "/api/v1/home" + (q || "");
 let homeMap = null;
 let homeMark = null;
@@ -755,8 +755,8 @@ function stringRow(app, id, help) {
   return box;
 }
 // A place setting's search: the Home card's searcher without its map (owner, 2026-11-06).
-// Typing lists the matching cities at once; Enter takes the first, or reads coordinates
-// or a full plus code, which the orb names the way it names a home (GET /api/v1/home's
+// Typing lists the matching cities at once; Enter takes the first, or reads coordinates,
+// which the orb names the way it names a home (GET /api/v1/home's
 // proposal, which stores nothing); this browser's location works the same. A pick waits
 // beside its Save with its name editable, as Home's waits beside Set location.
 function placeSearch(app, id, help, write, msg, encode) {
@@ -764,9 +764,9 @@ function placeSearch(app, id, help, write, msg, encode) {
   const side = document.createElement("div");
   side.className = "locside";
   const q = document.createElement("input");
-  q.placeholder = "a city, 33.4484, -112.074, or 8559CWXG+9C";
+  q.placeholder = "a city, or 33.4484, -112.074";
   q.autocomplete = "off";
-  q.setAttribute("aria-label", (app.title || app.slug) + " " + (help.label || id) + ": find a city, or type coordinates or a full plus code");
+  q.setAttribute("aria-label", (app.title || app.slug) + " " + (help.label || id) + ": find a city, or type coordinates");
   const hits = document.createElement("div");
   hits.className = "tzlist"; hits.setAttribute("role", "listbox"); hits.hidden = true;
   const btns = document.createElement("div");
@@ -806,7 +806,7 @@ function placeSearch(app, id, help, write, msg, encode) {
     msg.textContent = "";
     nm.focus();
   };
-  // coordinates or a plus code: the orb's proposal names the point ("near Lansing")
+  // coordinates: the orb's proposal names the point ("near Lansing")
   const ask_orb = async (query, what) => {
     const my = ++ask;
     msg.textContent = "asking the orb about " + what + "\u2026";
@@ -832,7 +832,6 @@ function placeSearch(app, id, help, write, msg, encode) {
     ev.preventDefault();
     const v = this.value.trim();
     if (!v) return;
-    if (v.includes("+")) { show([]); ask_orb("?code=" + encodeURIComponent(v.split(/\s+/)[0]), v); return; }
     const m = v.match(HOME_COORDS);
     if (m) { show([]); ask_orb("?lat=" + encodeURIComponent(m[1]) + "&lon=" + encodeURIComponent(m[2]), v); return; }
     const first = hits.firstChild;
@@ -1433,7 +1432,7 @@ async function loadSecrets() {
   await apsPage();
 }
 
-// ---- the search box: a city, coordinates, or a full plus code ----
+// ---- the search box: a city or coordinates ----
 const HOME_COORDS = /^\s*([-+]?\d*\.?\d+)\s*[, ]\s*([-+]?\d*\.?\d+)\s*$/;
 
 async function homeCityList() {
@@ -1498,7 +1497,6 @@ $("#home-q").addEventListener("keydown", function (ev) {
   ev.preventDefault();
   const v = this.value.trim();
   if (!v) return;
-  if (v.includes("+")) { homeHits([]); homePropose("?code=" + encodeURIComponent(v.split(/\s+/)[0]), v, true); return; }
   const m = v.match(HOME_COORDS);
   if (m) { homeHits([]); homePropose("?lat=" + encodeURIComponent(m[1]) + "&lon=" + encodeURIComponent(m[2]), v, true); return; }
   const first = $("#home-hits").firstChild;

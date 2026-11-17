@@ -647,88 +647,6 @@ def c_page(sym):
     return "".join(ast.literal_eval(x) for x in out), None
 
 
-def themes_page_js():
-    page, err = c_page("HTML_THEMES")
-    if err:
-        print("FAIL " + err); return 1
-    m = re.search(r"<script>(.*?)</script>", page, re.S)
-    if not m:
-        print("FAIL /themes has no <script> block"); return 1
-    js = m.group(1)
-    try:
-        import esprima
-    except ImportError:
-        print("SKIP esprima is not installed — the /themes parse check did not run. "
-              "Run: pip install esprima")
-        js_ok = True
-    else:
-        try:
-            esprima.parseScript(js); js_ok = True
-        except Exception as e:
-            print("FAIL /themes JS: %s — one syntax error kills the whole <script> and "
-                  "the page sits at 'loading' with an empty list" % e)
-            js_ok = False
-    # Pins: the decisions the FORMAT 3 store page must keep making. The confirm() on
-    # delete and store are the ones that matter — the first destroys a file on somebody's
-    # card, the second writes flash and reboots the orb onto it. Migration 1's single slot
-    # retired the A/B flip and the factory-default door: the store is the only theme press
-    # and it reboots on its own, so the banner states a source and the page has no flip.
-    pins = [("onclick=doUp()", "an upload path exists"),
-            ("function store(id){var nm=ROWS[id]||id;",
-             "a store press names the theme it is about to copy"),
-            ("function del(id){var nm=ROWS[id]||id;",
-             "delete is offered, and names what it destroys"),
-            ("if(!confirm('Delete ", "delete asks before destroying a file"),
-            ("if(!confirm('Store ", "a store press names the copy it is about to make"),
-            ("ROWS[t.id]=nm;", "the row's name is read back from a map, never pasted into an onclick"),
-            ("var ROWS={};", "and that map exists before the rows are drawn"),
-            ("x.upload.onprogress", "the upload reports real progress (fetch cannot)"),
-            ("/api/v1/sd/bundle?id='+encodeURIComponent(id)",
-             "Store posts the streaming ingest by the url-encoded id, not by name"),
-            ("/api/v1/sd/delete?id='+encodeURIComponent(id)",
-             "delete addresses the row by the url-encoded id, the only handle that resolves"),
-            ("data.source", "the banner states what the dial draws, not a pending operation"),
-            ("the orb is back - dial on ", "a store waits for the reboot onto the theme it wrote"),
-            ("LAST TRY FAILED", "the store the worker refused explains itself on its row"),
-            ("CANNOT LOAD", "an unloadable bundle says why instead of vanishing")]
-    rc = 0 if js_ok else 1
-    for want, why in pins:
-        if want not in page:
-            print("FAIL /themes: missing %r — %s" % (want, why)); rc = 1
-    # No row label may reach a handler as markup: names cover the full printable range
-    # including apostrophes, so the id is the only value a row hands to a function.
-    for fn, args in re.findall(r'onclick="(store|del)\((.*?)"', page):
-        if "nm" in args or "name" in args:
-            print("FAIL /themes: the %s handler interpolates a name into markup (%s) — "
-                  "pass the id alone" % (fn, args[:60])); rc = 1
-    # The FORMAT 2 install door, its Load button, and the whole A/B flip/default surface
-    # are retired: a page that still names them offers a button for a route that no longer
-    # exists. Migration 1 deleted the flip, the factory-default door, and the live word.
-    for gone, why in (("/api/v1/sd/install", "the FORMAT 2 install door is gone from the firmware"),
-                      ("function load(", "there is no FORMAT 2 Load button any more"),
-                      ("/api/v1/sd/unstage", "the staged load has no undo (ruling D13)"),
-                      ("/api/v1/sd/flip", "the A/B flip door is gone under the single slot"),
-                      ("/api/v1/sd/default", "the factory-default door is gone under the single slot"),
-                      ("function flip(", "there is no flip press any more"),
-                      ("tofactory", "there is no use-the-factory-dial button any more"),
-                      ("data.live", "the A/B live word is retired")):
-        if gone in page:
-            print("FAIL /themes: still carries %r — %s" % (gone, why)); rc = 1
-    defined = set(re.findall(r"function\s+([A-Za-z_$][\w$]*)", js))
-    called  = set(re.findall(r"(?<![.\w$])([A-Za-z_$][\w$]*)\s*\(", js))
-    builtin = {"function", "if", "for", "while", "switch", "catch", "return", "typeof",
-               "fetch", "String", "Number", "JSON", "Math", "Date", "Array", "parseInt",
-               "encodeURIComponent", "XMLHttpRequest", "confirm", "alert",
-               "setTimeout", "clearTimeout", "setInterval", "clearInterval"}
-    undef = sorted(c for c in called - defined - builtin if not c[0].isupper())
-    if undef:
-        print("FAIL /themes JS calls functions that do not exist: %s" % undef); rc = 1
-    if not rc:
-        print("ok    /themes (%d B page) parses, is pinned to the FORMAT 3 store door, "
-              "and calls only functions it has" % len(page))
-    return rc
-
-
 def _code_only(src):
     """The source with comments and string/char literals blanked, line count preserved.
 
@@ -1432,8 +1350,6 @@ if "--mutations" in sys.argv:
 rc = run_harness()
 if rc == 0:
     rc = caps_lint()
-if rc == 0:
-    rc = themes_page_js()
 if rc == 0:
     rc = err_t_lint()
 if rc == 0:

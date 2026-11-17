@@ -35,8 +35,6 @@ const (
 	ConfigBodyMax = 128
 	NameBodyMax   = 128
 	ScanMaxNets   = 12
-	// APManualS is CONFIG_ORB_NET_AP_MANUAL_S, the seconds a hand-opened AP stays up.
-	APManualS = 900
 )
 
 // Net is one row of h_wifi_scan's cached table. The field order is the firmware's
@@ -69,6 +67,8 @@ type device struct {
 	Home Home
 	// Units is the orb's units (/api/v1/units, orb_units.c). Zero value = metric.
 	Units Units
+	// Display is the dial's DISPLAY page (/api/v1/display).
+	Display Display
 	// Places are the three beside home (/api/v1/places, orb_places.c), and PlacesGen
 	// moves on every set or clear. Zero value = none set.
 	Places    [3]Place
@@ -115,20 +115,6 @@ type device struct {
 	// AP without one, and that refusal is the lockout guard worth having a double for.
 	StaUp  bool
 	APOpen bool
-	// Mode is the persistent reachability choice POST /api/v1/wifi/mode writes: "" is
-	// the station default, "ap" is the isolated mode. It is kept as the stored word
-	// rather than as a bool because that is what flash holds, and the firmware's
-	// reject list ("AP", "AP-isolated", a 4-byte value) is a statement about the
-	// STRING, not about a flag.
-	Mode string
-	// ModeSets counts accepted mode writes, the same way Rebooted counts reboots: a
-	// hub test that asserts the reply alone cannot tell "the orb accepted the mode"
-	// from "the hub parsed a 200 and the orb said nothing".
-	ModeSets int
-	// ModeRefused answers 409, standing in for a firmware built with
-	// CONFIG_ORB_NET_AP_ISOLATED=n, where the door exists and refuses by design
-	// rather than being absent.
-	ModeRefused bool
 	// ApIP is the SoftAP's own address while it is up. The firmware's responder
 	// hands a querier on 192.168.4.0/24 THAT address rather than the STA's
 	// (orb_mdns.c build_answer's subnet test), and it is the one half of item 4's
@@ -194,27 +180,6 @@ func (o *Orb) SetState(s string) { o.mu.Lock(); d := o.deviceLocked(); d.State =
 
 // SetSTA sets the lease bit that both h_wifi_ap's close path and h_status read.
 func (o *Orb) SetSTA(up bool) { o.mu.Lock(); d := o.deviceLocked(); d.StaUp = up; o.mu.Unlock() }
-
-// ModeSet reports the stored reachability word ("" = station, "ap" = isolated) and how
-// many accepted writes put it there. A hub test asserting only the reply body cannot
-// tell a mode the orb stored from a mode the orb refused.
-func (o *Orb) ModeSet() (string, int) {
-	o.mu.Lock()
-	defer o.mu.Unlock()
-	if o.dev == nil {
-		return "", 0
-	}
-	return o.dev.Mode, o.dev.ModeSets
-}
-
-// SetModeRefused makes POST /api/v1/wifi/mode answer 409, the CONFIG_ORB_NET_AP_ISOLATED=n
-// build: the door is registered and refuses on purpose.
-func (o *Orb) SetModeRefused(v bool) {
-	o.mu.Lock()
-	d := o.deviceLocked()
-	d.ModeRefused = v
-	o.mu.Unlock()
-}
 
 // SetAddress sets the MAC and the address /api/v1/status reports, and so the
 // instance name the mDNS announcement derives from the same two facts. A test that
@@ -464,9 +429,9 @@ func (o *Orb) serveWifiJoin(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, `{"state":"joining"}`)
 }
 
-// --- wifi/ap (h_wifi_ap, orb_net.c:2322) ----------------------------------------
+// --- wifi/ap (h_wifi_ap) --------------------------------------------------------
 //
-// The body is optional: {} opens for CONFIG_ORB_NET_AP_MANUAL_S seconds. Both
+// Close only since §66: anything but a close is refused (apOpenGoneBody). Both
 // spellings of the close are accepted, because the page sends {"on":"off"} and a
 // person at a curl prompt sends {"on":false} (orb_net.c:2348). Closing is refused
 // without a lease: an orb reachable by no other route is precisely the lockout the
@@ -499,26 +464,20 @@ func (o *Orb) serveWifiAP(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 200, `{"state":"ap_closing"}`)
 		return
 	}
-	suffix := ""
-	if len(d.MAC) >= 4 {
-		suffix = strings.ToUpper(d.MAC[len(d.MAC)-4:])
-	}
-	d.APOpen = true
 	o.mu.Unlock()
-	// The SSID is in the reply because a phone has to find it in a network list, and
-	// the seconds because "how long do I have" is the first question a person
-	// standing at a wall with a phone asks (orb_net.c:2381).
-	writeJSON(w, 200, fmt.Sprintf(`{"state":"ap_opening","ap_ssid":"orb-%s","seconds":%d}`,
-		suffix, APManualS))
+	// app-platform-plan §66: the hotspot exists only in a setup boot, so a request
+	// cannot open one; the open half is refused in the firmware's sentence.
+	writeJSON(w, 409, apOpenGoneBody)
 }
 
 // The mode door's three refusals, named so the scrape in door_bodies_test.go can hold
 // them against h_wifi_mode's own text. A hand-typed refusal here is a sentence no orb
 // has ever sent, which is the exact rot that test exists to catch.
 const (
-	noModeBody  = `{"error":"mode required (\"ap\" or \"sta\")"}`
-	badModeBody = `{"error":"mode must be \"ap\" or \"sta\""}`
-	modeOffBody = `{"error":"AP-isolated mode is not in this build"}`
+	noModeBody     = `{"error":"mode required (\"sta\")"}`
+	badModeBody    = `{"error":"mode must be \"sta\""}`
+	modeGoneBody   = `{"error":"the orb is a network device; the AP-only mode is gone"}`
+	apOpenGoneBody = `{"error":"the setup hotspot opens only when the orb has no working network"}`
 )
 
 // --- wifi/mode (h_wifi_mode) -----------------------------------------------------
@@ -544,40 +503,16 @@ func (o *Orb) serveWifiMode(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 400, noModeBody)
 		return
 	}
-	o.mu.Lock()
-	d := o.deviceLocked()
-	if d.ModeRefused {
-		o.mu.Unlock()
-		writeJSON(w, 409, modeOffBody)
-		return
-	}
-	o.mu.Unlock()
-	// net_mode_set's own accept set: "ap", or "sta"/"" for the station default.
-	// Anything else — "AP", "station", 4 bytes — is refused with the firmware's
-	// wording, because the exact strings are what the hub's card shows a person.
-	mode := *req.Mode
-	switch mode {
+	// app-platform-plan §66: the station is the only mode. "ap" is refused, "sta" (or
+	// empty) is the no-op it now is, anything else is the firmware's 400.
+	switch *req.Mode {
 	case "ap":
+		writeJSON(w, 409, modeGoneBody)
 	case "sta", "":
-		mode = "sta"
+		writeJSON(w, 200, `{"state":"station","mode":"sta"}`)
 	default:
 		writeJSON(w, 400, badModeBody)
-		return
 	}
-	o.mu.Lock()
-	d = o.deviceLocked()
-	d.Mode = "" // "sta" is the absent key, the station default
-	if mode == "ap" {
-		d.Mode = "ap"
-	}
-	d.ModeSets++
-	if mode == "ap" {
-		d.APOpen, d.StaUp, d.ApIP = true, false, "192.168.4.1"
-	}
-	o.mu.Unlock()
-	// 750 ms of reboot grace, then the CDC-less equivalent of dropping the client:
-	// the reply is the last thing this boot says on the old mode.
-	writeJSON(w, 200, `{"state":"rebooting","mode":"`+mode+`"}`)
 }
 
 // spelledOff accepts the two spellings one intent has, matching the firmware's
@@ -1026,7 +961,10 @@ func knownApp(slug string) bool {
 // body is a range and not a constant. The knob and idle blocks are here because the
 // hub parses status with struct tags, and a field the device never sent decodes to
 // the same zero as a device honestly reporting one.
-func (o *Orb) serveStatus(w http.ResponseWriter) {
+// serveStatus answers h_status's two bodies (app-platform-plan §65.4): the plain read is the
+// hub's slim one, ?full=1 the bench's whole body. Every slim key is in the full body,
+// in the same order, so the two share one set of reads.
+func (o *Orb) serveStatus(w http.ResponseWriter, r *http.Request) {
 	o.mu.Lock()
 	d := o.deviceLocked()
 	state, mac, ip := d.State, d.MAC, d.IP
@@ -1048,6 +986,17 @@ func (o *Orb) serveStatus(w http.ResponseWriter) {
 	// "[]" would let a hub test pass against an orb that has apps on it.
 	ledger := o.ledgerJSONLocked()
 	o.mu.Unlock()
+	if r.URL.Query().Get("full") != "1" {
+		writeJSON(w, 200, `{"state":"`+state+`","ip":"`+ip+`","mac":"`+mac+
+			`","rssi":`+strconv.Itoa(rssi)+`,"fw":"`+fw+`","idf":"v5.4",`+
+			`"art_ready":true,"art_bytes":8388608,"slot":"a","img":"valid",`+
+			`"synced":`+fmt.Sprint(state == "connected")+
+			`,"epoch":1760000000,"tz":"`+tz+`","tz_offset":`+strconv.Itoa(offset)+
+			`,"name":"`+name+`"`+
+			`,"ap":`+fmt.Sprint(ap)+`,"assoc_fails":`+strconv.FormatUint(uint64(fails), 10)+
+			`,"wifi_reason":0,"wifi_reason_name":"`+jsonSafe(reason)+`","rst":3,"rst_name":"sw"}`)
+		return
+	}
 	writeJSON(w, 200, `{"state":"`+state+`","ip":"`+ip+`","mac":"`+mac+
 		`","rssi":`+strconv.Itoa(rssi)+`,"fw":"`+fw+`","idf":"v5.4",`+
 		`"heap_internal":131072,"heap_internal_largest":65536,"heap_psram":2097152,`+

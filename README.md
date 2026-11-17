@@ -81,7 +81,7 @@ source of record.
 ## What is in the tree
 
 ```
-main/                 the firmware (ESP-IDF v5.4 + LVGL 9): display, compositor, theme
+main/                 the firmware (ESP-IDF v5.5.6 + LVGL 9): display, compositor, theme
                       store, app platform and wasm3 host, Wi-Fi, HTTP API, OTA, SD, USB, audio
 apps/                 the apps (one directory each) and the app SDK (apps/sdk/)
   clock/editor/       the Theme Editor, which ships inside the clock app

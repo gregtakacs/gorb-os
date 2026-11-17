@@ -99,6 +99,7 @@ typedef enum {
     PG_SHARE,         /* D38: the USB share window's own card, forced over any page */
     PG_UNITS,         /* weather-plan §2.1: temperature, speed, distance for every app */
     PG_GO,            /* plan §51: the app list a hold opens, then settings */
+    PG_PHONE,         /* §67.9: the carousel's Phone card: the page's QR, one press leaves */
     PG_N
 } page_t;
 
@@ -901,7 +902,8 @@ static int rows_about(void)  { return 5 + ABOUT_CREDITS_N + 1; }   /* facts, cre
 enum { ABOUT_ROW_ADDR = 0 };
 static bool about_qr_on(void)
 {
-    return s_armed && s_pg == P(PG_ABOUT) && s_cur == ABOUT_ROW_ADDR && orb_net_ip_str()[0];
+    return s_armed && orb_net_ip_str()[0] &&
+           ((s_pg == P(PG_ABOUT) && s_cur == ABOUT_ROW_ADDR) || s_pg == P(PG_PHONE));
 }
 
 /* The subject PG_APPACT is showing, by registry index when it is on the dial
@@ -1675,6 +1677,22 @@ static void label_about(int row, char *out, size_t outsz, bool *sel_hi)
 }
 
 static const char *title_about(void) { return "ABOUT"; }
+/* §67.9: the carousel's Phone card opens this: the code for the orb's settings page and
+ * nothing else, so a phone on the same Wi-Fi gets there without knowing the address. Its one
+ * row is the exit (back_to MENU_GO_EXIT), so any press goes back to the app it came from. */
+static int  rows_phone(void) { return 1; }
+static void label_phone(int row, char *out, size_t outsz, bool *sel_hi)
+{
+    (void)row;
+    if (sel_hi) *sel_hi = false;
+    snprintf(out, outsz, "%s", orb_net_ip_str()[0] ? "back" : "not on Wi-Fi: back");
+}
+static const char *title_phone(void) { return "ON YOUR PHONE"; }
+/* The QR's own painter prints the address under the code, so the hint only says what to do. */
+static const char *hint_phone(void)
+{
+    return orb_net_ip_str()[0] ? "scan with a phone on this Wi-Fi" : "push: back";
+}
 static const char *hint_about(void)  { return about_qr_on() ? "scan with a phone on this Wi-Fi" : "rotate: read   push: nothing here"; }
 
 
@@ -2618,6 +2636,17 @@ void menu_view_switcher(const orb_app_t *from, int step)
     ESP_LOGI(TAG, "app list open on row %d", s_cur);
 }
 
+void menu_view_open_phone(void)
+{
+    edit_end();
+    s_armed = true;
+    s_pg = P(PG_PHONE);
+    s_cur = 0;
+    s_ui.status[0] = '\0';
+    repaint();
+    ESP_LOGI(TAG, "phone card open from the carousel");
+}
+
 void menu_view_open_settings(void)
 {
     edit_end();
@@ -2661,6 +2690,8 @@ const menu_page_t s_pages[PG_N] = {
                      .back_to = PG_APPS, .back_cur = 0 },
     [PG_UNITS]   = { .rows = rows_units, .label = label_units, .title = title_units,
                      .hint = hint_units, .back_to = PG_TOP, .back_cur = 2, .edit = edit_units },
+    [PG_PHONE]   = { .rows = rows_phone, .label = label_phone, .title = title_phone,
+                     .hint = hint_phone, .back_to = MENU_GO_EXIT },
     [PG_ABOUT]   = { .rows = rows_about, .label = label_about, .title = title_about,
                      .hint = hint_about, .back_to = PG_TOP, .back_cur = 0 },
     /* The share card: reachable from no row, carrying no rows of its own, and

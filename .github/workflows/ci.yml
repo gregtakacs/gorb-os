@@ -77,7 +77,7 @@ jobs:
   firmware:
     name: firmware build and host suites
     runs-on: ubuntu-24.04
-    container: espressif/idf:v5.4
+    container: espressif/idf:v5.5.6   # v1.8.2 moved to IDF v5.5.6 (the CMD59 retry; app-platform-plan §65)
     steps:
       - uses: actions/checkout@v7
         with:

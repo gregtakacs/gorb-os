@@ -33,6 +33,13 @@
 
 static const char *TAG = "orb_sd";
 
+/* §7.11: the hush (orb_sd.h). One writer (the appnet task), any readers; a stale read
+ * costs one piece at most. Outside the config block: with no card it is never read. */
+static volatile int64_t s_hush_until_us;
+void orb_sd_hush_until(int64_t until_us) { s_hush_until_us = until_us; }
+void orb_sd_hush_end(void) { s_hush_until_us = 0; }
+bool orb_sd_hushed(void) { const int64_t u = s_hush_until_us; return u && esp_timer_get_time() < u; }
+
 #if CONFIG_ORB_SD_ENABLE
 
 #define SD_HOST  SPI3_HOST   /* SPI2_HOST belongs to the CO5300 — display.c:702 */

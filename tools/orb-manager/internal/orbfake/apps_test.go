@@ -218,7 +218,7 @@ func TestAppUploadTakesItsNameFromTheHeader(t *testing.T) {
 	// h_status's apps array is the broker ledger and lists only what is registered in
 	// flash, so an upload alone must leave it at the built-ins: the row is staged on the
 	// card, not installed. The ledger row for it appears after the install that follows.
-	_, sb := appDo(t, srv, http.MethodGet, "/api/v1/status", nil)
+	_, sb := appDo(t, srv, http.MethodGet, "/api/v1/status?full=1", nil)
 	if strings.Contains(sb, `"slug":"dialtest"`) {
 		t.Errorf("a staged-only app appeared in the ledger: %s", sb)
 	}
@@ -228,7 +228,7 @@ func TestAppUploadTakesItsNameFromTheHeader(t *testing.T) {
 	if code, body := appDo(t, srv, http.MethodPost, "/api/v1/apps/install?id=dialtest", []byte("{}")); code != 200 {
 		t.Fatalf("install dialtest -> %d %s", code, body)
 	}
-	_, sb = appDo(t, srv, http.MethodGet, "/api/v1/status", nil)
+	_, sb = appDo(t, srv, http.MethodGet, "/api/v1/status?full=1", nil)
 	if !strings.Contains(sb, `"slug":"dialtest"`) {
 		t.Errorf("status ledger omitted the installed app: %s", sb)
 	}

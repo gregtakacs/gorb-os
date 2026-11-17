@@ -1249,6 +1249,7 @@ static void map_open(void)
         orb_logf("flights: the map did not open (%d), again in %d s", (int)s_view_next, absent ? 20 : 3);
         s_map_retry_ms = now_ms() + (absent ? 20000 : 3000);
         s_view_next = 0;
+        map_clear();                              /* §67: never the last place's map under this one */
     }
 }
 

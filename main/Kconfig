@@ -28,26 +28,11 @@ menu "Orb networking"
         depends on ORB_NET_ENABLE
         default y
         help
-            First-boot provisioning path: with no SSID saved, the orb comes up
-            as an open "orb-xxxxxx" AP on channel 1 (channel 1 only, so it sits
-            inside the 2.4 GHz-only radio; the 466x466 screen cannot show a QR
-            code legibly, so the pairing URL is printed to the serial log and
-            shown on-screen).
-
-    config ORB_NET_AP_ISOLATED
-        bool "Allow the persistent AP-only (isolated) mode"
-        depends on ORB_NET_AP_FALLBACK
-        default y
-        help
-            Lets an owner park a configured orb in a mode where it runs only its
-            own open SoftAP and web page and never associates with any Wi-Fi
-            network, so the ONLY way to reach it is that AP. The choice is
-            persistent (NVS orb.net "mode" = "ap") and survives a reboot until a
-            MODE command (serial door or the config page) switches it back to
-            station. The on-demand rescue AP is separate and unaffected; this
-            option only gates the deliberate, persistent isolated mode. A device
-            in this mode is unreachable from the LAN and cannot be OTA'd over it:
-            it is a self-contained clock serving 192.168.4.1.
+            The setup boot (app-platform-plan §66): with no SSID saved, or after
+            stored credentials keep being refused, the orb comes up as an open
+            "orb-xxxx" AP on channel 1 (the radio is 2.4 GHz only) and the glass
+            shows a QR code that joins it; nothing else of the OS starts. A lease
+            ends the setup boot with a reboot into the dial.
 
     config ORB_NET_AP_HOLD_S
         int "Seconds to keep the SoftAP after the STA gets a lease"
@@ -72,30 +57,18 @@ menu "Orb networking"
             Leave this well above the time it takes to read the
             address and switch networks by hand (NOT recommended).
 
-    config ORB_NET_AP_MANUAL_S
-        int "Seconds an explicit POST /api/v1/wifi/ap keeps the SoftAP open"
-        depends on ORB_NET_ENABLE
-        default 900
-        help
-            Window for the on-demand path: a machine already on the LAN
-            summons the AP with POST /api/v1/wifi/ap, and a phone at the wall
-            joins it. Long enough to pair, join the AP and submit the form;
-            short enough that a forgotten request cannot leave the AP open
-            overnight. (The config page carries no button for this on
-            purpose — anything that can reach the page can change the
-            network from the page; see the h_wifi_ap comment.)
-
     config ORB_NET_AP_RESCUE_FAILS
-        int "Failed associations before the SoftAP comes back up"
+        int "Refused associations before the orb reboots into setup"
         depends on ORB_NET_ENABLE
         default 8
         help
             The recovery path for the case that has no other exit: credentials
             are stored but unusable (the passphrase on the router changed while
             the orb was powered off), so the boot path takes the station-only
-            branch and no AP ever appears. After this many consecutive failed
-            associations the orb opens the provisioning AP alongside the
-            retries, and closes it again on a timer once it gets a lease.
+            branch and no AP ever appears. After this many consecutive refused
+            associations the orb reboots into one recovery setup boot (QR on
+            the glass, the stored network kept as the fallback); its sojourn
+            reboots back into the normal boot to retry (app-platform-plan §66).
 
             With the 5 s base back-off doubling to 120 s, 8 attempts is roughly
             8-9 minutes of failure — long enough that a router rebooting

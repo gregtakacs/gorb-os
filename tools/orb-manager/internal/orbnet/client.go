@@ -245,13 +245,10 @@ func (c *Client) PostName(ip, name string) (json.RawMessage, error) {
 	return c.postJSON(ip, "/api/v1/name", map[string]string{"name": name})
 }
 
-// PostAP opens (on=true) or closes (on=false) the provisioning SoftAP.
-func (c *Client) PostAP(ip string, on bool) (json.RawMessage, error) {
-	v := "on"
-	if !on {
-		v = "off"
-	}
-	return c.postJSON(ip, "/api/v1/wifi/ap", map[string]string{"on": v})
+// CloseAP lowers the setup SoftAP. Close only: since app-platform-plan §66 the AP
+// exists only in a setup boot, and the orb refuses a request to open one.
+func (c *Client) CloseAP(ip string) (json.RawMessage, error) {
+	return c.postJSON(ip, "/api/v1/wifi/ap", map[string]string{"on": "off"})
 }
 
 // PostJoin associates the orb to a LAN SSID with a passphrase, a tz and a name.

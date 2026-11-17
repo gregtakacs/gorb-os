@@ -295,7 +295,7 @@
     <!-- The OS home location (flight-tracker-design §6.4): where the orb is. It
          sets the time zone and every app that needs a position reads it. Two
          steps (owner ruling 2026-11-01): any source — a city from the orb's own
-         list, this browser's location, a map pin, coordinates or a plus code —
+         list, this browser's location, a map pin or coordinates —
          only proposes a point, which the orb previews (place, zone) and the map
          shows; Set location stores it, and the zone comes with it. There is no
          separate zone picker: the location drives the zone. The controls sit
@@ -303,8 +303,8 @@
     <div class="locgrid">
       <div class="locside">
         <div class="hint" id="home-cur">the location loads with this tab</div>
-        <input id="home-q" placeholder="a city, 33.4484, -112.074, or 8559CWXG+9C" autocomplete="off"
-               aria-label="Find a city, or type coordinates or a full plus code" aria-controls="home-hits">
+        <input id="home-q" placeholder="a city, or 33.4484, -112.074" autocomplete="off"
+               aria-label="Find a city, or type coordinates" aria-controls="home-hits">
         <div id="home-hits" class="tzlist" role="listbox" hidden></div>
         <div class="locbtns">
           <button id="home-loc" class="ghost" type="button" title="Ask this browser where it is">Use this browser's location</button>

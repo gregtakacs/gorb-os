@@ -3,7 +3,7 @@
 carousel's Back, which the firmware carries (owner, 2026-11-08, lifting D22 for these two),
 and HSB's app icon, which ships in its own .orbapp (orb.icon).
 
-tools/ui_icons/draw.py OUTDIR    -> OUTDIR/settings.png, back.png, hsb.png (466 px)
+tools/ui_icons/draw.py OUTDIR    -> OUTDIR/settings.png, back.png, hsb.png, phone.png (466 px)
 
 Run through tools/ui_icons/make.py, which writes the firmware arrays and the app icon.
 Deterministic: seeded noise, fixed supersampling, Pillow's BOX filter.
@@ -196,8 +196,41 @@ def hsb(out):
     save(img, disc, out + "/hsb.png")
 
 
+def phone(out):
+    """§67.9: the carousel's Phone, beside Settings: a steel phone with three QR finder
+    squares on its screen, amber like the settings page that a scan opens."""
+    img, disc = card(13, (0.10, 0.12, 0.15))
+    X, Y = globals()["X"] / 1.2, globals()["Y"] / 1.2   # the glyph drawn 1.2x, to stand as large as the gear
+    hw, hh, rr = 0.25, 0.43, 0.085                    # the body: half width, half height, corner
+    qx, qy = np.abs(X) - (hw - rr), np.abs(Y) - (hh - rr)
+    body = rr - (np.hypot(np.maximum(qx, 0), np.maximum(qy, 0)) + np.minimum(np.maximum(qx, qy), 0))
+    sw, sh, sr = 0.195, 0.33, 0.03                    # the screen, a dark pane inset in it
+    px, py = np.abs(X) - (sw - sr), np.abs(Y + 0.02) - (sh - sr)
+    screen = sr - (np.hypot(np.maximum(px, 0), np.maximum(py, 0)) + np.minimum(np.maximum(px, py), 0))
+    steel = np.array([0.83, 0.85, 0.89], np.float32) * brushed(9, 0.05)[..., None]
+    img, _ = lay(img, body, 0.04, steel, spec=0.85, shine=55, amb=0.3)
+    sm = cov(screen)
+    glass = np.array([0.05, 0.06, 0.08], np.float32) * (1.25 - 0.5 * (Y + 0.35))[..., None]
+    img = img * (1 - sm)[..., None] + glass * sm[..., None]
+    amber = np.array([0.94, 0.65, 0.23], np.float32)
+    def finder(cx, cy, s):                            # a QR finder: ring and centre
+        d = np.maximum(np.abs(X - cx), np.abs(Y - cy))
+        return np.maximum(np.minimum(s - d, d - s * 0.62), s * 0.36 - d)
+    q = 0.075
+    f = np.maximum(np.maximum(finder(-0.095, -0.15, q), finder(0.095, -0.15, q)), finder(-0.095, 0.04, q))
+    dots = -1.0
+    for (dx, dy) in ((0.06, 0.03), (0.12, 0.07), (0.08, 0.12), (0.03, 0.17), (0.13, 0.18), (-0.06, 0.18)):
+        dots = np.maximum(dots, 0.024 - np.maximum(np.abs(X - dx), np.abs(Y - dy)))
+    fm = cov(np.maximum(f, dots)) * sm
+    img = img + glow(fm, 10, (0.94, 0.65, 0.23), 0.25)
+    img = img * (1 - fm)[..., None] + amber * fm[..., None]
+    sp = cov(0.022 - np.hypot(X, Y - 0.375))         # the speaker slot's dot under the screen
+    img = img * (1 - sp)[..., None] + np.array([0.2, 0.21, 0.24], np.float32) * sp[..., None]
+    save(img, disc, out + "/phone.png")
+
+
 if __name__ == "__main__":
     out = sys.argv[1]
-    for f in (settings, back, hsb):
+    for f in (settings, back, hsb, phone):
         f(out)
         print("drew", f.__name__)

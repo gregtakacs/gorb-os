@@ -91,6 +91,8 @@ void input_router_inject_push_end(void);
 /** Plan §54: the carousel's gear. Switch to the home entry and open its system pages.
  *  LVGL task only (the carousel calls it from this file's poll). */
 void input_router_open_settings(void);
+/** §67.9: the carousel's Phone card: the shell, on the page that shows the orb page's QR. */
+void input_router_open_phone(void);
 
 /** Which registry entry currently owns the knob; NULL before the first switch. */
 const orb_app_t *input_router_current(void);

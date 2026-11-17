@@ -374,8 +374,6 @@ var deviceRoutes = map[string][]string{
 	// same token as /screen; the hub's diagnose flow reads it after any failed call,
 	// so a hub that cannot dial it makes the firmware's own witness unreachable.
 	"/api/v1/log":    {http.MethodGet},
-	"/themes":        {http.MethodGet},
-	"/timezone":      {http.MethodGet},
 	"/api/v1/config": {http.MethodGet, http.MethodPost},
 	// The device owns its name, so the hub's rename button has to be able to put it
 	// there. POST only: the value is already on /api/v1/status, and a GET door on this
@@ -402,8 +400,11 @@ var deviceRoutes = map[string][]string{
 	"/api/v1/sound/test": {http.MethodPost},
 	// weather-plan §2.1: the orb's units (temperature, speed, distance), one OS setting
 	// every app reads. Device config like the zone; it reaches neither card nor slot.
-	"/api/v1/units":  {http.MethodGet, http.MethodPost},
-	"/api/v1/reboot": {http.MethodPost},
+	"/api/v1/units": {http.MethodGet, http.MethodPost},
+	// app-platform-plan §67: the dial's DISPLAY page (dim after idle, the timeout), which
+	// the orb's own settings page writes. Device config; it reaches neither card nor slot.
+	"/api/v1/display": {http.MethodGet, http.MethodPost},
+	"/api/v1/reboot":  {http.MethodPost},
 	// Recovery, not a reboot: arms D2's one-shot intent and comes back in its SoftAP with
 	// the stored credential intact. Allowlisted because the hub's Manage card has to be
 	// able to reach an orb it can no longer configure any other way — a wrong SSID or a

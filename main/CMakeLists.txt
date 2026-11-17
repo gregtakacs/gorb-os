@@ -110,6 +110,7 @@ idf_component_register(
         "assets/orb_ui_icons.c"
         "net/orb_net.c"
         "net/orb_https.c"
+        "setup/setup_view.c"
         "net/orb_home.c"
         # radar-plan §2.1: the three places beside home, one OS setting.
         "net/orb_places.c"
@@ -156,6 +157,7 @@ idf_component_register(
         # the vocabulary lives one directory over from the art it describes.
         "assets"
         "net"
+        "setup"
         "sd"
         "usb"
         "util"
@@ -191,6 +193,14 @@ idf_component_register(
         lvgl__lvgl
         espressif__esp_lcd_co5300
         espressif__esp_tinyusb  # D38: the MTP gadget behind `orb usb files` (MSC is gone from the tree)
+    EMBED_TXTFILES
+        "net/settings.html"      # §67: the connected orb's own page (h_index), NUL-terminated
+        # §67.8: the hub's map builder, served to the settings page from flash so a phone or a
+        # PC makes a place's maps without the hub. Embedded from the hub's own file: one
+        # source, the bytes host_orbmap_js_test pins against tools/orbmap.py.
+        "../tools/orb-manager/web/runtime/maps@1/orbmap.js"
+    EMBED_FILES
+        "net/icon.png"           # §67: the page's home-screen icon (512 px, 64 colours)
 )
 
 # No art is compiled in or flashed: every face is a FORMAT 3 theme the store door

@@ -1,5 +1,7 @@
 # L0 hub step 1: GorbBake writes and reads a sound as a WAV file; the real pre-L0 fixtures
 
+*Amended by `l0-hub-2-orb-encoding.md` after the owner's 2026-11-17 steer (l0-design §5.5): the PCM-only writer and the 20 s bound below were replaced; the fixtures stand.*
+
 ## Goal
 
 Slice L0 of orb-os-net's `docs/design.md` §12 (ruling 41), gorb-os step 1 of 3. Editors are

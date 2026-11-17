@@ -8477,3 +8477,31 @@ the address under it, "scan with a phone on this Wi-Fi", and one row whose press
 the app it came from. The router reaches it through `orb_app_open_phone()` (the registry
 names the views, host_menu_test). Bench, Gold: hold, turn to Phone, open: "strip: opened
 phone", the page drew, a press returned to Radar.
+
+### 67.10 A stalled phone must not pin the orb's RAM (owner, 2026-11-17, Gold)
+
+The settings page open on two phones and a laptop at once, with refreshes and theme wears,
+left Gold unable to send: replies of one small segment (the slim status) went out, anything
+larger sent its header and stopped, 1400 B pings were lost while 56 B ones passed, and the
+page spun. Weather stopped painting its forecast and sunrise in the same state; after a
+reset everything drew.
+
+Reproduced on the bench: six connections that ask for a large reply and never read (a phone
+that locked mid-load) took 1400 B pings to 100 % loss and the web task off the air, and
+releasing them brought both back at once. Each stalled connection holds what was queued for
+it, up to the send buffer (2,880 B), in internal RAM; six held ~17 KB of the ~22 KB free.
+A phone that leaves Wi-Fi never closes, so lwIP retried it for minutes (12 retransmissions,
+the RTO doubling). Forty plain reloads and twelve theme wears in a row did not reproduce it:
+it needs peers that stop acking, which phones do when they lock.
+
+- **A stalled send aborts its socket on close.** Every httpd session gets a send override
+  (`net_sock_open`, `net_send`): a send that times out arms `SO_LINGER {1, 0}`, so the close
+  httpd makes next resets the peer and frees the data at once. A normal close is untouched,
+  so a `Connection: close` client still gets the end of its reply.
+- **httpd's send wait 5 s -> 2 s**, so the one web task gives a stalled peer up sooner.
+- **`LWIP_TCP_MAXRTX` 12 -> 6**, so an orphaned connection is dropped in under a minute.
+- **The page and the map kit are served gzipped** (built with `mtime=0`): 46 KB -> 14.9 KB and
+  42 KB -> 13.7 KB, a third of the segments a stalled peer can pin. The page loads in 0.08 s.
+
+After: the same six stalled connections held for 30 s, 1400 B pings 0 % lost throughout, the
+status door back within ~12 s (six stalls at 2 s each) and answering from then on.

@@ -657,7 +657,7 @@
     var GB = root.GorbBake, St = GB.stage3({ dither: true }), AUX = GB.classId('aux'), TEXT = GB.classId('text'), PLATE = GB.classId('plate');
     var rowsOrder = d.order.rows;
     St.row({ n: St.id(), class: PLATE, slot: 0, x: 0, y: 0, w: G, h: G, order: 0, alpha: 255, n_frames: 1 }, plane(plateCanvas(d)), false, true);
-    St.row({ n: St.id(), class: PLATE, slot: 1, x: 0, y: 0, w: G, h: G, order: 0, alpha: 255, n_frames: 1 }, plane(glassCanvas(d)), true, true);
+    St.glass({ n: St.id(), x: 0, y: 0, w: G, h: G, order: 0, alpha: 255, n_frames: 1 }, plane(glassCanvas(d)), true);   // #20: the OS glass, by name
     var centred = function (w, h, slot) { return { slot: slot, x: CX - (w >> 1), y: CX - (h >> 1), order: rowsOrder }; };
     St.row(Object.assign({ n: St.id(), class: AUX, w: 16, h: 16, pivot_x: 8, pivot_y: 8, alpha: 255, n_frames: 1 }, centred(16, 16, SLOT.dot)),
       plane(dotCanvas(d)), true, false);

@@ -512,7 +512,7 @@
       var r = await bakeNow(); if (!r) return;
       var nm = ((await stemOf(d.name)) || A.slug + '-theme') + '.orbtheme';
       var w = await T.saveFile(new Blob([r.bytes], { type: 'application/octet-stream' }), nm);
-      say(w === 'saved' ? 'Exported “' + d.name + '” as ' + nm : w === 'downloaded' ? 'Exported “' + d.name + '” to your Downloads folder as ' + nm : 'Not exported');
+      say(w === 'saved' ? 'Exported “' + d.name + '” as ' + nm : w === 'downloaded' ? 'Exported “' + d.name + '” as ' + nm + ': your browser saved it, so look in its downloads' : 'Not exported');
     }
     async function saveLib() { await ses.saveDraft({ name: d.name, doc: await ses.doc(true), thumb: await thumbOf(d) }); }
     // import: into the library first, then open; a name already there asks before it is replaced
@@ -622,9 +622,9 @@
         rows: S.libraryRows(ses.library(), { version: ses.version(), armed: mineDel, arm: setMineDel,
           meta: function (m) { var t = m.design && tmpl(A, m.design.base); return t ? t.name + ' · ' : ''; },
           open: function (nm) { ses.openEntry(nm); }, forget: function (nm, what) { ses.forgetEntry(nm, what); } }),
-        empty: T && T.hostText ? T.hostText('Nothing saved yet. Save to library on the Render step keeps a design here; Send to orb bakes it into a theme under the same name; Import a file adds one.',
+        empty: T && T.hostText ? T.hostText('Nothing saved yet. This list holds unsent work: a design you sent rides inside its theme, so open it from the Themes tab with Edit. Save to library on the Render step keeps a draft here; Import a file adds one.',
           'Nothing saved yet. Save to library on the Render step keeps a design in your library; Download .orbtheme bakes it into a theme under the same name; Import a file adds one.')
-          : 'Nothing saved yet. Save to library on the Render step keeps a design here; Send to orb bakes it into a theme under the same name; Import a file adds one.' },
+          : 'Nothing saved yet. This list holds unsent work: a design you sent rides inside its theme, so open it from the Themes tab with Edit. Save to library on the Render step keeps a draft here; Import a file adds one.' },
       importFile: { accept: '.orbtheme,.orbdesign,.json', on: function (e) { var fl = e.target.files[0]; e.target.value = ''; if (fl) importFile(fl); } },
       foot: [{ label: 'Continue with ' + d.name, primary: true, on: function () { setChosen(true); setStep(first); } }],
     }) : null;

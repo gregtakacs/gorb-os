@@ -86,9 +86,9 @@ def main():
         check('"%s"' % key in units, "unit key %r is not one of orb_units.c's" % key)
 
     # served
-    check('EMBED_TXTFILES' in cmake and '"net/settings.html"' in cmake,
-          "the build does not embed main/net/settings.html")
-    check("s_setup_boot ? HTML_LANDING : settings_html_start" in net,
+    check('net/settings.html' in cmake and 'target_add_binary_data' in cmake and 'gzip.compress' in cmake,
+          "the build does not embed main/net/settings.html, gzipped")
+    check("settings_html_gz_start" in net and "s_setup_boot" in net,
           "h_index must serve the provisioning page in a setup boot and this page otherwise")
 
     # gone

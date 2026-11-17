@@ -3659,6 +3659,31 @@ static bool scan_on_air(void)
  * the close an RST, which frees the pcb and its queue on the spot. Only for a
  * stream that has already failed: on a whole response it would cut the tail
  * the peer has not acked yet. */
+/* §67.10: a stalled peer must not pin internal RAM. A phone that locked or left mid-reply
+ * stops acking; what httpd queued for it sits in lwIP's send buffer, in internal RAM, and a
+ * normal close keeps it there while TCP retries for minutes. Three phones and a laptop did
+ * this to Gold (2026-11-17): ~17 KB pinned, no room for a full-size frame, every page load
+ * hung and 1400 B pings died while 56 B ones passed. So a send that times out arms
+ * abort-on-close on its socket: the close httpd makes next resets the peer and frees the
+ * data at once. Only a stalled send arms it, never a normal close, so a client that asked
+ * for Connection: close still gets the end of its reply. */
+extern int httpd_default_send(httpd_handle_t hd, int sockfd, const char *buf, size_t buf_len, int flags);
+static volatile uint32_t s_send_stalls;
+static int net_send(httpd_handle_t hd, int fd, const char *buf, size_t len, int flags)
+{
+    const int r = httpd_default_send(hd, fd, buf, len, flags);
+    if (r == HTTPD_SOCK_ERR_TIMEOUT) {
+        const struct linger lg = { .l_onoff = 1, .l_linger = 0 };
+        (void)setsockopt(fd, SOL_SOCKET, SO_LINGER, &lg, sizeof lg);
+        s_send_stalls++;
+    }
+    return r;
+}
+static esp_err_t net_sock_open(httpd_handle_t hd, int fd)
+{
+    return httpd_sess_set_send_override(hd, fd, net_send);
+}
+
 static void sock_abort_on_close(httpd_req_t *req)
 {
     const int fd = httpd_req_to_sockfd(req);
@@ -8386,8 +8411,10 @@ orb does not answer. */
 "status();scan();mainTmr=setInterval(function(){if(!sel&&!done)status()},3000);"
 "</script></body></html>";
 
-/* main/net/settings.html, embedded by the build (EMBED_TXTFILES adds the NUL). */
-extern const char settings_html_start[] asm("_binary_settings_html_start");
+/* main/net/settings.html, gzipped by the build (§67.10: 46 KB -> ~12 KB on the air, a quarter
+ * of the segments a stalled peer can pin). */
+extern const uint8_t settings_html_gz_start[] asm("_binary_settings_html_gz_start");
+extern const uint8_t settings_html_gz_end[]   asm("_binary_settings_html_gz_end");
 extern const uint8_t icon_png_start[] asm("_binary_icon_png_start");
 extern const uint8_t icon_png_end[]   asm("_binary_icon_png_end");
 
@@ -8410,14 +8437,16 @@ static esp_err_t h_manifest(httpd_req_t *req)
     return httpd_resp_sendstr(req, out);
 }
 
-extern const char orbmap_js_start[] asm("_binary_orbmap_js_start");
+extern const uint8_t orbmap_js_gz_start[] asm("_binary_orbmap_js_gz_start");
+extern const uint8_t orbmap_js_gz_end[]   asm("_binary_orbmap_js_gz_end");
 
 /* §67.8: the map kit, for the settings page's Make maps (the hub's maps@1/orbmap.js). */
 static esp_err_t h_maps_js(httpd_req_t *req)
 {
     httpd_resp_set_type(req, "application/javascript");
     httpd_resp_set_hdr(req, "Cache-Control", "no-store");
-    return httpd_resp_send(req, orbmap_js_start, HTTPD_RESP_USE_STRLEN);
+    httpd_resp_set_hdr(req, "Content-Encoding", "gzip");
+    return httpd_resp_send(req, (const char *)orbmap_js_gz_start, orbmap_js_gz_end - orbmap_js_gz_start);
 }
 
 static esp_err_t h_icon(httpd_req_t *req)
@@ -8434,8 +8463,10 @@ static esp_err_t h_index(httpd_req_t *req)
 {
     httpd_resp_set_type(req, "text/html; charset=utf-8");
     httpd_resp_set_hdr(req, "Cache-Control", "no-store");
-    return httpd_resp_send(req, s_setup_boot ? HTML_LANDING : settings_html_start,
-                           HTTPD_RESP_USE_STRLEN);
+    if (s_setup_boot) return httpd_resp_send(req, HTML_LANDING, HTTPD_RESP_USE_STRLEN);
+    httpd_resp_set_hdr(req, "Content-Encoding", "gzip");
+    return httpd_resp_send(req, (const char *)settings_html_gz_start,
+                           settings_html_gz_end - settings_html_gz_start);
 }
 
 
@@ -8597,6 +8628,7 @@ static esp_err_t net_start_httpd(void)
      * clears that floor (8) with room left for the SoftAP and mDNS sockets. */
     cfg.max_open_sockets = 5;
     cfg.lru_purge_enable = true;
+    cfg.open_fn = net_sock_open;          /* §67.10: a stalled send frees its RAM on close */
     /* HTTPD_DEFAULT_CONFIG() ships max_uri_handlers at 8 (httpd_config.h:61), and
      * httpd_register_uri_handler() fails SILENTLY past that — this table now has
      * more than 8 entries, so the tail of it would 404 with no log line at all.
@@ -8680,7 +8712,8 @@ static esp_err_t net_start_httpd(void)
      * unreachable orb — the peer's own deadline expired over a socket that was
      * simply parked. The durable fix is the write size in h_sd_preview (one MSS,
      * so one segment asks for one buffer), not a longer permission to stall. */
-    cfg.send_wait_timeout  = 5;
+    cfg.send_wait_timeout  = 2;   /* §67.10: was 5; a peer that takes no bytes for 2 s has
+                                   * stalled (a locked phone), and the one web task waits on it */
 
     /* 2026-10-24 ESP_ERR_HTTPD_TASK ladder: the boot heap log says the block
      * is big enough and the call still says no, so this ladder makes the

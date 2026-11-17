@@ -5125,6 +5125,18 @@ function libAppTitle(slug) {
 // loadLibThemes draws the shelf. A read that fails leaves the rows on screen standing —
 // they were the truth a moment ago and are better than a blank list — and says so in
 // the state line, which is the same rule every other read on this page keeps.
+// #21: one line naming where a library is, in startup's own words (LibStatusLines, so the
+// screen and the log cannot disagree), and where the hub writes when that is elsewhere (a
+// read-only resolved directory falls back to the user config dir). kind: "themes" | "apps".
+function libWhere(el, data, kind) {
+  if (!el || !data) return;
+  const line = (Array.isArray(data.status) ? data.status : []).find((l) => l.indexOf(kind + " =") >= 0 || l.indexOf("no " + kind + " directory") >= 0) || "";
+  const dir = kind === "themes" ? data.themesDir : data.appsDir;
+  const writes = kind === "themes" ? data.writableThemesDir : data.writableAppsDir;
+  el.textContent = line.replace(/^library: /, "") + (writes && writes !== dir ? " \u00b7 writes to " + writes : "");
+  el.hidden = !el.textContent;
+}
+
 async function loadLibThemes() {
   const list = $("#mn-lib-list"), state = $("#mn-lib-state");
   let data = null;
@@ -5138,6 +5150,7 @@ async function loadLibThemes() {
     return;
   }
   libApps = Array.isArray(data.apps) ? data.apps : [];
+  libWhere($("#mn-lib-where"), data, "themes");
   // the door onto orb-os.net shows only on a hub that has it open (-site)
   const site = data.site === true;
   for (const id of ["#mn-site-btn", "#mn-lib-upload"]) { const b = $(id); if (b) b.hidden = !site; }

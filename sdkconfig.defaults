@@ -99,6 +99,12 @@ CONFIG_LWIP_SO_LINGER=y
 CONFIG_LWIP_TCP_WND_DEFAULT=2880
 CONFIG_LWIP_TCP_SND_BUF_DEFAULT=2880
 
+# TCP retransmissions 12 -> 6 (app-platform-plan §67.10). A phone that locks or leaves
+# mid-reply stops acking, and until TCP gives up on it, what was queued for it stays in
+# internal RAM. At the IDF's 12, with the RTO doubling, that is minutes; a few such phones
+# pinned ~17 KB on Gold and nothing full-size could be sent. 6 still rides out a lossy minute.
+CONFIG_LWIP_TCP_MAXRTX=6
+
 # CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP stays OFF. v1.1.41 shipped it for runtime
 # internal-RAM headroom (a harsh preview/scan stress: 12/12 previews whole with it,
 # 9/12 without), and v1.1.42 took it back out, because it costs the board its

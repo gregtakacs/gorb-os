@@ -223,6 +223,12 @@ type LibraryPayload struct {
 	Restorable []RestorableApp `json:"restorable"`
 	// Site says the door onto orb-os.net is open on this hub (-site); the page shows it only then.
 	Site bool `json:"site"`
+	// #21: where the hub really writes (the resolved directory, or the user config dir when
+	// that one is read-only), and startup's own two lines about the resolution
+	// (LibStatusLines), so the Themes and Apps tabs say what the log says.
+	WritableAppsDir   string   `json:"writableAppsDir"`
+	WritableThemesDir string   `json:"writableThemesDir"`
+	Status            []string `json:"status"`
 }
 
 // h_library answers GET /api/library. Read-only, and it re-reads the directory every
@@ -237,7 +243,9 @@ func (s *Server) h_library(r *http.Request) (any, error) {
 	}
 	out := &LibraryPayload{AppsDir: lib.AppsDir, ThemesDir: lib.ThemesDir,
 		AppsSource: lib.AppsSource, ThemesSource: lib.ThemesSource,
-		Apps: []LibraryFile{}, Themes: []LibraryFile{}, Refused: []LibraryRefusal{}}
+		Apps: []LibraryFile{}, Themes: []LibraryFile{}, Refused: []LibraryRefusal{},
+		WritableAppsDir: lib.writableAppsDir(), WritableThemesDir: lib.writableThemesDir(),
+		Status: lib.LibStatusLines()}
 	if lib.AppsDir != "" {
 		listAppLibrary(lib.AppsDir, out)
 	}

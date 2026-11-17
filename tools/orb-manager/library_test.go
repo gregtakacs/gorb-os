@@ -1374,3 +1374,25 @@ func TestAnOlderFormatLibraryCopyIsNotSent(t *testing.T) {
 		t.Error("the run swapped the copy without saying so")
 	}
 }
+
+// #21: the Themes and Apps tabs say where the library is, in startup's own words, and where
+// the hub writes when that differs. The payload carries both, and the line names the rung.
+func TestLibraryPayloadSaysWhereItIsAndWhereItWrites(t *testing.T) {
+	dir := t.TempDir()
+	themes := filepath.Join(dir, "themes")
+	if err := os.MkdirAll(themes, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	lib := &Library{AppsDir: dir, ThemesDir: themes, AppsSource: "-library", ThemesSource: "-library"}
+	out, err := (&Server{lib: lib}).h_library(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := out.(*LibraryPayload)
+	if len(p.Status) != 2 || !strings.Contains(p.Status[1], "themes = "+themes+" (-library)") {
+		t.Errorf("status lines = %q, want startup's two, the themes one naming %s and its rung", p.Status, themes)
+	}
+	if p.WritableThemesDir != themes || p.WritableAppsDir != dir {
+		t.Errorf("writable dirs = %q, %q; a writable resolved directory is where the hub writes", p.WritableThemesDir, p.WritableAppsDir)
+	}
+}

@@ -3676,7 +3676,28 @@
       if ((e.slot | 0) === 1 && masked) return discPackMasked(art, DISC_SIDE);
       return null;
     }
+    /* #20: plate slot 1 is the OS's glass, not a free plate. orb_stage.c paints it above every
+     * row the app has (pick_ord 0xFFFF, CLK_ROLE_GLASS, tagged 0x10000), so art put there
+     * stands over the app's own words: Pomodoro's split-flaps did, and Station showed no time
+     * while every byte check passed. Slot 1 takes only glass(), which says so; an app's own
+     * art goes on plate 0, with its words over it. */
+    var GLASS = '__glass';
+    function guardSlot(e) {
+      if ((e['class'] | 0) !== CLASS_PLATE) return;
+      if ((e.slot | 0) === 1 && !e[GLASS])
+        throw new Error('plate slot 1 is the OS glass, painted above every row the app has: ' +
+          'draw glass with glass(e, plane) and put the app\'s own art on plate 0');
+      // orb_clock3.c refuses it at load ("one plate and one overlay"): say so at the bake,
+      // not on the orb
+      if ((e.slot | 0) > 1)
+        throw new Error('a plate at slot ' + (e.slot | 0) + ': a theme has two plates, 0 (the ' +
+          'app\'s art, always at the bottom) and 1 (the OS glass, always on top); put other ' +
+          'art on plate 0 or in a row with its own order');
+    }
+    function own(e) { var c = Object.assign({}, e); delete c[GLASS]; return c; }
     function row(e, plane, masked, dith) {
+      guardSlot(e);
+      e = own(e);
       var b = bank3([plane], { alpha: masked, dither: ditherAt(e, dith) });
       var disc = discOf(e, plane, masked, b.art);
       if (disc) b = { art: disc, sprites: [{ size: disc.length }] };
@@ -3740,6 +3761,7 @@
     // colour-only like the plate — the projection seats the row against exactly
     // this shape, and the bgAnim consumer flips through it on its beat.
     function rowFrames(e, planes, masked, dith) {
+      guardSlot(e);
       var rec = blankElement();
       for (var f in e) rec[f] = e[f];
       rec.frame0 = bank.sprites.length;
@@ -3763,6 +3785,7 @@
     // DELTA_TOL floor, so selfVerify3 re-derives it to that same floor, closing rect
     // included, before ship.
     function rowDelta(e, planes, delay, masked, dith) {
+      guardSlot(e);
       var rec = blankElement();
       for (var f in e) rec[f] = e[f];
       rec.frame0 = bank.sprites.length;
@@ -3929,6 +3952,7 @@
       return pb.sprites[0].size;
     }
     function element(e) {
+      guardSlot(e);
       var rec = blankElement();
       for (var f in e) rec[f] = e[f];
       elems.push(rec);
@@ -3948,12 +3972,14 @@
       }
     }
     function rowPick(e, planes, masked, dith) {
+      guardSlot(e);
       pickPlanes(e, planes);
       return rowFrames(Object.assign({}, e, { n_frames: planes.length, delay: 0 }), planes, masked, dith);
     }
     // one bank of frames and a row per entry of rows, each naming it: rows[0] lays the bank
     function pool(e, planes, rows, masked, dith) {
       if (!rows || !rows.length) throw new Error('a pool needs at least one row');
+      for (var g = 0; g < rows.length; g++) guardSlot(Object.assign({}, e, rows[g]));
       var first = rowPick(Object.assign({}, e, rows[0], { n: nid++ }), planes, masked, dith), out = [first];
       for (var i = 1; i < rows.length; i++)
         out.push(element(Object.assign({}, e, rows[i], { n: nid++, frame0: first.frame0, n_frames: planes.length, delay: 0 })));
@@ -4073,6 +4099,13 @@
     return { bank: bank, elements: elems, scrW: scrW, scrH: scrH,
              id: function () { return nid++; }, put: put, values: values, ditherAt: ditherAt,
              row: row, rowFrames: rowFrames, font: font,
+             // #20: the OS glass, plate slot 1, masked; e carries the row's place (x, y, w, h,
+             // order, flags, alpha), the class and slot are the call's
+             glass: function (e, plane, dith) {
+               var g = Object.assign({ x: 0, y: 0, w: plane.w, h: plane.h, order: 0, alpha: 255, n_frames: 1 }, e);
+               g['class'] = CLASS_PLATE; g.slot = 1; g[GLASS] = true;
+               return row(g, plane, true, dith !== false);
+             },
              rowDelta: function (e, planes, delay, masked, dith) { var r = rowDelta(e, planes, delay, masked, dith); deltas.push({ rec: r, planes: planes }); return r; },
              verifyDelta: selfVerify3, preview: preview, element: element, rowPick: rowPick, pool: pool,
              sounds: sounds, pack: pack, capCheck: capCheck, finish: finish };
@@ -4363,9 +4396,9 @@
         throw new Error('a shadow at slot ' + shadows[k].slot + ' with no hand there: a shadow twin takes its hand’s pose, and there is no hand to take it from');
     }
     for (k = 0; k < plates.length; k++) {
-      row({ n: B.id(), 'class': classId('plate'), slot: 1, x: plates[k].x, y: plates[k].y,
+      B.glass({ n: B.id(), x: plates[k].x, y: plates[k].y,
             w: plates[k].w, h: plates[k].h, order: 63 - (plates.length - 1 - k), flags: plates[k].flags || 0,
-            alpha: plates[k].alpha === undefined ? 255 : plates[k].alpha, n_frames: 1 }, plates[k], true, true);
+            alpha: plates[k].alpha === undefined ? 255 : plates[k].alpha, n_frames: 1 }, plates[k], true);
     }
     if (car) {
       /* The row ships CROPPED to carriageRect3, and that crop is the byte figure the

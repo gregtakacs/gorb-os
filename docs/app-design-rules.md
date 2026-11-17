@@ -146,6 +146,26 @@ An app has one dial, of one kind. The clock has none: a turn on the clock opens 
 - The editor's start sheet, screen calibration and colour picker come from the kit
   (studio@1, theme@1), never from the app.
 
+## Layers and slots
+
+What sits over what on the glass is the OS's stack, not the order your bake draws in (#20).
+
+Your rows stack in the `order` you give them: higher paints over lower, ties keep table
+order (`main/stage/orb_stage.c`, `depth_key`). The two plates are the only exceptions, and
+their `order` is ignored:
+
+- **Plate 0 is always at the bottom.** It is your art: background, furniture, engraving,
+  anything that never moves, folded into one plane. Your words and moving rows stand on it.
+- **Plate 1 is always on top**, above every row you have, words included: it is the OS's
+  glass (`pick_ord` 0xFFFF, `CLK_ROLE_GLASS`). Only glass goes there, a mostly clear masked
+  sheen, made with `St.glass(e, plane)`; the bake kit refuses a plate at slot 1 through
+  `row`, `rowFrames`, `rowPick`, `pool` and `element`. Radar's bake shows both: its art on
+  plate 0, its glass by name at slot 1. Pomodoro once put its split-flaps there, and the
+  orb painted them over the digits whatever order they had.
+- **There is no plate 2.** The orb refuses one at load (`main/art/orb_clock3.c`), and the
+  kit refuses it at the bake. Art that must sit above your words is a row with its own
+  order, not another plate.
+
 ## Shipping
 
 - An app's `version.txt` goes up once per push, not once per commit. The third segment is

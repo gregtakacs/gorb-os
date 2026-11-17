@@ -78,6 +78,9 @@
     </div>
     <ul id="mn-lib-list" class="themelist"></ul>
     <p class="hint">The themes Orb Manager keeps. Open an orb and its Themes tab to put one on it.</p>
+    <!-- #21: where the theme library is (startup's own line), and where it writes when that
+         differs. The owner had looked for an export in the wrong folder with no answer. -->
+    <p class="hint" id="mn-lib-where"></p>
   </section>
 
   <!-- One Updates list (design §7.6, ruling 26): every update this hub knows about in one
@@ -399,13 +402,14 @@
     <!-- D38: there is no "Hub library" section on this face. The shelf's files are rows
          in the list above, wearing their "in the hub library" chip and their row's own
          verbs — a separate section said "these files, too", which was the same fact
-         spelled twice. The resolved directory paths and the inventory count stayed on
-         this face for exactly one read and then told the owner nothing they could act
-         on, so they are gone: these two elements carry ONLY what needs action — the
-         files the shelf could not parse, each with the reader's own refusal, and a
-         read failure. An empty shelf face is a healthy shelf face. -->
+         spelled twice. The inventory count is gone, and these two elements carry ONLY
+         what needs action — the files the shelf could not parse, each with the reader's
+         own refusal, and a read failure. An empty shelf face is a healthy shelf face.
+         The directory came back as one plain line under the list (#21, 2026-11-17): an
+         owner who could not find an export had no way to learn where the library was. -->
     <p class="hint" id="lib-state" hidden></p>
     <div id="lib-list"></div>
+    <p class="hint" id="lib-where"></p>   <!-- #21: the app library's directory, as startup logs it -->
     <!-- The browser file door, and it does one thing: import. A picked .orbapp is parsed
          by the hub, filed in its library, and listed as a row like any other. It never
          auto-installs, and the face carries no checkbox to make it. Moving bytes onto a

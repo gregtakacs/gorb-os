@@ -2571,6 +2571,7 @@ async function renderLibrary() {
     return;
   }
   list.innerHTML = "";
+  if (typeof libWhere === "function") libWhere($("#lib-where"), libCache, "apps");
   const refused = libCache.refused || [];
   // The directories and the count are gone from this face (owner, 2026-10-28):
   // a path the operator cannot press and a number that restates the list above

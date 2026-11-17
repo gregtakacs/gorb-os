@@ -193,12 +193,6 @@ idf_component_register(
         lvgl__lvgl
         espressif__esp_lcd_co5300
         espressif__esp_tinyusb  # D38: the MTP gadget behind `orb usb files` (MSC is gone from the tree)
-    EMBED_TXTFILES
-        "net/settings.html"      # §67: the connected orb's own page (h_index), NUL-terminated
-        # §67.8: the hub's map builder, served to the settings page from flash so a phone or a
-        # PC makes a place's maps without the hub. Embedded from the hub's own file: one
-        # source, the bytes host_orbmap_js_test pins against tools/orbmap.py.
-        "../tools/orb-manager/web/runtime/maps@1/orbmap.js"
     EMBED_FILES
         "net/icon.png"           # §67: the page's home-screen icon (512 px, 64 colours)
 )
@@ -227,3 +221,18 @@ target_link_libraries(${COMPONENT_LIB} INTERFACE
 # undefined from the start, so the object is extracted on the first pass.
 target_link_libraries(${COMPONENT_LIB} INTERFACE "-u orb_lv_rgb565_with_opa"
                       "-u orb_lv_rgb565_with_mask" "-u orb_lv_rgb565_mix_mask_opa")
+
+# §67.10: the settings page and the hub's map builder (maps@1/orbmap.js, the one source
+# host_orbmap_js_test pins), gzipped at build time and served with Content-Encoding: gzip:
+# 46 KB and 42 KB become ~12 KB each on the air. mtime=0 keeps the image reproducible.
+foreach(src "${CMAKE_CURRENT_SOURCE_DIR}/net/settings.html"
+            "${CMAKE_CURRENT_SOURCE_DIR}/../tools/orb-manager/web/runtime/maps@1/orbmap.js")
+    get_filename_component(nm "${src}" NAME)
+    set(gz "${CMAKE_CURRENT_BINARY_DIR}/${nm}.gz")
+    add_custom_command(OUTPUT "${gz}"
+                       COMMAND ${python} -c "import gzip,sys;open(sys.argv[2],'wb').write(gzip.compress(open(sys.argv[1],'rb').read(),9,mtime=0))" "${src}" "${gz}"
+                       DEPENDS "${src}" VERBATIM)
+    add_custom_target("gz_${nm}" DEPENDS "${gz}")
+    add_dependencies(${COMPONENT_LIB} "gz_${nm}")
+    target_add_binary_data(${COMPONENT_LIB} "${gz}" BINARY)
+endforeach()

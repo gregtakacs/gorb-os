@@ -10,6 +10,8 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
+	"syscall"
 	"time"
 )
 
@@ -409,6 +411,23 @@ func watchPageGone(done <-chan struct{}, blind <-chan struct{}, probe func() tim
 // keeps serving, exactly as it did before app mode existed — with one exception:
 // watchPageGone ends that service once the page stops asking for anything.
 func launchAppWindow(url, browser string) (<-chan struct{}, error) {
+	w, err := startAppWindow(url, browser)
+	if err != nil {
+		return nil, err
+	}
+	return w.done, nil
+}
+
+// appWindow is a launched app window: done closes when the window is gone, and
+// closeBrowser quits the browser instance on the hub's private profile (see
+// window_quit.go) — idempotent, bounded, and a no-op when the hub ran on the
+// browser's default profile.
+type appWindow struct {
+	done         <-chan struct{}
+	closeBrowser func()
+}
+
+func startAppWindow(url, browser string) (*appWindow, error) {
 	if browser == "" {
 		browser = findBrowser()
 	}
@@ -460,8 +479,10 @@ func launchAppWindow(url, browser string) (<-chan struct{}, error) {
 	// Snapshot the tunables now: lingering watcher goroutines must never read
 	// the package vars, which tests rewrite between cases.
 	poll, firstWindow, grace := devtoolsPollEvery, devtoolsFirstWindow, detachGrace
+	var childExited atomic.Bool
 	go func() {
 		_ = cmd.Wait()
+		childExited.Store(true)
 		events <- childExit
 	}()
 	go func() {
@@ -564,5 +585,27 @@ func launchAppWindow(url, browser string) (<-chan struct{}, error) {
 			}
 		}
 	}()
-	return done, nil
+
+	var closeOnceBrowser sync.Once
+	closeBrowser := func() {
+		closeOnceBrowser.Do(func() {
+			if profile == "" {
+				return // the browser's own default profile: the owner's, never ours to quit
+			}
+			err := closeAppBrowser(profile, browserCloseBudget)
+			if err == nil {
+				log.Println("orb-manager: closed the hub's browser")
+				return
+			}
+			// No endpoint answered. The process this hub started, if it is still
+			// running, is on the hub's profile by its command line: end it.
+			if !childExited.Load() && cmd.Process != nil {
+				log.Printf("orb-manager: the hub's browser did not take Browser.close (%v); ending the process it started", err)
+				if runtime.GOOS == "windows" || cmd.Process.Signal(syscall.SIGTERM) != nil {
+					_ = cmd.Process.Kill()
+				}
+			}
+		})
+	}
+	return &appWindow{done: done, closeBrowser: closeBrowser}, nil
 }

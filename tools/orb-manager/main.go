@@ -201,6 +201,11 @@ type Server struct {
 	// eleven minutes), and quit's wait has no chance to drain. Set in main; nil
 	// means no sweeps were ever started, which is what every test hub looks like.
 	stopCables func()
+	// closeAppBrowser quits the browser instance on the hub's private profile
+	// (window_quit.go): macOS keeps an app with no windows running, and a hub
+	// that left it behind left a Chrome on its profile in the owner's Dock.
+	// nil in every mode that opened no app window of its own.
+	closeAppBrowser func()
 	// fw is the firmware to flash: the bundle compiled in, replaced only by a
 	// file the user picks on the Onboard card. There is no build-dir fallback —
 	// an end user has no ESP-IDF and never will.
@@ -928,7 +933,7 @@ func main() {
 		// window, the page's own traffic decides, and this is the clock it reads.
 		// --no-window and --browser=browser make no such promise and go unwired.
 		pageGoneProbe = s.pageQuiet
-		done, err := launchAppWindow(url, browser)
+		w, err := startAppWindow(url, browser)
 		if err != nil {
 			// No Chromium, an unreadable profile dir, or an exec failure: the
 			// hub is still a web app, so degrade to the old default-browser
@@ -936,6 +941,8 @@ func main() {
 			log.Printf("orb-manager: app window unavailable (%v); falling back to the default browser", err)
 			go openBrowser(url)
 		} else {
+			s.closeAppBrowser = w.closeBrowser
+			done := w.done
 			go func() {
 				// launchAppWindow already said why the window is gone. Closing
 				// it must not pull the wire out from under a live flash, so this
@@ -1024,6 +1031,11 @@ func (s *Server) quit(srv *http.Server) {
 	// the process is gone, or the board the operator just ended is an orb again on
 	// the next launch (see handleLonely's order note). Cheap when nothing moved.
 	s.saveState()
+	// Last, the hub's own browser: after the state is safe, so a browser slow to
+	// quit can never cost the save.
+	if s.closeAppBrowser != nil {
+		s.closeAppBrowser()
+	}
 }
 
 // writesFlashByKind is op.writesFlash in method-value shape, so it can be passed
@@ -1067,6 +1079,9 @@ func (s *Server) watchSignals(srv *http.Server) {
 			// caught above — a state file behind the process is a fleet rebuilt
 			// wrong on the next launch.
 			s.saveState()
+			if s.closeAppBrowser != nil {
+				s.closeAppBrowser()
+			}
 			os.Exit(1)
 		}
 	}()

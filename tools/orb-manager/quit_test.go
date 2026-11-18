@@ -190,3 +190,16 @@ func TestWritesFlashClassification(t *testing.T) {
 		}
 	}
 }
+
+// The owner's report (2026-11-18): on macOS a hub that quit left its own Chrome
+// running on the hub's profile, and the next Chrome the owner opened was that
+// one. Every quit ends with the hub's browser told to close, once.
+func TestQuitClosesTheHubsBrowser(t *testing.T) {
+	s := newHub()
+	var closes int64
+	s.closeAppBrowser = func() { atomic.AddInt64(&closes, 1) }
+	s.quit(&http.Server{})
+	if got := atomic.LoadInt64(&closes); got != 1 {
+		t.Fatalf("quit closed the hub's browser %d time(s), want 1", got)
+	}
+}

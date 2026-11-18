@@ -132,7 +132,7 @@ From `tools/orb-manager`, `GOFLAGS=-buildvcs=false`, Go at `/usr/local/go/bin/go
 - The site's `/api/hub/resolve` **server** and the handle-migration that *produces* renames (H3,
   §8.4). This step only consumes a resolve answer; the tests fake it, exactly as H1 faked
   `/api/hub/theme`.
-- Uploading the theme to the site / *"Save a copy to my orb-os.net"* (H2).
+- Uploading the theme to the site / *"Save a copy to my orb-studio.net"* (H2).
 - A new bake mechanism: drive H1b's existing doors; do not add another import path.
 - Changes to `adopt.go`, `installflow.go`, `liveness.go`, the firmware/app update paths, or the
   existing per-tab amber buttons.

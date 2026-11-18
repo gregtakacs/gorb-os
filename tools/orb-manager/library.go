@@ -221,7 +221,7 @@ type LibraryPayload struct {
 	// Restorable is what the Apps face's "Restore bundled apps" press would put back:
 	// the compiled-in apps this library lacks or holds only at an older version (seed.go).
 	Restorable []RestorableApp `json:"restorable"`
-	// Site says the door onto orb-os.net is open on this hub (-site); the page shows it only then.
+	// Site says the door onto orb-studio.net is open on this hub (-site); the page shows it only then.
 	Site bool `json:"site"`
 	// #21: where the hub really writes (the resolved directory, or the user config dir when
 	// that one is read-only), and startup's own two lines about the resolution
@@ -324,7 +324,7 @@ func listAppLibrary(dir string, out *LibraryPayload) {
 		row := LibraryFile{File: e.Name(), Slug: c.Slug, Title: c.Title,
 			Version: c.Version, Caps: c.CapNames(), Themes: c.HasThemes(),
 			HasEditor: c.HasEditor(), Bytes: len(body), OSMin: appOSMin(body)}
-		// A1 §7.3: an app the hub added from orb-os.net wears where it came from. Filled only when
+		// A1 §7.3: an app the hub added from orb-studio.net wears where it came from. Filled only when
 		// the sidecar reads, so an app the hub has no record of leaves the key out entirely; the
 		// `.orbapp.origin.json` beside it is already no row and no refusal, since the loop above
 		// admits only files whose extension is .orbapp.

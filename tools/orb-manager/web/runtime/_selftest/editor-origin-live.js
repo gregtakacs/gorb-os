@@ -231,7 +231,7 @@ const HOSTILE_JS = `(function () {
   go('control:provision', 'editor-port', Object.assign({ method: 'POST', path: '/api/provision', body: '{}' }, body));
   go('control:fleet/set', 'editor-port', Object.assign({ method: 'POST', path: '/api/fleet/set', body: '{}' }, body));
   go('control:fleet/forget', 'editor-port', Object.assign({ method: 'POST', path: '/api/fleet/forget', body: '{}' }, body));
-  go('control:site/import', 'editor-port', Object.assign({ method: 'POST', path: '/api/site/import', body: '{"link":"https://orb-os.net/t/AAAAAAAAAAAAAAAAAAAAAA"}' }, body));
+  go('control:site/import', 'editor-port', Object.assign({ method: 'POST', path: '/api/site/import', body: '{"link":"https://orb-studio.net/t/AAAAAAAAAAAAAAAAAAAAAA"}' }, body));
   // Reads the control port keeps to itself, aimed at this port: 404 because they were
   // never registered here.
   ['fleet', 'orbs', 'state', 'console', 'discovered', 'roster', 'config'].forEach(function (p) {
@@ -561,7 +561,7 @@ function chromePath() {
 }
 
 // ---------- the stand-in site ----------
-// orb-os.net's contract, reduced to the one door the hub uses: GET /api/hub/theme/<id>
+// orb-studio.net's contract, reduced to the one door the hub uses: GET /api/hub/theme/<id>
 // answers the design bundle for the link the operator pasted. The hub fetches this
 // itself (no browser, no CORS), checks it against siteimport.go's rules, holds a ticket.
 

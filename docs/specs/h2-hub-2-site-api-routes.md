@@ -1,6 +1,6 @@
 # H2 hub step 2: `/api/site/designs`, disconnect, and Import by own-design id
 
-> **Read `docs/specs/h2-design.md`'s "Lead review" block first: it is binding and overrides this spec where they disagree.** For this step: point 5. A 401 does not delete the file: it rewrites it as `{site, handle, disconnected: true}` (no token), so `link-status` says `disconnected` and the page can offer Reconnect; the error sentence stays `disconnected from orb-os.net`. Disconnect in Orb Manager deletes the file. Every outbound bearer call goes only to the recorded site while it equals `siteReleaseBase()`.
+> **Read `docs/specs/h2-design.md`'s "Lead review" block first: it is binding and overrides this spec where they disagree.** For this step: point 5. A 401 does not delete the file: it rewrites it as `{site, handle, disconnected: true}` (no token), so `link-status` says `disconnected` and the page can offer Reconnect; the error sentence stays `disconnected from orb-studio.net`. Disconnect in Orb Manager deletes the file. Every outbound bearer call goes only to the recorded site while it equals `siteReleaseBase()`.
 
 ## Goal
 
@@ -8,7 +8,7 @@ Hub step 2 of 3. A linked hub proxies its owner's design list, imports any of
 them through the H1 ticket pipeline by design id (the site's §2.6 own-bundle
 door, bearer-authenticated), and forgets its token on demand or the moment the
 site stops accepting it. This is everything the step-3 UI will call:
-My orb-os.net could be driven by curl alone.
+My orb-studio.net could be driven by curl alone.
 
 ## Read first
 
@@ -28,12 +28,12 @@ My orb-os.net could be driven by curl alone.
 ## Contract
 
 - `GET /api/site/designs` (`s.requireControl`, only-when-`!siteHidden`): no
-  stored token → `s.jsonErr("not connected to orb-os.net")`. GET
+  stored token → `s.jsonErr("not connected to orb-studio.net")`. GET
   `<siteReleaseBase()>/api/hub/designs` with `siteHTTP()`, `Authorization:
   Bearer <token>`, 10 s timeout, body capped 64 KB; 200 whose body parses as the
   §2.5 object → re-encode that object as `data` verbatim; **401 →
-  `clearSiteLink()` first, then `s.jsonErr("disconnected from orb-os.net")`**;
-  anything else (including unparseable) → `s.jsonErr("orb-os.net did not
+  `clearSiteLink()` first, then `s.jsonErr("disconnected from orb-studio.net")`**;
+  anything else (including unparseable) → `s.jsonErr("orb-studio.net did not
   answer")`, token kept — a stall is not a revocation.
 - `POST /api/site/disconnect`: best-effort `DELETE /api/hub/token` with the
   bearer and a 10 s timeout — its outcome is logged at debug level at most —
@@ -41,13 +41,13 @@ My orb-os.net could be driven by curl alone.
   DELETE saw 200, 401 (already gone site-side, the §2.4 rule) or nothing at all.
 - `POST /api/site/import` grows a second body shape: `{"designId": "<id>"}`
   (`link` and `designId` together or apart-but-empty → `siteLinkRefused`):
-  `loadSiteLink` required (`s.jsonErr("not connected to orb-os.net")` without);
+  `loadSiteLink` required (`s.jsonErr("not connected to orb-studio.net")` without);
   id must match the same 22-char grammar `parseSiteLink` enforces; fetches
   `<siteReleaseBase()>/api/hub/theme/<id>` **with the bearer**, through a
   bearer-parameter on the existing fetch path — one added parameter or sibling
   function, not a second copy of the client — then the untouched
   `checkBundle`/`checkBundleArt`/ticket/`ThemeOrigin` pipeline. 401 on that fetch
-  clears the link and answers `disconnected from orb-os.net`, as above. The
+  clears the link and answers `disconnected from orb-studio.net`, as above. The
   `ThemeOrigin` records `siteReleaseBase()` and the id: an own design imports
   exactly like a shared one and tags "from <host>" the same; §2.6 already made
   the bytes uncredited.
@@ -96,7 +96,7 @@ My orb-os.net could be driven by curl alone.
 - No HTML/JS: step 3. No update-check changes (`resolveOrigin` stays H3's
   problem), no retry/backoff — one call, one answer.
 - Do not modify `release.go`'s allow rules: `siteAllowed` already blesses the
-  configured origin and `orb-os.net`, and every dial here goes to
+  configured origin and `orb-studio.net`, and every dial here goes to
   `siteReleaseBase()`, which is checked by construction.
 
 ## Notes

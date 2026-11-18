@@ -139,7 +139,7 @@ type Server struct {
 	// nil means no library was resolved, which the pane reports as an empty library
 	// rather than as an error — the hub still serves everything else it can.
 	lib *Library
-	// siteClient is the client "Import from orb-os.net" dials a design site with
+	// siteClient is the client "Import from orb-studio.net" dials a design site with
 	// (siteimport.go). Nil is the hub's own default: a minute of patience for a bundle's
 	// tens of megabytes, and no redirect followed. A test hands itself one.
 	siteClient *http.Client
@@ -174,7 +174,7 @@ type Server struct {
 	// noAutoInstall turns the join-time install off and leaves every press intact (-no-autoseed),
 	// for a bench run that must not touch a board it is about to instrument.
 	noAutoInstall bool
-	// siteHidden keeps the door onto orb-os.net shut until the site opens (-site turns it on):
+	// siteHidden keeps the door onto orb-studio.net shut until the site opens (-site turns it on):
 	// no Import/Upload on the Theme library and no /api/site routes. The zero value is the
 	// door open, so a test's bare Server still reaches it.
 	siteHidden bool
@@ -515,7 +515,7 @@ func main() {
 	flag.BoolVar(&allowRemote, "allow-remote", false, "permit -addr to bind somewhere other than loopback; every control route still needs this launch's token")
 	flag.StringVar(&orbPort, "orb-port", "80", "TCP port the hub dials on an orb; the device's httpd listens on 80, and only a bench run against cmd/orbfake has a reason to change it")
 	flag.StringVar(&onlyOrb, "only-orb", "", "development: see, list and dial only the orb with this base MAC, leaving every other board to the hub that owns it (make run passes the clone's .orb-target ORB_BASE_MAC); empty is every orb")
-	flag.BoolVar(&site, "site", false, "show the door onto orb-os.net (the Theme library's Import and Upload, and the /api/site routes); off until the site opens")
+	flag.BoolVar(&site, "site", false, "show the door onto orb-studio.net (the Theme library's Import and Upload, and the /api/site routes); off until the site opens")
 	flag.BoolVar(&noAutoInstall, "no-autoinstall", false, "do not install the library clock onto a freshly joined orb; the Library card Install press still works")
 	// The flag shipped its first cut named -no-autoseed; the verb the operator reads is
 	// Install now, and a shortcut built against the old spelling keeps working.
@@ -788,7 +788,7 @@ func main() {
 	// context's shutdown because it is the same shape of background work — one loop, no
 	// operation registry, pointless the moment the hub is closing.
 	// The release check asks the site, so it waits behind the same door as Import and Upload:
-	// with -site off (every release until the site opens) the hub contacts no orb-os.net host.
+	// with -site off (every release until the site opens) the hub contacts no orb-studio.net host.
 	if !s.siteHidden {
 		go s.releaseCheckLoop(listenCtx)
 	}

@@ -41,7 +41,7 @@ and attaches the `.orbapp` to a GitHub release.
 
 To release to GitHub and to the site with one tag push, set the repository **secret**
 `ORB_SITE_TOKEN` (a developer token from the site's `/dev` page, scoped to this app's slug,
-shown once when created) and optionally the **variable** `ORB_SITE` (default `orb-os.net`):
+shown once when created) and optionally the **variable** `ORB_SITE` (default `orb-studio.net`):
 a `v*` tag then also queues the `.orbapp` on the site, and an unset secret leaves that step
 skipped — the release stays GitHub-only, exactly as before. If the site refuses the upload
 the job fails with the GitHub release already out; fix and re-push the tag, and since the

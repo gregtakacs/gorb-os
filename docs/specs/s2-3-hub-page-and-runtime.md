@@ -11,7 +11,7 @@ token, and removed `/editor/...` from the control port. Read `tools/orb-manager/
 The hub page (`web/app.js`) still builds same-origin iframe URLs (`/editor/...`) and assumes
 it can reach into the frame; theme@1 still posts its messages to `location.origin`, which is
 now the editor's own origin, so the hub page would never hear them. This step makes Edit,
-Compose, Rebake all, Send to orb, Import from orb-os.net and the G3 Updates/rename bake work
+Compose, Rebake all, Send to orb, Import from orb-studio.net and the G3 Updates/rename bake work
 again across the origin boundary. Browser code plus one Go string; no server behaviour changes.
 
 ## Read first

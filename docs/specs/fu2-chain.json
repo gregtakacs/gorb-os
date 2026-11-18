@@ -19,7 +19,7 @@
       "name": "fu2-3-www-and-sdkdoc",
       "spec": "docs/specs/fu2-3-www-and-sdkdoc.md",
       "hard": true,
-      "verify": "export GOFLAGS=-buildvcs=false PATH=/usr/local/go/bin:$PATH && set -o pipefail && R=$PWD && cd tools/orb-manager && go vet ./... && go test -run 'SiteAllowed|SiteImport|ResolveOrigin|ThemeOrigin' . && cd $R && grep -q 'www.orb-os.net' tools/orb-manager/sitelimits.go && grep -q 'unsafe-eval' apps/README.md && grep -qi 'support@1' apps/README.md && make check-hub && sh docs/specs/s3-gotest.sh && test -z \"$(git diff --name-only delegate/fu2-1-svg-parse -- tools/orb-manager/contract apps/clock apps/flights apps/weather apps/radar apps/color_picker)\""
+      "verify": "export GOFLAGS=-buildvcs=false PATH=/usr/local/go/bin:$PATH && set -o pipefail && R=$PWD && cd tools/orb-manager && go vet ./... && go test -run 'SiteAllowed|SiteImport|ResolveOrigin|ThemeOrigin' . && cd $R && grep -q 'www.orb-studio.net' tools/orb-manager/sitelimits.go && grep -q 'unsafe-eval' apps/README.md && grep -qi 'support@1' apps/README.md && make check-hub && sh docs/specs/s3-gotest.sh && test -z \"$(git diff --name-only delegate/fu2-1-svg-parse -- tools/orb-manager/contract apps/clock apps/flights apps/weather apps/radar apps/color_picker)\""
     },
     {
       "name": "fu2-4-rename-prompt",

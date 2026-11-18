@@ -183,7 +183,7 @@ func uploadDesignBytes(dir string, e *LibEntry) ([]byte, error) {
 // answer, not a refusal (the site stored the design); a 401 is H2's rule unchanged; the
 // scope refusal and the clash get the two bodies the dialog needs; everything else — a
 // 429, a 500, a stall, a body that forgot to answer — is the site's message when it sent
-// one and orb-os.net did not answer when it did not, in one pass-through so no hub-side
+// one and orb-studio.net did not answer when it did not, in one pass-through so no hub-side
 // table of codes can fall out of date. The query's name is siteName when the dialog typed or
 // confirmed one and the entry's own name otherwise; the bytes are whatever that entry's read
 // returned, so "Upload as a new design" is one entry read under one name and posted under

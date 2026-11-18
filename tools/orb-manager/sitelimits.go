@@ -1,14 +1,14 @@
 package main
 
-// S3 (ruling 35): the bounds "Import from orb-os.net" keeps to itself.
+// S3 (ruling 35): the bounds "Import from orb-studio.net" keeps to itself.
 //
 // Two of them. The first is whose links this hub will open at all: only the configured
 // site — GORB_SITE, the one origin release.go's resolver answers, so a bench and the
-// site's §11 move are the same one string — and orb-os.net under either of its two
+// site's §11 move are the same one string — and orb-studio.net under either of its two
 // public names, plus loopback, which is how the hub's own tests and a developer's
 // machine site are served. A link to any other host is refused here, before a socket
 // opens: dialing an unknown host with the design's id would tell that host both that
-// this owner imports from orb-os.net and which design they were after.
+// this owner imports from orb-studio.net and which design they were after.
 //
 // The second is what a bundle's art may be. The site applies these rules when it stores
 // a picture, so a bundle that arrived through the site's own doors already holds to
@@ -40,15 +40,15 @@ import (
 	"unicode/utf8"
 )
 
-// orbOSNet is the site's future home (§11): always allowed, https only. Its www spelling
+// publicSite is the site's future home (§11): always allowed, https only. Its www spelling
 // (ruling 35, as amended 2026-11-11) is the same site behind the other name an owner's
 // paste is just as likely to carry, so it is allowed by the same door, and the two are
 // named together in the refusal an owner reads.
 const (
-	orbOSNet    = "orb-os.net"
-	orbOSNetWww = "www.orb-os.net"
-	// orbOSNetNames is the public half of the allow-list as the sentences spell it.
-	orbOSNetNames = orbOSNet + "/" + orbOSNetWww
+	publicSite    = "orb-studio.net"
+	publicSiteWww = "www.orb-studio.net"
+	// publicSiteNames is the public half of the allow-list as the sentences spell it.
+	publicSiteNames = publicSite + "/" + publicSiteWww
 )
 
 // siteAllowed reports whether a canonical site origin (scheme://host[:port], as
@@ -67,7 +67,7 @@ func siteAllowed(site string) bool {
 	if c, _, cp, cok := siteOriginParts(siteReleaseBase()); cok && scheme == c && hostport == cp {
 		return true
 	}
-	return scheme == "https" && (hostport == orbOSNet || hostport == orbOSNetWww)
+	return scheme == "https" && (hostport == publicSite || hostport == publicSiteWww)
 }
 
 // siteNotAllowed is the refusal for a link to any other host. It names the two places a
@@ -76,10 +76,10 @@ func siteAllowed(site string) bool {
 func siteNotAllowed(site string) error {
 	conf := canonicalSiteOrigin(siteReleaseBase())
 	host := siteHost(site)
-	if conf == "https://"+orbOSNet || conf == "https://"+orbOSNetWww {
-		return fmt.Errorf("Orb Manager imports themes only from %s, not from %s", orbOSNetNames, host)
+	if conf == "https://"+publicSite || conf == "https://"+publicSiteWww {
+		return fmt.Errorf("Orb Manager imports themes only from %s, not from %s", publicSiteNames, host)
 	}
-	return fmt.Errorf("Orb Manager imports themes only from %s and %s, not from %s", siteHost(conf), orbOSNetNames, host)
+	return fmt.Errorf("Orb Manager imports themes only from %s and %s, not from %s", siteHost(conf), publicSiteNames, host)
 }
 
 // siteOriginParts splits a site origin the way the comparisons need it: the scheme and
@@ -1177,7 +1177,7 @@ var themeNameRe = regexp.MustCompile(`^[A-Za-z0-9 ._-]+$`)
 // written out because the rule refuses names the author can see are "letters".
 const themeNameRefusalChars = "a design's name can use only letters (A–Z, a–z), numbers, spaces, dots, underscores and dashes"
 
-// handleRe is the owner's orb-os.net handle inside a shared name: a lower-case word of
+// handleRe is the owner's orb-studio.net handle inside a shared name: a lower-case word of
 // 3 to 24 characters, the site's HANDLE_RE.
 var handleRe = regexp.MustCompile(`^[a-z][a-z0-9_-]{2,23}$`)
 

@@ -207,7 +207,7 @@ func (s *Server) orbOnlyThemeFacts(p string) (string, string) {
 }
 
 // siteOrbOnlyThemes is the enumeration: every orb's own card list walked once, the names that
-// could be orb-os.net designs and are not in the library asked of the configured site, and the
+// could be orb-studio.net designs and are not in the library asked of the configured site, and the
 // answers turned into the rows §7.3 shows. A candidate whose ask comes back Gone is written to
 // the ledger and reported gone — which is why the walk asks at all: the block refreshes, and a
 // retired name re-asked at every refresh is the noise step 3's review 5 was written against,

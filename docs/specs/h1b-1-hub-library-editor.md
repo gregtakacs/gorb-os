@@ -3,7 +3,7 @@
 ## Goal
 
 Slice H1b of the orb-os-net design (`~/docker/Projects/orb-os-net/docs/design.md`, ruling 32
-and §7.1). **Import from orb-os.net needs no orb.** H1 baked an import with the orb's own
+and §7.1). **Import from orb-studio.net needs no orb.** H1 baked an import with the orb's own
 editor (`/editor/<ip>/<slug>/?import=<ticket>`), so it needed an orb that runs the app. From
 now on Orb Manager bakes with **its own copy** of the app's editor: the editor region inside
 the `.orbapp` its app library holds (`s.library().Container(slug)`). That is the same file the
@@ -98,8 +98,8 @@ No JavaScript, HTML or CSS changes in this step.
 `tools/orb-manager/README.md`, in the editor section that describes `/editor/<ip>/<slug>/`
 (search for `/editor/`): add 2–4 lines saying that `/editor/hub/<slug>/` serves Orb Manager's
 own copy of an app's editor, from the `.orbapp` in its app library, with no orb involved, and
-that Import from orb-os.net bakes with it. Match the README's tone. Don't edit the
-"Import from orb-os.net" section yet (step h1b-3 rewrites it).
+that Import from orb-studio.net bakes with it. Match the README's tone. Don't edit the
+"Import from orb-studio.net" section yet (step h1b-3 rewrites it).
 
 ## Behaviour and edge cases
 

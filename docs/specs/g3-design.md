@@ -81,7 +81,7 @@ id H2 links with, and the rename-application H3 drives with `/api/hub/resolve`.
   the Download link. It must not expect any field R1 does not send.
 - **The default host.** The release check runs with no connection and no prior import, so it needs
   a built-in site host. It reads `GORB_SITE` (a full `https://` origin) and otherwise defaults to
-  `https://orb.takacsfamily.com` — ruling 1 (the site starts there; the move to `orb-os.net` is
+  `https://orb.takacsfamily.com` — ruling 1 (the site starts there; the move to `orb-studio.net` is
   §11). See **Owner questions**: the §11 move changes this default and nothing else.
 
 ### The Updates list — §7.6, ruling 26
@@ -112,7 +112,7 @@ id H2 links with, and the rename-application H3 drives with `/api/hub/resolve`.
   out of every future check; and a `keep` choice so nothing re-adds it. The choice is stored in
   `hubState.UpdateChoices` too, because a later re-import of the same design must not resurrect the
   tracking of a copy the owner claimed (the §7.6 duplicate question covers the re-import itself).
-  *"Save a copy to my orb-os.net"* (the private remix) needs the account link and so waits for H2 —
+  *"Save a copy to my orb-studio.net"* (the private remix) needs the account link and so waits for H2 —
   see below.
 
 ### Updates that rename — §7.4, ruling 23
@@ -142,7 +142,7 @@ id H2 links with, and the rename-application H3 drives with `/api/hub/resolve`.
   it failed, exactly the theme they had.
 - **A design that stopped being shared**: resolve answers 404 (private/unknown) or 410 (deleted).
   §7.4: *"says so once, keeps the theme, and stops checking it"* — the Updates row reads once
-  *"Skeleton by @greg is no longer shared on orb-os.net; the theme stays, updates stop"*, and the
+  *"Skeleton by @greg is no longer shared on orb-studio.net; the theme stays, updates stop"*, and the
   origin is retired like Keep-my-version does, so no later check re-offers it.
 
 ## The gate, as concrete checks
@@ -165,11 +165,11 @@ id H2 links with, and the rename-application H3 drives with `/api/hub/resolve`.
 
 - **Sending the install id** (the `/connect` exchange, `hubLink`, Connected Orb Managers on `/me`) —
   H2. G3 only mints and stores it. (Ruling 25, §7.2.)
-- **"Save a copy to my orb-os.net"** under Keep my version (the private remix, *"remix of Skeleton
+- **"Save a copy to my orb-studio.net"** under Keep my version (the private remix, *"remix of Skeleton
   by @greg"*) — H2, because it posts a design into an account and needs the link's token (§7.6). In
   G3 the row offers Keep my version, which does its whole job locally (stop tracking, keep the
   name); the extra upload button is simply absent until there is a link to post through.
-- **"Upload to orb-os.net"** on the Theme library stays the disabled button `h1b-3` left it — H2.
+- **"Upload to orb-studio.net"** on the Theme library stays the disabled button `h1b-3` left it — H2.
 - **`/api/hub/resolve` itself** and the handle/shared-name history it reads — H3. G3 ships the
   client and the application; the live theme-update rows only appear once H3's route answers. The
   site's handle-change migration that *creates* the rename updates is H3 too (§8.4).
@@ -180,9 +180,9 @@ id H2 links with, and the rename-application H3 drives with `/api/hub/resolve`.
 
 - **The release check's built-in default site host.** G3 must reach `/api/hub/releases/latest` with
   no import and no link, so it needs a default origin. Ruling 1 (the site *starts* on
-  `orb.takacsfamily.com`) and §11 (it *moves* to `orb-os.net`) point at two answers, and only the
+  `orb.takacsfamily.com`) and §11 (it *moves* to `orb-studio.net`) point at two answers, and only the
   owner knows when the move happens. **Options:** (a) default to `https://orb.takacsfamily.com`,
-  overridable by a `GORB_SITE` env var; (b) default to `https://orb-os.net` now; (c) no default — a
+  overridable by a `GORB_SITE` env var; (b) default to `https://orb-studio.net` now; (c) no default — a
   required setting the operator fills before the first check. **Chosen: (a)**, as the one most
   consistent with the rulings (ruling 1 is the present, §11 the future, and an env override makes
   the move a config change, not a rebuild). The affected step is **g3-1**; when §11 lands, the only

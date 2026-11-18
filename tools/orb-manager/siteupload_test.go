@@ -87,7 +87,7 @@ func TestSiteUploadSendsTheDocument(t *testing.T) {
 		sent = r.Header.Clone()
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusCreated)
-		_, _ = io.WriteString(w, `{"id":"d-1","app":"clock","name":"Skeleton","version":1,"visibility":"private","url":"https://orb-os.net/t/d-1"}`)
+		_, _ = io.WriteString(w, `{"id":"d-1","app":"clock","name":"Skeleton","version":1,"visibility":"private","url":"https://orb-studio.net/t/d-1"}`)
 	}
 	design := designDoc("Skeleton", "v1.2.16", 4)
 	putDraft(t, s, "clock", "Skeleton", design)
@@ -97,7 +97,7 @@ func TestSiteUploadSendsTheDocument(t *testing.T) {
 	}
 	if _, env := uploadCall(t, s, `{"app":"clock","name":"Skeleton"}`); env["ok"] != true {
 		t.Fatalf("upload: %v", env)
-	} else if d, _ := env["data"].(map[string]any); d == nil || d["url"] != "https://orb-os.net/t/d-1" || d["version"] != float64(1) {
+	} else if d, _ := env["data"].(map[string]any); d == nil || d["url"] != "https://orb-studio.net/t/d-1" || d["version"] != float64(1) {
 		t.Errorf("data = %v, want the site's object passed through", env["data"])
 	}
 	if got := hs.uploadAsks(); got != 1 {
@@ -286,7 +286,7 @@ func TestSiteUploadThemeWithNoDesign(t *testing.T) {
 // the two the credential decides, the two the dialog needs shaped, and the one
 // pass-through that means no hub-side list of site codes can ever fall out of date.
 func TestSiteUploadAnswerMatrix(t *testing.T) {
-	clashBody := `{"error":"name_taken","message":"orb-os.net already has a design called “Skeleton”.","existing":{"id":"d-7","name":"Big Ben","visibility":"private"}}`
+	clashBody := `{"error":"name_taken","message":"orb-studio.net already has a design called “Skeleton”.","existing":{"id":"d-7","name":"Big Ben","visibility":"private"}}`
 	cases := []struct {
 		name    string
 		status  int
@@ -309,15 +309,15 @@ func TestSiteUploadAnswerMatrix(t *testing.T) {
 		},
 		{
 			name: "clash", status: http.StatusConflict, keepTok: true, body: clashBody,
-			wantErr: "name_taken", wantMsg: "orb-os.net already has a design called “Skeleton”.",
+			wantErr: "name_taken", wantMsg: "orb-studio.net already has a design called “Skeleton”.",
 			wantKey: "nameTaken", wantVal: "Big Ben",
 		},
 		{
 			// The race §3.2 names: a clash with no existing object is the same
 			// answer without that member, which the dialog draws as the sentence alone.
 			name: "clash-no-existing", status: http.StatusConflict, keepTok: true,
-			body:    `{"error":"name_taken","message":"orb-os.net already has a design called “Skeleton”.","existing":null}`,
-			wantErr: "name_taken", wantMsg: "orb-os.net already has a design called “Skeleton”.", wantKey: "!nameTaken",
+			body:    `{"error":"name_taken","message":"orb-studio.net already has a design called “Skeleton”.","existing":null}`,
+			wantErr: "name_taken", wantMsg: "orb-studio.net already has a design called “Skeleton”.", wantKey: "!nameTaken",
 		},
 		{
 			// H2's rule unchanged: the only answer that costs the credential.
@@ -419,7 +419,7 @@ func TestSiteUploadOnceOnly(t *testing.T) {
 	hs.uploadHook = func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusConflict)
-		_, _ = io.WriteString(w, `{"error":"name_taken","message":"orb-os.net already has a design called “Skeleton”."}`)
+		_, _ = io.WriteString(w, `{"error":"name_taken","message":"orb-studio.net already has a design called “Skeleton”."}`)
 	}
 	if _, env := uploadCall(t, s, `{"app":"clock","name":"Skeleton"}`); env["error"] != "name_taken" {
 		t.Fatalf("first press: %v", env)

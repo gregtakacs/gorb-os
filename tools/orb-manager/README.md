@@ -714,7 +714,7 @@ so a deliberate downgrade stays possible.
   equals the installed one and from the orb's card otherwise. `/editor/hub/<app>/` is the
   same editor with no orb at all: the region inside the `.orbapp` the hub's own app library
   holds, the file this listing shows and `orb-manager extract-editors` unpacks, so Import
-  from orb-os.net bakes a theme without waiting for a board that runs the app. The clock's
+  from orb-studio.net bakes a theme without waiting for a board that runs the app. The clock's
   editor is the watch composer, whose sources live in `apps/clock/editor/`. Since D43 the
   pieces every editor builds with are the hub's **OS theme runtime**, compiled in under
   `web/runtime/` and served at `/runtime/<name>@<version>/`: the dc-runtime
@@ -881,9 +881,9 @@ keeps. The site origin is `GORB_SITE` — a whole `https://` origin — defaulti
 in favour of the default, so a typo cannot route the one public call this hub makes over
 plaintext.
 
-### Import from orb-os.net
+### Import from orb-studio.net
 
-**Import from orb-os.net** sits in the **Theme library** on the home view, under the Orbs
+**Import from orb-studio.net** sits in the **Theme library** on the home view, under the Orbs
 list, and opens a link field: paste a theme's page on the site, press Import. No orb is
 asked for — the hub fetches the design itself (`GET <site>/api/hub/theme/<id>`, no
 sign-in and no account, and the site never learns of a board), holds the bundle it gets
@@ -894,7 +894,7 @@ gave it, `<name> by @<handle>`, and the hub keeps that bake in its library with 
 `<theme file>.origin.json` sidecar `{site, designId, version, importedAt}` — which is what
 the row's `from <site>` tag reads, on the library list and on an orb's Themes tab alike.
 Getting it ONTO a board stays that board's business: its Themes tab's `Install` is the same
-door it always was. **Upload to orb-os.net** is shown disabled beside the door, since
+door it always was. **Upload to orb-studio.net** is shown disabled beside the door, since
 pushing a theme to an account needs this Orb Manager connected to one. Only `https://`
 links are accepted, with plain `http` allowed for `127.0.0.1`/`localhost` so a site under
 development can be imported from the bench.

@@ -67,7 +67,7 @@ site-side change; the fake site answers design.md §4.
     second. The ledger's resolved entry is deleted once `shelfByDesign` proves the shelf holds the
     design and the answer carried no `NeedBake`; on a `NeedBake` answer it stays, and the existing
     browser-driven second half (editor keep → apply with `baked`) settles it.
-- **`web/app.js`**: inside the From orb-os.net block, a **Themes on orbs only** sub-list (the
+- **`web/app.js`**: inside the From orb-studio.net block, a **Themes on orbs only** sub-list (the
   enumeration's non-gone entries) — one row per theme, `<name> · <app> · on <orbWord list>`, with
   one **Track this theme** button posting the adopt door and rendering the answer the way an update
   row's apply result renders today; a `"gone":true` entry prints §8's `<name> is gone from the

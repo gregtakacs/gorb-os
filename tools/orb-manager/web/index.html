@@ -42,7 +42,7 @@
   when the hub asked it runs no orb: give it one with the New Orb button. Add an orb by its
   address if the hub cannot hear it announce.</p>
 
-  <!-- Orb Manager's own shelf of themes, and the only door onto orb-os.net (design
+  <!-- Orb Manager's own shelf of themes, and the only door onto orb-studio.net (design
        ruling 32). Both belong to the home view rather than to an orb because neither
        needs one: the library is the hub's own directory, and an import is baked by the
        hub's own copy of an app's editor. A theme gets onto a board from that board's
@@ -51,27 +51,27 @@
     <h3>Theme library</h3>
     <div class="row toolbar">
       <button id="mn-site-btn" class="ghost" type="button" hidden
-              title="Paste the link of a theme on orb-os.net. Orb Manager fetches its design, bakes it with its own editor for that app under its shared name (“name by @creator”), and keeps it here. No orb and no sign-in are needed.">Import from orb-os.net</button>
+              title="Paste the link of a theme on orb-studio.net. Orb Manager fetches its design, bakes it with its own editor for that app under its shared name (“name by @creator”), and keeps it here. No orb and no sign-in are needed.">Import from orb-studio.net</button>
       <button id="mn-lib-upload" class="ghost" type="button" hidden
-              title="Send a design from this hub's library to your orb-os.net account. It lands in your library there under the same name; nothing on the site is changed.">Upload to orb-os.net</button>
+              title="Send a design from this hub's library to your orb-studio.net account. It lands in your library there under the same name; nothing on the site is changed.">Upload to orb-studio.net</button>
       <!-- H4: a link minted before designs:write reads designs only, and the one sentence
            that says so is drawn beside this button rather than in the connect row, because
            the fact belongs where the refused act was pressed. -->
       <button id="mn-lib-reconnect" class="ghost" type="button" hidden
-              title="Link this Orb Manager to your orb-os.net account again, and approve the two scopes">Reconnect</button>
+              title="Link this Orb Manager to your orb-studio.net account again, and approve the two scopes">Reconnect</button>
       <span id="mn-lib-state" class="hint"></span>
     </div>
     <div class="row" id="mn-site-row" hidden>
-      <input type="url" id="mn-site-link" placeholder="https://orb-os.net/t/…" spellcheck="false" autocomplete="off" size="44">
+      <input type="url" id="mn-site-link" placeholder="https://orb-studio.net/t/…" spellcheck="false" autocomplete="off" size="44">
       <button id="mn-site-go" type="button">Import</button>
       <span id="mn-site-state" class="hint"></span>
       <span id="mn-site-connect-block" hidden>
         <button id="mn-site-connect" class="ghost" type="button"
-                title="Link this Orb Manager to your orb-os.net account so it can read your designs. The hub opens your browser to sign in; nothing here uploads or changes anything on the site.">Connect to orb-os.net</button>
+                title="Link this Orb Manager to your orb-studio.net account so it can read your designs. The hub opens your browser to sign in; nothing here uploads or changes anything on the site.">Connect to orb-studio.net</button>
         <span id="mn-site-conn" class="hint"></span>
       </span>
       <span id="mn-site-designs-block" hidden>
-        <h4 class="hint">My orb-os.net <span id="mn-site-linked" class="mut"></span></h4>
+        <h4 class="hint">My orb-studio.net <span id="mn-site-linked" class="mut"></span></h4>
         <button id="mn-site-disconnect" class="ghost" type="button">Disconnect</button>
         <ul id="mn-site-designs" class="themelist"></ul>
       </span>
@@ -95,7 +95,7 @@
     <span id="mn-updates-state" class="hint"></span>
     <p class="hint">What this hub could put on an orb, and what the site has newer than what
     you imported. Skipping hides one version and offers the next one; keeping a theme from
-    orb-os.net stops Orb Manager ever checking it again, and leaves the theme itself exactly
+    orb-studio.net stops Orb Manager ever checking it again, and leaves the theme itself exactly
     as it is, name included.</p>
   </section>
 </main>
@@ -427,7 +427,7 @@
       <button id="lib-restore" class="ghost" type="button" disabled>Restore bundled apps</button>
       <span class="hint" id="lib-import-state"></span>
     </div>
-    <!-- A1 §7.4: Get apps from orb-os.net, under the import row and behind the same
+    <!-- A1 §7.4: Get apps from orb-studio.net, under the import row and behind the same
          door as every other site surface: the face reads GET /api/site/apps once the
          library says the site is open, and a shut door, a refusal or an empty store
          keeps this whole section away. One row per store app the shelf does not hold,
@@ -435,7 +435,7 @@
          the hub's add door — the app lands as an ordinary shelf row whose own Install
          is still the only thing that moves bytes onto a board. -->
     <section id="mn-site-apps" hidden>
-      <h4>Get apps from orb-os.net</h4>
+      <h4>Get apps from orb-studio.net</h4>
       <p class="hint" id="mn-site-apps-state" hidden></p>
       <div id="mn-site-apps-list"></div>
     </section>
@@ -806,7 +806,7 @@
      the site. Markup only: app.js fills the two selects and draws every answer. -->
 <div class="mask" id="up-mask" hidden>
   <div class="uppanel" id="up-panel" role="dialog" aria-modal="true" aria-labelledby="up-title">
-    <h3 id="up-title">Upload to orb-os.net</h3>
+    <h3 id="up-title">Upload to orb-studio.net</h3>
     <div class="row">
       <label class="inline">App <select id="up-app"></select></label>
       <label class="inline">Design <select id="up-name"></select></label>
@@ -821,7 +821,7 @@
          answers. It stands hidden until a name_taken answer unhides it. -->
     <div class="row" id="up-clash" hidden>
       <span class="hint" id="up-clash-line"></span>
-      <button id="up-replace" class="danger" type="button" title="Add a new version of the design already on orb-os.net under this name. It asks first what that does.">Replace</button>
+      <button id="up-replace" class="danger" type="button" title="Add a new version of the design already on orb-studio.net under this name. It asks first what that does.">Replace</button>
       <button id="up-new" class="ghost" type="button" title="Keep this hub's design and upload it under a name you type.">Upload as a new design</button>
       <button id="up-cancel" class="ghost" type="button" title="Send nothing. The dialog stays open and the library on this hub is untouched.">Cancel</button>
       <!-- Replace's second ask: what pressing Replace again will cost. -->
@@ -835,10 +835,10 @@
          with what was first chosen and editable. maxlength is the hub's own 64-character name
          bound, so the field cannot type a name the door would refuse for length. -->
     <input type="text" id="up-newname" maxlength="64" hidden placeholder="upload under this name"
-           aria-label="Upload under this name" title="The name this design goes to orb-os.net under." spellcheck="false" autocomplete="off">
+           aria-label="Upload under this name" title="The name this design goes to orb-studio.net under." spellcheck="false" autocomplete="off">
     <p class="hint" id="up-state" aria-live="polite"></p>
     <div class="row">
-      <button id="up-go" class="primary" type="button" title="Send this design to your orb-os.net library. Nothing on the site's existing designs changes.">Upload</button>
+      <button id="up-go" class="primary" type="button" title="Send this design to your orb-studio.net library. Nothing on the site's existing designs changes.">Upload</button>
       <button id="up-close" class="ghost" type="button" title="Close without sending anything.">Close</button>
     </div>
   </div>

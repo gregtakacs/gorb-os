@@ -281,7 +281,7 @@ with the host's sentence or `Your library could not be reached`.
   the size, `512 × 512` / `2.4 s`, and `In <design>, <design>` (at most three names, then
   `+N`). Clicking a row (or Enter on it) picks: `library.pick(asset)` then `lib.pick(result)`
   and the modal closes. States: `Opening your library…`; empty: `No pictures in your library yet.`
-  / `No sounds in your library yet.` followed by `Add them on orb-os.net, under Assets.`;
+  / `No sounds in your library yet.` followed by `Add them on orb-studio.net, under Assets.`;
   error: the message; `Cancel` closes; Escape closes.
 - `S.Sound(Kit, o)` passes `o.library(key, pick)` and `o.play` as the `Your own` row's `lib`.
 - `S.fitSound(file) → Promise<{ dataUrl, seconds, samples, converted }>` next to `fitPicture`

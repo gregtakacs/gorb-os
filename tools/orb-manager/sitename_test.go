@@ -413,7 +413,7 @@ func TestSiteNameGateHost(t *testing.T) {
 	// by-name one and the by-id resolve the adopted theme then went on to make.
 	base := asked.nameAsks() + asked.idAsks() + elsewhere.nameAsks() + elsewhere.idAsks()
 	for _, host := range []string{"http://not-the-configured.site", "https://evil.example.com",
-		"https://orb-os.net:8443"} {
+		"https://orb-studio.net:8443"} {
 		if _, err := s.resolveName(context.Background(), host, "clock", "Skeleton by @greg"); err == nil {
 			t.Errorf("resolveName(%q) was allowed", host)
 			continue
@@ -616,7 +616,7 @@ func TestSiteResolveName(t *testing.T) {
 	t.Run("an empty question is not asked", func(t *testing.T) {
 		s := newHub()
 		for _, one := range [][3]string{{"", "clock", "A by @greg"},
-			{"https://orb-os.net", "", "A by @greg"}, {"https://orb-os.net", "clock", ""}} {
+			{"https://orb-studio.net", "", "A by @greg"}, {"https://orb-studio.net", "clock", ""}} {
 			if _, err := s.resolveName(ctx, one[0], one[1], one[2]); err == nil {
 				t.Errorf("resolveName(%q,%q,%q) answered a question that was never asked", one[0], one[1], one[2])
 			}

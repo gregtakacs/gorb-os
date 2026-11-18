@@ -16,7 +16,7 @@ including the renaming one — is g3-3.
 
 - `~/docker/Projects/orb-os-net/docs/design.md` §7.4 (the resolve order, the *"no longer shared"*
   sentence), §7.6 (the whole table, the Skip and Keep-my-version bullets, *"Save a copy to
-  orb-os.net" waits*), §8.4 (the shared-name / handle-history that makes a rename resolve), ruling
+  orb-studio.net" waits*), §8.4 (the shared-name / handle-history that makes a rename resolve), ruling
   26 and 27.
 - `docs/specs/g3-design.md` and `docs/specs/g3-1-install-id-and-release-check.md` (this step reads
   g3-1's `GET /api/release/latest` cache; do not re-fetch the release in the list's own path).
@@ -99,7 +99,7 @@ including the renaming one — is g3-3.
   - `update` → a button with `id`/`data-kind`/`data-key` wired in **g3-3**; in g3-2 it is present
     but `disabled` with `title="Applying this update lands in the next release."` so the row is
     honest and no dangling handler exists.
-  - a `gone:true` theme row shows the §7.4 sentence `"<name> is no longer shared on orb-os.net; the
+  - a `gone:true` theme row shows the §7.4 sentence `"<name> is no longer shared on orb-studio.net; the
     theme stays, and Orb Manager will stop checking it."` with one **OK** that POSTs `/api/updates/keep`.
   - empty: `li.hint` `Nothing to update.`; a failed read → `#mn-updates-state` `the update list
     could not be read: <msg>`, list left as it was.
@@ -159,7 +159,7 @@ From `tools/orb-manager`, `GOFLAGS=-buildvcs=false`, Go at `/usr/local/go/bin/go
 - **Applying** a site-theme update — same-name or renaming (g3-3). The `update` button is present
   but disabled here; no `/api/updates/apply` endpoint in this step.
 - A self-update / binary swap (forbidden in G3).
-- H2's *"Save a copy to my orb-os.net"* remix, and any linking (H2).
+- H2's *"Save a copy to my orb-studio.net"* remix, and any linking (H2).
 - The site's `/api/hub/resolve` **server** and the handle/shared-name history (H3).
 - New firmware or app install paths, changes to `updateEverything`, `adopt.go`, `installflow.go`,
   `liveness.go`, or the existing per-tab amber buttons (they stay).

@@ -433,7 +433,7 @@ func (s *Server) serveEditor(w http.ResponseWriter, r *http.Request) {
 // runs the hub's release, and `orb-manager extract-editors` unpacks.
 //
 // There is no orb in this door at all. No address is checked, no ledger is read, nothing is
-// dialled: the hub's own disk is the source, so an import from orb-os.net needs no board to
+// dialled: the hub's own disk is the source, so an import from orb-studio.net needs no board to
 // be running the app it bakes a theme for. The memo keeps the parsed reader under the
 // non-address ip "hub", keyed on the library file's stamp, so a rewritten .orbapp is served
 // on the next request rather than when the window ages out.

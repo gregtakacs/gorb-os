@@ -7,7 +7,7 @@ link's inbox door, and for each item it does **not** already hold it writes a ho
 the config dir containing the **pinned version's bytes** (fetched from the bundle door, not
 the theme door), fsyncs, and only then claims the item. A restart between fetch and import
 loses nothing: the claim is on disk, the bytes are on disk, and the next boot re-drives the
-same files. The Themes tab grows a **From orb-os.net** block with Add (the existing
+same files. The Themes tab grows a **From orb-studio.net** block with Add (the existing
 import→editor→keep flow, unchanged downstream) and Dismiss. No new shelf code, no new bake code,
 no new keep code.
 
@@ -89,7 +89,7 @@ no new keep code.
   sentence, not a 404 (the tray cannot tell the difference and neither can the user).
   `POST /api/site/inbox/dismiss` `{"itemId":…}`: delete the file, then `deliver` that id (its
   answer is ignored — a `missing` is precisely the agreement), answer `{"ok":true}`.
-- `web/app.js`: a **From orb-os.net** block in the Themes tab beside the `/api/updates` section
+- `web/app.js`: a **From orb-studio.net** block in the Themes tab beside the `/api/updates` section
   (`hubFetch("/api/site/inbox")` next to the existing `hubFetch("/api/updates")` call), one row
   per item — §8's `<name> · from <site> · waiting` and `<name> · from <site> · delivered
   <relative time>` — with

@@ -355,7 +355,7 @@ func TestReleaseCheckFailsClosedOnStampAndSite(t *testing.T) {
 			t.Errorf("GORB_SITE=%q gave %q, want the default origin refused it", bad, got)
 		}
 	}
-	for _, good := range []string{"https://orb-os.net", "https://orb.example.com:8443/", "http://127.0.0.1:4321",
+	for _, good := range []string{"https://orb-studio.net", "https://orb.example.com:8443/", "http://127.0.0.1:4321",
 		"http://localhost:3000", "http://[::1]:3000"} {
 		t.Setenv("GORB_SITE", good)
 		want := strings.TrimRight(good, "/")

@@ -87,13 +87,13 @@ var siteCallTimeout = 10 * time.Second
 var siteUploadTimeout = 120 * time.Second
 
 // The three sentences §5's site doors answer with, one per answer the hub can give. They
-// name orb-os.net rather than the configured host because that is the account's own name:
+// name orb-studio.net rather than the configured host because that is the account's own name:
 // a hub pointed at a developer's site has a developer's GORB_SITE and its owner is reading
 // about the same door either way, and the words the lead review fixed are these.
 const (
-	siteMsgNotConnected = "not connected to orb-os.net"
-	siteMsgDisconnected = "disconnected from orb-os.net"
-	siteMsgNoAnswer     = "orb-os.net did not answer"
+	siteMsgNotConnected = "not connected to orb-studio.net"
+	siteMsgDisconnected = "disconnected from orb-studio.net"
+	siteMsgNoAnswer     = "orb-studio.net did not answer"
 )
 
 // The two consent words H4 knows (h4-design.md §1.2), declared once here because this
@@ -144,7 +144,7 @@ func siteLinkScopes(l *siteLink) []string {
 	return normalizeSiteScopes(l.Scopes)
 }
 
-// siteLink is the hub's link to an orb-os.net account, as §5's file shape names it (and
+// siteLink is the hub's link to an orb-studio.net account, as §5's file shape names it (and
 // as H4 §6 grows it): the site origin, the bearer it handed, when the link was made, the
 // owner's handle for the page's words, the scopes the site answered for this link
 // (omitempty: a link carrying no consent writes no key at all, which is what lets an H2
@@ -701,7 +701,7 @@ func (s *Server) handleSiteLinkStatus(w http.ResponseWriter, r *http.Request) {
 
 // disconnectedSiteLink is the file a site-side Disconnect (or step 2's 401 rewrite)
 // leaves: a named site with the disconnected flag and no token, read as itself — the
-// hub's answer to the owner is "Disconnected from orb-os.net" with Reconnect — and not
+// hub's answer to the owner is "Disconnected from orb-studio.net" with Reconnect — and not
 // as a link.
 func (s *Server) disconnectedSiteLink() *siteLink {
 	l := s.loadSiteLinkRaw()

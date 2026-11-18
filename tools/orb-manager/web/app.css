@@ -415,7 +415,7 @@ button.upd:hover{border-color:#fff}
   border:1px solid var(--warn);border-radius:8px}
 .row.updall #mn-updall-go{margin-left:auto}
 .row.updall[hidden]{display:none}
-/* H1-3 / H1b: the orb-os.net link row, collapsed until the Theme library's door is
+/* H1-3 / H1b: the orb-studio.net link row, collapsed until the Theme library's door is
    pressed. Not decoration: .row's own display:flex beats the UA [hidden] rule (the same
    trap .row.updall above steps around), so a collapsed row is drawn open without it. */
 #mn-site-row{flex-wrap:wrap}
@@ -430,7 +430,7 @@ button.upd:hover{border-color:#fff}
    column would make the implicit second one and draw every name flush right. */
 #mn-lib-list li.trow{grid-template-columns:minmax(0,1fr)}
 #mn-lib-list li.trow>.tinfo{grid-column:1}
-/* H2 step 3: My orb-os.net. The connect block and the design list stand INSIDE the horizontal
+/* H2 step 3: My orb-studio.net. The connect block and the design list stand INSIDE the horizontal
    #mn-site-row toolbar, so a shut hub's row-hiding puts them away with it — which also means each
    has to be told to claim its own full-width line instead of flex-squishing beside the paste box.
    .row does not wrap on its own, so the row is wrapped here and the two blocks made to break. */

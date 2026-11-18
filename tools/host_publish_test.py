@@ -234,9 +234,9 @@ def cases(s, site, site2, port, port2, orb, size):
     s.line("--dry-run", out, "publish: would POST %s (%d B) to http://%s/api/dev/release"
            % (orb, size, host))
     s.ok("--dry-run opens no connection", hits(site) == n, "%d new hits" % (hits(site) - n))
-    rc, out = orbsdk(["publish", "--dry-run", "--site", "orb-os.net", orb], token=None)
+    rc, out = orbsdk(["publish", "--dry-run", "--site", "orb-studio.net", orb], token=None)
     s.line("--dry-run on a real host", out,
-           "publish: would POST %s (%d B) to https://orb-os.net/api/dev/release" % (orb, size))
+           "publish: would POST %s (%d B) to https://orb-studio.net/api/dev/release" % (orb, size))
 
     # 6a. the https rule, from the refusing end: a non-localhost http: target is refused
     #     before any socket, and the stub bound for exactly that traffic counts zero hits

@@ -9,7 +9,7 @@ in this slice.
 Ruling 36 (docs/design.md:205-213) closes the gap between "the shelf app carries an editor"
 and "the shelf app can prove its old designs still open". Today `_fixtures/schema-N.orbdesign`
 lives only in the source tree (`apps/<slug>/editor/_fixtures/`); it never reaches the `.orbapp`,
-so a hub — or orb-os.net — that holds only the container cannot run the migration check from
+so a hub — or orb-studio.net — that holds only the container cannot run the migration check from
 the container alone. Ruling 36 says: pack the fixtures **into the editor region** as
 `_fixtures/schema-N.orbdesign`, **refuse at build** an app whose schema rose without a fixture
 for **every** past schema (1 … N-1, not only N-1), **rebuild the shelf apps** so their

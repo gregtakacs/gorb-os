@@ -381,7 +381,7 @@ gateway is a site, and its link carries the bearer):
    out (a claim the site answers `missing` is exactly what a dismiss means).
 
 The tray itself: `siteInboxList()` feeds `GET /api/site/inbox` (requireControl, the same idiom
-`/api/site/designs` uses) and a **From orb-os.net** block in the Themes tab beside the
+`/api/site/designs` uses) and a **From orb-studio.net** block in the Themes tab beside the
 `/api/updates` section — §8's waiting/delivered wording, `Nothing waiting.` when the directory
 is empty or unreadable. Add and Dismiss are posts to `/api/site/inbox/add` and
 `/api/site/inbox/dismiss`.

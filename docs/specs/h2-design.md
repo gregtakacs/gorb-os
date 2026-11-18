@@ -1,4 +1,4 @@
-# H2 design: linking a hub to an account, My orb-os.net, and `/me` connections
+# H2 design: linking a hub to an account, My orb-studio.net, and `/me` connections
 
 > **Lead review, 2026-11-10 (binding; it overrides anything below that disagrees).**
 > 1. `/connect` parameter rules (§2.1): `redirect` must match
@@ -21,7 +21,7 @@
 > 5. Hub link state (§5): `site-link.json` is `{site, token?, linkedAt, handle?, disconnected?}`.
 >    A 401 from the site on any bearer call **rewrites** the file as
 >    `{site, handle, disconnected: true}` (no token), so the hub shows **"Disconnected from
->    orb-os.net"** with **Reconnect** after a restart too. Disconnect in Orb Manager removes the
+>    orb-studio.net"** with **Reconnect** after a restart too. Disconnect in Orb Manager removes the
 >    file. `GET /api/site/link-status` answers
 >    `{"ok":true,"data":{"state":"none"|"pending"|"linked"|"disconnected","site"?,"handle"?,"linkedAt"?}}`
 >    and never the token. The token is sent only to the origin recorded in the file, and only while
@@ -61,7 +61,7 @@ both. Every clause is mapped to a named test at the end.
 ## 1. Scope
 
 In: the PKCE connect flow (§7.2 steps 1–4) with install ids; the hub token and its
-routes under `/api/hub/`; My orb-os.net in Orb Manager (design list with Import by
+routes under `/api/hub/`; My orb-studio.net in Orb Manager (design list with Import by
 own-design id, which extends the H1 bundle door to the owner's private designs);
 `/me` sections Connected Orb Managers and Signed-in browsers, with per-row
 Disconnect and Sign out, Sign out everywhere else, and the studio-session
@@ -95,7 +95,7 @@ refusal card with the verbatim body line
 `That is not a valid Orb Manager connect request.` and no form.
 
 The page says (verbatim, with the hub's own values): heading
-`Link Orb Manager to orb-os.net`; question
+`Link Orb Manager to orb-studio.net`; question
 `Allow Orb Manager on <label> to read your designs?`; and — only when a live link
 with the same `install` already exists on this account — the line
 `This replaces the existing connection with this install.` Buttons: `Allow` and
@@ -231,7 +231,7 @@ its access — that is this):
 with `type HubAccess = "anyone" | "anyone-or-hub-token" | "hub-token" |
 "code-verifier"` and `access: HubAccess | Partial<Record<HttpMethod, HubAccess>>`.
 
-## 5. My orb-os.net (hub surface, for the hub chain and its UI step)
+## 5. My orb-studio.net (hub surface, for the hub chain and its UI step)
 
 The hub is the PKCE client (RFC 8252 loopback). New file `sitelink.go`, new
 credential file, five control routes (all behind `requireControl`, registered

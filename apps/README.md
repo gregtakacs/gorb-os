@@ -72,7 +72,7 @@ check-migrations` runs the OS's migration runner over the fixtures in the app's 
 editor (it needs Node and Chromium), so deleting a migration step fails the check, and the
 template's CI workflow runs it before packing.
 
-Publishing an editor on orb-os.net is a CSP question, and ruling 37 settled it: the site
+Publishing an editor on orb-studio.net is a CSP question, and ruling 37 settled it: the site
 relaxes `script-src` with `'unsafe-eval'` for exactly the two releases that need it —
 `support@1` and `babel@7.29.0` — on their own origin, and the relaxation follows the release
 being served rather than the app being edited, so every other release keeps the strict
@@ -92,7 +92,7 @@ every schema from `N` to `schema-1`, an older sample is skipped rather than refu
 `<slug>: schema-<k> fixture is below minSchema <N>, not checked` (a container built before the
 floor keeps its file; packing and checking only stop reading it), the region packs `schema-N`
 and above, its stamp names `minSchema`, and `check-migrations` opens exactly those. That is what
-lets a release raise its schema and delete the migration steps below the floor. On orb-os.net a
+lets a release raise its schema and delete the migration steps below the floor. On orb-studio.net a
 release whose floor drops a schema its earlier releases wrote is always reviewed by hand,
 whatever its check says, and the site keeps the older editors owners still need: a design below
 the floor opens in the last version that reads it, marked as needing a remake, so it can still
@@ -222,17 +222,17 @@ An app moves into this repo unchanged:
    `orbsdk.py`, writes the shelf ones into `tools/orb-manager/apps/`, and the hub
    compiles them in.
 4. Commit the directory and the container.
-5. **Reserve its slug on orb-os.net before it ships.** The site hands a slug to the first
+5. **Reserve its slug on orb-studio.net before it ships.** The site hands a slug to the first
    outside developer whose release of it is approved, and holds it for anyone with a release
-   of it pending (orb-os.net ruling 44). A shelf app's slug is protected only once it is in
-   the site's reserved list, `RESERVED_SLUGS` in orb-os.net `src/lib/slug-claims.ts`, or once
+   of it pending (orb-studio.net ruling 44). A shelf app's slug is protected only once it is in
+   the site's reserved list, `RESERVED_SLUGS` in orb-studio.net `src/lib/slug-claims.ts`, or once
    a gorb-os release carrying it has been loaded there. Add the slug to that list in the same
    change that adds `"shelf": true`; otherwise someone could claim the name first, and the
    site's shelf loader would then refuse the whole orb-web load until the clash is resolved.
 
 Shelf apps are a transitional arrangement. They are meant to become ordinary apps, authored
 by the owner under a developer account and published, reviewed and versioned through the
-same door and rules as any other app (orb-os.net ruling 45). Until then, step 5 is what keeps
+same door and rules as any other app (orb-studio.net ruling 45). Until then, step 5 is what keeps
 their names safe.
 
 `make_factory_apps.py --check` (part of `make check`) holds the committed containers

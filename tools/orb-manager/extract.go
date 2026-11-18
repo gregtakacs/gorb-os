@@ -328,7 +328,7 @@ func skipped(reason string) regionOutcome { return regionOutcome{status: "skippe
 // extractMaxMembers and extractMaxTotal bound one editor as a whole. Each member is held
 // to editorMaxEntry and the packed region to orbnet.MaxEditorRegion, but a region of many
 // small members that each inflate to the per-file limit would still unpack to gigabytes, all
-// held in memory here. extract-editors reads uploads from strangers on orb-os.net (D1), so
+// held in memory here. extract-editors reads uploads from strangers on orb-studio.net (D1), so
 // the whole editor is capped too: far above any real editor (the shelf clock is under 1 MB).
 const (
 	extractMaxMembers = 1000

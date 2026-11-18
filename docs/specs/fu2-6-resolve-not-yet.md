@@ -2,8 +2,8 @@
 
 ## Goal
 
-Greg's live H2 test imported his own private design "Neon moon" through My orb-os.net, and the
-Updates list at once said "Neon moon is no longer shared on orb-os.net; … will stop checking it".
+Greg's live H2 test imported his own private design "Neon moon" through My orb-studio.net, and the
+Updates list at once said "Neon moon is no longer shared on orb-studio.net; … will stop checking it".
 Cause: `resolveOrigin` (tools/orb-manager/siteimport.go ~618) reads ANY 404/410 from
 `GET <site>/api/hub/resolve` as Gone, but that route is slice H3's and the site has not built it,
 so the site's generic not-found reads as "unshared". After this step only an answer that says so
@@ -31,8 +31,8 @@ that link's bearer.
 - Any other 404 or 410 (HTML, empty body, JSON without `"gone": true`, unparseable body) returns
   a new answer `resolveAnswer{NotYet: true}` with no error.
 - `themeUpdateRows`: a `NotYet` answer produces a theme row with no choices, `gone` false, and
-  `note`: `orb-os.net can't check this theme for updates yet` (use the origin site's host via
-  `siteHost(o.Site)` in place of `orb-os.net` when it is not orb-os.net). The web page draws it as
+  `note`: `orb-studio.net can't check this theme for updates yet` (use the origin site's host via
+  `siteHost(o.Site)` in place of `orb-studio.net` when it is not orb-studio.net). The web page draws it as
   plain information (no warning colour, no "stop checking" sentence).
 - The update apply path on `NotYet` refuses with `<name>: <host> can't check for updates yet`
   and changes nothing.
@@ -54,7 +54,7 @@ that link's bearer.
 - `TestResolveGoneBodyIsGone`: 404 and 410 each with `{"gone":true}` → Gone row as today.
 - `TestResolveSendsBearerOnlyToItsSite`: linked to site A: a resolve to A carries
   `Authorization: Bearer <token>`; a resolve to site B (also allowed, e.g. a second loopback
-  port configured as GORB_SITE in another subtest, or orb-os.net through a test transport)
+  port configured as GORB_SITE in another subtest, or orb-studio.net through a test transport)
   carries none.
 - The existing Gone tests are updated to send the new body.
 

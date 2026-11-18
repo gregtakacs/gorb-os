@@ -1,6 +1,6 @@
 package main
 
-// S3 (ruling 35): the two bounds "Import from orb-os.net" keeps — whose links the hub
+// S3 (ruling 35): the two bounds "Import from orb-studio.net" keeps — whose links the hub
 // opens at all, and what a bundle's pictures may be — and the header reader the second
 // one is measured with. The door tests here ride the same s.routes(mux) the binary
 // serves, the way siteimport_test.go's do.
@@ -32,40 +32,40 @@ func TestSiteAllowedMatchesConfiguredSiteAndOrbOSNet(t *testing.T) {
 		{"", "https://orb.takacsfamily.com:443", true},
 		{"", "HTTPS://Orb.TakacsFamily.COM", true},
 		{"", "http://orb.takacsfamily.com", false},
-		{"", "https://orb-os.net", true},
-		{"", "https://orb-os.net:443", true},
-		{"", "https://orb-os.net:8443", false},
-		{"", "http://orb-os.net", false},
-		{"", "https://evil.orb-os.net", false},
-		{"", "https://orb-os.net.evil.example", false},
+		{"", "https://orb-studio.net", true},
+		{"", "https://orb-studio.net:443", true},
+		{"", "https://orb-studio.net:8443", false},
+		{"", "http://orb-studio.net", false},
+		{"", "https://evil.orb-studio.net", false},
+		{"", "https://orb-studio.net.evil.example", false},
 		// fu2-3 (ruling 35, as amended 2026-11-11): the site's other public name is the
 		// same door, and every other subdomain — or suffix look-alike — is still refused.
-		{"", "https://www.orb-os.net", true},
-		{"", "https://www.orb-os.net:443", true},
-		{"", "HTTPS://WWW.Orb-OS.NET", true},
-		{"", "https://www.orb-os.net:8443", false},
-		{"", "http://www.orb-os.net", false},
-		{"", "ftp://www.orb-os.net", false},
-		{"", "https://api.orb-os.net", false},
-		{"", "https://www.orb-os.net.evil.example", false},
-		{"", "https://evil.www.orb-os.net", false},
+		{"", "https://www.orb-studio.net", true},
+		{"", "https://www.orb-studio.net:443", true},
+		{"", "HTTPS://WWW.Orb-Studio.NET", true},
+		{"", "https://www.orb-studio.net:8443", false},
+		{"", "http://www.orb-studio.net", false},
+		{"", "ftp://www.orb-studio.net", false},
+		{"", "https://api.orb-studio.net", false},
+		{"", "https://www.orb-studio.net.evil.example", false},
+		{"", "https://evil.www.orb-studio.net", false},
 		{"", "https://evil.example", false},
 		{"", "http://localhost:3000", true},
 		{"", "http://127.0.0.1:8080", true},
 		{"", "http://[::1]:9", true},
 		{"", "https://localhost", true},
-		{"", "ftp://orb-os.net", false},
+		{"", "ftp://orb-studio.net", false},
 		{"", "", false},
 		{"", "not a url", false},
 		{"", "https://user@evil.example", false},
 		{"https://bench.example:8443", "https://bench.example:8443", true},
 		{"https://bench.example:8443", "https://bench.example", false},
 		{"https://bench.example:8443", "https://orb.takacsfamily.com", false},
-		{"https://orb-os.net", "https://orb-os.net", true},
-		{"https://orb-os.net", "https://orb.takacsfamily.com", false},
-		{"https://www.orb-os.net", "https://www.orb-os.net", true},
-		{"https://www.orb-os.net", "https://orb-os.net", true},
-		{"https://www.orb-os.net", "https://api.orb-os.net", false},
+		{"https://orb-studio.net", "https://orb-studio.net", true},
+		{"https://orb-studio.net", "https://orb.takacsfamily.com", false},
+		{"https://www.orb-studio.net", "https://www.orb-studio.net", true},
+		{"https://www.orb-studio.net", "https://orb-studio.net", true},
+		{"https://www.orb-studio.net", "https://api.orb-studio.net", false},
 	}
 	for _, c := range cases {
 		t.Setenv("GORB_SITE", c.env)
@@ -76,31 +76,31 @@ func TestSiteAllowedMatchesConfiguredSiteAndOrbOSNet(t *testing.T) {
 }
 
 func TestSiteAllowedRefusalSentences(t *testing.T) {
-	t.Run("the default site names itself and both spellings of orb-os.net", func(t *testing.T) {
+	t.Run("the default site names itself and both spellings of orb-studio.net", func(t *testing.T) {
 		t.Setenv("GORB_SITE", "")
-		want := "Orb Manager imports themes only from orb.takacsfamily.com and orb-os.net/www.orb-os.net, not from evil.example"
+		want := "Orb Manager imports themes only from orb.takacsfamily.com and orb-studio.net/www.orb-studio.net, not from evil.example"
 		if got := siteNotAllowed("https://evil.example").Error(); got != want {
 			t.Errorf("sentence = %q, want %q", got, want)
 		}
 	})
 	t.Run("a bench site names its own port", func(t *testing.T) {
 		t.Setenv("GORB_SITE", "https://bench.example:8443")
-		want := "Orb Manager imports themes only from bench.example:8443 and orb-os.net/www.orb-os.net, not from evil.example:9"
+		want := "Orb Manager imports themes only from bench.example:8443 and orb-studio.net/www.orb-studio.net, not from evil.example:9"
 		if got := siteNotAllowed("https://evil.example:9").Error(); got != want {
 			t.Errorf("sentence = %q, want %q", got, want)
 		}
 	})
 	t.Run("once the site has moved, the sentence names one place", func(t *testing.T) {
-		t.Setenv("GORB_SITE", "https://orb-os.net")
-		want := "Orb Manager imports themes only from orb-os.net/www.orb-os.net, not from evil.example"
+		t.Setenv("GORB_SITE", "https://orb-studio.net")
+		want := "Orb Manager imports themes only from orb-studio.net/www.orb-studio.net, not from evil.example"
 		if got := siteNotAllowed("https://evil.example").Error(); got != want {
 			t.Errorf("sentence = %q, want %q", got, want)
 		}
 	})
 	t.Run("the site moved under its www name and the sentence still names one place", func(t *testing.T) {
-		t.Setenv("GORB_SITE", "https://www.orb-os.net")
-		want := "Orb Manager imports themes only from orb-os.net/www.orb-os.net, not from api.orb-os.net"
-		if got := siteNotAllowed("https://api.orb-os.net").Error(); got != want {
+		t.Setenv("GORB_SITE", "https://www.orb-studio.net")
+		want := "Orb Manager imports themes only from orb-studio.net/www.orb-studio.net, not from api.orb-studio.net"
+		if got := siteNotAllowed("https://api.orb-studio.net").Error(); got != want {
 			t.Errorf("sentence = %q, want %q", got, want)
 		}
 	})
@@ -618,7 +618,7 @@ func TestSvgScanTag(t *testing.T) {
 // --- the door -------------------------------------------------------------------------
 
 // The whole point of the host gate is that a refused link costs the hub no request: an
-// unknown host learns neither that this owner imports from orb-os.net nor which design
+// unknown host learns neither that this owner imports from orb-studio.net nor which design
 // they were after. So the refusal sentence must be the gate's own, and the test site —
 // stood up here even though the link never names it — must record nothing.
 func TestSiteImportRefusesAnotherHostBeforeAnyFetch(t *testing.T) {
@@ -637,13 +637,13 @@ func TestSiteImportRefusesAnotherHostBeforeAnyFetch(t *testing.T) {
 	})}
 	for _, link := range []string{
 		"https://evil.example/t/" + siteDesignID,
-		"https://orb-os.net.evil.example/t/" + siteDesignID,
-		"https://api.orb-os.net/t/" + siteDesignID,
-		"https://www.orb-os.net.evil.example/t/" + siteDesignID,
+		"https://orb-studio.net.evil.example/t/" + siteDesignID,
+		"https://api.orb-studio.net/t/" + siteDesignID,
+		"https://www.orb-studio.net.evil.example/t/" + siteDesignID,
 		"https://not-the-configured-site.test:8443/t/" + siteDesignID,
 	} {
 		got := importErr(t, s, link)
-		want := "Orb Manager imports themes only from orb.takacsfamily.com and orb-os.net/www.orb-os.net, not from " +
+		want := "Orb Manager imports themes only from orb.takacsfamily.com and orb-studio.net/www.orb-studio.net, not from " +
 			siteHost(strings.TrimSuffix(link[:strings.Index(link, "/t/")], "https://"))
 		if got != want {
 			t.Errorf("import of %q: error = %q, want %q", link, got, want)
@@ -763,11 +763,11 @@ func TestResolveOriginRefusesAnUnknownSite(t *testing.T) {
 		t.Errorf("the update check dialed a host the gate refuses: %s", r.URL.Path)
 	})
 	_ = srv
-	for _, refused := range []string{"https://evil.example", "https://api.orb-os.net", "https://orb-os.net.evil.example"} {
+	for _, refused := range []string{"https://evil.example", "https://api.orb-studio.net", "https://orb-studio.net.evil.example"} {
 		_, err := s.resolveOrigin(t.Context(), &ThemeOrigin{
 			Site: refused, DesignID: siteDesignID, Version: 3,
 		})
-		want := "Orb Manager imports themes only from orb.takacsfamily.com and orb-os.net/www.orb-os.net, not from " + siteHost(refused)
+		want := "Orb Manager imports themes only from orb.takacsfamily.com and orb-studio.net/www.orb-studio.net, not from " + siteHost(refused)
 		if err == nil || err.Error() != want {
 			t.Fatalf("resolveOrigin(%q) error = %v, want %q", refused, err, want)
 		}

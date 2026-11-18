@@ -12,7 +12,7 @@ refused here rather than on the dial.
     orbsdk.py pack [<appdir>] [-o DIR]           build, then write DIR/<slug>.orbapp
     orbsdk.py install <appdir|file.orbapp> --orb HOST
                                                  pack, upload to the orb's card, install
-    orbsdk.py publish --site HOST <file.orbapp>  post a built container to an orb-os.net site
+    orbsdk.py publish --site HOST <file.orbapp>  post a built container to an orb-studio.net site
     orbsdk.py inspect <file.orbapp>              read a container back
     orbsdk.py binds [--write]                    in a gorb-os clone: check (or rewrite)
                                                  binds.json against the firmware
@@ -815,7 +815,7 @@ def cmd_install(a):
 
 
 def cmd_publish(a):
-    """Post a built .orbapp to an orb-os.net site's CI door with the developer token."""
+    """Post a built .orbapp to an orb-studio.net site's CI door with the developer token."""
     url = site_url(a.site)
     token = os.environ.get("ORB_SITE_TOKEN")
     if not token and not a.dry_run:
@@ -1046,7 +1046,7 @@ def main(argv=None):
     s = sub.add_parser("install", help="pack, upload to an orb, install")
     s.add_argument("target"); s.add_argument("--orb", required=True, help="the orb's IP or name")
     s.set_defaults(fn=cmd_install)
-    s = sub.add_parser("publish", help="publish a built .orbapp to an orb-os.net site")
+    s = sub.add_parser("publish", help="publish a built .orbapp to an orb-studio.net site")
     s.add_argument("file"); s.add_argument("--site", required=True,
                                            help="the site's host (or host:port); https, "
                                                 "except a localhost test site")

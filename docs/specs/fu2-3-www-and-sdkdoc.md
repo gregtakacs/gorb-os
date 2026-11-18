@@ -1,13 +1,13 @@
-# fu2-3: import accepts https://www.orb-os.net, and the SDK doc records ruling 37 as built
+# fu2-3: import accepts https://www.orb-studio.net, and the SDK doc records ruling 37 as built
 
 ## Goal
 
 Two small, independent gorb-os changes. (Item 3, ruling 35 as amended 2026-11-11:) Orb Manager
-imports only from known sites — the configured site, `orb-os.net`, `www.orb-os.net`, and loopback —
-so `https://www.orb-os.net` is accepted by the same door that already accepts `orb-os.net`, https
-only, and every other subdomain (`api.orb-os.net`, `orb-os.net.evil.example`) is still refused
+imports only from known sites — the configured site, `orb-studio.net`, `www.orb-studio.net`, and loopback —
+so `https://www.orb-studio.net` is accepted by the same door that already accepts `orb-studio.net`, https
+only, and every other subdomain (`api.orb-studio.net`, `orb-studio.net.evil.example`) is still refused
 before a socket opens; the refusal sentence names both allowed hosts so the owner recognises them.
-(Item 5, ruling 37 as built:) the SDK runtime doc records that on orb-os.net a `support@1` editor
+(Item 5, ruling 37 as built:) the SDK runtime doc records that on orb-studio.net a `support@1` editor
 gets `'unsafe-eval'` on its own origin only, with two `support@1` features still blocked by the
 studio CSP. The hub's own CSP mirror of R37 is G5 and is out of scope; do not move CSP code, and do
 not touch orb-os-net.
@@ -22,7 +22,7 @@ not touch orb-os-net.
   gates through `siteAllowed`), `resolveOrigin` (~618–640, how it calls `siteAllowed` and what it
   does with an origin sidecar), `handleSiteImport`.
 - `tools/orb-manager/sitelimits_test.go`: `TestSiteAllowed*` (host rows, e.g. line ~36 asserting
-  `https://evil.orb-os.net` is false) and `TestSiteAllowedRefusalSentences` (~61).
+  `https://evil.orb-studio.net` is false) and `TestSiteAllowedRefusalSentences` (~61).
 - `tools/orb-manager/siteimport_test.go`: `TestSiteImportRefusesAnotherHostBeforeAnyFetch`-style
   tests (the zero-requests assertion pattern).
 - `apps/README.md`: the `editor` field row (~49) and the "Theme designs, schemas and migrations"
@@ -34,20 +34,20 @@ not touch orb-os-net.
 
 ### Item 3 — `tools/orb-manager/sitelimits.go`
 
-- `siteAllowed(site string) bool` becomes true also for the canonical `https://www.orb-os.net`
-  (and `https://www.orb-os.net:443`; `siteOriginParts` strips `:443`), https only. Loopback and the
-  configured-site branches are unchanged. Any other subdomain of `orb-os.net` (e.g.
-  `api.orb-os.net`) and any suffix look-alike (`orb-os.net.evil.example`) stay false.
+- `siteAllowed(site string) bool` becomes true also for the canonical `https://www.orb-studio.net`
+  (and `https://www.orb-studio.net:443`; `siteOriginParts` strips `:443`), https only. Loopback and the
+  configured-site branches are unchanged. Any other subdomain of `orb-studio.net` (e.g.
+  `api.orb-studio.net`) and any suffix look-alike (`orb-studio.net.evil.example`) stay false.
 - `siteNotAllowed`'s sentence (and the allowed-name side it prints) names both public hosts as
-  `orb-os.net/www.orb-os.net`. Keep it one sentence and the `not from <host>` tail. Reuse the
+  `orb-studio.net/www.orb-studio.net`. Keep it one sentence and the `not from <host>` tail. Reuse the
   existing format constant; do not add a second resolver.
 - `parseSiteLink` and `resolveOrigin` need **no logic change** — both already gate through
-  `siteAllowed`; verify by test that a `www.orb-os.net` link/origin passes and a `www.`-look-alike
+  `siteAllowed`; verify by test that a `www.orb-studio.net` link/origin passes and a `www.`-look-alike
   does not, and that `resolveOrigin` opens no socket for a refused host.
 
 ### Item 5 — `apps/README.md`
 
-Add one sentence (in the `editor`-field area) recording R37 as built: on orb-os.net an editor whose
+Add one sentence (in the `editor`-field area) recording R37 as built: on orb-studio.net an editor whose
 `editor.json` lists `support@1` is served with `'unsafe-eval'` on its own origin only, and two
 `support@1` features stay blocked by the studio CSP — its helmet mount's inline `<script>` (which
 would need `'unsafe-inline'`) and its x-import from other origins (`connect-src 'self'` stays). Note
@@ -56,13 +56,13 @@ relaxation follows the release being served. Documentation only.
 
 ## Tests
 
-- `sitelimits_test.go`: add rows — `https://www.orb-os.net` and `https://www.orb-os.net:443` → true;
-  `http://www.orb-os.net` → false; `https://api.orb-os.net`, `https://orb-os.net.evil.example` →
-  false; keep `https://orb-os.net` true and `https://evil.orb-os.net` false. Update
-  `TestSiteAllowedRefusalSentences` to the `orb-os.net/www.orb-os.net` spelling.
-- `siteimport_test.go`: the before-any-fetch test gains a `www.orb-os.net` accepted and an
-  `api.orb-os.net` refused-with-zero-requests case; add/extend a `resolveOrigin` test asserting a
-  `www.orb-os.net` origin sidecar passes the gate with zero requests to a refused host.
+- `sitelimits_test.go`: add rows — `https://www.orb-studio.net` and `https://www.orb-studio.net:443` → true;
+  `http://www.orb-studio.net` → false; `https://api.orb-studio.net`, `https://orb-studio.net.evil.example` →
+  false; keep `https://orb-studio.net` true and `https://evil.orb-studio.net` false. Update
+  `TestSiteAllowedRefusalSentences` to the `orb-studio.net/www.orb-studio.net` spelling.
+- `siteimport_test.go`: the before-any-fetch test gains a `www.orb-studio.net` accepted and an
+  `api.orb-studio.net` refused-with-zero-requests case; add/extend a `resolveOrigin` test asserting a
+  `www.orb-studio.net` origin sidecar passes the gate with zero requests to a refused host.
 
 ## Gate
 

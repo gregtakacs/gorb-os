@@ -11,7 +11,7 @@ rules. This step proves the whole thing **in a real browser**, the gate of §12:
 - from an editor page, `/api/flash`, provisioning, erase, app install and the LAN proxy are all
   refused — shown by a **hostile editor** that tries each;
 - the control cookie never reaches an editor origin;
-- Edit (and Compose), Rebake all, Send to orb and Import from orb-os.net still work, end to end,
+- Edit (and Compose), Rebake all, Send to orb and Import from orb-studio.net still work, end to end,
   through the hub page's own functions, against a hub with `cmd/orbfake` as the orb;
 - the shelf editors run under the editor origin's content security policy with no violation.
 

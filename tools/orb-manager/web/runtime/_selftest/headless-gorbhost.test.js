@@ -522,7 +522,7 @@ async function scenario(host, pathname, themeQuery, map) {
           if (cfg.keepThrow) throw new TypeError('Failed to fetch');
           st.keeps.push({ url: String(url), method: (o && o.method) || 'GET', type: o && o.headers && o.headers['Content-Type'], bytes: new Uint8Array(o.body) });
           if (cfg.keepStatus) return resp(cfg.keepStatus, { ok: false, error: cfg.keepError });
-          return resp(200, { ok: true, data: { name: SN, file: 'tint-Skeleton by @greg.orbtheme', origin: { site: 'https://orb-os.net', designId: 'abcdefghijklmnopqrstuv', version: 3 } } });
+          return resp(200, { ok: true, data: { name: SN, file: 'tint-Skeleton by @greg.orbtheme', origin: { site: 'https://orb-studio.net', designId: 'abcdefghijklmnopqrstuv', version: 3 } } });
         }
         return resp(404, { ok: false, error: 'no route ' + p });
       };

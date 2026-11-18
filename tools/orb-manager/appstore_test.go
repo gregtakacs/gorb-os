@@ -113,7 +113,7 @@ func TestSiteAppsCatalogueProxiesAndCaches(t *testing.T) {
 	if d, _ := first["data"].(map[string]any); d == nil || d["site"] != srv.URL {
 		t.Errorf("the catalogue answer names site %v, want %q", first["data"].(map[string]any)["site"], srv.URL)
 	}
-	// A second press inside a minute is the cache, not a second call to orb-os.net.
+	// A second press inside a minute is the cache, not a second call to orb-studio.net.
 	second := designCall(t, s, http.MethodGet, "/api/site/apps", nil)
 	apps2, checkedAt2, _ := appsData(t, second)
 	if len(apps2) != 2 {
@@ -453,7 +453,7 @@ func TestSiteAppsGetAppsSectionIsThereAndShut(t *testing.T) {
 
 // A1 §7.4's one alarm, pinned in the same style: a banner above the app rows and now-
 // where-else, the sentence with the host read off the site-sourced row (never a
-// hardcoded orb-os.net, because GORB_SITE points wherever it points), the reason with
+// hardcoded orb-studio.net, because GORB_SITE points wherever it points), the reason with
 // its pre-A1 fallback, and the two branches the entry decides — Update that walks the
 // row's own ladder, or the one line with no press at all. Nothing in this face removes
 // a version, an app or a file.

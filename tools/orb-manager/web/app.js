@@ -3251,7 +3251,7 @@ let themeSub = "";
 let themeRowsAll = [];
 let themeAppsRows = [];
 let themeAppsErr = "";
-// siteImportPending is this face's word that an orb-os.net import owns the door: it
+// siteImportPending is this face's word that an orb-studio.net import owns the door: it
 // stands from the moment Import fetches the bundle until the editor reports the bake
 // (theme.imported) or the pane closes without one. It is what keeps a second press
 // out, and what closeThemeEditor reads to decide whether it owes a sentence.
@@ -4298,7 +4298,7 @@ async function themeBridge(ev) {
   if (m.type === "theme.ready") { back({ state: "ok" }); return; }
   if (m.type === "theme.close") { closeThemeEditor(); return; }
   if (m.type === "theme.busy") { themeEditorBusy = !!m.on; return; }
-  // H1-3: an orb-os.net import's own word that the bake landed in the hub's library.
+  // H1-3: an orb-studio.net import's own word that the bake landed in the hub's library.
   // The message is the editor's half of the door; the Theme library's link field is the
   // other, and this is the only place the two meet. An import for an app this frame
   // did not open is not this frame's news, so it is dropped like any other stranger.
@@ -5107,7 +5107,7 @@ $("#mn-up-btn").onclick = () => {
 //
 // Orb Manager's own shelf of themes, listed under the fleet (orb-os-net design ruling
 // 32). The shelf belongs to the hub rather than to a board, so this is the one place
-// themes are read with no orb in hand — which is also why the door onto orb-os.net
+// themes are read with no orb in hand — which is also why the door onto orb-studio.net
 // lives here and not in an orb's Themes tab: an import is fetched by the hub, baked by
 // the hub's own copy of the app's editor, and kept on the hub's shelf, and none of that
 // ever asks a board. Getting one ONTO a board stays that board's Themes tab's Install.
@@ -5151,7 +5151,7 @@ async function loadLibThemes() {
   }
   libApps = Array.isArray(data.apps) ? data.apps : [];
   libWhere($("#mn-lib-where"), data, "themes");
-  // the door onto orb-os.net shows only on a hub that has it open (-site)
+  // the door onto orb-studio.net shows only on a hub that has it open (-site)
   const site = data.site === true;
   for (const id of ["#mn-site-btn", "#mn-lib-upload"]) { const b = $(id); if (b) b.hidden = !site; }
   if (!site && $("#mn-site-row")) $("#mn-site-row").hidden = true;
@@ -5172,7 +5172,7 @@ async function loadLibThemes() {
     if (!themes.length) {
       const li = document.createElement("li");
       li.className = "hint";
-      li.textContent = site ? "No themes yet. Import one from orb-os.net, or keep one from an orb\u2019s Themes tab."
+      li.textContent = site ? "No themes yet. Import one from orb-studio.net, or keep one from an orb\u2019s Themes tab."
         : "No themes yet. Keep one from an orb\u2019s Themes tab.";
       list.appendChild(li);
     }
@@ -5310,7 +5310,7 @@ function updateRowLine(it, tags) {
     // origin, which is the keep the operator would have pressed anyway.
     const n = document.createElement("span");
     n.className = "upnote";
-    n.textContent = (it.title || "This theme") + " is no longer shared on orb-os.net; the theme stays, and Orb Manager will stop checking it.";
+    n.textContent = (it.title || "This theme") + " is no longer shared on orb-studio.net; the theme stays, and Orb Manager will stop checking it.";
     tags.appendChild(n);
     return;
   }
@@ -5517,7 +5517,7 @@ function applyClosed() {
   loadUpdates();
 }
 
-// ---- Import from orb-os.net ------------------------------------------------------
+// ---- Import from orb-studio.net ------------------------------------------------------
 //
 // The Theme library's door onto the site (orb-os-net design §7.1, slices H1 and H1b).
 // The hub does the fetching (h1-1's POST /api/site/import): it dials GET
@@ -5544,14 +5544,14 @@ $("#mn-site-btn").onclick = () => {
   if (!row) return;
   row.hidden = !row.hidden;
   if (!row.hidden && link) link.focus();
-  // Opening the door brings the My orb-os.net section on screen with it: read its state so
+  // Opening the door brings the My orb-studio.net section on screen with it: read its state so
   // a linked hub shows the list and an in-flight attempt resumes waiting.
   if (!row.hidden) loadSiteLink();
 };
 $("#mn-site-go").onclick = () => { siteImportPress(); };
 $("#mn-site-link").onkeydown = (e) => { if (e.key === "Enter") siteImportPress(); };
 
-// H3 §7.1 hub step 2: the "From orb-os.net" tray, built here rather than in index.html
+// H3 §7.1 hub step 2: the "From orb-studio.net" tray, built here rather than in index.html
 // so the Updates section keeps its markup of record and the block appears beside it at the
 // first look. Rows come from /api/site/inbox, which reads the hub's disk and never the
 // network, so the block opens on a plane's wifi. It refreshes with the tab's own idiom —
@@ -5611,7 +5611,7 @@ function siteInboxSection() {
   section.className = "fleet";
   section.hidden = true;
   const h = document.createElement("h3");
-  h.textContent = "From orb-os.net ";
+  h.textContent = "From orb-studio.net ";
   const c = document.createElement("span");
   c.id = "mn-inbox-count";
   c.className = "count";
@@ -5722,7 +5722,7 @@ function orbOnlyRow(t) {
 async function orbOnlyAdopt(t, go) {
   const state = document.getElementById("mn-orbonly-state");
   if (go) go.disabled = true;
-  if (state) state.textContent = "asking orb-os.net about \u201c" + String(t.name || "") + "\u201d\u2026";
+  if (state) state.textContent = "asking orb-studio.net about \u201c" + String(t.name || "") + "\u201d\u2026";
   let data = null, refusal = "";
   try {
     const r = await hubFetch("/api/site/orb-themes/adopt", {
@@ -5754,7 +5754,7 @@ async function siteImportPress() {
   if (!link || !go || !st) return;
   if (siteImportPending) return;
   const text = String(link.value || "").trim();
-  if (!text) { st.textContent = "paste a theme\u2019s link from orb-os.net first"; return; }
+  if (!text) { st.textContent = "paste a theme\u2019s link from orb-studio.net first"; return; }
   siteImportPending = true;
   go.disabled = true;
   st.textContent = "fetching the theme\u2026";
@@ -5792,7 +5792,7 @@ function siteInboxRow(it, data) {
   line.className = "ttags";
   const tag = document.createElement("span");
   tag.className = "tag mut";
-  const siteName = data && data.site ? siteHostWords(String(data.site)) : "orb-os.net";
+  const siteName = data && data.site ? siteHostWords(String(data.site)) : "orb-studio.net";
   tag.textContent = String(it.name || "theme") + " \u00b7 from " + siteName
     + (it.claimed ? " \u00b7 delivered " + siteInboxAgo(it.sentAt) : " \u00b7 waiting");
   line.appendChild(tag);
@@ -5889,7 +5889,7 @@ async function siteInboxDismiss(it, li) {
   loadSiteInbox();
 }
 
-// finishSiteImport is the shared tail of an orb-os.net import: the hub has fetched a
+// finishSiteImport is the shared tail of an orb-studio.net import: the hub has fetched a
 // bundle and held it under a ticket, and this decides whether Orb Manager can bake it and,
 // if so, opens the hub's own copy of the app's editor on that ticket. It is reached from
 // both doors H2 §7.2 opened — the pasted link (siteImportPress) and a signed-in owner's own
@@ -6025,7 +6025,7 @@ function siteImportClosed() {
   st.textContent = "the editor closed without importing: its status line said why";
 }
 
-// ---- My orb-os.net (H2 §7.2, hub step 3) ---------------------------------------------
+// ---- My orb-studio.net (H2 §7.2, hub step 3) ---------------------------------------------
 //
 // The human half of the site link. The hub owns the PKCE client, the token and every
 // request that leaves the machine (steps 1 and 2); this page only reads /api/site/link-status
@@ -6150,7 +6150,7 @@ async function siteAppAdd(slug, version, replace) {
     if (!replace && j && j.held === true) {
       const yes = await askConfirm({
         title: "Replace " + slug + "?",
-        body: "Orb Manager's library already holds " + slug + " from somewhere else (imported by hand or bundled), not from orb-os.net. Replace it with " + version + " from orb-os.net?",
+        body: "Orb Manager's library already holds " + slug + " from somewhere else (imported by hand or bundled), not from orb-studio.net. Replace it with " + version + " from orb-studio.net?",
         yes: "Replace",
       });
       if (!yes) return { ok: false, error: "kept the library's own " + slug + "; nothing was replaced" };
@@ -6187,19 +6187,19 @@ function drawSiteLink(data) {
   if (isLinked) {
     siteConnectUrl = "";
     const handle = data.handle ? String(data.handle) : "";
-    if (linked) linked.textContent = handle ? ("\u2014 Connected as @" + handle) : "\u2014 Connected to orb-os.net";
+    if (linked) linked.textContent = handle ? ("\u2014 Connected as @" + handle) : "\u2014 Connected to orb-studio.net";
     return;
   }
-  if (connect) connect.textContent = state === "disconnected" ? "Reconnect" : "Connect to orb-os.net";
+  if (connect) connect.textContent = state === "disconnected" ? "Reconnect" : "Connect to orb-studio.net";
   if (state === "pending") {
     if (conn) {
-      conn.textContent = "Waiting for orb-os.net\u2026";
+      conn.textContent = "Waiting for orb-studio.net\u2026";
       if (siteConnectUrl) appendSiteFallback(conn, siteConnectUrl);
     }
     startSiteLinkPoll();
   } else if (state === "disconnected") {
     siteConnectUrl = "";
-    if (conn) conn.textContent = "Disconnected from orb-os.net";
+    if (conn) conn.textContent = "Disconnected from orb-studio.net";
     stopSiteLinkPoll();
   } else {
     siteConnectUrl = "";
@@ -6242,7 +6242,7 @@ let siteDesignsSeq = 0;
 // which proxies the site's list with the stored bearer) and draws them. Nothing is cached:
 // the list is the page's claim about what is on the account right now, so an Import that
 // the site has since refused should not still be offered. An answer saying the link is gone
-// — "disconnected from orb-os.net", the token already cleared hub-side — flips the whole
+// — "disconnected from orb-studio.net", the token already cleared hub-side — flips the whole
 // section to the connect block with that sentence, because there is no state to invent: the
 // hub has already forgotten the credential.
 async function loadSiteDesigns() {
@@ -6262,10 +6262,10 @@ async function loadSiteDesigns() {
   // A newer read is already drawing this same list; this reply is the past.
   if (seq !== siteDesignsSeq) return;
   if (refusal) {
-    if (refusal === "disconnected from orb-os.net") {
+    if (refusal === "disconnected from orb-studio.net") {
       drawSiteLink({ state: "disconnected" });
       const conn = $("#mn-site-conn");
-      if (conn) conn.textContent = "disconnected from orb-os.net";
+      if (conn) conn.textContent = "disconnected from orb-studio.net";
       return;
     }
     const li = document.createElement("li");
@@ -6278,14 +6278,14 @@ async function loadSiteDesigns() {
   if (!designs.length) {
     const li = document.createElement("li");
     li.className = "hint";
-    li.textContent = "Nothing saved on orb-os.net yet.";
+    li.textContent = "Nothing saved on orb-studio.net yet.";
     ul.appendChild(li);
     return;
   }
   for (const d of designs) ul.appendChild(siteDesignRow(d));
 }
 
-// siteDesignRow builds one row of the My orb-os.net list through the DOM, the way the shelf
+// siteDesignRow builds one row of the My orb-studio.net list through the DOM, the way the shelf
 // rows are built: the design's name is bytes off the site and only ever lands in textContent,
 // never in markup. Each row names the app and version it is, carries a private/unlisted hint
 // word so a person sees why it is not public, and offers an Import button.
@@ -6317,7 +6317,7 @@ function siteDesignRow(d) {
   else { label = "unknown"; note = "A design whose app is not named"; }
   tag(label, "mut", note);
   const vis = (d && d.visibility) ? String(d.visibility) : "";
-  if (vis === "private" || vis === "unlisted") tag(vis, "mut", "Only you" + (vis === "unlisted" ? " (anyone with the link)" : "") + " can see this design on orb-os.net");
+  if (vis === "private" || vis === "unlisted") tag(vis, "mut", "Only you" + (vis === "unlisted" ? " (anyone with the link)" : "") + " can see this design on orb-studio.net");
   info.append(name, tags);
   li.appendChild(info);
   const actions = document.createElement("div");
@@ -6415,11 +6415,11 @@ async function siteDisconnectPress() {
     return;
   }
   stopSiteLinkPoll();
-  if (st) st.textContent = "disconnected from orb-os.net";
+  if (st) st.textContent = "disconnected from orb-studio.net";
   loadSiteLink();
 }
 
-// ---- Upload to orb-os.net (H4 §6, hub step 3) ---------------------------------------
+// ---- Upload to orb-studio.net (H4 §6, hub step 3) ---------------------------------------
 //
 // The dialog the H2 UI left disabled: one design off this hub's shelf, one visibility, one
 // press, one answer. It reads its picker from the hub (GET /api/site/local-designs) and
@@ -6648,12 +6648,12 @@ async function siteUploadSend(replaceId, replaceName) {
 // siteUploadAnswer is the one fork over the hub's envelope. ok draws what the site answered;
 // name_taken hands the clash to the three answers; every other error is the hub's sentence
 // verbatim — including the "Reconnect to allow uploads" a scope refusal and the "not connected
-// to orb-os.net" a door that closed — and the dialog stays open on all of them, because none of
+// to orb-studio.net" a door that closed — and the dialog stays open on all of them, because none of
 // them is a reason to take away what the human was looking at.
 function siteUploadAnswer(j) {
   if (j && j.ok === true) { siteUploadSuccess(j.data || {}); return; }
   if (j && j.error === "name_taken") { siteUploadClash(j); return; }
-  siteUploadSay(String((j && (j.error || j.message)) || "orb-os.net did not answer"));
+  siteUploadSay(String((j && (j.error || j.message)) || "orb-studio.net did not answer"));
 }
 
 function siteUploadSay(line) {
@@ -6673,15 +6673,15 @@ function siteUploadSuccess(data) {
   const refused = data ? data.shareRefused : null;
   const vis = refused ? "private" : String((data && data.visibility) || "private");
   const line = refused
-    ? "Uploaded to orb-os.net as private: " + String(refused.message || "")
-    : "Uploaded to orb-os.net as " + vis;
+    ? "Uploaded to orb-studio.net as private: " + String(refused.message || "")
+    : "Uploaded to orb-studio.net as " + vis;
   if (st) st.textContent = line;
   const url = (data && data.url) ? String(data.url) : "";
   if (!st || !url) return;
   const a = document.createElement("a");
   a.className = "site-fallback";
   a.href = url;
-  a.textContent = "Open " + String((data && data.name) || "") + " on orb-os.net";
+  a.textContent = "Open " + String((data && data.name) || "") + " on orb-studio.net";
   a.target = "_blank";
   a.rel = "noopener noreferrer";
   st.appendChild(document.createTextNode(" "));
@@ -6695,12 +6695,12 @@ function siteUploadSuccess(data) {
 function siteUploadClash(j) {
   const existing = j ? j.nameTaken : null;
   if (!existing || !existing.id) {
-    siteUploadSay(String((j && j.message) || "orb-os.net did not answer"));
+    siteUploadSay(String((j && j.message) || "orb-studio.net did not answer"));
     return;
   }
   nameTaken = existing;
   const line = $("#up-clash-line");
-  if (line) line.textContent = "orb-os.net already has a design called \u201c" + String(existing.name) + "\u201d.";
+  if (line) line.textContent = "orb-studio.net already has a design called \u201c" + String(existing.name) + "\u201d.";
   siteUploadAskAway();
   const st = $("#up-state");
   if (st) st.textContent = "";
@@ -6719,7 +6719,7 @@ function siteUploadReplaceAsk() {
   if (!existing || !existing.id) return;
   const line = $("#up-replace-line");
   if (line) {
-    line.textContent = "Replace adds a new version of \u201c" + String(existing.name) + "\u201d on orb-os.net. "
+    line.textContent = "Replace adds a new version of \u201c" + String(existing.name) + "\u201d on orb-studio.net. "
       + "It stays " + String(existing.visibility) + " and keeps its link, and the current version can be restored on the site.";
   }
   const ask = $("#up-replace-ask");

@@ -153,7 +153,7 @@ check-runner:
 	$(NODE) tools/orb-manager/web/runtime/_selftest/runner-check.js
 
 ## check-editor-origin: the S2 live gate, end to end. A real headless Chromium drives a real
-## hub (built here from this tree) against cmd/orbfake and a stand-in orb-os.net, and the
+## hub (built here from this tree) against cmd/orbfake and a stand-in orb-studio.net, and the
 ## eight claims of the editor-origin story are checked in the browser: edit on the app's own
 ## origin, Rebake all, Send to orb, import by link, no cookie on the editor port, no CSP
 ## violation in any flow, and a hostile third-party app refused into a wall that moves

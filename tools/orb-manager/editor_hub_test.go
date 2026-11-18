@@ -2,7 +2,7 @@ package main
 
 // H1b ruling 32: the hub's own editor door. `/editor/hub/<slug>/<file>` serves the region
 // inside the `.orbapp` this hub's app library holds, and it is the door Import from
-// orb-os.net bakes with — an import cannot be made to wait for an orb that runs the app.
+// orb-studio.net bakes with — an import cannot be made to wait for an orb that runs the app.
 //
 // What these tests are mostly about is what this door must NOT do: no address is checked,
 // no ledger is read, no dial is opened. The hub here is built with no orbfake at all, with
@@ -323,7 +323,7 @@ func TestLibraryOriginOnThemeRows(t *testing.T) {
 	put("aurora.orbtheme", orbfake.Container("Aurora"))
 	cloneFixture(t, filepath.Join(root, "apps"), "sentinel")
 	if err := writeThemeOrigin(imported, &ThemeOrigin{
-		Site: "https://orb-os.net", DesignID: siteDesignID, Version: 9, ImportedAt: 1730000000000,
+		Site: "https://orb-studio.net", DesignID: siteDesignID, Version: 9, ImportedAt: 1730000000000,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -356,7 +356,7 @@ func TestLibraryOriginOnThemeRows(t *testing.T) {
 	if !ok {
 		t.Fatalf("the imported row = %v, want an origin object", byName["tourbillon.orbtheme"])
 	}
-	if o["site"] != "https://orb-os.net" || o["designId"] != siteDesignID || o["version"] != float64(9) {
+	if o["site"] != "https://orb-studio.net" || o["designId"] != siteDesignID || o["version"] != float64(9) {
 		t.Errorf("origin = %v, want the site, the design id and the version imported", o)
 	}
 	if at, isNum := o["importedAt"].(float64); !isNum || at == 0 {

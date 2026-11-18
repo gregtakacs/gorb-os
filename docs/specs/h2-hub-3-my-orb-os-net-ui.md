@@ -1,12 +1,12 @@
-# H2 hub step 3: My orb-os.net in the Theme library
+# H2 hub step 3: My orb-studio.net in the Theme library
 
-> **Read `docs/specs/h2-design.md`'s "Lead review" block first: it is binding and overrides this spec where they disagree.** For this step: the section shows one of four states from `link-status`: none → **Connect to orb-os.net**; pending → `Waiting for orb-os.net…` with the URL as a fallback link; linked → `Connected as @<handle>` (or `Connected to orb-os.net` with no handle) with **Disconnect** and the My orb-os.net list; disconnected → **Disconnected from orb-os.net** with **Reconnect** (which is Connect). Pin those strings in the static test.
+> **Read `docs/specs/h2-design.md`'s "Lead review" block first: it is binding and overrides this spec where they disagree.** For this step: the section shows one of four states from `link-status`: none → **Connect to orb-studio.net**; pending → `Waiting for orb-studio.net…` with the URL as a fallback link; linked → `Connected as @<handle>` (or `Connected to orb-studio.net` with no handle) with **Disconnect** and the My orb-studio.net list; disconnected → **Disconnected from orb-studio.net** with **Reconnect** (which is Connect). Pin those strings in the static test.
 
 ## Goal
 
 Hub step 3 of 3, the last H2 artifact. The Themes tab of Orb Manager gains the
-human half of §7.2: a **Connect to orb-os.net** button that opens the browser
-and waits, and once linked a **My orb-os.net** list of the account's designs,
+human half of §7.2: a **Connect to orb-studio.net** button that opens the browser
+and waits, and once linked a **My orb-studio.net** list of the account's designs,
 each with an Import button riding step 2's `{designId}` door, and a Disconnect
 that means it. Upload stays dark (§8 (a)). After this step the H2 gate row is
 operable end to end by a human with two hubs and one account.
@@ -40,12 +40,12 @@ operable end to end by a human with two hubs and one account.
   - Designs rows are built through the DOM like the shelf already is (the site's
     `name` is foreign bytes, never markup): name, `app · v<version>`, an Import
     button, a private/unlisted hint word. Empty list: `Nothing saved on
-    orb-os.net yet.`
+    orb-studio.net yet.`
   - Import click: disable the button, POST `/api/site/import` `{"designId": …}`,
     and feed the successful `data` to the SAME tail `siteImportPress` runs after
     its fetch — refactor that tail into `finishSiteImport(data)` used by both,
     no copy.
-  - A `designs` read answering `disconnected from orb-os.net` flips the section
+  - A `designs` read answering `disconnected from orb-studio.net` flips the section
     to the connect block with that sentence in `#mn-site-conn` (the token is
     already gone hub-side; the UI catches up, no state to invent).
   - Connect click: POST `/api/site/connect`; the returned URL is opened by the

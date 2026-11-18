@@ -4,7 +4,7 @@ package main
 // POST /api/site/apps/add is the only way one of its apps reaches this hub's shelf, and the
 // `.origin.json` beside a kept `.orbapp` records where those bytes came from.
 //
-// The owner's Apps face asks the hub what orb-os.net holds; the hub fetches the public
+// The owner's Apps face asks the hub what orb-studio.net holds; the hub fetches the public
 // catalogue from GET <GORB_SITE>/api/hub/apps through its own no-redirect site client,
 // holds one copy in memory for five minutes, and answers the face with it. The catalogue
 // is public, so the hub forwards no bearer, cookie or token: what needs control is letting
@@ -208,14 +208,14 @@ const siteAddBodyMax = 4096
 // an unknown slug, a withdrawn one and an old live version, so the door cannot be walked one
 // probe at a time by a caller that is only asking for a list.
 const (
-	siteAddNoOffer     = "orb-os.net does not offer %s %s."
-	siteAddThrottled   = "orb-os.net is asking us to wait a minute."
-	siteAddUnreachable = "orb-os.net could not be reached."
-	siteAddNoHash      = "orb-os.net sent %s %s with no sha256 to check the bytes against"
-	siteAddOversize    = "orb-os.net sent a %s bigger than the %d MB the hub's own import takes"
-	siteAddHashDiff    = "the bytes orb-os.net sent for %s %s hash to %s and the store named %s"
-	siteAddNotThatApp  = "the file orb-os.net sent is not that app: %s"
-	siteAddHeld        = "The library already holds %s from somewhere else, not from orb-os.net: replace it with %s %s from orb-os.net?"
+	siteAddNoOffer     = "orb-studio.net does not offer %s %s."
+	siteAddThrottled   = "orb-studio.net is asking us to wait a minute."
+	siteAddUnreachable = "orb-studio.net could not be reached."
+	siteAddNoHash      = "orb-studio.net sent %s %s with no sha256 to check the bytes against"
+	siteAddOversize    = "orb-studio.net sent a %s bigger than the %d MB the hub's own import takes"
+	siteAddHashDiff    = "the bytes orb-studio.net sent for %s %s hash to %s and the store named %s"
+	siteAddNotThatApp  = "the file orb-studio.net sent is not that app: %s"
+	siteAddHeld        = "The library already holds %s from somewhere else, not from orb-studio.net: replace it with %s %s from orb-studio.net?"
 	siteAddNeedsPress  = "add needs a slug and a version: {\"slug\": \"aurora\", \"version\": \"v1.3.0\"}"
 )
 

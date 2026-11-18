@@ -1,7 +1,7 @@
 package main
 
 // orb-os-net design §7.1 (import by link) and §8.4 (the design bundle), H1: the hub's half
-// of "Import from orb-os.net".
+// of "Import from orb-studio.net".
 //
 // The owner pastes a design's link — https://<site>/t/<id> — into the Themes tab. The hub
 // fetches that design's bundle from GET <site>/api/hub/theme/<id>, checks what came back,
@@ -64,7 +64,7 @@ const (
 
 // siteLinkRefused is what every unreadable paste gets: one sentence, naming the shape a
 // link has, rather than a diagnosis of which rule the text broke.
-const siteLinkRefused = "paste a theme’s link from orb-os.net, like https://orb-os.net/t/AbCdEfGhIjKlMnOpQrStUv"
+const siteLinkRefused = "paste a theme’s link from orb-studio.net, like https://orb-studio.net/t/AbCdEfGhIjKlMnOpQrStUv"
 
 // siteTicketGone is the answer on either ticket door once the import is no longer held.
 const siteTicketGone = "that import has expired: paste the link again"

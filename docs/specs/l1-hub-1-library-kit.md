@@ -72,7 +72,7 @@ OrbTheme.library = OrbTheme.library || {
    - `<input type="file">` exactly as today, only when `OrbTheme.hostInfo().files` (missing
      `OrbTheme` → treat as the hub default: files true, library false);
    - a `button` with class `ui-ghost st-sm`, text `Your library…`, title `Pick a picture from
-     your orb-os.net library` / `Pick a sound from your orb-os.net library`, only when
+     your orb-studio.net library` / `Pick a sound from your orb-studio.net library`, only when
      `hostInfo().library` and `lib` is given; pressing it opens `S.LibraryPicker` for this row
      (state held in `FieldRow` with `React.useState`);
    - the value line as today. Under `files: false` with no `lib`, no control at all.
@@ -94,7 +94,7 @@ OrbTheme.library = OrbTheme.library || {
    - Picking: `OrbTheme.library.pick(asset)`; `ok` → `p.onPick(result)` then `p.onClose()`;
      not ok → the message in the body, the modal stays open.
    - Empty (after the filter): `No pictures in your library yet.` / `No sounds in your library yet.`
-     and a hint line `Add them on orb-os.net, under Assets.`
+     and a hint line `Add them on orb-studio.net, under Assets.`
    - A failed list: the message from `list()`.
    - Footer: one `Cancel` button → `onClose`. Escape closes; a click on the backdrop closes
      (as `S.Confirm`).

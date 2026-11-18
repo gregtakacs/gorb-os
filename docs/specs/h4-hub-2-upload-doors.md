@@ -92,14 +92,14 @@ reads the local library. No HTML and no button in this step — step 3 wires the
 | 201 object | `{"ok":true,"data":<the site's object, verbatim>}` — `url` untouched |
 | 403 `insufficient_scope` | `{"ok":false,"error":"Reconnect to allow uploads"}`, credential kept |
 | 409 `name_taken` | `{"ok":false,"error":"name_taken","message":<site's message>,"nameTaken":<site's existing object>}` |
-| 401 | `forgetSiteLink(l)` then `{"ok":false,"error":"disconnected from orb-os.net"}` |
-| Any other status | `{"ok":false,"error":<the site's `message` when its body is a §2 envelope carrying one, else `orb-os.net did not answer`>}`, credential kept |
-| Timeout, connection refused, oversize or unparsable answer | `{"ok":false,"error":"orb-os.net did not answer"}`, credential kept |
+| 401 | `forgetSiteLink(l)` then `{"ok":false,"error":"disconnected from orb-studio.net"}` |
+| Any other status | `{"ok":false,"error":<the site's `message` when its body is a §2 envelope carrying one, else `orb-studio.net did not answer`>}`, credential kept |
+| Timeout, connection refused, oversize or unparsable answer | `{"ok":false,"error":"orb-studio.net did not answer"}`, credential kept |
 
   The `data` object passes an envelope check (an object with a string `id` and a string `url`)
   and is forwarded as `json.RawMessage`, never into a hub struct — the reason
   `siteDesignsObject` checks an envelope rather than a schema. A 201 failing that check is
-  `orb-os.net did not answer`. `name_taken` is matched on the site's `error` **word** (the two
+  `orb-studio.net did not answer`. `name_taken` is matched on the site's `error` **word** (the two
   credential answers above are matched on status, because status is the only thing they say): a
   site that answers the clash at another status still reaches the human's confirm. When the
   clash's body carries no `existing` object — the race h4-design.md §3.2 names, where the site's

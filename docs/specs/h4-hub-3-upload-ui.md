@@ -33,9 +33,9 @@ three answers.
 
 - `index.html`: `#mn-lib-upload` loses `disabled` and its placeholder title, keeping `hidden`
   (app.js shows it for `-site` hubs and nothing else changes its visibility); its title becomes
-  `Send a design from this hub's library to your orb-os.net account. It lands in your library
+  `Send a design from this hub's library to your orb-studio.net account. It lands in your library
   there under the same name; nothing on the site is changed.` A `#mn-lib-reconnect` ghost button,
-  `hidden` in markup and titled `Link this Orb Manager to your orb-os.net account again, and
+  `hidden` in markup and titled `Link this Orb Manager to your orb-studio.net account again, and
   approve the two scopes`, joins the toolbar row beside it. A new `class="mask"
   id="up-mask"` wrapper holding `id="up-panel" role="dialog" aria-modal="true"` sits with the
   other masks, containing, by id: `#up-title`, `#up-app`, `#up-name` (both `<select>`),
@@ -72,18 +72,18 @@ three answers.
     reads `Uploading <name>…` while it runs, naming the design as the human asked for it, and the
     button comes back on every answer including
     a stall.
-  - Answers: `ok` → `#up-state` reads `Uploaded to orb-os.net as ` plus the visibility **the site
+  - Answers: `ok` → `#up-state` reads `Uploaded to orb-studio.net as ` plus the visibility **the site
     answered** (`private`, `unlisted` or `public`, from `data.visibility`, never from the radio),
     followed by an anchor
-    `Open <name on the site's answer, not the local spelling> on orb-os.net` whose `href` is the
+    `Open <name on the site's answer, not the local spelling> on orb-studio.net` whose `href` is the
     answer's `url` assigned as a property (`rel="noopener noreferrer"`, `target="_blank"`, as
     `appendSiteFallback` does). A `data.shareRefused` member changes only the sentence around that
-    anchor: `Uploaded to orb-os.net as private: ` + its `message` verbatim — the design is on the
+    anchor: `Uploaded to orb-studio.net as private: ` + its `message` verbatim — the design is on the
     site and only its share failed, so the line says both facts and the link still appears.
     `error === "name_taken"` → `#up-clash` unhides with `#up-clash-line`
-    reading `orb-os.net already has a design called “<existing.name>”.`; **Replace** unhides
+    reading `orb-studio.net already has a design called “<existing.name>”.`; **Replace** unhides
     `#up-replace-ask` and sends nothing — that row's line reads `Replace adds a new version of
-    “<existing.name>” on orb-os.net. It stays <existing.visibility> and keeps its link, and the
+    “<existing.name>” on orb-studio.net. It stays <existing.visibility> and keeps its link, and the
     current version can be restored on the site.` with **Replace** on `#up-replace-yes` (which is
     the press that re-sends with the `nameTaken.id` and `nameTaken.existing.name` as the two
     replace arguments) and **Cancel** on `#up-replace-no` (which
@@ -144,7 +144,7 @@ The pins go in `ui_test.go` beside `TestSiteUISectionIsThereAndShut`, in that fi
   `existing.name`, `existing.visibility` and nothing invented — the pin is that the human reads
   what a Replace does (a new version, the visibility kept, the old version restorable) before the
   bytes move, since a Replace is the one answer that changes something already on the site.
-- `TestSiteUploadSuccessNamesTheVisibility`: the ok path's sentence is `Uploaded to orb-os.net as`
+- `TestSiteUploadSuccessNamesTheVisibility`: the ok path's sentence is `Uploaded to orb-studio.net as`
   followed by `data.visibility`, and the body contains no read of the radio's value in that
   branch (a Replace's answer says `public` even when the radio said `private`, and the line must
   not contradict the site); `shareRefused` is drawn as `as private: ` plus its `message` through
@@ -157,7 +157,7 @@ The pins go in `ui_test.go` beside `TestSiteUISectionIsThereAndShut`, in that fi
   (`#up-go` disabled, `Uploading <name>…`), refused (sentence shown, dialog open, button live),
   succeeded (link shown, and reopening the dialog clears the row and the clash). A hub whose
   `-site` door closes between the draw and the press gets the door's own `not connected to
-  orb-os.net` sentence, not a JS error: the send path has one `catch` and it draws.
+  orb-studio.net` sentence, not a JS error: the send path has one `catch` and it draws.
 
 ## Acceptance criteria
 

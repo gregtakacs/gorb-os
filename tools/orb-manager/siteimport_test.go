@@ -1,6 +1,6 @@
 package main
 
-// orb-os-net §7.1 H1: the hub's half of "Import from orb-os.net" — the link, the fetch,
+// orb-os-net §7.1 H1: the hub's half of "Import from orb-studio.net" — the link, the fetch,
 // the checks, the ticket, the keep with its origin record — run through the same
 // s.routes(mux) the binary serves, against a site that is an httptest handler.
 
@@ -155,16 +155,16 @@ func untokenedCall(t *testing.T, s *Server, method, path string, body []byte) *h
 // says one sentence when the text is not a design's link.
 func TestSiteLinkNamesOneDesignOnOneSite(t *testing.T) {
 	ok := []struct{ paste, site, id string }{
-		{"https://orb-os.net/t/" + siteDesignID, "https://orb-os.net", siteDesignID},
-		{"  https://orb-os.net/t/" + siteDesignID + "/  ", "https://orb-os.net", siteDesignID},
-		{"https://orb-os.net/t/" + siteDesignID + "?utm=share#copy", "https://orb-os.net", siteDesignID},
+		{"https://orb-studio.net/t/" + siteDesignID, "https://orb-studio.net", siteDesignID},
+		{"  https://orb-studio.net/t/" + siteDesignID + "/  ", "https://orb-studio.net", siteDesignID},
+		{"https://orb-studio.net/t/" + siteDesignID + "?utm=share#copy", "https://orb-studio.net", siteDesignID},
 		{"orb.takacsfamily.com/t/" + siteDesignID, "https://orb.takacsfamily.com", siteDesignID},
-		{"HTTPS://ORB-OS.NET/t/" + siteDesignID, "https://orb-os.net", siteDesignID},
+		{"HTTPS://ORB-STUDIO.NET/t/" + siteDesignID, "https://orb-studio.net", siteDesignID},
 		// fu2-3 (ruling 35, as amended 2026-11-11): the site's other public name is the
 		// same site to this door, canonicalised and kept https-only exactly as its apex.
-		{"https://www.orb-os.net/t/" + siteDesignID, "https://www.orb-os.net", siteDesignID},
-		{"www.orb-os.net/t/" + siteDesignID, "https://www.orb-os.net", siteDesignID},
-		{"HTTPS://WWW.Orb-OS.NET/t/" + siteDesignID, "https://www.orb-os.net", siteDesignID},
+		{"https://www.orb-studio.net/t/" + siteDesignID, "https://www.orb-studio.net", siteDesignID},
+		{"www.orb-studio.net/t/" + siteDesignID, "https://www.orb-studio.net", siteDesignID},
+		{"HTTPS://WWW.Orb-Studio.NET/t/" + siteDesignID, "https://www.orb-studio.net", siteDesignID},
 		{"http://127.0.0.1:8080/t/" + siteDesignID, "http://127.0.0.1:8080", siteDesignID},
 		{"http://localhost/t/" + siteDesignID, "http://localhost", siteDesignID},
 		{"http://[::1]:8080/t/" + siteDesignID, "http://[::1]:8080", siteDesignID},
@@ -180,12 +180,12 @@ func TestSiteLinkNamesOneDesignOnOneSite(t *testing.T) {
 		}
 	}
 	bad := []string{
-		"", "   ", "hello", "orb-os.net", "https://orb-os.net/", "https://orb-os.net/t/",
-		"https://orb-os.net/t/AbCdEfGhIjKlMnOpQrStu",  // 21 characters
-		"https://orb-os.net/t/" + siteDesignID + "/x", // a path that goes on
-		"https://greg@orb-os.net/t/" + siteDesignID,   // userinfo
-		"ftp://orb-os.net/t/" + siteDesignID,          // not a web scheme
-		"https://orb-os.net/" + siteDesignID,          // no /t/ to say what the id is
+		"", "   ", "hello", "orb-studio.net", "https://orb-studio.net/", "https://orb-studio.net/t/",
+		"https://orb-studio.net/t/AbCdEfGhIjKlMnOpQrStu",  // 21 characters
+		"https://orb-studio.net/t/" + siteDesignID + "/x", // a path that goes on
+		"https://greg@orb-studio.net/t/" + siteDesignID,   // userinfo
+		"ftp://orb-studio.net/t/" + siteDesignID,          // not a web scheme
+		"https://orb-studio.net/" + siteDesignID,          // no /t/ to say what the id is
 	}
 	for _, p := range bad {
 		if _, _, err := parseSiteLink(p); err == nil || err.Error() != siteLinkRefused {
@@ -194,18 +194,18 @@ func TestSiteLinkNamesOneDesignOnOneSite(t *testing.T) {
 	}
 	// A remote http:// link is not a malformed paste: the owner has a link, and the one
 	// thing they can do about it is get the https one.
-	if _, _, err := parseSiteLink("http://orb-os.net/t/" + siteDesignID); err == nil ||
+	if _, _, err := parseSiteLink("http://orb-studio.net/t/" + siteDesignID); err == nil ||
 		err.Error() != "the link must start with https://" {
 		t.Errorf("a remote http link = %v, want the https sentence", err)
 	}
-	if _, _, err := parseSiteLink("http://www.orb-os.net/t/" + siteDesignID); err == nil ||
+	if _, _, err := parseSiteLink("http://www.orb-studio.net/t/" + siteDesignID); err == nil ||
 		err.Error() != "the link must start with https://" {
 		t.Errorf("a remote http link under the site's www name = %v, want the https sentence", err)
 	}
 }
 
 // TestSiteImportGateOpensBothNamesOfTheSite: fu2-3 (ruling 35, as amended 2026-11-11).
-// orb-os.net and www.orb-os.net are the two public names of the one site the hub imports
+// orb-studio.net and www.orb-studio.net are the two public names of the one site the hub imports
 // from, so both clear the gate and reach the fetch; any other subdomain of the domain is
 // refused by the gate itself, and the refusal costs the hub no request at all. The client
 // here is a transport that answers from memory and remembers the host it was asked for:
@@ -221,14 +221,14 @@ func TestSiteImportGateOpensBothNamesOfTheSite(t *testing.T) {
 		_, _ = w.Write(goodBundle(t, siteDesignID, 3, "clock", "Skeleton by @greg"))
 		return w.Result(), nil
 	})}
-	for _, site := range []string{"https://orb-os.net", "https://www.orb-os.net"} {
+	for _, site := range []string{"https://orb-studio.net", "https://www.orb-studio.net"} {
 		ticketOf(t, siteImport(t, s, site+"/t/"+siteDesignID))
 	}
-	if want := []string{"orb-os.net", "www.orb-os.net"}; !slices.Equal(dials, want) {
+	if want := []string{"orb-studio.net", "www.orb-studio.net"}; !slices.Equal(dials, want) {
 		t.Errorf("the gate opened for %v, want exactly %v", dials, want)
 	}
-	want := "Orb Manager imports themes only from orb.takacsfamily.com and orb-os.net/www.orb-os.net, not from api.orb-os.net"
-	if got := importErr(t, s, "https://api.orb-os.net/t/"+siteDesignID); got != want {
+	want := "Orb Manager imports themes only from orb.takacsfamily.com and orb-studio.net/www.orb-studio.net, not from api.orb-studio.net"
+	if got := importErr(t, s, "https://api.orb-studio.net/t/"+siteDesignID); got != want {
 		t.Errorf("import of a refused subdomain = %q, want %q", got, want)
 	}
 	if n := len(dials); n != 2 {
@@ -440,7 +440,7 @@ func TestSiteImportDoorRefusesWhatIsNotALink(t *testing.T) {
 		}
 	}
 	env := designCall(t, s, http.MethodPost, "/api/site/import",
-		[]byte(`{"link":"https://orb-os.net/t/`+siteDesignID+`?pad=`+strings.Repeat("p", siteLinkMax)+`"}`))
+		[]byte(`{"link":"https://orb-studio.net/t/`+siteDesignID+`?pad=`+strings.Repeat("p", siteLinkMax)+`"}`))
 	if env["ok"] != false || env["error"] != siteLinkRefused {
 		t.Errorf("an oversized paste = %v, want the link sentence", env)
 	}
@@ -735,7 +735,7 @@ func TestSiteImportTicketsExpireAndTheStoreCaps(t *testing.T) {
 	fake := time.Unix(1700000000, 0)
 	st.now = func() time.Time { return fake }
 	add := func() string {
-		tk, err := st.add(&siteTicket{site: "https://orb-os.net", id: siteDesignID, sharedName: "x"})
+		tk, err := st.add(&siteTicket{site: "https://orb-studio.net", id: siteDesignID, sharedName: "x"})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -785,7 +785,7 @@ func TestSiteImportDoorsRefuseAnUntokenedRequest(t *testing.T) {
 		{http.MethodGet, "/api/site/bundle?ticket=" + siteDesignID},
 		{http.MethodPost, "/api/site/keep?ticket=" + siteDesignID},
 	} {
-		rec := untokenedCall(t, s, c.method, c.path, []byte(`{"link":"https://orb-os.net/t/`+siteDesignID+`"}`))
+		rec := untokenedCall(t, s, c.method, c.path, []byte(`{"link":"https://orb-studio.net/t/`+siteDesignID+`"}`))
 		if rec.Code != http.StatusForbidden {
 			t.Errorf("%s %s with no token = %d, want 403 from requireControl", c.method, c.path, rec.Code)
 		}
@@ -806,9 +806,9 @@ func TestThemeOriginIsOnlyThereWhenTheRecordSaysSo(t *testing.T) {
 	}
 	put("tourbillon.orbtheme", orbfake.Container("Tourbillon"))
 	for _, junk := range []string{`{"site":"","designId":"` + siteDesignID + `","version":9}`,
-		`{"site":"https://orb-os.net","designId":"","version":9}`,
-		`{"site":"https://orb-os.net","designId":"` + siteDesignID + `","version":0}`,
-		`{"site":"https://orb-os.net","designId":"` + siteDesignID + `"}`,
+		`{"site":"https://orb-studio.net","designId":"","version":9}`,
+		`{"site":"https://orb-studio.net","designId":"` + siteDesignID + `","version":0}`,
+		`{"site":"https://orb-studio.net","designId":"` + siteDesignID + `"}`,
 		`not json at all`} {
 		put("tourbillon.orbtheme.origin.json", []byte(junk))
 		if o := readThemeOrigin(filepath.Join(shelf, "tourbillon.orbtheme")); o != nil {
@@ -820,7 +820,7 @@ func TestThemeOriginIsOnlyThereWhenTheRecordSaysSo(t *testing.T) {
 	if bytes.Contains(rec.Body.Bytes(), []byte(`"origin"`)) {
 		t.Errorf("entries = %.200s, want no origin key for a theme the hub never imported", rec.Body)
 	}
-	put("skeleton.orbtheme.origin.json", []byte(`{"site":"https://orb-os.net","designId":"`+siteDesignID+`","version":2}`))
+	put("skeleton.orbtheme.origin.json", []byte(`{"site":"https://orb-studio.net","designId":"`+siteDesignID+`","version":2}`))
 	if es := entriesOf(t, s, "clock"); len(es) != 1 {
 		t.Errorf("entries = %v, want Tourbillon alone: a record is not a theme", es)
 	}
@@ -939,7 +939,7 @@ func TestSiteDoorShutWithoutTheFlag(t *testing.T) {
 			t.Errorf("#%s is not hidden in the markup, so it shows before the hub says the site is open", id)
 		}
 	}
-	// H2 step 3: My orb-os.net — the connect block and the design list — stand INSIDE
+	// H2 step 3: My orb-studio.net — the connect block and the design list — stand INSIDE
 	// #mn-site-row, so a shut hub hiding that row (which it does every time the library says
 	// site:false) puts them away with it. A sibling of the row would leak a Connect button onto
 	// a release that has no /api/site/connect to answer it. The row closes at its first </div>.
@@ -1048,7 +1048,7 @@ func TestResolveOriginGateOpensTheSitesWwwName(t *testing.T) {
 		_, _ = w.Write([]byte(`{"designId":"` + siteDesignID + `","app":"clock","version":9,"sharedName":"Night dial by @greg","handle":"greg"}`))
 		return w.Result(), nil
 	})}
-	for _, site := range []string{"https://orb-os.net", "https://www.orb-os.net"} {
+	for _, site := range []string{"https://orb-studio.net", "https://www.orb-studio.net"} {
 		ans, err := s.resolveOrigin(context.Background(), &ThemeOrigin{Site: site, DesignID: siteDesignID, Version: 3})
 		if err != nil {
 			t.Errorf("resolveOrigin(%q): %v", site, err)
@@ -1058,12 +1058,12 @@ func TestResolveOriginGateOpensTheSitesWwwName(t *testing.T) {
 			t.Errorf("resolveOrigin(%q) = %+v, want the answer the site gave", site, ans)
 		}
 	}
-	if want := []string{"orb-os.net", "www.orb-os.net"}; !slices.Equal(dials, want) {
+	if want := []string{"orb-studio.net", "www.orb-studio.net"}; !slices.Equal(dials, want) {
 		t.Errorf("the gate opened for %v, want exactly %v", dials, want)
 	}
-	want := "Orb Manager imports themes only from orb.takacsfamily.com and orb-os.net/www.orb-os.net, not from www.orb-os.net.evil.example"
+	want := "Orb Manager imports themes only from orb.takacsfamily.com and orb-studio.net/www.orb-studio.net, not from www.orb-studio.net.evil.example"
 	if _, err := s.resolveOrigin(context.Background(), &ThemeOrigin{
-		Site: "https://www.orb-os.net.evil.example", DesignID: siteDesignID, Version: 3,
+		Site: "https://www.orb-studio.net.evil.example", DesignID: siteDesignID, Version: 3,
 	}); err == nil || err.Error() != want {
 		t.Errorf("a look-alike origin = %v, want %q", err, want)
 	}
@@ -1152,8 +1152,8 @@ func TestResolveSendsBearerOnlyToItsSite(t *testing.T) {
 	})
 
 	// The production shape, with the site stood in by a transport: a hub linked to
-	// orb-os.net asks orb-os.net with its bearer, and a hub linked to a bench site asks
-	// orb-os.net as anonymously as the paste door always did.
+	// orb-studio.net asks orb-studio.net with its bearer, and a hub linked to a bench site asks
+	// orb-studio.net as anonymously as the paste door always did.
 	siteStoodIn := func(s *Server, seen *http.Header, body string) {
 		s.siteClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
 			*seen = r.Header.Clone()
@@ -1163,27 +1163,27 @@ func TestResolveSendsBearerOnlyToItsSite(t *testing.T) {
 			return rec.Result(), nil
 		})}
 	}
-	t.Run("orb-os.net is the site this hub is linked to", func(t *testing.T) {
-		s, tok := linkedHub(t, "https://"+orbOSNet)
+	t.Run("orb-studio.net is the site this hub is linked to", func(t *testing.T) {
+		s, tok := linkedHub(t, "https://"+publicSite)
 		var seen http.Header
 		siteStoodIn(s, &seen, `{"designId":"`+siteDesignID+`","app":"clock","version":9}`)
-		if ans, err := asked(t, s, "https://"+orbOSNet); err != nil || ans == nil || !ans.Resolved {
-			t.Fatalf("the resolve to orb-os.net: %v %+v", err, ans)
+		if ans, err := asked(t, s, "https://"+publicSite); err != nil || ans == nil || !ans.Resolved {
+			t.Fatalf("the resolve to orb-studio.net: %v %+v", err, ans)
 		}
 		if got := seen.Get("Authorization"); got != "Bearer "+tok {
-			t.Errorf("a resolve to the orb-os.net this hub is linked to carried %q, want its bearer", got)
+			t.Errorf("a resolve to the orb-studio.net this hub is linked to carried %q, want its bearer", got)
 		}
 	})
-	t.Run("a bench site’s link does not ride to orb-os.net", func(t *testing.T) {
+	t.Run("a bench site’s link does not ride to orb-studio.net", func(t *testing.T) {
 		a, _ := siteServer(t, answers)
 		s, _ := linkedHub(t, a.URL)
 		var seen http.Header
 		siteStoodIn(s, &seen, `{"designId":"`+siteDesignID+`","app":"clock","version":9}`)
-		if _, err := asked(t, s, "https://"+orbOSNet); err != nil {
-			t.Fatalf("the resolve to orb-os.net: %v", err)
+		if _, err := asked(t, s, "https://"+publicSite); err != nil {
+			t.Fatalf("the resolve to orb-studio.net: %v", err)
 		}
 		if got := seen.Get("Authorization"); got != "" {
-			t.Errorf("a link minted by a bench site carried %q to orb-os.net", got)
+			t.Errorf("a link minted by a bench site carried %q to orb-studio.net", got)
 		}
 	})
 
@@ -1409,7 +1409,7 @@ func TestSiteImportIdRefusesWhatItCannotImport(t *testing.T) {
 		srv, asks := siteServer(t, func(w http.ResponseWriter, r *http.Request) {})
 		t.Setenv("GORB_SITE", srv.URL)
 		s.statePath = filepath.Join(t.TempDir(), "state.json")
-		if got := importIDErr(t, s, siteDesignID); got != "not connected to orb-os.net" {
+		if got := importIDErr(t, s, siteDesignID); got != "not connected to orb-studio.net" {
 			t.Errorf("an unlinked hub = %q, want the sentence that says so", got)
 		}
 		if len(*asks) != 0 {
@@ -1423,7 +1423,7 @@ func TestSiteImportIdRefusesWhatItCannotImport(t *testing.T) {
 		if err := s.saveSiteLink(&siteLink{Site: siteReleaseBase(), Handle: "greg", Disconnected: true}); err != nil {
 			t.Fatal(err)
 		}
-		if got := importIDErr(t, s, siteDesignID); got != "not connected to orb-os.net" {
+		if got := importIDErr(t, s, siteDesignID); got != "not connected to orb-studio.net" {
 			t.Errorf("a disconnected hub = %q, want the sentence that says so", got)
 		}
 		if len(*asks) != 0 {
@@ -1435,7 +1435,7 @@ func TestSiteImportIdRefusesWhatItCannotImport(t *testing.T) {
 			t.Error("a hub with a malformed id still dialed its site")
 		})
 		for _, id := range []string{"short", "", "   ", strings.Repeat("a", 23), "AbCdEfGhIjKlMnOpQrStU.",
-			"https://orb-os.net/t/" + siteDesignID, siteDesignID + "/download", "t/" + siteDesignID, "AbCdEfGhIjKlMnOpQrStU~", " " + strings.Repeat("a", 21) + "!"} {
+			"https://orb-studio.net/t/" + siteDesignID, siteDesignID + "/download", "t/" + siteDesignID, "AbCdEfGhIjKlMnOpQrStU~", " " + strings.Repeat("a", 21) + "!"} {
 			if got := importIDErr(t, s, id); got != siteLinkRefused {
 				t.Errorf("designId %q = %q, want the one link sentence", id, got)
 			}
@@ -1489,7 +1489,7 @@ func TestSiteImportIdRefusesWhatItCannotImport(t *testing.T) {
 			w.WriteHeader(http.StatusUnauthorized)
 			_, _ = w.Write([]byte(`{"error":"unauthenticated"}`))
 		})
-		if got := importIDErr(t, s, siteDesignID); got != "disconnected from orb-os.net" {
+		if got := importIDErr(t, s, siteDesignID); got != "disconnected from orb-studio.net" {
 			t.Errorf("a 401 = %q, want the sentence that says the link is over", got)
 		}
 		if len(*asks) != 1 {

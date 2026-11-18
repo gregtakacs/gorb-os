@@ -193,7 +193,7 @@
       var s = (q && q.get('shared')) || '';
       return OrbTheme.hostInfo().kind === 'web' && /^[A-Za-z0-9_-]{22}$/.test(s) ? s : null;
     };
-    // ?import=<ticket> (the hub's Import from orb-os.net): the ticket, when this page was opened
+    // ?import=<ticket> (the hub's Import from orb-studio.net): the ticket, when this page was opened
     // on the hub for one; a site page ignores it entirely
     var importOf = function (q) {
       var t = (q && q.get('import')) || '';
@@ -922,7 +922,7 @@
       say('Downloaded “' + want + '”');
       return true;
     };
-    /* ?import=<ticket> (the hub's Import from orb-os.net, orb-os-net design §7.1): a site's design
+    /* ?import=<ticket> (the hub's Import from orb-studio.net, orb-os-net design §7.1): a site's design
      * bundle the hub fetched and holds for one import. It opens here, bakes under the shared name
      * the bundle carries, and the bake is what the hub files in its library beside where it came
      * from. Nothing is saved as a draft, and the editor stays on the design: it can be looked at,

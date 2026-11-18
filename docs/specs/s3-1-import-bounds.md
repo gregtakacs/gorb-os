@@ -3,8 +3,8 @@
 ## Goal
 
 Slice S3 of orb-os-net's design (ruling 35), gorb-os half, step 1 of 2. Orb Manager's "Import
-from orb-os.net" accepts a link only when its host is the configured site (`GORB_SITE`, the
-same resolver G3's release check uses, default `https://orb.takacsfamily.com`) or `orb-os.net`,
+from orb-studio.net" accepts a link only when its host is the configured site (`GORB_SITE`, the
+same resolver G3's release check uses, default `https://orb.takacsfamily.com`) or `orb-studio.net`,
 plus loopback for tests and a developer's own site, as today. Any other host is refused before
 any network request. And a bundle whose art is not a PNG, JPEG, GIF or WebP of at most
 1024 × 1024 pixels (read from the image header, never decoded) is refused, with the same rules
@@ -33,7 +33,7 @@ the site now applies when it stores art.
 
 ```go
 // orbOSNet is the site's future home (§11): always allowed, https only.
-const orbOSNet = "orb-os.net"
+const orbOSNet = "orb-studio.net"
 // siteAllowed reports whether a canonical site origin (scheme://host[:port], as parseSiteLink
 // answers it) is one Orb Manager may import from or ask about.
 func siteAllowed(site string) bool
@@ -52,18 +52,18 @@ func artRefusal(prefix string, b []byte) string
 1. it equals the configured site: `siteReleaseBase()` canonicalised the way `parseSiteLink`
    canonicalises (scheme lower-case, host lower-case, port kept). For `https`, an explicit `:443`
    on either side is ignored for the comparison.
-2. it is `https://orb-os.net` (or `https://orb-os.net:443`). Not `www.orb-os.net`, not another
+2. it is `https://orb-studio.net` (or `https://orb-studio.net:443`). Not `www.orb-studio.net`, not another
    port, not http.
 3. its hostname is loopback: `localhost`, `127.0.0.1` or `::1`, any port, http or https, exactly
    as `parseSiteLink` already lets plain http through to these.
 
 `siteNotAllowed(site)` returns, verbatim (curly apostrophes not needed; `×` is U+00D7 elsewhere):
 
-`Orb Manager imports themes only from <A> and orb-os.net, not from <host>`
+`Orb Manager imports themes only from <A> and orb-studio.net, not from <host>`
 
 where `<A>` is the configured site's host (`siteHost` of the canonical configured origin) and
-`<host>` is `siteHost(site)`. When the configured site IS `orb-os.net`, the sentence is
-`Orb Manager imports themes only from orb-os.net, not from <host>`.
+`<host>` is `siteHost(site)`. When the configured site IS `orb-studio.net`, the sentence is
+`Orb Manager imports themes only from orb-studio.net, not from <host>`.
 
 Art sentences (Go), verbatim:
 - type: `an image in it is not a PNG, JPEG, GIF or WebP, the only pictures a design can hold`
@@ -99,9 +99,9 @@ Art sentences (Go), verbatim:
 
 ## Behaviour and edge cases
 
-- `https://evil.example/t/<22-char id>` → `Orb Manager imports themes only from orb.takacsfamily.com and orb-os.net, not from evil.example`, and the injected `siteClient`'s transport sees zero requests.
-- `https://orb-os.net/t/<id>`, `orb.takacsfamily.com/t/<id>`, `http://127.0.0.1:<port>/t/<id>`, `http://[::1]:8080/t/<id>` keep parsing as today.
-- With `GORB_SITE=https://site.example:8443`: `https://site.example:8443/t/<id>` is allowed, `https://site.example/t/<id>` and `https://orb.takacsfamily.com/t/<id>` are refused, `https://orb-os.net/t/<id>` is allowed.
+- `https://evil.example/t/<22-char id>` → `Orb Manager imports themes only from orb.takacsfamily.com and orb-studio.net, not from evil.example`, and the injected `siteClient`'s transport sees zero requests.
+- `https://orb-studio.net/t/<id>`, `orb.takacsfamily.com/t/<id>`, `http://127.0.0.1:<port>/t/<id>`, `http://[::1]:8080/t/<id>` keep parsing as today.
+- With `GORB_SITE=https://site.example:8443`: `https://site.example:8443/t/<id>` is allowed, `https://site.example/t/<id>` and `https://orb.takacsfamily.com/t/<id>` are refused, `https://orb-studio.net/t/<id>` is allowed.
 - `GORB_SITE` invalid (e.g. `http://example.com`) → the release resolver's fallback (the default site) is what is allowed.
 - A bundle whose sidecar art is a 1025 × 1 PNG → `the theme from 127.0.0.1:<port> can't be imported: an image in it is 1025 × 1 pixels, and a design's pictures can be at most 1024 × 1024`; nothing is held (no ticket).
 - A sidecar prefix `data:image/svg+xml;base64` → the type sentence; an inline `data:image/svg+xml;utf8,<svg…>` anywhere in the design → the type sentence; a 50000 × 50000 PNG header in a ~60-byte inline data URL → the size sentence.
@@ -110,7 +110,7 @@ Art sentences (Go), verbatim:
 ## Acceptance criteria
 
 1. `cd tools/orb-manager && go vet ./... && go test -run 'SiteLink|SiteImport|SiteBundle|SiteKeep|ResolveOrigin|ThemeOrigin|SiteAllowed|ImageHeader|ArtRefusal|BundleArt' -v .` → all pass, including new tests:
-   - `TestSiteAllowed*`: the hosts above, the `GORB_SITE` cases, `:443` equivalence, `www.orb-os.net` refused;
+   - `TestSiteAllowed*`: the hosts above, the `GORB_SITE` cases, `:443` equivalence, `www.orb-studio.net` refused;
    - `TestSiteImportRefusesAnotherHostBeforeAnyFetch`: a `siteClient` whose `RoundTripper` counts calls; the count stays 0 and the sentence is exact;
    - `TestImageHeader*`: the same matrix as the site's `tests/image-header.test.ts` (PNG, GIF87a/89a with and without colour tables and an oversized frame, truncated GIF, JPEG with APP0/APP1 then SOF0, SOF2, fill bytes, SOS-before-SOF, WebP VP8/VP8L/VP8X, truncations, random bytes), headers built by hand;
    - `TestArtRefusal*` and `TestSiteImportRefusesArtOutsideTheLimits` (1025-wide PNG, SVG prefix, SVG inline, 50000 × 50000 bomb), each with the exact sentence;

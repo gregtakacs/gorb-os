@@ -185,9 +185,9 @@ function tRowSite() {
   const ts = render(S.Fields, { fields: [sf] });
   const sbtn = by(ts, 'button').filter((n) => text(n) === 'Your library…');
   ok(pic.length === 0 && btns.length === 1 && btns[0].props.className === 'ui-ghost st-sm'
-    && btns[0].props.title === 'Pick a picture from your orb-os.net library'
+    && btns[0].props.title === 'Pick a picture from your orb-studio.net library'
     && by(ts, 'input').filter((n) => n.props.type === 'file').length === 0 && sbtn.length === 1
-    && sbtn[0].props.title === 'Pick a sound from your orb-os.net library'
+    && sbtn[0].props.title === 'Pick a sound from your orb-studio.net library'
     && text(t).indexOf('art.png') >= 0,
     'a file row under the site has no file input and a library button', btns.length + '/' + pic.length);
   const nf = render(S.Fields, { fields: [Kit.Fi('Art', () => {}, 'v')] });
@@ -258,13 +258,13 @@ async function tPickerStates() {
   T.library = { list: async () => ({ ok: true, assets: [] }), pick: async () => ({ ok: true }) };
   const t2 = render(S.LibraryPicker, P); await flush();
   const te = rerender();
-  const empty = text(te).indexOf('No pictures in your library yet.') >= 0 && text(te).indexOf('Add them on orb-os.net, under Assets.') >= 0;
+  const empty = text(te).indexOf('No pictures in your library yet.') >= 0 && text(te).indexOf('Add them on orb-studio.net, under Assets.') >= 0;
   const t2s = render(S.LibraryPicker, Object.assign({}, P, { kind: 'sound', accept: 'audio/*' })); await flush();
   const emptyS = text(rerender()).indexOf('No sounds in your library yet.') >= 0;
   T.library = { list: async () => ({ ok: false, message: 'Your library could not be reached' }), pick: async () => ({ ok: false }) };
   const t3 = render(S.LibraryPicker, P); await flush();
   const errt = text(rerender());
-  const errored = errt.indexOf('Your library could not be reached') >= 0 && errt.indexOf('Add them on orb-os.net, under Assets.') < 0;
+  const errored = errt.indexOf('Your library could not be reached') >= 0 && errt.indexOf('Add them on orb-studio.net, under Assets.') < 0;
   ok(loading && empty && emptyS && errored, "the picker's empty, loading and error states read as the contract says", [loading, empty, emptyS, errored].join());
 }
 async function tPickerPick() {

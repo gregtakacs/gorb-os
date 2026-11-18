@@ -28,7 +28,7 @@ fixed, set its status to `fixed`, add the commit or release, and leave the entry
 - **Status:** fixed (the commit that adds this entry, "theme@1: Import a file on the site keeps through hostUrl")
 - **Reported:** 2026-11-10, found during H1b's review
 - **Area:** theme@1 `importFile`
-- **Symptom:** on orb-os.net's studio, importing an `.orbtheme` file posted to `/api/library/keep`,
+- **Symptom:** on orb-studio.net's studio, importing an `.orbtheme` file posted to `/api/library/keep`,
   which the site does not serve; the hub was unaffected.
 - **Fix:** the keep call goes through `OrbTheme.hostUrl`, like every other library call.
 

@@ -1,4 +1,4 @@
-# H4 — Upload to orb-os.net from Orb Manager: the `designs:write` scope and the upload route
+# H4 — Upload to orb-studio.net from Orb Manager: the `designs:write` scope and the upload route
 
 ## The ruling
 
@@ -225,7 +225,7 @@ on it.
 
 ```json
 {"id": "<design id>", "app": "clock", "name": "Skeleton", "version": 3,
- "visibility": "private", "url": "https://orb-os.net/t/<design id>"}
+ "visibility": "private", "url": "https://orb-studio.net/t/<design id>"}
 ```
 
 `url` is built from the site's configured origin (`authEnv(process.env).origin`, the same
@@ -239,7 +239,7 @@ is) and one extra member:
 
 ```json
 {"id": "…", "app": "clock", "name": "Skeleton", "version": 3, "visibility": "private",
- "url": "https://orb-os.net/t/…",
+ "url": "https://orb-studio.net/t/…",
  "shareRefused": {"error": "name_too_long", "message": "<the site's sentence, verbatim>"}}
 ```
 
@@ -460,9 +460,9 @@ confirmation (§6's dialog). The answer:
   the site's `error` **word** (only the two credential answers are matched on status, because
   status is all they say), and a clash whose body carries no `existing` — the race §3.2 names —
   is the same answer without `nameTaken`, which the dialog draws as the sentence alone.
-- **401** → `forgetSiteLink` and `disconnected from orb-os.net`, H2's rule unchanged.
+- **401** → `forgetSiteLink` and `disconnected from orb-studio.net`, H2's rule unchanged.
 - **anything else, including a stall** → the site's `message` when it sent one, else
-  `orb-os.net did not answer`; the credential kept. This is how `replace_mismatch`,
+  `orb-studio.net did not answer`; the credential kept. This is how `replace_mismatch`,
   `invalid_request`, `invalid_design`, `not_json`, `too_large`, the schema gate's three 409s,
   `storage_full`, `name_refused`, the save path's `art_refused` and `not_found` reach a human:
   one pass-through, in the site's words, with no hub-side table of codes to fall out of date.
@@ -497,18 +497,18 @@ sentence is the only place upload is mentioned to a hub that cannot upload. It p
 and posts `/api/site/upload`. Unlisted or Public on an account with no handle — which the page
 knows from `link-status` without dialing — is answered locally with `Unlisted and public designs
 need a handle: set one on <site>`, where `<site>` is an anchor to
-`<site>/me`. A `name_taken` answer opens the confirm: `orb-os.net already has
+`<site>/me`. A `name_taken` answer opens the confirm: `orb-studio.net already has
 a design called “<name>”.` with **Replace**, **Upload as a new design** (the name prefilled
 and editable) and **Cancel**. Pressing **Replace** does not send anything: it first says what
-pressing it twice more will do — `Replace adds a new version of “<name>” on orb-os.net. It stays
+pressing it twice more will do — `Replace adds a new version of “<name>” on orb-studio.net. It stays
 <visibility> and keeps its link, and the current version can be restored on the site.` with
 **Replace** and **Cancel**, the two names being the clash answer's `existing.name` and
 `existing.visibility`, so the human confirms the consequence rather than the collision, and the
 sentence answers the two questions a Replace really raises (what happens to the version count,
-and what happens to what is there now). Success draws `Uploaded to orb-os.net as <visibility>`,
+and what happens to what is there now). Success draws `Uploaded to orb-studio.net as <visibility>`,
 the word the site answered — `private`, `unlisted` or `public` — beside an anchor
-`Open <name> on orb-os.net` whose `href` is the site's `url` set as a property. A `shareRefused`
-in that answer draws the same line with the site's sentence on the end, `Uploaded to orb-os.net
+`Open <name> on orb-studio.net` whose `href` is the site's `url` set as a property. A `shareRefused`
+in that answer draws the same line with the site's sentence on the end, `Uploaded to orb-studio.net
 as private: <message>`, and the same anchor: the design is on the site and only its share failed,
 so the line says both. Foreign
 bytes go into `textContent` and `href`, never into markup, as every other site string in that
@@ -535,15 +535,15 @@ page does.
 | Upload 409, Replace's name does not match | `that design is named “<stored>”, not “<name>”` (new to this door, §4) |
 | Upload 201, site | `{"id","app","name","version","visibility","url"}`, plus `shareRefused: {"error","message"}` only when §5's post-share refusal happened |
 | Upload, every other refusal | no new text: `name_taken`, `no_handle`, `name_too_long`, `name_refused`, `storage_full`, `art_refused` and `not_found` re-use the sentence the save or share path already writes (§2 names the helper each comes from) |
-| Hub, upload button | `Upload to orb-os.net` (existing id `#mn-lib-upload`) |
+| Hub, upload button | `Upload to orb-studio.net` (existing id `#mn-lib-upload`) |
 | Hub, read-only link | `Reconnect to allow uploads` |
 | Hub, entry with no design | `that theme carries no design, so it can't be uploaded` |
 | Hub, no handle | `Unlisted and public designs need a handle: set one on <site>` — `<site>` links to `<site>/me` |
-| Hub, clash confirm | `orb-os.net already has a design called “<name>”.` with buttons `Replace`, `Upload as a new design`, `Cancel` |
-| Hub, Replace confirm | `Replace adds a new version of “<name>” on orb-os.net. It stays <visibility> and keeps its link, and the current version can be restored on the site.` with buttons `Replace`, `Cancel` |
+| Hub, clash confirm | `orb-studio.net already has a design called “<name>”.` with buttons `Replace`, `Upload as a new design`, `Cancel` |
+| Hub, Replace confirm | `Replace adds a new version of “<name>” on orb-studio.net. It stays <visibility> and keeps its link, and the current version can be restored on the site.` with buttons `Replace`, `Cancel` |
 | Hub, over 10 MB before dialing | `that design is over the 10 MB a saved design may be` |
-| Hub, success | `Uploaded to orb-os.net as private` / `… as unlisted` / `… as public`, link `Open <name> on orb-os.net` |
-| Hub, stored but unshared | `Uploaded to orb-os.net as private: <message>`, same link |
+| Hub, success | `Uploaded to orb-studio.net as private` / `… as unlisted` / `… as public`, link `Open <name> on orb-studio.net` |
+| Hub, stored but unshared | `Uploaded to orb-studio.net as private: <message>`, same link |
 
 ## 8. Steps
 
@@ -596,14 +596,14 @@ clock design `Big Ben`, 4 MB of PNG art inline.
   the dialog's button enables.
 - Upload `Big Ben`, Private → `POST …/api/hub/designs?app=clock&name=Big%20Ben&visibility=private`
   with the draft's bytes, and the site answers 201 `{"id":"…","name":"Big Ben","version":1,
-  "visibility":"private","url":"https://orb-os.net/t/…"}`; it appears on `/me`, not in the
+  "visibility":"private","url":"https://orb-studio.net/t/…"}`; it appears on `/me`, not in the
   gallery; the art is stored by hash and counted once against 250 MB.
 - The library's `Weather` entry is a baked theme with no draft — its design is inside the
   bake. It is listed, because it carries a design the editor can reopen; uploading it sends the
   `orbnet.ShelfTheme` design, never the bake, and the row's `bytes` is that design's size.
 - Upload the same entry renamed to `big ben` → 409 `name_taken` with
   `existing.name: "Big Ben"` — case-folded, so the site's spelling is the one offered back.
-  **Replace** first says `Replace adds a new version of “Big Ben” on orb-os.net. It stays
+  **Replace** first says `Replace adds a new version of “Big Ben” on orb-studio.net. It stays
   private and keeps its link, and the current version can be restored on the site.`; pressing
   Replace re-posts `?app=clock&name=Big%20Ben&replaceId=…` — the site's own spelling, not the
   hub file's — and the design keeps its id, gains version 2, and its `/t/` link never changed.
@@ -613,12 +613,12 @@ clock design `Big Ben`, 4 MB of PNG art inline.
 - **Upload as a new design** edits the name to `Big Ben II` and re-posts the same bytes with
   `?name=Big%20Ben%20II`: the hub edited a query parameter, never the document.
 - Upload `Big Ben 2` as Public with no handle → the hub answers locally, before dialing, with
-  `Unlisted and public designs need a handle: set one on orb-os.net`, because `link-status` had
+  `Unlisted and public designs need a handle: set one on orb-studio.net`, because `link-status` had
   already said the handle was empty; a hub that dialed anyway would get 409 `no_handle` and
   would still have stored nothing.
 - Owner sets a handle, uploads `Skyline` as Public, and another browser drops the handle in the
   seconds between the preflight and the share: 201 with `"visibility":"private"` and
-  `"shareRefused":{"error":"no_handle",…}` — the hub draws `Uploaded to orb-os.net as private:
+  `"shareRefused":{"error":"no_handle",…}` — the hub draws `Uploaded to orb-studio.net as private:
   Pick a handle on your account page before sharing.` and the link to the design, which is
   genuinely there.
 

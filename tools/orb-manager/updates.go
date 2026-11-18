@@ -456,7 +456,7 @@ func (s *Server) h_keep(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if in.Kind != "theme" {
-		s.jsonErr(w, "Keep my version is an answer about a theme from orb-os.net")
+		s.jsonErr(w, "Keep my version is an answer about a theme from orb-studio.net")
 		return
 	}
 	dir := s.library().ThemesDir
@@ -545,7 +545,7 @@ func (s *Server) h_apply(w http.ResponseWriter, r *http.Request) {
 	in.Key = strings.TrimSpace(in.Key)
 	in.Baked = strings.TrimSpace(in.Baked)
 	if in.Kind != "theme" || in.Key == "" {
-		s.jsonErr(w, "Applying an update is an answer about a theme from orb-os.net")
+		s.jsonErr(w, "Applying an update is an answer about a theme from orb-studio.net")
 		return
 	}
 	if !s.startApply() {
@@ -618,7 +618,7 @@ func (s *Server) applyThemeUpdate(r *http.Request, key, baked string) (*applyPay
 		return nil, err
 	}
 	if ans.Gone {
-		return nil, fmt.Errorf("%s is no longer shared on orb-os.net; the theme stays, and Orb Manager "+
+		return nil, fmt.Errorf("%s is no longer shared on orb-studio.net; the theme stays, and Orb Manager "+
 			"will stop checking it", oldName)
 	}
 	if ans.NotYet {
@@ -633,7 +633,7 @@ func (s *Server) applyThemeUpdate(r *http.Request, key, baked string) (*applyPay
 	// app gate under it is untouched by the relaxation — a rename never changes an app.
 	if ans.Version < origin.Version ||
 		(ans.Version == origin.Version && (ans.SharedName == "" || ans.SharedName == oldName)) {
-		return nil, fmt.Errorf("orb-os.net has no newer version of %s than the one that was baked", oldName)
+		return nil, fmt.Errorf("orb-studio.net has no newer version of %s than the one that was baked", oldName)
 	}
 	if ans.App != "" && ans.App != app {
 		return nil, fmt.Errorf("%s belongs to the %s app now, and Orb Manager cannot move a theme between apps",
@@ -774,7 +774,7 @@ func (s *Server) updateBake(r *http.Request, lib *Library, origin *ThemeOrigin, 
 		}
 		o := readThemeOrigin(p)
 		if o == nil || o.DesignID != origin.DesignID || o.Version < ans.Version {
-			return "", "", nil, fmt.Errorf("the shelf’s %q is not this design at the version orb-os.net is offering", baked)
+			return "", "", nil, fmt.Errorf("the shelf’s %q is not this design at the version orb-studio.net is offering", baked)
 		}
 		return p, baked, nil, nil
 	}

@@ -20,7 +20,7 @@ Download, and the running binary is never swapped.
 - `~/docker/Projects/orb-os-net/docs/design.md` §0 (rulings 25, 26), §7.2 (the install id, the
   several-Orb-Managers rules), §7.6 (the table's Orb Manager and Firmware rows and the *"Updating
   itself in place may come later"* sentence), §9 (`GET /api/hub/releases/latest` row), §12 (row G3
-  and the dependency note *"H2 needs G3's install id"*), §11 (the move to orb-os.net).
+  and the dependency note *"H2 needs G3's install id"*), §11 (the move to orb-studio.net).
 - `~/docker/Projects/orb-os-net/src/app/api/hub/releases/latest/route.ts` and
   `~/docker/Projects/orb-os-net/docs/specs/r1-design.md` — the **exact** JSON the check consumes.
   Its shape is the contract; invent no field.
@@ -90,7 +90,7 @@ Download, and the running binary is never swapped.
 - README: in `tools/orb-manager/README.md` add a short subsection under the update/firmware area
   saying Orb Manager checks `GET /api/hub/releases/latest` on start and daily (no sign-in), and
   offers only **Download** (`/download`) — it does not update itself in place. Match the README's
-  tone. Do not touch the "Import from orb-os.net" section (that is H1b's).
+  tone. Do not touch the "Import from orb-studio.net" section (that is H1b's).
 
 ## Behaviour and edge cases
 

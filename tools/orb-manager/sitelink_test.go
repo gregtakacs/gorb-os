@@ -43,7 +43,7 @@ type hubGrant struct {
 	used      bool
 }
 
-// hubSite is the fake orb-os.net: the approve page's rules (§2.1 + lead review 1), the
+// hubSite is the fake orb-studio.net: the approve page's rules (§2.1 + lead review 1), the
 // decision endpoint (§2.2, 303 per lead review 2), the exchange with the S256 check and
 // the same-install replacement (§2.3, refusal 400 invalid_grant per lead review 3), the
 // bearer's own revoke (§2.4), a designs read (§2.5) to prove a stored token is live, and
@@ -188,7 +188,7 @@ func (hs *hubSite) connectPage(w http.ResponseWriter, r *http.Request) {
 	hs.record("connect-ok")
 	w.Header().Set("Content-Security-Policy", "frame-ancestors 'none'")
 	w.Header().Set("X-Frame-Options", "DENY")
-	_, _ = io.WriteString(w, "<h1>Link Orb Manager to orb-os.net</h1>")
+	_, _ = io.WriteString(w, "<h1>Link Orb Manager to orb-studio.net</h1>")
 }
 
 // decide is §2.2: allow stores a single-use 60-second grant and answers 303 to the
@@ -422,7 +422,7 @@ func (hs *hubSite) upload(w http.ResponseWriter, r *http.Request) {
 		status = http.StatusCreated
 	}
 	if resp == "" {
-		resp = `{"id":"d-1","app":"clock","name":"Skeleton","version":1,"visibility":"private","url":"https://orb-os.net/t/d-1"}`
+		resp = `{"id":"d-1","app":"clock","name":"Skeleton","version":1,"visibility":"private","url":"https://orb-studio.net/t/d-1"}`
 	}
 	w.WriteHeader(status)
 	_, _ = io.WriteString(w, resp)
@@ -1871,7 +1871,7 @@ func TestSiteDesigns401ClearsTheLink(t *testing.T) {
 	delete(hs.links, s.installID)
 	hs.mu.Unlock()
 	if env := designCall(t, s, http.MethodGet, "/api/site/designs", nil); env["ok"] != false ||
-		env["error"] != "disconnected from orb-os.net" {
+		env["error"] != "disconnected from orb-studio.net" {
 		t.Fatalf("a refused bearer = %v, want the one disconnected sentence", env)
 	}
 	if hs.designAsks() != 1 {
@@ -1898,7 +1898,7 @@ func TestSiteDesigns401ClearsTheLink(t *testing.T) {
 	}
 	// Believed the moment it is written: the next read answers from the file, and the site is
 	// asked nothing again by a hub that knows it has no bearer.
-	if env := designCall(t, s, http.MethodGet, "/api/site/designs", nil); env["error"] != "disconnected from orb-os.net" {
+	if env := designCall(t, s, http.MethodGet, "/api/site/designs", nil); env["error"] != "disconnected from orb-studio.net" {
 		t.Errorf("the read after the disconnect = %v, want the same sentence", env)
 	}
 	if hs.designAsks() != 1 {
@@ -1948,7 +1948,7 @@ func TestSiteDesignsKeepsTheTokenOnAnyOtherFailure(t *testing.T) {
 			s, tok := linkedSiteHub(t, hs, "greg")
 			c.setup(t, hs)
 			env := designCall(t, s, http.MethodGet, "/api/site/designs", nil)
-			if env["ok"] != false || env["error"] != "orb-os.net did not answer" {
+			if env["ok"] != false || env["error"] != "orb-studio.net did not answer" {
 				t.Fatalf("%s: got %v, want the one not-answering sentence", c.name, env)
 			}
 			l := s.loadSiteLink()
@@ -1989,7 +1989,7 @@ func TestSiteDisconnectForgetsTheToken(t *testing.T) {
 		if st := linkStatusState(t, s); st["state"] != "none" {
 			t.Errorf("link-status after the disconnect = %v, want none", st)
 		}
-		if env := designCall(t, s, http.MethodGet, "/api/site/designs", nil); env["error"] != "not connected to orb-os.net" {
+		if env := designCall(t, s, http.MethodGet, "/api/site/designs", nil); env["error"] != "not connected to orb-studio.net" {
 			t.Errorf("the next read = %v, want the hub to say it is not connected", env)
 		}
 	})
@@ -2074,7 +2074,7 @@ func TestSiteDesignsAndDisconnectDoorShapes(t *testing.T) {
 	if err := s.saveSiteLink(&siteLink{Token: tok, Site: other.URL, LinkedAt: 1730000000, Handle: "greg"}); err != nil {
 		t.Fatal(err)
 	}
-	if env := designCall(t, s, http.MethodGet, "/api/site/designs", nil); env["error"] != "not connected to orb-os.net" {
+	if env := designCall(t, s, http.MethodGet, "/api/site/designs", nil); env["error"] != "not connected to orb-studio.net" {
 		t.Errorf("a file naming another site = %v, want the hub to say it is not connected", env)
 	}
 	if got := hs.count(); got != 0 {

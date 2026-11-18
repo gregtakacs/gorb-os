@@ -37,7 +37,7 @@ import (
 )
 
 // defaultSiteBase is the origin the release check dials with no GORB_SITE: ruling 1 puts
-// the site on orb.takacsfamily.com today, and §11's move to orb-os.net is a future change
+// the site on orb.takacsfamily.com today, and §11's move to orb-studio.net is a future change
 // to this one string.
 const defaultSiteBase = "https://orb.takacsfamily.com"
 

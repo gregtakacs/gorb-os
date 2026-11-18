@@ -410,7 +410,7 @@ func TestApplyUpdateGoneRowRefuses(t *testing.T) {
 		return nil, errors.New("unreachable")
 	}
 	msg := applyErr(t, applyOnce(t, s, map[string]any{"kind": "theme", "key": siteDesignID}))
-	if !strings.Contains(msg, "is no longer shared on orb-os.net; the theme stays, and Orb Manager will stop checking it") {
+	if !strings.Contains(msg, "is no longer shared on orb-studio.net; the theme stays, and Orb Manager will stop checking it") {
 		t.Errorf("the gone refusal is not §7.4's sentence: %q", msg)
 	}
 	if callFind(orb.Calls(), "POST /api/v1/sd") >= 0 {

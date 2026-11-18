@@ -4,7 +4,7 @@
 
 Slice L1 (orb-os-net ruling 42; `docs/specs/l1-design.md` §4.5 is this step's contract). Orb
 Manager's local editors keep their file pickers and gain "Your library" while the hub is linked
-to orb-os.net (H2). Step 1 gave the editors `OrbTheme.library`, which asks `hostUrl('/assets')`
+to orb-studio.net (H2). Step 1 gave the editors `OrbTheme.library`, which asks `hostUrl('/assets')`
 and `hostUrl('/asset?sha256=…')` — under the hub that is `/api/assets` and `/api/asset`. This
 step adds those two doors to the editor port, passing through to the linked site's bearer routes
 `/api/hub/assets` and `/api/hub/asset`, and tells an editor document it may offer the library by
@@ -61,8 +61,8 @@ New file `tools/orb-manager/siteassets.go` (and `siteassets_test.go`):
 ## Behaviour and edge cases
 
 - Linked, then the site revokes the link: the next `/api/assets` hears 401, forgets the link,
-  answers `disconnected from orb-os.net`; the next editor document has no GorbHost line.
-- A site that redirects (3xx) is not an answer → `orb-os.net did not answer`.
+  answers `disconnected from orb-studio.net`; the next editor document has no GorbHost line.
+- A site that redirects (3xx) is not an answer → `orb-studio.net did not answer`.
 - The site's asset rows are passed through untouched (the hub does not parse them into structs),
   exactly as `/api/site/designs` passes the designs list.
 - The doors exist only on the editor port; the control port gets nothing new.
@@ -70,14 +70,14 @@ New file `tools/orb-manager/siteassets.go` (and `siteassets_test.go`):
 ## Tests (`siteassets_test.go`, plus updates to existing route-table tests)
 
 Go test names (each `t.Run` or `func Test…`; keep these words in the names so a grep finds them):
-- `TestSiteAssetsNotLinked` — no link → `not connected to orb-os.net`, the fake site saw no request.
+- `TestSiteAssetsNotLinked` — no link → `not connected to orb-studio.net`, the fake site saw no request.
 - `TestSiteAssetsPassThrough` — linked → the fake site saw `GET /api/hub/assets` with the bearer;
   the answer is `{"data":<the site's body>,"ok":true}`, byte for byte.
-- `TestSiteAssetsRevoked` — the site answers 401 → `disconnected from orb-os.net` and the link is
+- `TestSiteAssetsRevoked` — the site answers 401 → `disconnected from orb-studio.net` and the link is
   gone from disk.
-- `TestSiteAssetsBadAnswer` — 500, a 302, non-JSON, `{"assets":{}}`, a 5 MB body → `orb-os.net did not answer`.
+- `TestSiteAssetsBadAnswer` — 500, a 302, non-JSON, `{"assets":{}}`, a 5 MB body → `orb-studio.net did not answer`.
 - `TestSiteAssetBytes` — the bytes come through with the three headers; a body whose hash is
-  wrong → `orb-os.net did not answer`; 404 → 404 `no such asset`; a bad hash (63 hex, upper case,
+  wrong → `orb-studio.net did not answer`; 404 → 404 `no such asset`; a bad hash (63 hex, upper case,
   an extra parameter) → 400 with no dial.
 - `TestEditorDocumentGorbHostWhenLinked` — the served editor document contains the constant line
   right after the shim when linked, and is unchanged (equal to the unlinked bytes) when not.

@@ -1,6 +1,6 @@
 package main
 
-// A1 §7.2–§7.3 (docs/specs/a1-design.md): POST /api/site/apps/add, the one way an orb-os.net
+// A1 §7.2–§7.3 (docs/specs/a1-design.md): POST /api/site/apps/add, the one way an orb-studio.net
 // app reaches this hub's shelf, and the `.orbapp.origin.json` beside a kept app that records
 // where those bytes came from. The store is a fake site on loopback (GORB_SITE), the app it
 // serves is the repo's own sentinel fixture, and every case below is told by what the shelf

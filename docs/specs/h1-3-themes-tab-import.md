@@ -1,4 +1,4 @@
-# Themes tab: Import from orb-os.net, and the "from <site>" tag on library rows
+# Themes tab: Import from orb-studio.net, and the "from <site>" tag on library rows
 
 ## Goal
 
@@ -6,7 +6,7 @@ Slice H1 of the orb-os-net design (`~/docker/Projects/orb-os-net/docs/design.md`
 last step. Step h1-1 gave the hub `POST /api/site/import` (paste a link, get a ticket for the
 fetched design bundle). Step h1-2 taught the editor runtime to bake a ticket's bundle under
 its shared name and keep it in the library (`?import=<ticket>`). This step is the user-facing
-door. The Themes tab gets an **Import from orb-os.net** button with a link field. Import
+door. The Themes tab gets an **Import from orb-studio.net** button with a link field. Import
 fetches the bundle through the hub, opens that app's editor in the Themes tab's editor pane
 on the ticket (as Rebake all opens the editor to bake), and shows the result. Library rows
 that came from a site wear a tag naming it.
@@ -37,14 +37,14 @@ that came from a site wear a tag naming it.
 
 ```html
 <button id="mn-site-btn" class="ghost" type="button"
-        title="Paste the link of a theme on orb-os.net. The hub fetches its design, this orb's editor for that app bakes it under its shared name (“name by @creator”), and it lands in the hub library. No sign-in is needed.">Import from orb-os.net</button>
+        title="Paste the link of a theme on orb-studio.net. The hub fetches its design, this orb's editor for that app bakes it under its shared name (“name by @creator”), and it lands in the hub library. No sign-in is needed.">Import from orb-studio.net</button>
 ```
 
 and, directly under the toolbar `div.row.toolbar`, a row that starts hidden:
 
 ```html
 <div class="row" id="mn-site-row" hidden>
-  <input type="url" id="mn-site-link" placeholder="https://orb-os.net/t/…" spellcheck="false" autocomplete="off" size="44">
+  <input type="url" id="mn-site-link" placeholder="https://orb-studio.net/t/…" spellcheck="false" autocomplete="off" size="44">
   <button id="mn-site-go" type="button">Import</button>
   <span id="mn-site-state" class="hint"></span>
 </div>
@@ -55,7 +55,7 @@ and, directly under the toolbar `div.row.toolbar`, a row that starts hidden:
 1. `#mn-site-btn` toggles `#mn-site-row` and focuses `#mn-site-link` when it opens.
    Enter in the field does what `#mn-site-go` does.
 2. `#mn-site-go`, with the field's trimmed value:
-   - Empty → state `paste a theme’s link from orb-os.net first`. Nothing is fetched.
+   - Empty → state `paste a theme’s link from orb-studio.net first`. Nothing is fetched.
    - Disable the button, state `fetching the theme…`, then
      `hubFetch("/api/site/import", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({link})})`.
    - A transport failure → `✗ the hub did not answer: <message>`. `ok:false` → `✗ ` + `error`.
@@ -85,7 +85,7 @@ and, directly under the toolbar `div.row.toolbar`, a row that starts hidden:
 
 ### README
 
-`tools/orb-manager/README.md`: add a short section **Import from orb-os.net** (5–10 lines). It
+`tools/orb-manager/README.md`: add a short section **Import from orb-studio.net** (5–10 lines). It
 covers: the button in the Themes tab; that the hub fetches `GET <site>/api/hub/theme/<id>`
 with no sign-in; that the orb's own editor for the app bakes the design under
 `<name> by @<handle>` and the hub keeps it in its library with a
@@ -120,6 +120,6 @@ From `tools/orb-manager`, Go at `/usr/local/go/bin/go`:
 
 - The hub's Go doors (h1-1) and `theme@1/session.js` (h1-2): use them as they are. If one of
   them is wrong for the UI, report `blocked` and say what.
-- A gallery or browse tab, a "My orb-os.net" list, update checks, sending to the orb
+- A gallery or browse tab, a "My orb-studio.net" list, update checks, sending to the orb
   automatically after an import. The row's existing Install does that.
 - `app.css` restyling beyond what the new row needs to sit like the toolbar row above it.

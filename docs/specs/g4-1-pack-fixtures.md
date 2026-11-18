@@ -5,7 +5,7 @@
 Slice G4 (ruling 36) of the orb-os-net design, gorb-os half, step 1 of 2 — the source of truth
 for the region format. `orbsdk.py`'s editor region (the bytes a `.orbapp` carries) today holds
 only the editor directory's top-level files; the schema fixtures an app keeps for the migration
-check stay in the source tree, so a hub or orb-os.net holding only the container cannot run the
+check stay in the source tree, so a hub or orb-studio.net holding only the container cannot run the
 check from it. This step packs the editor's `_fixtures/schema-<n>.orbdesign` samples into the
 region, tightens the build's fixture rule to require a fixture for **every** past schema (not
 only N-1) and to refuse the same stray/newer names `check-migrations` already refuses, updates

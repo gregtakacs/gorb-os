@@ -445,7 +445,7 @@ func (s *Server) siteInboxFetch(ctx context.Context, link *siteLink) error {
 			log.Printf("orb-manager: site inbox: %s: %v", it.ID, err)
 			continue
 		}
-		// The same checks an Import from orb-os.net applies, before anything is held or
+		// The same checks an Import from orb-studio.net applies, before anything is held or
 		// claimed: a bundle this hub would refuse to open is left waiting on the site.
 		if _, err := checkBundle(raw, it.DesignID); err != nil {
 			log.Printf("orb-manager: site inbox: %s: %v", it.ID, err)

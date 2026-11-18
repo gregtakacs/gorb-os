@@ -1731,7 +1731,7 @@ func TestInstallStepsWordALiveLanding(t *testing.T) {
 	}
 }
 
-// H1b-3 (design ruling 32): the door onto orb-os.net is Orb Manager's own, so it stands
+// H1b-3 (design ruling 32): the door onto orb-studio.net is Orb Manager's own, so it stands
 // on the home view's Theme library rather than in an orb's Themes tab, and it asks for no
 // board. The hub's half (h1b-1) and the editor's half (h1b-2) are tested where they live;
 // what is at stake here is the seam between them — the markup the press needs, the fetch
@@ -1809,7 +1809,7 @@ func TestSiteImportDoorInTheLibrary(t *testing.T) {
 	}
 	// The empty field is refused in the door's own words and not by the hub: an empty
 	// POST buys an error sentence from the far end for nothing.
-	if !strings.Contains(press, `"paste a theme\u2019s link from orb-os.net first"`) {
+	if !strings.Contains(press, `"paste a theme\u2019s link from orb-studio.net first"`) {
 		t.Error("an empty field is not refused in the door's own words")
 	}
 	if !strings.Contains(press, `"the hub did not answer: "`) {
@@ -1897,7 +1897,7 @@ func TestSiteImportDoorInTheLibrary(t *testing.T) {
 	}
 }
 
-// H2 hub step 3 (design §5, §7.2): the human half of the site link is My orb-os.net, and it
+// H2 hub step 3 (design §5, §7.2): the human half of the site link is My orb-studio.net, and it
 // lives in the Theme library right where Import lives — not as a new view. The binding is
 // the four-state sentence drawn straight from link-status, and the fact that the whole thing
 // waits behind the SAME door the closed hub already hides: every new id is inside #mn-site-row,
@@ -1911,7 +1911,7 @@ func TestSiteUISectionIsThereAndShut(t *testing.T) {
 	// (a) The new ids exist and stand inside the home view.
 	for _, id := range []string{"mn-site-connect", "mn-site-conn", "mn-site-designs", "mn-site-disconnect", "mn-site-connect-block", "mn-site-designs-block"} {
 		if !strings.Contains(home, `id="`+id+`"`) {
-			t.Errorf(`#%s is missing from the home view: My orb-os.net is half built`, id)
+			t.Errorf(`#%s is missing from the home view: My orb-studio.net is half built`, id)
 		}
 	}
 
@@ -1944,11 +1944,11 @@ func TestSiteUISectionIsThereAndShut(t *testing.T) {
 
 	// (d) The four binding sentences and the two fallback lines, drawn from link-status.state.
 	for _, want := range []string{
-		"Connect to orb-os.net",        // none
-		"Waiting for orb-os.net",       // pending (the ellipsis is a \u2026 escape in source)
+		"Connect to orb-studio.net",        // none
+		"Waiting for orb-studio.net",       // pending (the ellipsis is a \u2026 escape in source)
 		"Connected as @",               // linked, with a handle
-		"Connected to orb-os.net",      // linked, no handle
-		"Disconnected from orb-os.net", // disconnected
+		"Connected to orb-studio.net",      // linked, no handle
+		"Disconnected from orb-studio.net", // disconnected
 		"Reconnect",                    // the disconnected button, which IS connect
 	} {
 		if !strings.Contains(app, want) {
@@ -1956,7 +1956,7 @@ func TestSiteUISectionIsThereAndShut(t *testing.T) {
 		}
 	}
 	// The empty list and the press fallback line the spec pinned.
-	for _, want := range []string{"Nothing saved on orb-os.net yet.", "open the link the hub printed if your browser stayed shut"} {
+	for _, want := range []string{"Nothing saved on orb-studio.net yet.", "open the link the hub printed if your browser stayed shut"} {
 		if !strings.Contains(app, want) {
 			t.Errorf("app.js is missing the pinned line %q", want)
 		}
@@ -2101,7 +2101,7 @@ func TestSiteUploadButtonIsEnabledByScopesOnly(t *testing.T) {
 	if !strings.Contains(line, `st.textContent = ""`) {
 		t.Error("a writable link leaves the toolbar's line unemptied, so a stale refusal outlives the relink")
 	}
-	if strings.Contains(line, "Waiting for orb-os.net") || strings.Contains(line, "Disconnected from orb-os.net") ||
+	if strings.Contains(line, "Waiting for orb-studio.net") || strings.Contains(line, "Disconnected from orb-studio.net") ||
 		strings.Contains(line, "Connected as @") || strings.Contains(line, "#mn-site-conn") {
 		t.Error("the toolbar's upload line reaches into the connect row's four bound sentences")
 	}
@@ -2199,7 +2199,7 @@ func TestSiteUploadSendsForeignBytesAsTextOnly(t *testing.T) {
 	// The success anchor's label is the SITE's name, so a hostile name can only ever be a
 	// label, and its href is assigned as a property rather than concatenated into an attribute.
 	succ := jsFuncBody(t, app, "function siteUploadSuccess(data)")
-	if !strings.Contains(succ, `"Open " + String((data && data.name) || "") + " on orb-os.net"`) {
+	if !strings.Contains(succ, `"Open " + String((data && data.name) || "") + " on orb-studio.net"`) {
 		t.Error("the success anchor's label is not built from the answer's name: the local spelling would name a design the site never stored")
 	}
 	for _, want := range []string{"a.href = url", `a.rel = "noopener noreferrer"`, `a.target = "_blank"`} {
@@ -2401,17 +2401,17 @@ func TestSiteUploadSuccessNamesTheVisibility(t *testing.T) {
 	if !strings.Contains(succ, "data.visibility") || strings.Contains(succ, "siteUploadVis()") {
 		t.Error("the success line reads the radio instead of the answer: the site decides the word")
 	}
-	if !strings.Contains(succ, `"Uploaded to orb-os.net as " + vis`) {
+	if !strings.Contains(succ, `"Uploaded to orb-studio.net as " + vis`) {
 		t.Error("the success line is not the §7 sentence naming the visibility")
 	}
 	// A Replace against a public design must be able to say public: the word rides the answer,
 	// so no branch of the drawing may hard-code private into the plain case.
-	if strings.Contains(succ, `= "Uploaded to orb-os.net as private"`) {
+	if strings.Contains(succ, `= "Uploaded to orb-studio.net as private"`) {
 		t.Error("the plain success line hard-codes private: a Replace keeping public would be reported wrongly")
 	}
 	// shareRefused: the design landed, only its share failed, and the line carries the site's
 	// own reason after the fact.
-	if !strings.Contains(succ, `"Uploaded to orb-os.net as private: "`) || !strings.Contains(succ, "shareRefused") {
+	if !strings.Contains(succ, `"Uploaded to orb-studio.net as private: "`) || !strings.Contains(succ, "shareRefused") {
 		t.Error("shareRefused is not drawn as upload-plus-site-sentence in one line")
 	}
 	// The link rides only an answered url, and the dialog stays open on success: closing it
@@ -2678,7 +2678,7 @@ func TestUpdatesListOnHome(t *testing.T) {
 	}
 	// §7.4's sentence is the page's, not a bare tag: a retired design is explained.
 	line := blockOf(t, app, "function updateRowLine(")
-	if !strings.Contains(line, "is no longer shared on orb-os.net; the theme stays, and Orb Manager will stop checking it.") {
+	if !strings.Contains(line, "is no longer shared on orb-studio.net; the theme stays, and Orb Manager will stop checking it.") {
 		t.Error("the gone row does not say §7.4's sentence")
 	}
 	// A row with no choices at all draws no buttons, and the empty list says so plainly.
@@ -2850,7 +2850,7 @@ func TestAppSettingsColourPickerIsWiredInTheFace(t *testing.T) {
 	}
 }
 
-// TestOrbOnlySubBlockIsWiredIntoTheTray: §7.3's enumeration lives INSIDE the From orb-os.net
+// TestOrbOnlySubBlockIsWiredIntoTheTray: §7.3's enumeration lives INSIDE the From orb-studio.net
 // block, on the block's own refresh, and its rows are names that came off an orb's card — so the
 // row is built with DOM APIs, the gone entry carries no button, and the press that adopts goes
 // through the apply door's own half-finished-bake path with the card's name as the key the settle
@@ -2861,7 +2861,7 @@ func TestOrbOnlySubBlockIsWiredIntoTheTray(t *testing.T) {
 	build := blockOf(t, app, "function siteInboxSection()")
 	for _, want := range []string{`"mn-orbonly"`, `"mn-orbonly-list"`, "Themes on orbs only"} {
 		if !strings.Contains(build, want) {
-			t.Errorf("the From orb-os.net block never builds %s; §7.3's sub-list is not inside it", want)
+			t.Errorf("the From orb-studio.net block never builds %s; §7.3's sub-list is not inside it", want)
 		}
 	}
 	// The refresh is the tray's, not a loop of its own: the enumeration dials orbs and the site,

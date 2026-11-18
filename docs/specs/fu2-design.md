@@ -82,20 +82,20 @@ silent about a payload too short" — are rewritten to the new rule. The site co
 site's own save route, which now enforces the floor, and the recorded art is real images so the
 save succeeds).
 
-## Item 3 — import accepts https://www.orb-os.net too (ruling 35)
+## Item 3 — import accepts https://www.orb-studio.net too (ruling 35)
 
 Ruling 35, www added 2026-11-11: "Orb Manager imports only from known sites: the configured site
-(`GORB_SITE`), `orb-os.net` and `www.orb-os.net`." https only; any other subdomain still refused.
+(`GORB_SITE`), `orb-studio.net` and `www.orb-studio.net`." https only; any other subdomain still refused.
 
 **Hub (step fu2-3).** `siteAllowed` (sitelimits.go:60) is true only for `hostport == orbOSNet`. It
-also becomes true for `https://www.orb-os.net` (and `:443`, stripped by `siteOriginParts`), https
-only, loopback unchanged; `api.orb-os.net` and `orb-os.net.evil.example` stay refused.
-`siteNotAllowed`'s sentence keeps its shape and its allowed side becomes `orb-os.net/www.orb-os.net`
+also becomes true for `https://www.orb-studio.net` (and `:443`, stripped by `siteOriginParts`), https
+only, loopback unchanged; `api.orb-studio.net` and `orb-studio.net.evil.example` stay refused.
+`siteNotAllowed`'s sentence keeps its shape and its allowed side becomes `orb-studio.net/www.orb-studio.net`
 so the owner recognises both. `resolveOrigin` (siteimport.go:625) already gates through
-`siteAllowed`, so a `www.orb-os.net` origin sidecar resolves and any other subdomain is refused
+`siteAllowed`, so a `www.orb-studio.net` origin sidecar resolves and any other subdomain is refused
 before a socket opens. Tests: `TestSiteAllowed*` gains www rows; the before-any-fetch test adds a
-`www.orb-os.net` accepted and `api.orb-os.net` refused (zero requests) case; a `resolveOrigin` test
-proves a `www.orb-os.net` origin passes the gate with zero requests.
+`www.orb-studio.net` accepted and `api.orb-studio.net` refused (zero requests) case; a `resolveOrigin` test
+proves a `www.orb-studio.net` origin passes the gate with zero requests.
 
 ## Item 4 — a library name that breaks the basic-character rule gets a rename prompt (ruling 35)
 
@@ -126,7 +126,7 @@ copy are provisional: the lead will check the behaviour live and may adjust the 
 
 **Doc (step fu2-3).** The SDK doc that lists the editor runtimes is `apps/README.md` (the `editor`
 field row and the "Theme designs, schemas and migrations" section, `apps/README.md:49`). A sentence
-is added there matching R37 as built: on orb-os.net an editor whose `editor.json` lists `support@1`
+is added there matching R37 as built: on orb-studio.net an editor whose `editor.json` lists `support@1`
 gets `'unsafe-eval'` on its own origin only, and two `support@1` features stay blocked by the
 studio CSP — its helmet mount's inline `<script>` (needs `'unsafe-inline'`) and its x-import from
 other origins (`connect-src 'self'` stays). `babel@7.29.0` editors likewise get `'unsafe-eval'` on
@@ -192,6 +192,6 @@ check, to confirm. If a shelf app's bytes **do** change and it is not one of the
    `version.txt` (consistent with RELEASING.md, which refuses a bundle whose version is not
    `version.txt`).
 4. **Item 3 — sentence shape.** **Chosen:** name both allowed public hosts as
-   `orb-os.net/www.orb-os.net` (matches how the rule reads in `design.md`) rather than two names
+   `orb-studio.net/www.orb-studio.net` (matches how the rule reads in `design.md`) rather than two names
    joined by "and".
 

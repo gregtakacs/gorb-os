@@ -3,7 +3,7 @@
 ## Goal
 
 Slice H1 of the orb-os-net design (`~/docker/Projects/orb-os-net/docs/design.md` §7.1, §8.4):
-Orb Manager's **Import from orb-os.net**. The user pastes `https://<site>/t/<id>`. The hub
+Orb Manager's **Import from orb-studio.net**. The user pastes `https://<site>/t/<id>`. The hub
 (Go) fetches that design's **design bundle** from `GET <site>/api/hub/theme/<id>`, checks it,
 and holds it under a one-time **import ticket**. The app's own editor, opened later by the
 Themes tab with `?import=<ticket>` (step h1-2), reads the bundle back from the hub, bakes it
@@ -53,7 +53,7 @@ This step is the Go side only: three doors, the ticket store, the origin sidecar
 - `site` = `scheme + "://" + host`, with the host lowercased and the port kept if present.
   `id` is the 22-character id.
 - Every refusal is the one sentence:
-  `paste a theme’s link from orb-os.net, like https://orb-os.net/t/AbCdEfGhIjKlMnOpQrStUv`
+  `paste a theme’s link from orb-studio.net, like https://orb-studio.net/t/AbCdEfGhIjKlMnOpQrStUv`
   except a remote `http://` link, which gets `the link must start with https://`.
 
 ### The fetch
@@ -179,7 +179,7 @@ Run from `tools/orb-manager` with Go at `/usr/local/go/bin/go`:
 2. `/usr/local/go/bin/go test -run 'SiteImport|SiteLink|SiteBundle|SiteKeep|ThemeOrigin' -v .` → passes, and covers at least:
    - `parseSiteLink`: a good https link (with a trailing slash, a query and a fragment);
      `orb.takacsfamily.com/t/<id>` with no scheme; `http://127.0.0.1:8080/t/<id>` accepted;
-     `http://orb-os.net/t/<id>` refused with the https sentence; a 21-character id, `/t/<id>/x`,
+     `http://orb-studio.net/t/<id>` refused with the https sentence; a 21-character id, `/t/<id>/x`,
      userinfo and `ftp://` all refused.
    - Against an `httptest` site: 200 bundle → ticket; 302 → the sign-in sentence, and the
      redirect target is never requested (count hits on it); 404; 410; 409 with a message;

@@ -516,7 +516,7 @@
           : st.error ? h('div', { className: 'st-mbody' }, st.error)
             : !shown.length ? h('div', { className: 'st-mbody' }, kind === 'sound' ? 'No sounds in your library yet.' : 'No pictures in your library yet.')
               : h('div', { className: 'st-mbody st-lib-list' }, shown.map(row)),
-        st && !st.error && !shown.length ? h('div', { className: 'st-hint' }, 'Add them on orb-os.net, under Assets.') : null,
+        st && !st.error && !shown.length ? h('div', { className: 'st-hint' }, 'Add them on orb-studio.net, under Assets.') : null,
         msg ? h('div', { className: 'st-hint st-warn' }, msg) : null,
         h('div', { className: 'st-mfoot' }, h('button', { onClick: p.onClose }, 'Cancel'))));
   };
@@ -1187,7 +1187,7 @@
           var kids = [];
           if (hostFiles()) kids.push(h('input', { type: 'file', accept: f.accept, onChange: f.on }));
           if (showLib) kids.push(h('button', { className: 'ui-ghost st-sm', onClick: function () { libS[1](true); },
-            title: (f.kind === 'sound' ? 'Pick a sound' : 'Pick a picture') + ' from your orb-os.net library' }, 'Your library…'));
+            title: (f.kind === 'sound' ? 'Pick a sound' : 'Pick a picture') + ' from your orb-studio.net library' }, 'Your library…'));
           return kids.length ? h.apply(null, [root.React.Fragment, null].concat(kids)) : null;
         })()
       : f.isCanvas ? h('canvas', { ref: f.ref, width: f.w, height: f.h, onMouseDown: f.onDown, onMouseMove: f.onMove, title: f.tip, className: 'st-cv', style: { width: f.css + 'px', height: f.css + 'px' } })

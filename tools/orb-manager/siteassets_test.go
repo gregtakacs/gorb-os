@@ -295,7 +295,7 @@ func TestSiteAssetsBadAnswer(t *testing.T) {
 			as.statusHook(http.StatusInternalServerError, "<html>the site is having a moment</html>")
 		}},
 		{"302", func(_ *testing.T, as *assetSite) {
-			as.statusHook(http.StatusFound, "Location: https://orb-os.net/login")
+			as.statusHook(http.StatusFound, "Location: https://orb-studio.net/login")
 		}},
 		{"a 200 that is not JSON", func(_ *testing.T, as *assetSite) { as.listBody = []byte("<html>nope</html>") }},
 		{`{"assets":{}}`, func(_ *testing.T, as *assetSite) { as.listBody = []byte(`{"assets":{}}`) }},
